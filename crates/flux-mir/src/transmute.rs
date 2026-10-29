@@ -75,14 +75,14 @@ fn known_layout(sigs: &Signatures, ty: Ty, unsized_parameters: &[bool], depth: u
         TyKind::FnPtr(_) | TyKind::FnDef(_) => true,
         TyKind::Array(elem, len) => len.as_usize().is_some() && known(elem),
         TyKind::Adt(..) => {
-            if let Some(variants) = flux_ty::variants(sigs, ty) {
+            if let Some(variants) = flux_solve::variants(sigs, ty) {
                 variants
                     .iter()
                     .flat_map(|fields| fields.iter())
                     .copied()
                     .all(known)
             } else {
-                flux_ty::fields(sigs, ty).is_some_and(|fields| fields.iter().copied().all(known))
+                flux_solve::fields(sigs, ty).is_some_and(|fields| fields.iter().copied().all(known))
             }
         }
         TyKind::Closure(_, args) => flux_ty::ClosureArgs::split(args)
@@ -109,14 +109,14 @@ fn unresolved_discriminants(
     match ty.kind() {
         TyKind::Ref(..) | TyKind::RawPtr(..) | TyKind::FnPtr(_) | TyKind::FnDef(_) => false,
         TyKind::Adt(adt, _) => {
-            if let Some(variants) = flux_ty::variants(sigs, ty) {
+            if let Some(variants) = flux_solve::variants(sigs, ty) {
                 (0..variants.len()).any(|i| {
                     crate::discriminant_bits(items, discriminants, adt.strukt, i as u32).is_none()
                 }) || variants
                     .iter()
                     .any(|fields| fields.iter().copied().any(unresolved))
             } else {
-                flux_ty::fields(sigs, ty)
+                flux_solve::fields(sigs, ty)
                     .is_some_and(|fields| fields.iter().copied().any(unresolved))
             }
         }

@@ -4,7 +4,7 @@
 //! A trait object's vtable is, as rustc's, three words (the function
 //! that drops a value of the type, its size and its alignment), then a
 //! word per *slot*: for each supertrait of its trait but the trait
-//! itself (each one [`flux_ty::traits::dyn_bounds`] lists), a pointer to
+//! itself (each one [`flux_solve::traits::dyn_bounds`] lists), a pointer to
 //! the type's vtable as that supertrait's object, which upcasting loads;
 //! then, for the trait and each supertrait in that order, each of its
 //! methods in turn, the type's implementation of it (its `impl` block's,
@@ -42,9 +42,9 @@ pub enum Entry {
 }
 
 fn slots(items: &ItemTree, sigs: &Signatures, object: Ty, d: DynTy) -> Vec<Slot> {
-    let bounds: Vec<_> = flux_ty::traits::dyn_bounds(sigs, object, d)
+    let bounds: Vec<_> = flux_solve::traits::dyn_bounds(sigs, object, d)
         .into_iter()
-        .filter(|p| !flux_ty::traits::is_auto_trait(items, p.trait_ref.trait_))
+        .filter(|p| !flux_solve::traits::is_auto_trait(items, p.trait_ref.trait_))
         .collect();
     let mut out: Vec<Slot> = bounds.iter().skip(1).map(|&p| Slot::Super(p)).collect();
     for &p in &bounds {
@@ -69,10 +69,10 @@ pub fn as_dyn(object: Ty) -> Option<DynTy> {
 /// `object`, `d`: its trait and arguments, and the associated types of
 /// it and its supertraits that `object` gives.
 pub fn super_object(items: &ItemTree, sigs: &Signatures, object: Ty, d: DynTy, p: Predicate) -> Ty {
-    let given = flux_ty::traits::dyn_projections(items, sigs, object, d);
+    let given = flux_solve::traits::dyn_projections(items, sigs, object, d);
     let mut names = Vec::new();
     let mut tys = Vec::new();
-    for (_, name) in flux_ty::objects::dyn_assoc(items, p.trait_ref.trait_) {
+    for (_, name) in flux_solve::objects::dyn_assoc(items, p.trait_ref.trait_) {
         if let Some(q) = given.iter().find(|q| q.alias.name == name) {
             names.push(name);
             tys.push(q.ty);
@@ -98,8 +98,8 @@ pub fn entries(items: &ItemTree, sigs: &Signatures, object: Ty, concrete: Ty) ->
         .map(|slot| match slot {
             Slot::Super(p) => Entry::Super(super_object(items, sigs, object, d, p)),
             Slot::Method(p, f) => {
-                if !flux_ty::objects::is_dispatchable(items, f)
-                    || flux_ty::traits::self_by_value(items, f)
+                if !flux_solve::objects::is_dispatchable(items, f)
+                    || flux_solve::traits::self_by_value(items, f)
                 {
                     return Entry::Null;
                 }
@@ -109,7 +109,7 @@ pub fn entries(items: &ItemTree, sigs: &Signatures, object: Ty, concrete: Ty) ->
                     function: f,
                     args: Ty::list(&args),
                 };
-                Entry::Method(flux_ty::traits::resolve_instance(items, sigs, instance))
+                Entry::Method(flux_solve::traits::resolve_instance(items, sigs, instance))
             }
         })
         .collect()
@@ -120,7 +120,7 @@ pub fn entries(items: &ItemTree, sigs: &Signatures, object: Ty, concrete: Ty) ->
 /// dropping one runs code and `core` has it; `None` (an empty word)
 /// otherwise.
 pub fn drop_entry(items: &ItemTree, sigs: &Signatures, concrete: Ty) -> Option<Instance> {
-    if !flux_ty::traits::needs_drop(items, sigs, &[], concrete) {
+    if !flux_solve::traits::needs_drop(items, sigs, &[], concrete) {
         return None;
     }
     let function = flux_ty::objects::drop_in_place(items)?;
@@ -165,7 +165,7 @@ pub fn virtual_call(items: &ItemTree, instance: Instance) -> Option<Ty> {
     };
     let object = *instance.args.first()?;
     let d = as_dyn(object)?;
-    flux_ty::objects::supertraits_of(items, d.trait_)
+    flux_solve::objects::supertraits_of(items, d.trait_)
         .contains(&t)
         .then_some(object)
 }

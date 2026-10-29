@@ -88,7 +88,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         };
         depths.insert(instance, 0);
         instances.push(instance);
-        let ret = flux_ty::traits::reveal(sigs, sigs[function].ret);
+        let ret = flux_solve::traits::reveal(sigs, sigs[function].ret);
         if ret != Ty::UNIT
             && ret != Ty::NEVER
             && let Some(runner) = flux_ty::entry::main_runner(items, sigs)
@@ -158,7 +158,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         let mut types: Vec<_> = body
             .locals
             .values()
-            .map(|local| flux_ty::traits::instance_ty(items, sigs, local.ty, caller_args))
+            .map(|local| flux_solve::traits::instance_ty(items, sigs, local.ty, caller_args))
             .collect();
         let mut seen = FxHashSet::default();
         while let Some(ty) = types.pop() {
@@ -183,13 +183,13 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             for statement in &data.statements {
                 // A vtable's methods, for a value made a trait object.
                 if let StatementKind::Assign(_, Rvalue::Unsize(op, to)) = &statement.kind {
-                    let from = flux_ty::traits::instance_ty(
+                    let from = flux_solve::traits::instance_ty(
                         &hir.items,
                         sigs,
                         body.operand_ty(op, sigs),
                         caller_args,
                     );
-                    let to = flux_ty::traits::instance_ty(&hir.items, sigs, *to, caller_args);
+                    let to = flux_solve::traits::instance_ty(&hir.items, sigs, *to, caller_args);
                     let mut vtables = Vec::new();
                     if let (Some(concrete), Some(object)) =
                         (pointee(items, from), pointee(items, to))
@@ -240,7 +240,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                             function: *function,
                             args: instance_args(items, sigs, args, caller_args),
                         };
-                        found.push(flux_ty::traits::resolve_instance(items, sigs, instance));
+                        found.push(flux_solve::traits::resolve_instance(items, sigs, instance));
                     }
                     Operand::Const(Constant::Static { id, .. }) => {
                         if let Some(value) = mir.const_values.items.get(*id) {
@@ -248,7 +248,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                         }
                     }
                     Operand::Const(Constant::Item { id, args, ty }) => {
-                        let ty = flux_ty::traits::instance_ty(items, sigs, *ty, caller_args);
+                        let ty = flux_solve::traits::instance_ty(items, sigs, *ty, caller_args);
                         if !may_contain_function_address(items, sigs, ty) {
                             continue;
                         }
@@ -256,7 +256,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                             konst: *id,
                             args: instance_args(items, sigs, args, caller_args),
                         };
-                        let c = flux_ty::traits::resolve_const(items, sigs, c);
+                        let c = flux_solve::traits::resolve_const(items, sigs, c);
                         let value = if let Some(value) = mir.const_values.get(c.konst, c.args) {
                             value
                         } else {
@@ -362,7 +362,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 }
                 TerminatorKind::Drop { place, .. } => {
                     let ty = body.place_ty(place, sigs);
-                    let ty = flux_ty::traits::instance_ty(&hir.items, sigs, ty, caller_args);
+                    let ty = flux_solve::traits::instance_ty(&hir.items, sigs, ty, caller_args);
                     let mut glue = Vec::new();
                     drop_glue(&hir.items, sigs, place.clone(), ty, &mut glue);
                     let mut types = Vec::new();
@@ -383,7 +383,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 _ => continue,
             };
             for &callee in callees.iter() {
-                let callee = flux_ty::traits::resolve_instance(&hir.items, sigs, callee);
+                let callee = flux_solve::traits::resolve_instance(&hir.items, sigs, callee);
                 // Through a vtable, whose methods are collected where
                 // values become trait objects.
                 if crate::vtable::virtual_call(&hir.items, callee).is_some() {
@@ -419,7 +419,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     if let Some((op, _, word)) =
                         atomic_intrinsic(hir.items.functions[callee.function].name.as_str())
                     {
-                        let sig = flux_ty::traits::instance_sig(
+                        let sig = flux_solve::traits::instance_sig(
                             &hir.items,
                             sigs,
                             callee.function,
@@ -565,7 +565,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
 fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> bool {
     let mut pending = vec![(ty, Vec::new())];
     while let Some((ty, mut active)) = pending.pop() {
-        let ty = flux_ty::traits::normalize(items, sigs, &[], ty);
+        let ty = flux_solve::traits::normalize(items, sigs, &[], ty);
         match ty.kind() {
             TyKind::FnPtr(_) | TyKind::Dynamic(_) => return true,
             TyKind::Ref(_, inner)
@@ -580,7 +580,7 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
                     return true;
                 }
                 active.push(adt.strukt);
-                let children = flux_ty::contents(sigs, ty).unwrap_or(args);
+                let children = flux_solve::contents(sigs, ty).unwrap_or(args);
                 pending.extend(children.iter().map(|&child| (child, active.clone())));
             }
             TyKind::Tuple(fields) => {
@@ -588,7 +588,7 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
             }
             TyKind::Closure(_, _) => {
                 pending.extend(
-                    flux_ty::contents(sigs, ty)
+                    flux_solve::contents(sigs, ty)
                         .unwrap_or_default()
                         .iter()
                         .map(|&child| (child, active.clone())),
@@ -662,7 +662,7 @@ fn value_functions<'a>(
 fn pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     match ty.kind() {
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => Some(t),
-        _ => flux_ty::box_pointee(ty).or_else(|| flux_ty::arc_pointee(items, ty)),
+        _ => flux_solve::box_pointee(ty).or_else(|| flux_ty::arc_pointee(items, ty)),
     }
 }
 
@@ -698,7 +698,7 @@ fn instance_args(
     }
     let list: Vec<Ty> = args
         .iter()
-        .map(|&a| flux_ty::traits::instance_ty(items, sigs, a, caller_args))
+        .map(|&a| flux_solve::traits::instance_ty(items, sigs, a, caller_args))
         .collect();
     Ty::list(&list)
 }
@@ -792,7 +792,7 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
     };
     let terminator = |kind| Terminator { kind, range };
     let mut blocks = flux_arena::Arena::new();
-    if flux_ty::traits::is_copy(items, sigs, &[], elem) {
+    if flux_solve::traits::is_copy(items, sigs, &[], elem) {
         blocks.alloc(BasicBlockData {
             statements: vec![statement(
                 ret,
@@ -893,7 +893,7 @@ fn is_pointer_debug_shim(items: &ItemTree, instance: Instance) -> bool {
 }
 
 fn pointer_debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
-    let signature = flux_ty::traits::instance_sig(items, sigs, instance.function, instance.args);
+    let signature = flux_solve::traits::instance_sig(items, sigs, instance.function, instance.args);
     let helper = items
         .functions
         .iter()
@@ -996,7 +996,7 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     let kind = crate::fn_method_kind(items, instance.function).expect("a Fn-family method");
     let callee_ty = instance.args[0];
     let tuple = instance.args.get(1).copied().unwrap_or(Ty::UNIT);
-    let sig = flux_ty::traits::instance_sig(items, sigs, instance.function, instance.args);
+    let sig = flux_solve::traits::instance_sig(items, sigs, instance.function, instance.args);
     let mut locals = flux_arena::Arena::new();
     let ret = locals.alloc(LocalDecl {
         ty: sig.ret,
@@ -1217,13 +1217,13 @@ pub fn expand_intrinsics(
             ("discriminant_is_signed", []) => (
                 dest,
                 Rvalue::Use(Operand::Const(Constant::Bool(
-                    sigs.discriminant_ty(flux_ty::traits::normalize(items, sigs, &[], arg_ty))
+                    sigs.discriminant_ty(flux_solve::traits::normalize(items, sigs, &[], arg_ty))
                         .is_some_and(flux_ty::IntTy::is_signed),
                 ))),
             ),
             ("discriminant_value", [value]) => {
                 let Some(ty) =
-                    sigs.discriminant_ty(flux_ty::traits::normalize(items, sigs, &[], arg_ty))
+                    sigs.discriminant_ty(flux_solve::traits::normalize(items, sigs, &[], arg_ty))
                 else {
                     body.blocks[block].statements.push(Statement {
                         kind: StatementKind::Assign(
@@ -1254,12 +1254,12 @@ pub fn expand_intrinsics(
             }
             ("is_copy", []) => {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
-                let copy = flux_ty::traits::is_copy(items, sigs, &[], ty);
+                let copy = flux_solve::traits::is_copy(items, sigs, &[], ty);
                 (dest, Rvalue::Use(Operand::Const(Constant::Bool(copy))))
             }
             ("needs_drop", []) => {
                 let ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
-                let needs = flux_ty::traits::needs_drop(items, sigs, &[], ty);
+                let needs = flux_solve::traits::needs_drop(items, sigs, &[], ty);
                 (dest, Rvalue::Use(Operand::Const(Constant::Bool(needs))))
             }
             (name @ ("size_of_val" | "align_of_val"), [ptr]) if sigs.is_unsized(arg_ty) => {
@@ -1345,7 +1345,7 @@ pub fn expand_intrinsics(
                 (dest, Rvalue::Use(Operand::Const(constant)))
             }
             ("type_id", []) => {
-                let bits = flux_ty::type_identity::of(items, sigs, arg_ty)
+                let bits = flux_solve::type_identity::of(items, sigs, arg_ty)
                     .expect("monomorphized type identity");
                 (
                     dest,
@@ -1520,7 +1520,7 @@ fn expand_drop_in_place(
     // code. Size alone is insufficient, since even a ZST can have a destructor.
     // This elides only the pointee's drops, not its owner's destructor/free.
     if let TyKind::Slice(elem) = ty.kind()
-        && !flux_ty::traits::needs_drop(items, sigs, &[], elem)
+        && !flux_solve::traits::needs_drop(items, sigs, &[], elem)
     {
         body.blocks[block].terminator.kind = TerminatorKind::Goto(target);
         return;
@@ -1670,14 +1670,14 @@ fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
 /// holds.
 fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mut Vec<Glue>) {
     match ty.kind() {
-        TyKind::Adt(adt, _) if flux_ty::is_lang_struct(items, adt.strukt, "manually_drop") => {
+        TyKind::Adt(adt, _) if flux_solve::is_lang_struct(items, adt.strukt, "manually_drop") => {
             return;
         }
         TyKind::Adt(adt, _) => {
-            if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() {
+            if flux_solve::traits::drop_impl(items, sigs, adt.strukt).is_some() {
                 out.push(Glue::Drop(place.clone(), ty));
             }
-            if let Some(variants) = flux_ty::variants(sigs, ty) {
+            if let Some(variants) = flux_solve::variants(sigs, ty) {
                 let glue: Vec<Vec<Glue>> = variants
                     .iter()
                     .enumerate()
@@ -1727,7 +1727,7 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
         }
         _ => return,
     }
-    for (i, &field) in flux_ty::fields(sigs, ty)
+    for (i, &field) in flux_solve::fields(sigs, ty)
         .unwrap_or_default()
         .iter()
         .enumerate()
@@ -2040,7 +2040,7 @@ fn truncated(ty: Ty, depth: u32) -> String {
 pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Body {
     let mut body = body.clone();
     let items = &hir.items;
-    let subst = |ty: Ty| flux_ty::traits::instance_ty(items, sigs, ty, args);
+    let subst = |ty: Ty| flux_solve::traits::instance_ty(items, sigs, ty, args);
     for local in body.locals.values_mut() {
         local.ty = subst(local.ty);
     }
@@ -2162,8 +2162,8 @@ pub fn volatile_scalar(sigs: &Signatures, mut ty: Ty) -> Option<Ty> {
                 return Some(ty);
             }
             TyKind::Tuple([]) => return Some(Ty::UNIT),
-            TyKind::Adt(..) if flux_ty::variants(sigs, ty).is_none() => {
-                let fields = flux_ty::fields(sigs, ty)?;
+            TyKind::Adt(..) if flux_solve::variants(sigs, ty).is_none() => {
+                let fields = flux_solve::fields(sigs, ty)?;
                 match fields {
                     [] => return Some(Ty::UNIT),
                     [field] => ty = *field,

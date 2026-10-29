@@ -68,7 +68,7 @@ pub fn assert_valid(
 /// the body of.
 pub fn validate_file(hir: &flux_hir::Hir, sigs: &Signatures, mir: &FileMir) -> Vec<String> {
     let items = &hir.items;
-    let env = |f| flux_ty::traits::projections_of(items, sigs, f);
+    let env = |f| flux_solve::traits::projections_of(items, sigs, f);
     let mut errors = Vec::new();
     let mut add = |what: String, found: Vec<String>| {
         errors.extend(found.into_iter().map(|e| format!("{what}: {e}")));
@@ -83,7 +83,7 @@ pub fn validate_file(hir: &flux_hir::Hir, sigs: &Signatures, mir: &FileMir) -> V
                 (env(f), items.function_path(&items.functions[f]))
             }
             flux_ty::ClosureOwner::Const(c) => (
-                flux_ty::traits::owner_projections(items, sigs, items.consts[c].owner),
+                flux_solve::traits::owner_projections(items, sigs, items.consts[c].owner),
                 items.const_name(c),
             ),
         };
@@ -110,8 +110,8 @@ impl Validator<'_> {
     /// its hidden types where its callers have the opaque ones, and an
     /// instance's are revealed.
     fn norm(&self, ty: Ty) -> Ty {
-        let ty = flux_ty::traits::reveal(self.sigs, ty);
-        flux_ty::traits::normalize(self.items, self.sigs, self.env, ty)
+        let ty = flux_solve::traits::reveal(self.sigs, ty);
+        flux_solve::traits::normalize(self.items, self.sigs, self.env, ty)
     }
 
     fn place_ty(&self, place: &Place) -> Ty {
@@ -129,7 +129,7 @@ impl Validator<'_> {
     /// instance's types are known, and checked, in code generation.
     fn same(&self, expected: Ty, actual: Ty) -> bool {
         expected == actual
-            || flux_ty::regions::same_fn_pointer_shape(expected, actual)
+            || flux_solve::fn_regions::same_shape(expected, actual)
             || has_error(expected)
             || has_error(actual)
             || ((expected.has_aliases() || actual.has_aliases()) && same_shape(expected, actual))
@@ -203,16 +203,18 @@ impl Validator<'_> {
             Rvalue::Aggregate(kind, ops) => {
                 let (fields, ok) = match (kind, ty.kind()) {
                     (AggregateKind::Union(s, field), TyKind::Adt(adt, _)) => (
-                        flux_ty::fields(self.sigs, ty)
+                        flux_solve::fields(self.sigs, ty)
                             .and_then(|fs| fs.get(*field as usize..*field as usize + 1)),
                         adt.strukt == *s && self.sigs.unions.contains(s),
                     ),
-                    (AggregateKind::Struct(s), TyKind::Adt(adt, _)) => {
-                        (flux_ty::variant_fields(self.sigs, ty, 0), adt.strukt == *s)
-                    }
-                    (AggregateKind::Variant(s, v), TyKind::Adt(adt, _)) => {
-                        (flux_ty::variant_fields(self.sigs, ty, *v), adt.strukt == *s)
-                    }
+                    (AggregateKind::Struct(s), TyKind::Adt(adt, _)) => (
+                        flux_solve::variant_fields(self.sigs, ty, 0),
+                        adt.strukt == *s,
+                    ),
+                    (AggregateKind::Variant(s, v), TyKind::Adt(adt, _)) => (
+                        flux_solve::variant_fields(self.sigs, ty, *v),
+                        adt.strukt == *s,
+                    ),
                     (AggregateKind::Closure, TyKind::Closure(_, args)) => {
                         (Some(flux_ty::ClosureArgs::split(args).upvar_types()), true)
                     }
@@ -288,22 +290,22 @@ impl Validator<'_> {
                     {
                         Some((a, b))
                     }
-                    _ => flux_ty::box_pointee(from)
-                        .zip(flux_ty::box_pointee(to))
+                    _ => flux_solve::box_pointee(from)
+                        .zip(flux_solve::box_pointee(to))
                         .or_else(|| {
                             flux_ty::arc_pointee(self.items, from)
                                 .zip(flux_ty::arc_pointee(self.items, to))
                         }),
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| {
-                    if let Some((x, y)) = flux_ty::array_unsize(self.sigs, a, b) {
+                    if let Some((x, y)) = flux_solve::array_unsize(self.sigs, a, b) {
                         return self.same(x, y);
                     }
                     match (a.kind(), b.kind()) {
                         (TyKind::Array(x, _), TyKind::Slice(y)) => self.same(y, x),
                         // Upcasting: to a supertrait's object.
                         (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
-                            flux_ty::objects::supertraits_of(self.items, x.trait_)
+                            flux_solve::objects::supertraits_of(self.items, x.trait_)
                                 .contains(&y.trait_)
                                 && flux_ty::objects::retains_auto_traits(self.sigs, a, b)
                         }

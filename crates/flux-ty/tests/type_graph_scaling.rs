@@ -37,7 +37,7 @@ fn elaboration_preserves_diamond_arguments_and_order() {
             },
         );
     }
-    let out = flux_ty::traits::elaborate(&sigs, &[root.with_self(Ty::BOOL)]);
+    let out = flux_solve::traits::elaborate(&sigs, &[root.with_self(Ty::BOOL)]);
     assert_eq!(
         out,
         [root, left, base_bool, right, base_char].map(|trait_ref| Predicate {

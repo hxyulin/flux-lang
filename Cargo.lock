@@ -233,6 +233,7 @@ dependencies = [
  "flux-hir",
  "flux-intern",
  "flux-mir",
+ "flux-solve",
  "flux-ty",
  "keel-asm",
  "keel-codegen",
@@ -285,10 +286,22 @@ dependencies = [
  "flux-arena",
  "flux-hir",
  "flux-intern",
+ "flux-solve",
  "flux-syntax",
  "flux-ty",
  "rustc-hash",
  "smallvec",
+]
+
+[[package]]
+name = "flux-solve"
+version = "0.1.0"
+dependencies = [
+ "flux-arena",
+ "flux-hir",
+ "flux-intern",
+ "flux-ty-ir",
+ "rustc-hash",
 ]
 
 [[package]]
@@ -315,6 +328,7 @@ dependencies = [
  "flux-arena",
  "flux-hir",
  "flux-intern",
+ "flux-solve",
  "flux-syntax",
  "flux-ty-ir",
  "hashbrown 0.17.1",

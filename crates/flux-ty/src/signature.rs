@@ -4,11 +4,12 @@ use super::{
     ItemTree, LenValues, Mutability, OnceLock, Owner, Predicate, Signatures, Symbol, TextRange,
     TraitSig, Ty, TyKind, TypeRef, TypeScope, check_alias, check_const_params, check_type_defaults,
     contains, contains_ref, core_lens_values, discriminant_ty, duplicate_assoc_items,
-    generic_consts, generic_names, impl_index, impl_type, in_scope, is_lang_struct, kw,
-    maybe_unsized, mentions_param, not_sync, opaque_sigs, param_const_ty, params_of, regions,
-    resolve_generic_arg, resolve_or_report, resolve_predicates, resolve_type, self_ty,
-    supported_union_field, traits, unsized_argument, unsized_error, unsized_params, uses_param,
+    generic_consts, generic_names, impl_index, impl_type, in_scope, kw, mentions_param, not_sync,
+    opaque_sigs, param_const_ty, params_of, regions, resolve_generic_arg, resolve_or_report,
+    resolve_predicates, resolve_type, self_ty, supported_union_field, traits, unsized_argument,
+    unsized_error, uses_param,
 };
+use flux_solve::{is_lang_struct, maybe_unsized, unsized_params};
 
 /// The signature of every function and the field types of every struct
 /// in `items`.
@@ -174,7 +175,7 @@ pub(super) fn extend_signatures(
         let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
         let consts = generic_consts(items, Some(Owner::Trait(id)), &Generics::default());
         let self_param = Ty::param(0, kw::SelfUpper);
-        let bounds = [traits::trait_self_predicate(items, id)];
+        let bounds = [flux_solve::traits::trait_self_predicate(items, id)];
         let mut errors = Vec::new();
         check_const_params(items, t.loc.module, &t.generics, &generics, &mut errors);
         in_file(errors, t.loc.file, &mut reported);
@@ -246,12 +247,13 @@ pub(super) fn extend_signatures(
             );
             let family_bounds: Vec<_> =
                 bounds.iter().chain(&resolved.predicates).copied().collect();
-            let family_bounds = traits::elaborate(&sigs, &family_bounds);
+            let family_bounds = flux_solve::traits::elaborate(&sigs, &family_bounds);
             let family_scope = TypeScope {
                 bounds: &family_bounds,
                 ..family_scope
             };
-            let mut alias = traits::alias_of(items, bounds[0].trait_ref, self_param, ty.name);
+            let mut alias =
+                flux_solve::traits::alias_of(items, bounds[0].trait_ref, self_param, ty.name);
             alias.family_args = Ty::list(&params_of(&ty.generics, generics.len()));
             for b in ty.bounds.iter() {
                 if let Some((trait_ref, bindings)) = traits::resolve_bound(
@@ -320,7 +322,7 @@ pub(super) fn extend_signatures(
         check_const_params(items, s.loc.module, &s.generics, &generics, &mut errors);
         let own = resolve_predicates(items, &sigs, s.loc.module, &s.generics, scope, &mut errors);
         in_file(errors, s.loc.file, &mut reported);
-        let bounds = traits::elaborate(&sigs, &own.predicates);
+        let bounds = flux_solve::traits::elaborate(&sigs, &own.predicates);
         let scope = TypeScope {
             bounds: &bounds,
             ..scope
@@ -354,7 +356,7 @@ pub(super) fn extend_signatures(
     }
     for (id, data) in items.structs.iter().skip(from.structs as usize) {
         let parameters = unsized_params(items, None, &data.generics);
-        let bounds = traits::elaborate(
+        let bounds = flux_solve::traits::elaborate(
             &sigs,
             sigs.struct_predicates
                 .get(id)
@@ -378,7 +380,7 @@ pub(super) fn extend_signatures(
             }
         }
         for variant in 0..data.variant_count() as u32 {
-            let fields = crate::variant_fields(
+            let fields = flux_solve::variant_fields(
                 &sigs,
                 Ty::adt(id, data.name, &params_of(&data.generics, 0)),
                 variant,
@@ -443,7 +445,7 @@ pub(super) fn extend_signatures(
         let mut projections = Vec::new();
         let resolved =
             resolve_predicates(items, &sigs, imp.module, &imp.generics, scope, &mut errors);
-        let bounds = traits::elaborate(&sigs, &resolved.predicates);
+        let bounds = flux_solve::traits::elaborate(&sigs, &resolved.predicates);
         let scope = TypeScope {
             bounds: &bounds,
             ..scope
@@ -464,8 +466,10 @@ pub(super) fn extend_signatures(
             }
         }
         projections.extend(resolved.projections);
-        let self_supertraits = traits::associated_self_bounds(&sigs, self_trait, Some(self_ty));
-        let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
+        let self_supertraits =
+            flux_solve::traits::associated_self_bounds(&sigs, self_trait, Some(self_ty));
+        let self_inherited_types =
+            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
             bounds: &bounds,
             self_trait,
@@ -479,7 +483,7 @@ pub(super) fn extend_signatures(
             let owner = Some(Owner::Impl(id));
             let names = generic_names(items, owner, &definition.generics);
             let consts = generic_consts(items, owner, &definition.generics);
-            let parameters = crate::unsized_params(items, owner, &definition.generics);
+            let parameters = flux_solve::unsized_params(items, owner, &definition.generics);
             let family_scope = TypeScope {
                 generics: &names,
                 consts: &consts,
@@ -498,7 +502,7 @@ pub(super) fn extend_signatures(
             );
             let family_bounds: Vec<_> =
                 bounds.iter().chain(&resolved.predicates).copied().collect();
-            let family_bounds = traits::elaborate(&sigs, &family_bounds);
+            let family_bounds = flux_solve::traits::elaborate(&sigs, &family_bounds);
             let family_scope = TypeScope {
                 bounds: &family_bounds,
                 ..family_scope
@@ -556,14 +560,21 @@ pub(super) fn extend_signatures(
         }
         let generics = generic_names(items, konst.owner, &Generics::default());
         // Its owner's bounds, for `Self::A` or `T::A` in its type.
-        let bounds = traits::elaborate(&sigs, &traits::owner_predicates(items, &sigs, konst.owner));
+        let bounds = flux_solve::traits::elaborate(
+            &sigs,
+            &flux_solve::traits::owner_predicates(items, &sigs, konst.owner),
+        );
         let self_trait = konst
             .owner
             .and_then(Owner::as_impl)
             .and_then(|imp| sigs.impl_traits.get(imp).copied());
-        let self_supertraits =
-            traits::associated_self_bounds(&sigs, self_trait, self_ty(&sigs, konst.owner));
-        let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
+        let self_supertraits = flux_solve::traits::associated_self_bounds(
+            &sigs,
+            self_trait,
+            self_ty(&sigs, konst.owner),
+        );
+        let self_inherited_types =
+            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
             self_supertraits: &self_supertraits,
@@ -648,16 +659,20 @@ pub(super) fn extend_signatures(
         let self_trait = items
             .impl_of(id)
             .and_then(|imp| sigs.impl_traits.get(imp).copied());
-        let owner_bounds = traits::owner_predicates(items, &sigs, function.owner);
+        let owner_bounds = flux_solve::traits::owner_predicates(items, &sigs, function.owner);
         let self_types: Vec<(Symbol, Ty)> = match items.impl_of(id) {
             Some(imp) if self_trait.is_some() => {
                 sigs.impl_types.get(imp).map_or(Vec::new(), |t| t.to_vec())
             }
             _ => Vec::new(),
         };
-        let self_supertraits =
-            traits::associated_self_bounds(&sigs, self_trait, self_ty(&sigs, function.owner));
-        let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
+        let self_supertraits = flux_solve::traits::associated_self_bounds(
+            &sigs,
+            self_trait,
+            self_ty(&sigs, function.owner),
+        );
+        let self_inherited_types =
+            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
             // Tuple constructors reuse their fields' written types. `Self`
             // in those types still names the declaring ADT, not a free function.
@@ -687,7 +702,7 @@ pub(super) fn extend_signatures(
         // their associated types.
         let mut own = traits::Bounds::default();
         if !function.generics.predicates.is_empty() {
-            let elaborated = traits::elaborate(&sigs, &owner_bounds);
+            let elaborated = flux_solve::traits::elaborate(&sigs, &owner_bounds);
             let scope = TypeScope {
                 bounds: &elaborated,
                 ..scope
@@ -708,7 +723,7 @@ pub(super) fn extend_signatures(
             .chain(&own.predicates)
             .copied()
             .collect();
-        let bounds = traits::elaborate(&sigs, &all);
+        let bounds = flux_solve::traits::elaborate(&sigs, &all);
         let scope = TypeScope {
             bounds: &bounds,
             ..scope
@@ -761,10 +776,10 @@ pub(super) fn extend_signatures(
         if function.has_self
             && let (Some(&receiver), Some(self_ty)) = (params.first(), scope.self_ty)
         {
-            let receiver = traits::normalize(items, &sigs, &[], receiver);
+            let receiver = flux_solve::traits::normalize(items, &sigs, &[], receiver);
             let valid = receiver == self_ty
                 || matches!(receiver.kind(), TyKind::Ref(_, pointee) if pointee == self_ty)
-                || super::box_pointee(receiver) == Some(self_ty);
+                || flux_solve::box_pointee(receiver) == Some(self_ty);
             if !receiver.has_error() && !valid {
                 let mut diagnostic = Diagnostic::new(
                     function.params[0].range,
@@ -838,12 +853,12 @@ pub(super) fn extend_signatures(
             if ty.has_error() {
                 continue;
             }
-            let ty = traits::normalize(items, &sigs, &[], ty);
+            let ty = flux_solve::traits::normalize(items, &sigs, &[], ty);
             let message = if !supported_union_field(items, &sigs, ty, &mut FxHashMap::default(), 0)
             {
                 Some("this union field type is not supported yet")
-            } else if !traits::is_copy(items, &sigs, &[], ty)
-                || traits::needs_drop(items, &sigs, &[], ty)
+            } else if !flux_solve::traits::is_copy(items, &sigs, &[], ty)
+                || flux_solve::traits::needs_drop(items, &sigs, &[], ty)
             {
                 Some("union fields must implement Copy")
             } else {
@@ -983,7 +998,7 @@ fn transparent_field_shape(
                 return (false, false);
             }
             active.push(adt.strukt);
-            let fields = crate::variant_fields(sigs, ty, 0).unwrap_or_default();
+            let fields = flux_solve::variant_fields(sigs, ty, 0).unwrap_or_default();
             let shape = fields
                 .iter()
                 .fold((true, data.repr_align <= 1), |shape, &field| {

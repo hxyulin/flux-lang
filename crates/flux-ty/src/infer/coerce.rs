@@ -110,8 +110,8 @@ impl Ctx<'_> {
         // A `Box<[T; N]>` or `Box<T>` where a `Box<[T]>` or `Box<dyn
         // Tr>` is wanted: rustc's `CoerceUnsized` of boxes.
         if let (Some(p), Some(q)) = (
-            crate::box_pointee(self.shallow(actual)),
-            crate::box_pointee(self.shallow(expected)),
+            flux_solve::box_pointee(self.shallow(actual)),
+            flux_solve::box_pointee(self.shallow(expected)),
         ) {
             let (p, q) = (self.shallow(p), self.shallow(q));
             if let Some(equalities) = self.array_unsize(p, q) {
@@ -451,8 +451,8 @@ impl Ctx<'_> {
             if !crate::objects::retains_auto_traits(self.sigs, source, target) {
                 return false;
             }
-            let principal = crate::traits::dyn_principal(target, d);
-            let found = crate::traits::dyn_bounds(self.sigs, source, s)
+            let principal = flux_solve::traits::dyn_principal(target, d);
+            let found = flux_solve::traits::dyn_bounds(self.sigs, source, s)
                 .into_iter()
                 .find(|p| p.trait_ref.trait_ == d.trait_);
             let Some(found) = found else {
@@ -464,7 +464,7 @@ impl Ctx<'_> {
             }
             // Its associated types are the source's.
             for (&name, &ty) in d.assoc_names.iter().zip(d.assoc_tys) {
-                let given = crate::traits::dyn_projections(self.items, self.sigs, source, s)
+                let given = flux_solve::traits::dyn_projections(self.items, self.sigs, source, s)
                     .into_iter()
                     .find(|p| p.alias.name == name)
                     .map(|p| p.ty);
@@ -478,7 +478,7 @@ impl Ctx<'_> {
         {
             return true;
         }
-        let principal = crate::traits::dyn_principal(source, d);
+        let principal = flux_solve::traits::dyn_principal(source, d);
         self.register(principal, range, solve::ObligationKind::Bound);
         for &trait_ref in d.auto_traits {
             self.register(
@@ -490,9 +490,9 @@ impl Ctx<'_> {
                 solve::ObligationKind::Bound,
             );
         }
-        for p in crate::traits::dyn_projections(self.items, self.sigs, target, d) {
+        for p in flux_solve::traits::dyn_projections(self.items, self.sigs, target, d) {
             if p.alias.args[0] == target && d.assoc_names.contains(&p.alias.name) {
-                let alias = crate::traits::alias_of(
+                let alias = flux_solve::traits::alias_of(
                     self.items,
                     crate::TraitRef {
                         trait_: p.alias.trait_,
@@ -585,7 +585,8 @@ impl Ctx<'_> {
         {
             return match source.kind() {
                 TyKind::Dynamic(from) => {
-                    crate::objects::supertraits_of(self.items, from.trait_).contains(&object.trait_)
+                    flux_solve::objects::supertraits_of(self.items, from.trait_)
+                        .contains(&object.trait_)
                         && crate::objects::retains_auto_traits(self.sigs, source, target)
                 }
                 _ => !self.is_unsized(source) && self.may_implement(source, object.trait_),
@@ -599,7 +600,10 @@ impl Ctx<'_> {
         {
             return self.can_unify(elem, wanted);
         }
-        if let (Some(p), Some(q)) = (crate::box_pointee(actual), crate::box_pointee(expected)) {
+        if let (Some(p), Some(q)) = (
+            flux_solve::box_pointee(actual),
+            flux_solve::box_pointee(expected),
+        ) {
             let (p, q) = (self.shallow(p), self.shallow(q));
             if let Some(equalities) = self.array_unsize(p, q) {
                 return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
@@ -646,7 +650,8 @@ impl Ctx<'_> {
                 let pointee = self.shallow(pointee);
                 return match pointee.kind() {
                     TyKind::Dynamic(s) => {
-                        crate::objects::supertraits_of(self.items, s.trait_).contains(&d.trait_)
+                        flux_solve::objects::supertraits_of(self.items, s.trait_)
+                            .contains(&d.trait_)
                             && crate::objects::retains_auto_traits(
                                 self.sigs,
                                 pointee,
@@ -741,8 +746,8 @@ impl Ctx<'_> {
                 }
                 (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => {
                     let (a, b) = (
-                        crate::fields(self.sigs, from)?,
-                        crate::fields(self.sigs, to)?,
+                        flux_solve::fields(self.sigs, from)?,
+                        flux_solve::fields(self.sigs, to)?,
                     );
                     let last = a.len().checked_sub(1)?;
                     if a.len() != b.len()

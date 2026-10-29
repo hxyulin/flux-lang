@@ -479,7 +479,7 @@ mod tests {
             .find(|(_, t)| t.name.as_str() == "Child")
             .unwrap();
         let reference = Ty::new(TyKind::Ref(Mutability::Not, Ty::int(flux_ty::IntTy::U32)));
-        let alias = flux_ty::traits::alias_of(
+        let alias = flux_solve::traits::alias_of(
             &hir.items,
             flux_ty::TraitRef {
                 trait_: own,

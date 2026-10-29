@@ -342,7 +342,7 @@ impl Cx<'_> {
                 .is_some_and(|sig| {
                     sig.projections.iter().any(|projection| {
                         projection
-                            .subst(&flux_ty::traits::opaque_args(opaque))
+                            .subst(&flux_solve::traits::opaque_args(opaque))
                             .alias
                             == alias
                     })
@@ -474,7 +474,7 @@ impl Cx<'_> {
         types.extend(family_inputs.iter().cloned());
         let mut args = header_args.clone();
         args.extend(alias.family_args);
-        let value = flux_ty::traits::impl_type(self.sigs, imp, alias.name)?;
+        let value = flux_solve::traits::impl_type(self.sigs, imp, alias.name)?;
         let mut map = |r| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => lifetimes.get(i as usize).copied(),
@@ -547,7 +547,7 @@ pub(super) fn impl_family_values_match(
             || actual.value.len()
                 != flux_ty::regions::slots(
                     items,
-                    flux_ty::traits::impl_type(sigs, imp, definition.name)?,
+                    flux_solve::traits::impl_type(sigs, imp, definition.name)?,
                 )
         {
             return None;
@@ -691,7 +691,7 @@ pub(super) fn impl_family_values_match(
                 }
             }
             if !reverse {
-                let value = flux_ty::traits::impl_type(sigs, imp, definition.name)?;
+                let value = flux_solve::traits::impl_type(sigs, imp, definition.name)?;
                 let row = cx.instantiate_sig(value, &actual.value, &mut { map_impl }, &[], &[])?;
                 if !cx.adt_declaration_uses(value, &row, &env)? {
                     return Some(false);
@@ -965,7 +965,8 @@ impl Cx<'_> {
             .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
             .filter(|&id| matches!(self.sigs.impls[id].kind(), TyKind::Param(_)))
             .filter_map(|id| {
-                flux_ty::traits::match_impl(self.items, self.sigs, id, goal).map(|args| (id, args))
+                flux_solve::traits::match_impl(self.items, self.sigs, id, goal)
+                    .map(|args| (id, args))
             });
         let selected = candidates.next()?;
         candidates.next().is_none().then_some(selected)

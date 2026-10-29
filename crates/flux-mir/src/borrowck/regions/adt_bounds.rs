@@ -58,7 +58,7 @@ fn instance_has_contract(
             predicates.iter().any(|p| {
                 let self_ty = p.self_ty.subst(args);
                 items.traits[p.trait_ref.trait_].lang != Some(flux_intern::sym::sized)
-                    && !flux_ty::traits::is_builtin_trait(items, p.trait_ref.trait_, self_ty)
+                    && !flux_solve::traits::is_builtin_trait(items, p.trait_ref.trait_, self_ty)
                     && (flux_ty::regions::slots(items, self_ty) != 0
                         || p.trait_ref.args.iter().any(|&ty| slots(ty) != 0))
             })
@@ -469,7 +469,7 @@ pub(crate) fn check_adt_declarations(items: &ItemTree, sigs: &Signatures) -> Vec
         cx.header_predicates = sigs
             .struct_predicates
             .get(id)
-            .map_or(Vec::new(), |p| flux_ty::traits::elaborate(sigs, p));
+            .map_or(Vec::new(), |p| flux_solve::traits::elaborate(sigs, p));
         for bound in &metadata.outlives {
             match *bound {
                 Outlives::Region(a, b) => {
@@ -691,7 +691,7 @@ pub(crate) fn check_adt_declarations(items: &ItemTree, sigs: &Signatures) -> Vec
         cx.header_predicates.extend(
             sigs.fn_predicates
                 .get(function)
-                .map_or(Vec::new(), |p| flux_ty::traits::elaborate(sigs, p)),
+                .map_or(Vec::new(), |p| flux_solve::traits::elaborate(sigs, p)),
         );
         for &bound in &metadata.outlives {
             match bound {

@@ -120,7 +120,7 @@ pub fn static_path_type(sigs: &Signatures, mut ty: Ty, path: &[StaticProjection]
         match *p {
             StaticProjection::Downcast(v) => variant = v,
             StaticProjection::Field(i) => {
-                ty = *flux_ty::variant_fields(sigs, ty, variant)?.get(i as usize)?;
+                ty = *flux_solve::variant_fields(sigs, ty, variant)?.get(i as usize)?;
                 variant = 0;
             }
             StaticProjection::Index(_) => ty = ty.sequence_elem()?,
@@ -270,7 +270,7 @@ impl<'a> Evaluator<'a> {
     /// be known types: a trait's for them is its `impl` block's, or the
     /// trait's default.
     pub fn eval_instance(&mut self, c: ConstInstance) -> Result<Value, EvalError> {
-        let c = flux_ty::traits::resolve_const(self.items, self.sigs, c);
+        let c = flux_solve::traits::resolve_const(self.items, self.sigs, c);
         if let Some(result) = self.values.get(&c) {
             return result.clone();
         }
@@ -342,11 +342,11 @@ impl<'a> Evaluator<'a> {
     }
 
     fn inline_lang(&self, value: &Value, ty: Ty, langs: &[&str]) -> bool {
-        let ty = flux_ty::traits::normalize(self.items, self.sigs, &[], ty);
+        let ty = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
         if let TyKind::Adt(adt, _) = ty.kind()
             && langs
                 .iter()
-                .any(|lang| flux_ty::is_lang_struct(self.items, adt.strukt, lang))
+                .any(|lang| flux_solve::is_lang_struct(self.items, adt.strukt, lang))
         {
             return true;
         }
@@ -355,7 +355,7 @@ impl<'a> Evaluator<'a> {
                 if let TyKind::Array(elem, _) | TyKind::Slice(elem) = ty.kind() {
                     fields.iter().any(|v| self.inline_lang(v, elem, langs))
                 } else {
-                    flux_ty::fields(self.sigs, ty).is_some_and(|types| {
+                    flux_solve::fields(self.sigs, ty).is_some_and(|types| {
                         fields
                             .iter()
                             .zip(types)
@@ -363,13 +363,14 @@ impl<'a> Evaluator<'a> {
                     })
                 }
             }
-            Value::Variant { index, fields, .. } => flux_ty::variant_fields(self.sigs, ty, *index)
-                .is_some_and(|types| {
+            Value::Variant { index, fields, .. } => {
+                flux_solve::variant_fields(self.sigs, ty, *index).is_some_and(|types| {
                     fields
                         .iter()
                         .zip(types)
                         .any(|(v, &t)| self.inline_lang(v, t, langs))
-                }),
+                })
+            }
             _ => false,
         }
     }
@@ -380,7 +381,7 @@ impl<'a> Evaluator<'a> {
         ty: Ty,
         range: TextRange,
     ) -> Result<(), EvalError> {
-        let ty = flux_ty::traits::normalize(self.items, self.sigs, &[], ty);
+        let ty = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
         match value {
             Value::LocalRef { .. } => return Err(error(range,
                 "reference to local storage cannot escape constant evaluation".into())),
@@ -395,7 +396,7 @@ impl<'a> Evaluator<'a> {
                     // A cast cannot introduce mutable storage into an existing
                     // allocation. Ordinary static Cell field borrows retain
                     // their original type and do not need a PointerView.
-                    if flux_ty::traits::has_interior_mutability(self.items, self.sigs, pointee) {
+                    if flux_solve::traits::has_interior_mutability(self.items, self.sigs, pointee) {
                         return Err(error(range, "references to reinterpreted interior-mutable storage in constants are not supported yet".into()));
                     }
                     self.pointer_value(pointer, *source, *target, range)?;
@@ -428,7 +429,7 @@ impl<'a> Evaluator<'a> {
                     TyKind::Array(elem, _) | TyKind::Slice(elem) => Some(elem),
                     _ => None,
                 };
-                let types = flux_ty::fields(self.sigs, ty);
+                let types = flux_solve::fields(self.sigs, ty);
                 for (i, field) in fields.iter().enumerate() {
                     // A raw-pointer cast can erase the original aggregate
                     // type. Its stored borrow origins must still be checked.
@@ -439,7 +440,7 @@ impl<'a> Evaluator<'a> {
                 }
             }
             Value::Variant { index, fields, .. } => {
-                let types = flux_ty::variant_fields(self.sigs, ty, *index);
+                let types = flux_solve::variant_fields(self.sigs, ty, *index);
                 for (i, field) in fields.iter().enumerate() {
                     let ty = types
                         .and_then(|types| types.get(i).copied())
@@ -625,7 +626,7 @@ impl<'a> Evaluator<'a> {
                         return Err(unsupported_view(range));
                     }
                     let at = layout.field_offset(variant, i);
-                    ty = *flux_ty::variant_fields(self.sigs, ty, variant)
+                    ty = *flux_solve::variant_fields(self.sigs, ty, variant)
                         .and_then(|f| f.get(i as usize))
                         .ok_or_else(|| unsupported_view(range))?;
                     sequence_len = ty.array_len();
@@ -725,7 +726,7 @@ impl<'a> Evaluator<'a> {
                 }
                 StaticProjection::Field(field) => {
                     let delta = self.view_layout(ty, range)?.field_offset(variant, field);
-                    ty = *flux_ty::variant_fields(self.sigs, ty, variant)
+                    ty = *flux_solve::variant_fields(self.sigs, ty, variant)
                         .and_then(|f| f.get(field as usize))
                         .ok_or_else(|| unsupported_view(range))?;
                     variant = 0;
@@ -919,8 +920,8 @@ impl<'a> Evaluator<'a> {
         if depth > DEPTH_LIMIT {
             return Err(unsupported_view(range));
         }
-        let from = flux_ty::traits::normalize(self.items, self.sigs, &[], from);
-        let to = flux_ty::traits::normalize(self.items, self.sigs, &[], to);
+        let from = flux_solve::traits::normalize(self.items, self.sigs, &[], from);
+        let to = flux_solve::traits::normalize(self.items, self.sigs, &[], to);
         let stored = self.view_layout(from, range)?;
         let viewed = self.view_layout(to, range)?;
         if !stored.exact || !viewed.exact {
@@ -1089,8 +1090,8 @@ impl<'a> Evaluator<'a> {
             }
             TyKind::Tuple(_) | TyKind::Adt(..) => {
                 let types =
-                    flux_ty::fields(self.sigs, to).ok_or_else(|| unsupported_view(range))?;
-                if matches!(to.kind(), TyKind::Adt(adt, _) if flux_ty::variants(self.sigs, to).is_some() || self.sigs.unions.contains(&adt.strukt))
+                    flux_solve::fields(self.sigs, to).ok_or_else(|| unsupported_view(range))?;
+                if matches!(to.kind(), TyKind::Adt(adt, _) if flux_solve::variants(self.sigs, to).is_some() || self.sigs.unions.contains(&adt.strukt))
                 {
                     return Err(unsupported_view(range));
                 }
@@ -1150,7 +1151,7 @@ impl<'a> Evaluator<'a> {
             return Ok(index.clone());
         }
         let layout = self.view_layout(ty, range)?;
-        let types = flux_ty::variant_fields(self.sigs, ty, variant).unwrap_or_default();
+        let types = flux_solve::variant_fields(self.sigs, ty, variant).unwrap_or_default();
         let mut fields = Vec::with_capacity(types.len());
         for (i, &ty) in types.iter().enumerate() {
             let at = layout.field_offset(variant, i as u32);
@@ -1179,7 +1180,7 @@ impl<'a> Evaluator<'a> {
         fields: &[Value],
         range: TextRange,
     ) -> Result<(), EvalError> {
-        let lang = |name| flux_ty::is_lang_struct(self.items, strukt, name);
+        let lang = |name| flux_solve::is_lang_struct(self.items, strukt, name);
         if lang("non_null") && matches!(fields.first(), Some(Value::RawAddr(0))) {
             return Err(error(range, "null pointer in `NonNull` constant".into()));
         }
@@ -1209,7 +1210,7 @@ impl<'a> Evaluator<'a> {
         if let TyKind::Adt(adt, _) = ty.kind() {
             self.validate_lang_fields(adt.strukt, fields, range)?;
         }
-        if let Some(pointee) = flux_ty::box_pointee(ty) {
+        if let Some(pointee) = flux_solve::box_pointee(ty) {
             let layout = self.view_layout(pointee, range)?;
             // There is no const heap allocator here. A nonempty Box cannot
             // acquire ownership of promoted/read-only data by changing types.
@@ -1622,7 +1623,7 @@ impl<'a> Evaluator<'a> {
             .is_some_and(|c| self.items.consts[c.konst].is_static.is_some());
         if !in_static
             && (self.items.consts[id].is_static_mut()
-                || flux_ty::traits::has_interior_mutability(
+                || flux_solve::traits::has_interior_mutability(
                     self.items,
                     self.sigs,
                     self.sigs.consts[id],
@@ -1707,18 +1708,28 @@ impl<'a> Evaluator<'a> {
         }
         let value = if name.as_str() == "type_id" {
             Value::Int {
-                bits: flux_ty::type_identity::of(self.items, self.sigs, ty)
+                bits: flux_solve::type_identity::of(self.items, self.sigs, ty)
                     .map_err(|message| error(range, message.into()))?,
                 ty: IntTy::U128,
             }
         } else if name.as_str() == "discriminant_is_signed" {
             Value::Bool(
                 self.sigs
-                    .discriminant_ty(flux_ty::traits::normalize(self.items, self.sigs, &[], ty))
+                    .discriminant_ty(flux_solve::traits::normalize(
+                        self.items,
+                        self.sigs,
+                        &[],
+                        ty,
+                    ))
                     .is_some_and(IntTy::is_signed),
             )
         } else if name.as_str() == "needs_drop" {
-            Value::Bool(flux_ty::traits::needs_drop(self.items, self.sigs, &[], ty))
+            Value::Bool(flux_solve::traits::needs_drop(
+                self.items,
+                self.sigs,
+                &[],
+                ty,
+            ))
         } else {
             let layout = self.layout_of(ty, range)?;
             if !layout.exact {
@@ -1778,9 +1789,9 @@ impl<'a> Evaluator<'a> {
                     if self.items.structs[adt.strukt].has_const_discriminants() {
                         enums.push(adt.strukt);
                     }
-                    stack.extend(flux_ty::contents(self.sigs, ty).unwrap_or_default());
+                    stack.extend(flux_solve::contents(self.sigs, ty).unwrap_or_default());
                 }
-                _ => stack.extend(flux_ty::contents(self.sigs, ty).unwrap_or_default()),
+                _ => stack.extend(flux_solve::contents(self.sigs, ty).unwrap_or_default()),
             }
         }
         let mut known = crate::Discriminants::new();
@@ -1885,7 +1896,7 @@ impl<'a> Evaluator<'a> {
                 // following pointer-linked growing ADTs here never terminates.
                 TyKind::Ref(..) | TyKind::RawPtr(..) => false,
                 TyKind::Array(t, _) | TyKind::Slice(t) => has_union(sigs, t, seen),
-                _ => flux_ty::contents(sigs, ty)
+                _ => flux_solve::contents(sigs, ty)
                     .is_some_and(|fs| fs.iter().any(|&t| has_union(sigs, t, seen))),
             }
         }
@@ -2034,7 +2045,7 @@ impl<'a> Evaluator<'a> {
                         == Some(flux_hir::Intrinsic::DiscriminantValue)
                         && let [Operand::Copy(pointer) | Operand::Move(pointer)] = &args[..]
                     {
-                        let ty = flux_ty::traits::normalize(
+                        let ty = flux_solve::traits::normalize(
                             self.items,
                             self.sigs,
                             &[],
@@ -2107,7 +2118,7 @@ impl<'a> Evaluator<'a> {
                         } else {
                             bits as i128
                         };
-                        let pointer_ty = flux_ty::traits::normalize(
+                        let pointer_ty = flux_solve::traits::normalize(
                             self.items,
                             self.sigs,
                             &[],
@@ -2135,7 +2146,7 @@ impl<'a> Evaluator<'a> {
                         else {
                             return Err(unsupported_view(range));
                         };
-                        let pointer_ty = flux_ty::traits::normalize(
+                        let pointer_ty = flux_solve::traits::normalize(
                             self.items,
                             self.sigs,
                             &[],
@@ -2145,7 +2156,7 @@ impl<'a> Evaluator<'a> {
                             value,
                             pointer_ty,
                             len as u64,
-                            flux_ty::traits::normalize(
+                            flux_solve::traits::normalize(
                                 self.items,
                                 self.sigs,
                                 &[],
@@ -2202,7 +2213,7 @@ impl<'a> Evaluator<'a> {
                             value,
                             start as usize,
                             end as usize,
-                            flux_ty::traits::normalize(
+                            flux_solve::traits::normalize(
                                 self.items,
                                 self.sigs,
                                 &[],
@@ -2332,7 +2343,7 @@ impl<'a> Evaluator<'a> {
         range: TextRange,
         checked: bool,
     ) -> Result<Value, EvalError> {
-        let instance = flux_ty::traits::resolve_instance(self.items, self.sigs, instance);
+        let instance = flux_solve::traits::resolve_instance(self.items, self.sigs, instance);
         let func: FunctionId = instance.function;
         if flux_ty::const_dependencies::queries_pointer_metadata(self.items, func)
             && let Some(&ty) = instance.args.first()
@@ -2578,7 +2589,7 @@ impl<'a> Evaluator<'a> {
                     Ok(Value::Ref(Arc::new(value)))
                 }
                 Constant::Fn { function, args, .. } => {
-                    Ok(Value::Function(flux_ty::traits::resolve_instance(
+                    Ok(Value::Function(flux_solve::traits::resolve_instance(
                         self.items,
                         self.sigs,
                         flux_ty::Instance {
@@ -2894,7 +2905,7 @@ impl<'a> Evaluator<'a> {
                             local: place.local,
                             projection: vec![ProjectionElem::Deref].into(),
                         };
-                        let view = flux_ty::traits::normalize(
+                        let view = flux_solve::traits::normalize(
                             self.items,
                             self.sigs,
                             &[],
@@ -3011,7 +3022,7 @@ impl<'a> Evaluator<'a> {
                             let promoted = flags & 2 != 0
                                 || (flags & 1 != 0
                                     && !self.inline_interior(&value, ty)
-                                    && !flux_ty::traits::needs_drop(
+                                    && !flux_solve::traits::needs_drop(
                                         self.items,
                                         self.sigs,
                                         &[],
@@ -3074,14 +3085,15 @@ impl<'a> Evaluator<'a> {
             // elements.
             Rvalue::Unsize(op, to) => {
                 let value = self.operand(locals, generics, op, range)?;
-                let to = flux_ty::traits::normalize(self.items, self.sigs, &[], to.subst(generics));
-                let from = flux_ty::traits::normalize(
+                let to =
+                    flux_solve::traits::normalize(self.items, self.sigs, &[], to.subst(generics));
+                let from = flux_solve::traits::normalize(
                     self.items,
                     self.sigs,
                     &[],
                     body.operand_ty(op, self.sigs).subst(generics),
                 );
-                if flux_ty::box_pointee(to).is_some_and(|ty| ty.is_dyn()) {
+                if flux_solve::box_pointee(to).is_some_and(|ty| ty.is_dyn()) {
                     return Err(error(
                         range,
                         "boxed trait object constant evaluation is not supported yet".into(),
@@ -3187,7 +3199,7 @@ impl<'a> Evaluator<'a> {
                         "constant subslice bounds must be integers".into(),
                     ));
                 };
-                let source_ty = flux_ty::traits::normalize(
+                let source_ty = flux_solve::traits::normalize(
                     self.items,
                     self.sigs,
                     &[],
@@ -3235,13 +3247,13 @@ impl<'a> Evaluator<'a> {
                         | Value::PointerView { .. }
                         | Value::LocalRef { .. } => Ok(pointer_view(
                             value,
-                            flux_ty::traits::normalize(
+                            flux_solve::traits::normalize(
                                 self.items,
                                 self.sigs,
                                 &[],
                                 body.operand_ty(op, self.sigs).subst(generics),
                             ),
-                            flux_ty::traits::normalize(
+                            flux_solve::traits::normalize(
                                 self.items,
                                 self.sigs,
                                 &[],

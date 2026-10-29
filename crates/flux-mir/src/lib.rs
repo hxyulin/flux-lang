@@ -366,7 +366,7 @@ impl PlaceTy {
                 };
             }
             (ProjectionElem::Field(field), _) => {
-                flux_ty::variant_fields(sigs, self.ty, self.variant.unwrap_or(0))
+                flux_solve::variant_fields(sigs, self.ty, self.variant.unwrap_or(0))
                     .and_then(|fields| fields.get(field as usize).copied())
                     .unwrap_or(Ty::ERROR)
             }
@@ -374,7 +374,7 @@ impl PlaceTy {
                 pointee
             }
             (ProjectionElem::Deref, _) => Ty::ERROR,
-            (ProjectionElem::BoxDeref, _) => flux_ty::box_pointee(self.ty).unwrap_or(Ty::ERROR),
+            (ProjectionElem::BoxDeref, _) => flux_solve::box_pointee(self.ty).unwrap_or(Ty::ERROR),
             (
                 ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. },
                 TyKind::Array(elem, _) | TyKind::Slice(elem),
@@ -450,7 +450,7 @@ impl Place {
     /// `*self`, of a value of type `ty`: a `Box`'s contents, or what a
     /// pointer points to.
     pub fn deref_of(&self, ty: Ty) -> Place {
-        if flux_ty::box_pointee(ty).is_some() {
+        if flux_solve::box_pointee(ty).is_some() {
             self.project(ProjectionElem::BoxDeref)
         } else {
             self.project(ProjectionElem::Deref)
@@ -1055,7 +1055,7 @@ impl Body {
             .flatten();
         traits
             .into_iter()
-            .flat_map(|t| flux_ty::objects::supertraits_of(items, t))
+            .flat_map(|t| flux_solve::objects::supertraits_of(items, t))
             .flat_map(|t| items.traits[t].functions.iter().copied())
             .chain(drop)
             .collect()

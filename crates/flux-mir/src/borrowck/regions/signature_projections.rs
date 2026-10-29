@@ -26,9 +26,9 @@ pub(crate) fn check_signature_projection_requirements(
         let body = Body::empty(Some(function));
         let requirements = Requirements::default();
         let mut cx = Cx::new(&body, items, sigs, &requirements);
-        cx.header_predicates = flux_ty::traits::elaborate(
+        cx.header_predicates = flux_solve::traits::elaborate(
             sigs,
-            &flux_ty::traits::predicates_of(items, sigs, function),
+            &flux_solve::traits::predicates_of(items, sigs, function),
         );
         cx.header_type_equalities();
         cx.new_universal("'static".into());

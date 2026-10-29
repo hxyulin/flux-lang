@@ -18,7 +18,7 @@ pub fn stores_adt(
     let mut pending = vec![(ty, 0u32)];
     let mut seen = FxHashSet::default();
     while let Some((ty, depth)) = pending.pop() {
-        let ty = crate::traits::normalize(items, sigs, &[], ty);
+        let ty = flux_solve::traits::normalize(items, sigs, &[], ty);
         if !seen.insert(ty) {
             continue;
         }
@@ -32,7 +32,7 @@ pub fn stores_adt(
                 pending.push((element, depth + 1))
             }
             _ => pending.extend(
-                crate::contents(sigs, ty)
+                flux_solve::contents(sigs, ty)
                     .unwrap_or_default()
                     .iter()
                     .map(|&field| (field, depth + 1)),

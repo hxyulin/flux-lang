@@ -13,9 +13,10 @@ use flux_hir::{
     PatId, Res, SegmentArgs, Stmt, StructId, StructKind, TypeRefId, UnaryOp,
 };
 use flux_intern::Symbol;
+use flux_solve::traits::{elaborate, predicates_of};
 use flux_syntax::TextRange;
 
-use crate::traits::{Predicate, elaborate, predicates_of};
+use crate::traits::Predicate;
 use crate::ty::{FloatTy, InferVar, IntTy, Mutability, Ty, TyKind};
 use crate::{
     ConstInstance, FnSig, Instance, Signatures, TypeScope, function_name, generic_names,
@@ -200,9 +201,9 @@ pub fn infer_body(
         const_context: (data.is_const && !data.do_not_const_check).then_some("constant functions"),
         ret: sig.ret,
         param_env: elaborate(sigs, &predicates_of(items, sigs, function)),
-        unsized_params: crate::unsized_params(items, data.owner, &data.generics),
-        env_projections: crate::traits::projections_of(items, sigs, function),
-        caller_projections: crate::traits::caller_projections_of(items, sigs, function),
+        unsized_params: flux_solve::unsized_params(items, data.owner, &data.generics),
+        env_projections: flux_solve::traits::projections_of(items, sigs, function),
+        caller_projections: flux_solve::traits::caller_projections_of(items, sigs, function),
         self_trait: items
             .impl_of(function)
             .and_then(|imp| sigs.impl_traits.get(imp).copied()),
@@ -258,15 +259,15 @@ pub fn infer_const(
         ret,
         param_env: elaborate(
             sigs,
-            &crate::traits::owner_predicates(items, sigs, data.owner),
+            &flux_solve::traits::owner_predicates(items, sigs, data.owner),
         ),
-        unsized_params: crate::unsized_params(items, data.owner, &Generics::default()),
-        env_projections: crate::traits::owner_projections(items, sigs, data.owner),
+        unsized_params: flux_solve::unsized_params(items, data.owner, &Generics::default()),
+        env_projections: flux_solve::traits::owner_projections(items, sigs, data.owner),
         // Extend compatibility to impl initializers only. Trait defaults can
         // shadow declaration bounds differently; preserve that existing path.
         caller_projections: match data.owner {
             Some(flux_hir::Owner::Impl(_)) => {
-                crate::traits::caller_owner_projections_of(items, sigs, data.owner)
+                flux_solve::traits::caller_owner_projections_of(items, sigs, data.owner)
             }
             _ => Vec::new(),
         },
@@ -1107,8 +1108,8 @@ impl Ctx<'_> {
         // makes a sized owner, coerced after, as rustc only hints
         // its arguments with what is wanted.
         if let Some(&expected) = self.expected.get(expr)
-            && let Some((e, t)) = crate::box_pointee(self.shallow(expected))
-                .zip(crate::box_pointee(self.shallow(ty)))
+            && let Some((e, t)) = flux_solve::box_pointee(self.shallow(expected))
+                .zip(flux_solve::box_pointee(self.shallow(ty)))
                 .or_else(|| {
                     crate::arc_pointee(self.items, self.shallow(expected))
                         .zip(crate::arc_pointee(self.items, self.shallow(ty)))
@@ -1342,9 +1343,9 @@ impl Ctx<'_> {
             .copied()
             .unwrap_or_default();
         let self_supertraits =
-            crate::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
+            flux_solve::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
         let self_inherited_types =
-            crate::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
+            flux_solve::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
         let scope = TypeScope {
             self_ty: self.self_ty,
             self_supertraits: &self_supertraits,
@@ -1579,9 +1580,9 @@ impl Ctx<'_> {
             .copied()
             .unwrap_or_default();
         let self_supertraits =
-            crate::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
+            flux_solve::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
         let self_inherited_types =
-            crate::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
+            flux_solve::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
         let scope = TypeScope {
             self_ty: self.self_ty,
             self_supertraits: &self_supertraits,
@@ -1669,7 +1670,7 @@ impl Ctx<'_> {
 
     /// The types of the fields of variant `variant` of `ty`, normalized.
     fn variant_fields_of(&mut self, ty: Ty, variant: u32, range: TextRange) -> &'static [Ty] {
-        let fields = crate::variant_fields(self.sigs, ty, variant).unwrap_or(&[]);
+        let fields = flux_solve::variant_fields(self.sigs, ty, variant).unwrap_or(&[]);
         if !fields.iter().any(|f| f.has_aliases()) {
             return fields;
         }
@@ -3676,7 +3677,7 @@ impl Ctx<'_> {
             return Ty::ERROR;
         };
         let data = &self.items.functions[function];
-        if crate::traits::is_destructor(self.items, function) {
+        if flux_solve::traits::is_destructor(self.items, function) {
             self.error(self.range(callee), "explicit use of destructor method");
         }
         self.check_fn_trait_method(function, self.range(callee));
@@ -3692,7 +3693,7 @@ impl Ctx<'_> {
         self.meet_expectation(id, sig.ret);
         // What the function's own arguments make of its return type must
         // meet its structs' bounds; its block's were checked with it.
-        let first_own = crate::traits::owner_param_count(self.items, data.owner) as u32;
+        let first_own = flux_solve::traits::owner_param_count(self.items, data.owner) as u32;
         let ret = self.sigs.fns[function].ret;
         if (first_own..first_own + data.generics.len() as u32)
             .any(|i| crate::mentions_param(ret, i))
@@ -3830,7 +3831,7 @@ impl Ctx<'_> {
             );
             return Ty::ERROR;
         }
-        if crate::traits::is_destructor(items, function) {
+        if flux_solve::traits::is_destructor(items, function) {
             self.error(self.range(expr), "explicit use of destructor method");
         }
         let range = self.range(expr);
@@ -4128,7 +4129,9 @@ impl Ctx<'_> {
                 self.annotations_needed(operand, var, self.range(id));
                 Ty::ERROR
             }
-            TyKind::Adt(..) if let Some(pointee) = crate::box_pointee(self.shallow(ty)) => pointee,
+            TyKind::Adt(..) if let Some(pointee) = flux_solve::box_pointee(self.shallow(ty)) => {
+                pointee
+            }
             _ => {
                 // `*Deref::deref(&v)`.
                 let range = self.range(id);
@@ -4450,7 +4453,7 @@ impl Ctx<'_> {
     fn deref_step(&mut self, ty: Ty, range: TextRange) -> Option<(Ty, bool)> {
         let ty = self.shallow(ty);
         // A `Box`'s contents, built in as rustc's are.
-        if let Some(pointee) = crate::box_pointee(ty) {
+        if let Some(pointee) = flux_solve::box_pointee(ty) {
             return Some((self.shallow(pointee), false));
         }
         match ty.kind() {
@@ -4479,7 +4482,8 @@ impl Ctx<'_> {
             name: self.items.traits[t].name,
             args: Ty::list(&[]),
         };
-        let alias = crate::traits::alias_of(self.items, trait_ref, ty, Symbol::intern("Target"));
+        let alias =
+            flux_solve::traits::alias_of(self.items, trait_ref, ty, Symbol::intern("Target"));
         self.normalize(Ty::alias(alias), range)
     }
 
@@ -4552,7 +4556,7 @@ impl Ctx<'_> {
                 ty = self.shallow(o.target);
                 continue;
             }
-            if let Some(pointee) = crate::box_pointee(ty) {
+            if let Some(pointee) = flux_solve::box_pointee(ty) {
                 ty = self.shallow(pointee);
                 continue;
             }
@@ -4654,7 +4658,7 @@ impl Ctx<'_> {
                 .and_then(|i| Some((i, *elements.get(i)?))),
             TyKind::Adt(adt, args) => items.structs[adt.strukt]
                 .field(name)
-                .map(|(i, _)| (i, crate::field_types(sigs, adt.strukt, args)[i]))
+                .map(|(i, _)| (i, flux_solve::field_types(sigs, adt.strukt, args)[i]))
                 .map(|(i, ty)| (i, self.normalize(ty, range))),
             TyKind::Error => return Ty::ERROR,
             TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool => {
@@ -5233,7 +5237,7 @@ impl Ctx<'_> {
         // A Box<Self> receiver belongs to the pointee's impl, while the
         // argument consumes the original box without dereferencing it.
         if mode.is_none()
-            && let Some(pointee) = crate::box_pointee(ty)
+            && let Some(pointee) = flux_solve::box_pointee(ty)
         {
             let pointee = self.shallow(pointee);
             let boxed = |f: FunctionId| items.functions[f].has_self && boxed_self(items, sigs, f);
@@ -5306,7 +5310,7 @@ impl Ctx<'_> {
                     ),
                     _ => {
                         edition != flux_syntax::Edition::E2024
-                            && crate::box_pointee(target)
+                            && flux_solve::box_pointee(target)
                                 .is_some_and(|ty| matches!(ty.kind(), TyKind::Slice(_)))
                     }
                 };
@@ -5361,7 +5365,7 @@ impl Ctx<'_> {
         name_range: TextRange,
     ) -> Ty {
         let data = &self.items.functions[function];
-        if crate::traits::is_destructor(self.items, function) {
+        if flux_solve::traits::is_destructor(self.items, function) {
             self.error(name_range, "explicit use of destructor method");
         }
         // A trait object has its trait's methods but those that need
@@ -5369,7 +5373,7 @@ impl Ctx<'_> {
         if let TyKind::Dynamic(d) = self.shallow(base).kind()
             && matches!(data.owner, Some(flux_hir::Owner::Trait(_)))
         {
-            if !crate::objects::is_dispatchable(self.items, function) {
+            if !flux_solve::objects::is_dispatchable(self.items, function) {
                 self.error(
                     name_range,
                     format!(
@@ -5379,7 +5383,7 @@ impl Ctx<'_> {
                 );
                 return Ty::ERROR;
             }
-            if crate::traits::self_by_value(self.items, function) {
+            if flux_solve::traits::self_by_value(self.items, function) {
                 let object = Ty::new(TyKind::Dynamic(d));
                 self.error(
                     self.range(receiver),
@@ -6016,7 +6020,8 @@ impl Ctx<'_> {
 
     /// `<ty as Tr>::Output`, normalized.
     fn output(&mut self, trait_ref: crate::TraitRef, ty: Ty, range: TextRange) -> Ty {
-        let alias = crate::traits::alias_of(self.items, trait_ref, ty, Symbol::intern("Output"));
+        let alias =
+            flux_solve::traits::alias_of(self.items, trait_ref, ty, Symbol::intern("Output"));
         self.normalize(Ty::alias(alias), range)
     }
 
@@ -6771,7 +6776,7 @@ impl Ctx<'_> {
     /// bound that no bound makes `Sized`.
     fn is_unsized(&mut self, ty: Ty) -> bool {
         let ty = self.shallow(ty);
-        crate::maybe_unsized(
+        flux_solve::maybe_unsized(
             self.items,
             self.sigs,
             ty,
@@ -6786,7 +6791,7 @@ impl Ctx<'_> {
     /// names it, as rustc does.
     fn check_sized_args(&mut self, expr: ExprId, function: FunctionId, args: &[Ty]) {
         let data = &self.items.functions[function];
-        let callee_unsized = crate::unsized_params(self.items, data.owner, &data.generics);
+        let callee_unsized = flux_solve::unsized_params(self.items, data.owner, &data.generics);
         let Some((index, arg)) = args
             .iter()
             .enumerate()
@@ -7383,9 +7388,9 @@ impl Ctx<'_> {
                         (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !self.is_unsized(pointee),
                         // A fieldless enum, to its discriminant.
                         (TyKind::Adt(adt, _), TyKind::Int(_)) => {
-                            crate::variants(self.sigs, from).is_some_and(|variants| {
+                            flux_solve::variants(self.sigs, from).is_some_and(|variants| {
                                 variants.iter().all(|fields| fields.is_empty())
-                            }) && crate::traits::drop_impl(self.items, self.sigs, adt.strukt)
+                            }) && flux_solve::traits::drop_impl(self.items, self.sigs, adt.strukt)
                                 .is_none()
                         }
                         _ => from == to,
@@ -7482,7 +7487,7 @@ fn boxed_self(items: &ItemTree, sigs: &Signatures, f: FunctionId) -> bool {
         None => None,
     };
     let receiver = sigs.fns.get(f).and_then(|sig| sig.params.first()).copied();
-    self_ty.is_some() && receiver.and_then(crate::box_pointee) == self_ty
+    self_ty.is_some() && receiver.and_then(flux_solve::box_pointee) == self_ty
 }
 
 /// How method `f` takes `self`: by value (`None`) or by reference.

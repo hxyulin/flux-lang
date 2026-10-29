@@ -125,7 +125,7 @@ impl TypeScope<'_> {
     /// Whether values of `ty` may have no size known at compile time
     /// here ([`maybe_unsized`]).
     pub fn is_unsized(&self, items: &ItemTree, ty: Ty) -> bool {
-        maybe_unsized_with(
+        flux_solve::maybe_unsized_with(
             items,
             self.struct_fields,
             ty,
@@ -158,76 +158,6 @@ impl TypeScope<'_> {
             .rposition(|&n| n == name)
             .is_some_and(|i| matches!(self.consts.get(i), Some(None)))
     }
-}
-
-/// Which generic parameters of an item in `owner` with its own
-/// `generics` have no implicit `Sized` bound, in the order of
-/// [`generic_names`]: a trait's `Self`, and those bounded `?Sized`.
-pub fn unsized_params(items: &ItemTree, owner: Option<Owner>, own: &Generics) -> Vec<bool> {
-    let mut out = Vec::new();
-    if let Some(Owner::Trait(_)) = owner {
-        out.push(true);
-    }
-    out.extend(
-        items
-            .owner_generics(owner)
-            .into_iter()
-            .chain([own])
-            .flat_map(|g| g.params.iter().map(|p| p.maybe_unsized)),
-    );
-    out
-}
-
-/// Whether values of `ty` may have no size known at compile time: a
-/// slice, `str`, or a generic parameter without an implicit `Sized`
-/// bound (`unsized_params`, by index) that none of `bounds` says is
-/// `Sized`.
-pub fn maybe_unsized(
-    items: &ItemTree,
-    sigs: &Signatures,
-    ty: Ty,
-    unsized_params: &[bool],
-    bounds: &[Predicate],
-) -> bool {
-    maybe_unsized_with(items, Some(&sigs.structs), ty, unsized_params, bounds)
-}
-
-fn maybe_unsized_with(
-    items: &ItemTree,
-    fields: Option<&LayeredArenaMap<Struct, &'static [Ty]>>,
-    ty: Ty,
-    unsized_params: &[bool],
-    bounds: &[Predicate],
-) -> bool {
-    let ty = metadata::tail(fields, ty, |id| items.structs[id].is_enum());
-    match ty.kind() {
-        TyKind::Param(p) => {
-            unsized_params.get(p.index as usize) == Some(&true)
-                && !bounds
-                    .iter()
-                    .any(|b| b.self_ty == ty && trait_requires_sized(items, b.trait_ref.trait_))
-        }
-        _ => ty.is_unsized(),
-    }
-}
-
-/// A supertrait's Self bound applies even before its signature is installed.
-fn trait_requires_sized(items: &ItemTree, root: flux_hir::TraitId) -> bool {
-    let mut work = vec![root];
-    let mut seen = rustc_hash::FxHashSet::default();
-    while let Some(id) = work.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        let data = &items.traits[id];
-        if data.lang == Some(sym::sized) {
-            return true;
-        }
-        for bound in data.supertraits.iter().chain(data.generics.predicates.iter().filter(|p| matches!(&p.ty, TypeRef::Path(path) if path.as_name() == Some(kw::SelfUpper))).map(|p| &p.bound)) {
-            if let (Some(target), _) = items.resolve_trait(data.loc.module, bound) { work.push(target); }
-        }
-    }
-    false
 }
 
 /// The types of the const parameters of an item in `owner` with its own
@@ -575,7 +505,7 @@ pub(crate) fn fill_type_defaults(
     }
     let names = generic_names(items, None, generics);
     let consts = generic_consts(items, None, generics);
-    let unsized_flags = unsized_params(items, None, generics);
+    let unsized_flags = flux_solve::unsized_params(items, None, generics);
     let own = TypeScope {
         generics: &names,
         consts: &consts,
@@ -1419,7 +1349,9 @@ fn assoc_type_base(
             ));
             return Ty::ERROR;
         }
-        return Ty::alias(traits::alias_of(items, trait_ref, self_ty, name));
+        return Ty::alias(flux_solve::traits::alias_of(
+            items, trait_ref, self_ty, name,
+        ));
     }
     // `Self::Out` in a trait's `impl` block: the block's own.
     // (Only written `Self`: `I::Item` in `impl<I: It> Tr for I` is `I`'s
@@ -1436,7 +1368,9 @@ fn assoc_type_base(
             {
                 return ty;
             }
-            return Ty::alias(traits::alias_of(items, trait_ref, self_ty, name));
+            return Ty::alias(flux_solve::traits::alias_of(
+                items, trait_ref, self_ty, name,
+            ));
         }
         if written_self {
             let found: Vec<_> = scope
@@ -1462,7 +1396,9 @@ fn assoc_type_base(
                         return Ty::ERROR;
                     }
                     if captures_inputs(inherited.trait_) {
-                        return Ty::alias(traits::alias_of(items, *inherited, self_ty, name));
+                        return Ty::alias(flux_solve::traits::alias_of(
+                            items, *inherited, self_ty, name,
+                        ));
                     }
                     if let Some(&(_, _, ty)) = scope
                         .self_inherited_types
@@ -1485,7 +1421,9 @@ fn assoc_type_base(
                             // normalization must retain that header selection
                             // and its lifetime recipe, rather than exposing an
                             // erased RHS under the spelling `Self::Out`.
-                            return Ty::alias(traits::alias_of(items, *inherited, self_ty, name));
+                            return Ty::alias(flux_solve::traits::alias_of(
+                                items, *inherited, self_ty, name,
+                            ));
                         }
                         if scope.signature_of != Some("functions") && regions::slots(items, ty) != 0
                         {
@@ -1494,7 +1432,9 @@ fn assoc_type_base(
                         }
                         return ty;
                     }
-                    return Ty::alias(traits::alias_of(items, *inherited, self_ty, name));
+                    return Ty::alias(flux_solve::traits::alias_of(
+                        items, *inherited, self_ty, name,
+                    ));
                 }
                 [] => errors.push((at, format!("associated type `{name}` not found for `Self`"))),
                 _ => errors.push((at, format!("ambiguous associated type `{name}` for `Self`"))),
@@ -1517,7 +1457,9 @@ fn assoc_type_base(
         }
     }
     match found.as_slice() {
-        [trait_ref] => Ty::alias(traits::alias_of(items, *trait_ref, self_ty, name)),
+        [trait_ref] => Ty::alias(flux_solve::traits::alias_of(
+            items, *trait_ref, self_ty, name,
+        )),
         [] => {
             errors.push((
                 at,
@@ -1557,7 +1499,7 @@ pub(super) fn resolve_predicates(
         .chain(&resolved.predicates)
         .copied()
         .collect();
-    let bounds = traits::elaborate(sigs, &all);
+    let bounds = flux_solve::traits::elaborate(sigs, &all);
     let scope = TypeScope {
         bounds: &bounds,
         ..scope
@@ -2028,26 +1970,6 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
     }
 }
 
-/// What `ty` holds if it is `alloc`'s `Box<T>` (`#[lang = "owned_box"]`),
-/// which dereferences as a built-in pointer that owns its value does, as
-/// rustc's: moves out of `*b`, and `*b` is mutable where `b` is.
-pub fn box_pointee(ty: Ty) -> Option<Ty> {
-    static OWNED_BOX: std::sync::OnceLock<Option<StructId>> = std::sync::OnceLock::new();
-    let TyKind::Adt(adt, args) = ty.kind() else {
-        return None;
-    };
-    let owned_box = OWNED_BOX.get_or_init(|| {
-        flux_hir::Core::get()
-            .items
-            .lang_enums
-            .get(&Symbol::intern("owned_box"))
-            .copied()
-    });
-    (Some(adt.strukt) == *owned_box)
-        .then(|| args.first().copied())
-        .flatten()
-}
-
 /// The payload of the trusted alloc Arc, whose library representation is
 /// shared with array-owner unsizing. User types with the same name do not
 /// acquire this coercion, including in item trees without embedded libraries.
@@ -2058,11 +1980,6 @@ pub fn arc_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     };
     let name = ARC.get_or_init(|| Symbol::intern("arc"));
     (args.len() == 1 && items.lang_enums.get(name) == Some(&adt.strukt)).then(|| args[0])
-}
-
-/// Whether `strukt` is `core`'s struct with `#[lang = "{lang}"]`.
-pub fn is_lang_struct(items: &ItemTree, strukt: StructId, lang: &str) -> bool {
-    items.lang_enums.get(&Symbol::intern(lang)) == Some(&strukt)
 }
 
 /// Integer representation of a trusted core nonzero wrapper.

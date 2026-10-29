@@ -275,7 +275,7 @@ impl<'a> Layouts<'a> {
                 Some((0, elem.size, elem.align))
             }
             TyKind::Adt(..) if self.sigs.is_unsized(ty) => {
-                let fields = flux_ty::fields(self.sigs, ty)?;
+                let fields = flux_solve::fields(self.sigs, ty)?;
                 let last = fields.len().checked_sub(1)?;
                 let (prefix, stride, _) = self.length_layout(fields[last])?;
                 let layout = self.of(ty);
@@ -405,9 +405,9 @@ impl<'a> Layouts<'a> {
     fn adt(&self, ty: Ty, strukt: StructId) -> Layout {
         let items = self.items;
         let data = &items.structs[strukt];
-        let lang = |name: &str| flux_ty::is_lang_struct(items, strukt, name);
-        let Some(variants) = flux_ty::variants(self.sigs, ty) else {
-            let fields = flux_ty::fields(self.sigs, ty).unwrap_or_default();
+        let lang = |name: &str| flux_solve::is_lang_struct(items, strukt, name);
+        let Some(variants) = flux_solve::variants(self.sigs, ty) else {
+            let fields = flux_solve::fields(self.sigs, ty).unwrap_or_default();
             if data.is_union {
                 let align = fields
                     .iter()
@@ -439,8 +439,8 @@ impl<'a> Layouts<'a> {
             }
             // Potentially unsized tails retain their position even in sized
             // instantiations so structural unsizing preserves the prefix.
-            let parameters = flux_ty::unsized_params(self.items, None, &data.generics);
-            let bounds = flux_ty::traits::elaborate(
+            let parameters = flux_solve::unsized_params(self.items, None, &data.generics);
+            let bounds = flux_solve::traits::elaborate(
                 self.sigs,
                 self.sigs
                     .struct_predicates
@@ -449,7 +449,7 @@ impl<'a> Layouts<'a> {
             );
             let tail = self.sigs.structs[strukt].last().copied();
             let kind = if tail.is_some_and(|tail| {
-                flux_ty::maybe_unsized(self.items, self.sigs, tail, &parameters, &bounds)
+                flux_solve::maybe_unsized(self.items, self.sigs, tail, &parameters, &bounds)
             }) {
                 Kind::MaybeUnsized
             } else {

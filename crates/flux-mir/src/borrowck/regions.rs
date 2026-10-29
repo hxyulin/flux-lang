@@ -674,7 +674,7 @@ fn impl_header_match(
         .impl_predicates
         .get(imp)
         .map_or(Vec::new(), |predicates| {
-            flux_ty::traits::elaborate(sigs, predicates)
+            flux_solve::traits::elaborate(sigs, predicates)
         });
     cx.header_type_equalities();
     cx.new_universal("'static".into());
@@ -760,7 +760,7 @@ fn impl_header_match(
         {
             continue;
         }
-        let value = flux_ty::traits::impl_type(sigs, imp, name)?;
+        let value = flux_solve::traits::impl_type(sigs, imp, name)?;
         // An abstract projection guaranteed by an original header bound
         // carries that declaration's bounds. It selects no concrete impl.
         if let TyKind::Alias(alias) = value.kind()
@@ -774,7 +774,7 @@ fn impl_header_match(
         {
             let header: Vec<_> = env.iter().map(|g| g.predicate).collect();
             cx.header_aliases.push(alias);
-            for bound in flux_ty::traits::alias_bounds(sigs, &header, value) {
+            for bound in flux_solve::traits::alias_bounds(sigs, &header, value) {
                 let goal =
                     cx.impl_region_goal(bound, &[], &TraitRefRegions::default(), &[], &[], &[])?;
                 if !cx.impl_super_goals(goal, &mut env, 0) {
@@ -803,7 +803,7 @@ fn impl_header_match(
         if vars.len() != cx.slots(cx.normalize(value)) as usize {
             return None;
         }
-        let alias = flux_ty::traits::alias_of(items, trait_ref, self_ty, name);
+        let alias = flux_solve::traits::alias_of(items, trait_ref, self_ty, name);
         cx.env.push(flux_ty::Projection { alias, ty: value });
         cx.env_regions.push((alias, vars));
     }
@@ -824,7 +824,7 @@ fn impl_header_match(
                         .map(|i| Ty::param(i as u32, flux_intern::kw::SelfUpper))
                         .collect::<Vec<_>>(),
                 ),
-                ..flux_ty::traits::alias_of(items, trait_ref, self_ty, name)
+                ..flux_solve::traits::alias_of(items, trait_ref, self_ty, name)
             };
             let goal = cx.impl_region_goal(
                 bound.with_self(Ty::alias(alias)),
@@ -1042,7 +1042,7 @@ impl<'a> Cx<'a> {
         requirements: &'a Requirements,
     ) -> Cx<'a> {
         let env = match body.owner {
-            Some(f) => flux_ty::traits::projections_of(items, sigs, f),
+            Some(f) => flux_solve::traits::projections_of(items, sigs, f),
             None => Vec::new(),
         };
         Cx {
@@ -1183,11 +1183,12 @@ impl<'a> Cx<'a> {
             // equalities; there is no concrete impl RHS to select here.
             return true;
         }
-        let Some((imp, impl_args)) = flux_ty::traits::select_impl(self.items, self.sigs, predicate)
+        let Some((imp, impl_args)) =
+            flux_solve::traits::select_impl(self.items, self.sigs, predicate)
         else {
             return false;
         };
-        let Some(value) = flux_ty::traits::impl_type(self.sigs, imp, alias.name) else {
+        let Some(value) = flux_solve::traits::impl_type(self.sigs, imp, alias.name) else {
             return false;
         };
         self.impl_aliases_proven(value, &impl_args, env, depth + 1)
@@ -1279,10 +1280,14 @@ impl<'a> Cx<'a> {
             ..template
         });
         if let TyKind::Dynamic(object) = predicate.self_ty.kind()
-            && let Some(declared) =
-                flux_ty::traits::dyn_projections(self.items, self.sigs, predicate.self_ty, object)
-                    .into_iter()
-                    .find(|declared| Ty::alias(declared.alias) == projection)
+            && let Some(declared) = flux_solve::traits::dyn_projections(
+                self.items,
+                self.sigs,
+                predicate.self_ty,
+                object,
+            )
+            .into_iter()
+            .find(|declared| Ty::alias(declared.alias) == projection)
         {
             // The full principal/argument rows were proved above. An object's
             // declared equality selects no concrete impl; any further RHS
@@ -1322,7 +1327,7 @@ impl<'a> Cx<'a> {
                 return false;
             }
         }
-        let Some(value) = flux_ty::traits::impl_type(self.sigs, imp, template.name) else {
+        let Some(value) = flux_solve::traits::impl_type(self.sigs, imp, template.name) else {
             return false;
         };
         if self.impl_aliases_known(value, &impl_args)
@@ -1686,8 +1691,8 @@ impl<'a> Cx<'a> {
                 && !self.declared_region_free_bound(&alias_goal, env)
             {
                 let (imp, impl_args) =
-                    flux_ty::traits::select_impl(self.items, self.sigs, alias_goal.predicate)?;
-                let value = flux_ty::traits::impl_type(self.sigs, imp, alias.name)?;
+                    flux_solve::traits::select_impl(self.items, self.sigs, alias_goal.predicate)?;
+                let value = flux_solve::traits::impl_type(self.sigs, imp, alias.name)?;
                 // Proving the outer edge does not prove the selected RHS's
                 // nested projection requirements. Discharge those separately.
                 if !self.impl_aliases_proven(value, &impl_args, env, 0) {
@@ -1736,7 +1741,7 @@ impl<'a> Cx<'a> {
 
     /// Select a candidate header; callers still prove every required bound.
     fn matching_impl(&self, goal: flux_ty::Predicate) -> Option<(flux_hir::ImplId, Vec<Ty>)> {
-        flux_ty::traits::select_impl(self.items, self.sigs, goal)
+        flux_solve::traits::select_impl(self.items, self.sigs, goal)
             .or_else(|| {
                 // A rigid generic input can prevent erased bound selection.
                 // A unique header is usable only after its region-aware proof.
@@ -1745,7 +1750,7 @@ impl<'a> Cx<'a> {
                     .impl_index
                     .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
                     .filter_map(|imp| {
-                        flux_ty::traits::match_impl(self.items, self.sigs, imp, goal)
+                        flux_solve::traits::match_impl(self.items, self.sigs, imp, goal)
                             .map(|args| (imp, args))
                     });
                 let candidate = matches.next()?;
@@ -1775,7 +1780,7 @@ impl<'a> Cx<'a> {
             return false;
         }
         let header: Vec<_> = env.iter().map(|goal| goal.predicate).collect();
-        flux_ty::traits::alias_bounds(self.sigs, &header, goal.predicate.self_ty)
+        flux_solve::traits::alias_bounds(self.sigs, &header, goal.predicate.self_ty)
             .contains(&goal.predicate)
     }
 
@@ -1816,13 +1821,13 @@ impl<'a> Cx<'a> {
         }
         let range = TextRange::default();
         if self.items.traits[goal.predicate.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
-            || flux_ty::traits::is_builtin_trait(
+            || flux_solve::traits::is_builtin_trait(
                 self.items,
                 goal.predicate.trait_ref.trait_,
                 goal.predicate.self_ty,
             )
         {
-            return flux_ty::traits::holds(self.items, self.sigs, &[], goal.predicate);
+            return flux_solve::traits::holds(self.items, self.sigs, &[], goal.predicate);
         }
         self.close_known();
         let mut candidates = Vec::new();
@@ -1911,7 +1916,7 @@ impl<'a> Cx<'a> {
             // Built-in, region-free obligations (notably Sized and Copy)
             // need no user impl. Never use erased environment bounds here.
             return goal.vars.iter().all(Vec::is_empty)
-                && flux_ty::traits::holds(self.items, self.sigs, &[], goal.predicate);
+                && flux_solve::traits::holds(self.items, self.sigs, &[], goal.predicate);
         };
         let Some(block) = self.sigs.regions.impls.get(imp) else {
             return false;
@@ -2122,7 +2127,7 @@ impl<'a> Cx<'a> {
     }
 
     fn normalize(&self, ty: Ty) -> Ty {
-        flux_ty::traits::normalize(self.items, self.sigs, &self.env, ty)
+        flux_solve::traits::normalize(self.items, self.sigs, &self.env, ty)
     }
 
     /// The universal regions, then each local's slots, and the
@@ -3196,7 +3201,7 @@ impl<'a> Cx<'a> {
                 return None;
             }
             let projection =
-                flux_ty::traits::dyn_projections(self.items, self.sigs, alias.args[0], object)
+                flux_solve::traits::dyn_projections(self.items, self.sigs, alias.args[0], object)
                     .into_iter()
                     .find(|projection| projection.alias == alias)?;
             let row = flux_ty::regions::object_associated_range(
@@ -3306,7 +3311,7 @@ impl<'a> Cx<'a> {
                 args: Ty::list(&inputs[1..]),
             },
         };
-        let selected = match flux_ty::traits::select_impl(items, sigs, goal) {
+        let selected = match flux_solve::traits::select_impl(items, sigs, goal) {
             Some(selected) => Some(selected),
             None => {
                 // A rigid caller parameter can select a blanket impl only
@@ -3331,7 +3336,7 @@ impl<'a> Cx<'a> {
             }
         };
         if let Some((imp, impl_args)) = selected {
-            let value = flux_ty::traits::impl_type(sigs, imp, alias.name)?;
+            let value = flux_solve::traits::impl_type(sigs, imp, alias.name)?;
             let regions = sigs.regions.impls.get(imp)?;
             let ImplBinding { lifetimes, types } = self.bind_impl(
                 imp,
@@ -3500,7 +3505,7 @@ impl<'a> Cx<'a> {
             .opaques
             .get(opaque.function)?
             .get(opaque.index as usize)?;
-        let args = flux_ty::traits::opaque_args(opaque);
+        let args = flux_solve::traits::opaque_args(opaque);
         let j = sig
             .projections
             .iter()
@@ -3631,18 +3636,14 @@ impl<'a> Cx<'a> {
                 )?;
                 if output != self.normalize(actual)
                     || output_rows.len() != vars.len()
-                    || !flux_ty::regions::same_fn_pointer_binders(self.items, output, actual)
+                    || !flux_solve::fn_regions::same_binders(self.items, output, actual)
                 {
                     return None;
                 }
                 eqs.extend(output_rows.into_iter().zip(vars.iter().copied()));
                 continue;
             }
-            if !flux_ty::regions::same_fn_pointer_binders(
-                self.items,
-                pattern.subst(impl_args),
-                actual,
-            ) {
+            if !flux_solve::fn_regions::same_binders(self.items, pattern.subst(impl_args), actual) {
                 return None;
             }
             let (mut t, mut v) = (0, 0);
@@ -4243,7 +4244,9 @@ impl<'a> Cx<'a> {
                 }
                 (ProjectionElem::Deref, TyKind::RawPtr(_, inner)) => ty = inner,
                 // A `Box<T>`'s slots are its `T`'s.
-                (ProjectionElem::BoxDeref, _) => ty = flux_ty::box_pointee(ty).unwrap_or(Ty::ERROR),
+                (ProjectionElem::BoxDeref, _) => {
+                    ty = flux_solve::box_pointee(ty).unwrap_or(Ty::ERROR)
+                }
                 (
                     ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. },
                     TyKind::Array(elem, _) | TyKind::Slice(elem),
@@ -4300,7 +4303,7 @@ impl<'a> Cx<'a> {
             return (Ty::ERROR, Slots::new());
         };
         let sigs = self.sigs;
-        let Some(field_ty) = flux_ty::variant_fields(sigs, ty, variant.unwrap_or(0))
+        let Some(field_ty) = flux_solve::variant_fields(sigs, ty, variant.unwrap_or(0))
             .and_then(|f| f.get(field as usize).copied())
         else {
             return (Ty::ERROR, Slots::new());
@@ -4395,7 +4398,7 @@ impl<'a> Cx<'a> {
     /// The constraints of every statement and call.
     fn generate(&mut self) {
         let body = self.body;
-        let copy = flux_ty::traits::copy_trait_ref(self.items);
+        let copy = flux_solve::traits::copy_trait_ref(self.items);
         for (block, data) in body.blocks.iter() {
             for statement in &data.statements {
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
@@ -4500,7 +4503,7 @@ impl<'a> Cx<'a> {
             // must outlive it, as rustc's `T: 'a` for the unsizing.
             Rvalue::Unsize(op, to)
                 if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn())
-                    || flux_ty::box_pointee(*to)
+                    || flux_solve::box_pointee(*to)
                         .or_else(|| flux_ty::arc_pointee(self.items, *to))
                         .is_some_and(|p| p.is_dyn()) =>
             {
@@ -4528,7 +4531,7 @@ impl<'a> Cx<'a> {
                         (pointee, &vars[..], dest_vars.first().copied())
                     }
                     // A box's slots are its value's.
-                    _ if let Some(pointee) = flux_ty::box_pointee(op_ty)
+                    _ if let Some(pointee) = flux_solve::box_pointee(op_ty)
                         .or_else(|| flux_ty::arc_pointee(self.items, op_ty)) =>
                     {
                         (pointee, &vars[..], dest_vars.first().copied())
@@ -4540,9 +4543,8 @@ impl<'a> Cx<'a> {
                 // must therefore fail while the object is constructed.
                 let object = match to.kind() {
                     TyKind::Ref(_, object) | TyKind::RawPtr(_, object) => Some(object),
-                    _ => {
-                        flux_ty::box_pointee(*to).or_else(|| flux_ty::arc_pointee(self.items, *to))
-                    }
+                    _ => flux_solve::box_pointee(*to)
+                        .or_else(|| flux_ty::arc_pointee(self.items, *to)),
                 };
                 let mut callable_principal_checked = false;
                 if let Some(object) = object
@@ -4703,7 +4705,7 @@ impl<'a> Cx<'a> {
                     }
                     // Supertrait Self: 'static constrains the erased payload,
                     // including closure environments and function-item args.
-                    let static_self = flux_ty::objects::supertraits_of(self.items, d.trait_)
+                    let static_self = flux_solve::objects::supertraits_of(self.items, d.trait_)
                         .into_iter().any(|owner| self.sigs.regions.traits.get(owner).is_some_and(|contract| {
                             contract.outlives.iter().any(|requirement| matches!(requirement,
                                 Outlives::Type(ty, Region::Static) if matches!(ty.kind(), TyKind::Param(p) if p.index == 0)))
@@ -4715,7 +4717,7 @@ impl<'a> Cx<'a> {
                         self.type_outlives(pointee, STATIC, range);
                     }
                     self.prove(
-                        flux_ty::traits::dyn_principal(pointee, d),
+                        flux_solve::traits::dyn_principal(pointee, d),
                         &rows,
                         &[],
                         range,
@@ -4773,7 +4775,7 @@ impl<'a> Cx<'a> {
                             }
                         }
                     }
-                    for (owner, name) in flux_ty::objects::dyn_assoc(self.items, d.trait_) {
+                    for (owner, name) in flux_solve::objects::dyn_assoc(self.items, d.trait_) {
                         let Some(row) =
                             flux_ty::regions::object_associated_range(self.items, d, name)
                                 .and_then(|row| object_vars.get(row))
@@ -4790,7 +4792,7 @@ impl<'a> Cx<'a> {
                         // The principal selection gives the impl and Self row;
                         // equality outputs must agree independently of the
                         // object's own lifetime bound.
-                        let reference = flux_ty::traits::dyn_bounds(self.sigs, pointee, d)
+                        let reference = flux_solve::traits::dyn_bounds(self.sigs, pointee, d)
                             .into_iter()
                             .find(|bound| bound.trait_ref.trait_ == owner)
                             .map(|bound| bound.trait_ref);
@@ -4805,7 +4807,8 @@ impl<'a> Cx<'a> {
                             ));
                             continue;
                         }
-                        let alias = flux_ty::traits::alias_of(self.items, reference, pointee, name);
+                        let alias =
+                            flux_solve::traits::alias_of(self.items, reference, pointee, name);
                         let Some(actual) = self.normalize_regions(alias, &rows, 0) else {
                             self.errors.push(Diagnostic::new(
                                 range,
@@ -5416,8 +5419,8 @@ impl<'a> Cx<'a> {
         let mut bounds: Vec<(flux_ty::Predicate, &[Region], TraitRefRegions)> = Vec::new();
         match (owner, block) {
             (Some(flux_hir::Owner::Trait(t)), _) => {
-                let list = flux_ty::traits::owner_predicates(items, sigs, owner);
-                let expected = flux_ty::traits::trait_self_predicate(items, t);
+                let list = flux_solve::traits::owner_predicates(items, sigs, owner);
+                let expected = flux_solve::traits::trait_self_predicate(items, t);
                 let metadata = sigs.regions.traits.get(t);
                 let count = expected.trait_ref.args.len();
                 // This prefix belongs to the trait declaration, not to the
@@ -5500,7 +5503,7 @@ impl<'a> Cx<'a> {
                 }
             }
             _ => {
-                for p in flux_ty::traits::owner_predicates(items, sigs, owner) {
+                for p in flux_solve::traits::owner_predicates(items, sigs, owner) {
                     bounds.push((p, &[], TraitRefRegions::default()));
                 }
             }
@@ -5657,7 +5660,7 @@ impl<'a> Cx<'a> {
     ) -> bool {
         // These keys live in the declaration's namespace. A caller's Cx.env
         // or concrete substitutions could conflate independent P/Q binders.
-        let facts = flux_ty::traits::caller_projections_of(self.items, self.sigs, function);
+        let facts = flux_solve::traits::caller_projections_of(self.items, self.sigs, function);
         let keys: Vec<_> = bounds
             .iter()
             .map(|(predicate, _, _)| {
@@ -5665,7 +5668,7 @@ impl<'a> Cx<'a> {
                     return None;
                 }
                 let key =
-                    flux_ty::traits::normalize(self.items, self.sigs, &facts, predicate.self_ty);
+                    flux_solve::traits::normalize(self.items, self.sigs, &facts, predicate.self_ty);
                 (!key.has_infer() && !key.has_error()).then_some(key)
             })
             .collect();
@@ -6130,7 +6133,8 @@ impl<'a> Cx<'a> {
                 if !matches!(self.sigs.impls[imp].kind(), TyKind::Param(_)) {
                     continue;
                 }
-                let Some(mut args) = flux_ty::traits::match_impl(self.items, self.sigs, imp, goal)
+                let Some(mut args) =
+                    flux_solve::traits::match_impl(self.items, self.sigs, imp, goal)
                 else {
                     continue;
                 };
@@ -6260,7 +6264,7 @@ impl<'a> Cx<'a> {
             && metadata.names.len() == r.owner as usize
             && r.names.get(..metadata.names.len()) == Some(&metadata.names[..])
         {
-            let predicate = flux_ty::traits::trait_self_predicate(self.items, owner);
+            let predicate = flux_solve::traits::trait_self_predicate(self.items, owner);
             candidates.push((
                 predicate,
                 Box::default(),
@@ -6533,13 +6537,13 @@ impl<'a> Cx<'a> {
         if self.trait_has_ranked_super(goal.trait_ref.trait_, &mut FxHashSet::default()) {
             return true;
         }
-        let selected = flux_ty::traits::select_impl(self.items, self.sigs, goal).or_else(|| {
+        let selected = flux_solve::traits::select_impl(self.items, self.sigs, goal).or_else(|| {
             let mut candidates = self
                 .sigs
                 .impl_index
                 .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
                 .filter_map(|imp| {
-                    flux_ty::traits::match_impl(self.items, self.sigs, imp, goal)
+                    flux_solve::traits::match_impl(self.items, self.sigs, imp, goal)
                         .map(|args| (imp, args))
                 });
             let first = candidates.next()?;
@@ -6585,7 +6589,7 @@ impl<'a> Cx<'a> {
         let mut written = Vec::new();
         match self.items.functions[function].owner {
             Some(flux_hir::Owner::Trait(id)) => {
-                let predicate = flux_ty::traits::trait_self_predicate(self.items, id);
+                let predicate = flux_solve::traits::trait_self_predicate(self.items, id);
                 let owner = regions.owner;
                 written.push((
                     predicate,
@@ -6743,7 +6747,7 @@ impl<'a> Cx<'a> {
             return None;
         }
         arg_vars.push(own.to_vec());
-        let args = flux_ty::traits::opaque_args(opaque);
+        let args = flux_solve::traits::opaque_args(opaque);
         let env = self.caller_region_goals(false);
         let mut goals = Vec::new();
         for ((bound, predicate), origin) in decl
@@ -6931,7 +6935,7 @@ impl<'a> Cx<'a> {
             }
             caller_blanket = self.caller_abstract_blanket(goal);
             let represented_blanket = matches!(goal.self_ty.kind(),TyKind::Alias(alias)if flux_ty::regions::has_projection_inputs(alias))
-                && (flux_ty::traits::select_impl(items, sigs, goal).is_some()
+                && (flux_solve::traits::select_impl(items, sigs, goal).is_some()
                     || self.family_blanket_impl(goal).is_some());
             let represented_blanket = represented_blanket || caller_blanket.is_some();
             if !represented_blanket {
@@ -6994,7 +6998,7 @@ impl<'a> Cx<'a> {
         {
             return;
         }
-        let Some((imp, impl_args)) = flux_ty::traits::select_impl(items, sigs, goal)
+        let Some((imp, impl_args)) = flux_solve::traits::select_impl(items, sigs, goal)
             .or_else(|| dynamic_object.then(|| self.matching_impl(goal)).flatten())
             .or_else(|| self.family_blanket_impl(goal))
             .or(caller_blanket)
@@ -7135,7 +7139,7 @@ impl<'a> Cx<'a> {
         };
         let actual_ty = self.normalize(Ty::alias(alias));
         let expected_ty = self.normalize(p.ty.subst(args));
-        if !flux_ty::regions::same_fn_pointer_binders(self.items, actual_ty, expected_ty) {
+        if !flux_solve::fn_regions::same_binders(self.items, actual_ty, expected_ty) {
             self.errors.push(Diagnostic::new(
                 range,
                 "associated function pointer binders do not match",
@@ -7989,19 +7993,20 @@ impl<'a> Cx<'a> {
                     out,
                 ),
                 TyKind::Adt(adt, _)
-                    if flux_ty::is_lang_struct(cx.items, adt.strukt, "manually_drop") => {}
+                    if flux_solve::is_lang_struct(cx.items, adt.strukt, "manually_drop") => {}
                 // PhantomData is an ownership declaration even though it has
                 // no physical fields. Owned references have no destructor;
                 // owned values with Drop keep the regions their Drop may read.
                 TyKind::Adt(adt, args)
-                    if flux_ty::is_lang_struct(cx.items, adt.strukt, "phantom_data") =>
+                    if flux_solve::is_lang_struct(cx.items, adt.strukt, "phantom_data") =>
                 {
                     if let Some(&owned) = args.first() {
                         visit(cx, owned, vars, active, out);
                     }
                 }
                 TyKind::Adt(adt, args) => {
-                    if let Some(imp) = flux_ty::traits::drop_impl(cx.items, cx.sigs, adt.strukt) {
+                    if let Some(imp) = flux_solve::traits::drop_impl(cx.items, cx.sigs, adt.strukt)
+                    {
                         let generics = &cx.items.impls[imp].generics;
                         if !generics.params.iter().any(|p| p.may_dangle)
                             && !generics.lifetimes.iter().any(|p| p.may_dangle)
@@ -8060,7 +8065,7 @@ impl<'a> Cx<'a> {
                         .get(adt.strukt)
                         .map_or(1, |v| v.len().saturating_sub(1));
                     for variant in 0..variants {
-                        let fields = flux_ty::variant_fields(cx.sigs, ty, variant as u32)
+                        let fields = flux_solve::variant_fields(cx.sigs, ty, variant as u32)
                             .map_or(0, |f| f.len());
                         for field in 0..fields {
                             let (field_ty, field_vars) =

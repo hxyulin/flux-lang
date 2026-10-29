@@ -12,6 +12,7 @@ publish = false
 flux-arena.workspace = true
 flux-hir.workspace = true
 flux-intern.workspace = true
+flux-solve.workspace = true
 flux-mir.workspace = true
 flux-ty.workspace = true
 rustc-hash = "2"

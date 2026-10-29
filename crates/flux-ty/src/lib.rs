@@ -21,17 +21,14 @@ pub mod entry;
 pub mod inline_asm;
 mod signature;
 pub mod sized_dispatch;
-mod struct_fields;
 pub use signature::{signatures, signatures_checked};
-pub use struct_fields::{array_unsize, contents, field_types, fields, variant_fields, variants};
 
 mod resolve;
 pub use resolve::{
-    ArrayLens, LenEvaluator, TypeScope, alias_type, arc_pointee, array_len, box_pointee,
-    check_const_params, const_param_ty, const_value, generic_consts, generic_names, impl_target,
-    is_lang_struct, maybe_unsized, nonzero_integer, param_const_ty, primitive, resolve_generic_arg,
-    resolve_generic_args, resolve_type, self_ty, struct_type, unsized_error, unsized_params,
-    wrong_arg_count,
+    ArrayLens, LenEvaluator, TypeScope, alias_type, arc_pointee, array_len, check_const_params,
+    const_param_ty, const_value, generic_consts, generic_names, impl_target, nonzero_integer,
+    param_const_ty, primitive, resolve_generic_arg, resolve_generic_args, resolve_type, self_ty,
+    struct_type, unsized_error, wrong_arg_count,
 };
 use resolve::{
     alias_cycle, check_type_defaults, reaches_alias, resolve_or_report, resolve_predicates,
@@ -45,7 +42,6 @@ pub mod objects;
 mod pats;
 pub mod regions;
 pub mod traits;
-pub mod type_identity;
 
 use std::fmt::Write;
 use std::sync::OnceLock;
@@ -66,7 +62,7 @@ pub use flux_ty_ir::{
     InferVar, Instance, IntTy, LenValues, Metadata, Mutability, OpaqueSig, OpaqueTy, ParamTy,
     Signatures, Ty, TyKind, fn_trait, fn_trait_kind, params_of, subst_list, symbol_list,
 };
-use flux_ty_ir::{impl_index, in_scope, max_param, mentions_param, metadata, overlap, ty};
+use flux_ty_ir::{impl_index, in_scope, mentions_param, metadata, overlap, ty};
 pub use infer::{
     BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, InferenceResult, Method,
     OverloadedDeref, c_char_ptr, c_str_ref, infer_body, infer_const,
@@ -268,7 +264,7 @@ fn check_alias(
     let mut errors = Vec::new();
     let names = generic_names(items, None, &alias.generics);
     let consts = generic_consts(items, None, &alias.generics);
-    let unsized_flags = unsized_params(items, None, &alias.generics);
+    let unsized_flags = flux_solve::unsized_params(items, None, &alias.generics);
     let scope = TypeScope {
         generics: &names,
         consts: &consts,
@@ -320,7 +316,7 @@ fn not_sync(items: &ItemTree, sigs: &Signatures, ty: Ty, seen: &mut Vec<StructId
             args: Ty::list(&[]),
         },
     };
-    if traits::holds(items, sigs, &[], goal) {
+    if flux_solve::traits::holds(items, sigs, &[], goal) {
         return None;
     }
     if let TyKind::Adt(adt, _) = ty.kind() {
@@ -329,7 +325,7 @@ fn not_sync(items: &ItemTree, sigs: &Signatures, ty: Ty, seen: &mut Vec<StructId
         }
         seen.push(adt.strukt);
     }
-    if let Some(nested) = traits::auto_trait_requirements(items, sigs, goal) {
+    if let Some(nested) = flux_solve::traits::auto_trait_requirements(items, sigs, goal) {
         for p in nested {
             if let Some(cause) = not_sync(items, sigs, p.self_ty, seen) {
                 return Some(cause);
@@ -352,7 +348,7 @@ fn contains(sigs: &Signatures, ty: Ty, strukt: StructId, seen: &mut Vec<StructId
         }
         seen.push(adt.strukt);
     }
-    let fields = crate::contents(sigs, ty).unwrap_or(&[]);
+    let fields = flux_solve::contents(sigs, ty).unwrap_or(&[]);
     fields
         .iter()
         .any(|&field| contains(sigs, field, strukt, seen))
@@ -527,7 +523,7 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
         "`main` function cannot take parameters".to_owned()
     } else if ![Ty::UNIT, Ty::NEVER, Ty::ERROR].contains(&sig.ret)
         && !entry::termination_trait(items).is_some_and(|trait_| {
-            traits::holds(
+            flux_solve::traits::holds(
                 items,
                 sigs,
                 &[],
@@ -815,7 +811,7 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
             .flatten();
         let objects: Vec<FunctionId> = traits
             .into_iter()
-            .flat_map(|t| objects::supertraits_of(items, t))
+            .flat_map(|t| flux_solve::objects::supertraits_of(items, t))
             .flat_map(|t| items.traits[t].functions.iter().copied())
             .chain(drop)
             .collect();
@@ -992,7 +988,7 @@ pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> b
                         .values()
                         .any(|f| f.derived == Some((adt.strukt, flux_hir::Derive::PartialEq)))
                     && (sigs.is_enum(adt.strukt)
-                        || crate::fields(sigs, ty).is_some_and(|fields| {
+                        || flux_solve::fields(sigs, ty).is_some_and(|fields| {
                             fields.iter().all(|&t| check(items, sigs, t, depth + 1))
                         }))
             }
@@ -1209,7 +1205,7 @@ fn supported_union_field(
     checked: &mut FxHashMap<Ty, bool>,
     depth: u32,
 ) -> bool {
-    let ty = traits::normalize(items, sigs, &[], ty);
+    let ty = flux_solve::traits::normalize(items, sigs, &[], ty);
     if ty.has_params() || ty.has_infer() || depth >= 128 {
         return false;
     }
@@ -1237,7 +1233,9 @@ fn supported_union_field(
         TyKind::Array(elem, len) => {
             len.as_usize().is_some() && supported_union_field(items, sigs, elem, checked, depth + 1)
         }
-        TyKind::Adt(adt, args) if !is_lang_struct(items, adt.strukt, "manually_drop") => {
+        TyKind::Adt(adt, args)
+            if !flux_solve::is_lang_struct(items, adt.strukt, "manually_drop") =>
+        {
             // Region slots also occur in type arguments, even when they are
             // phantom. Check these with the same memoized traversal rather
             // than expanding a shared generic type's region slots repeatedly.
@@ -1246,7 +1244,7 @@ fn supported_union_field(
                     matches!(arg.kind(), TyKind::Value(_))
                         || supported_union_field(items, sigs, arg, checked, depth + 1)
                 })
-                && crate::contents(sigs, ty).is_some_and(|fields| {
+                && flux_solve::contents(sigs, ty).is_some_and(|fields| {
                     fields
                         .iter()
                         .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1))

@@ -45,7 +45,7 @@ fn alignment(
     match ty.kind() {
         TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) => {
             if matches!(sigs.metadata(pointee), flux_ty::Metadata::Generic(_))
-                && flux_ty::maybe_unsized(items, sigs, pointee, parameters, bounds)
+                && flux_solve::maybe_unsized(items, sigs, pointee, parameters, bounds)
             {
                 None
             } else {
@@ -67,7 +67,7 @@ fn alignment(
         }
         _ => {
             active.push(ty);
-            let fields = flux_ty::fields(sigs, ty)?;
+            let fields = flux_solve::fields(sigs, ty)?;
             let result = fields.iter().try_fold(1, |align, &field| {
                 alignment(items, sigs, field, active, parameters, bounds)
                     .map(|field| align.max(field))
@@ -102,12 +102,12 @@ pub(crate) fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Dia
                         .owner
                         .map(|owner| {
                             let data = &items.functions[owner];
-                            flux_ty::unsized_params(items, data.owner, &data.generics)
+                            flux_solve::unsized_params(items, data.owner, &data.generics)
                         })
                         .unwrap_or_default();
                     let bounds = body
                         .owner
-                        .map(|owner| flux_ty::traits::predicates_of(items, sigs, owner))
+                        .map(|owner| flux_solve::traits::predicates_of(items, sigs, owner))
                         .unwrap_or_default();
                     (parameters, bounds)
                 });
@@ -152,11 +152,11 @@ pub(crate) fn check_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Dia
                     return false;
                 }
                 active.push(adt.strukt);
-                let found = flux_ty::fields(sigs, ty).is_some_and(|fields| {
+                let found = flux_solve::fields(sigs, ty).is_some_and(|fields| {
                     fields
                         .iter()
                         .any(|&field| aligned(items, sigs, field, active))
-                }) || flux_ty::variants(sigs, ty).is_some_and(|variants| {
+                }) || flux_solve::variants(sigs, ty).is_some_and(|variants| {
                     variants
                         .iter()
                         .flat_map(|fields| fields.iter())
@@ -179,13 +179,15 @@ pub(crate) fn check_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Dia
             return false;
         }
         match ty.kind() {
-            TyKind::Slice(elem) => flux_ty::traits::needs_drop(items, sigs, bounds, elem),
-            TyKind::Adt(adt, _) if !flux_ty::is_lang_struct(items, adt.strukt, "manually_drop") => {
-                if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() {
+            TyKind::Slice(elem) => flux_solve::traits::needs_drop(items, sigs, bounds, elem),
+            TyKind::Adt(adt, _)
+                if !flux_solve::is_lang_struct(items, adt.strukt, "manually_drop") =>
+            {
+                if flux_solve::traits::drop_impl(items, sigs, adt.strukt).is_some() {
                     return true;
                 }
                 active.push(ty);
-                let result = flux_ty::fields(sigs, ty).is_some_and(|fields| {
+                let result = flux_solve::fields(sigs, ty).is_some_and(|fields| {
                     fields
                         .iter()
                         .any(|&field| tail_needs_drop(items, sigs, bounds, field, active))
@@ -193,16 +195,16 @@ pub(crate) fn check_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Dia
                 active.pop();
                 result
             }
-            _ => flux_ty::traits::needs_drop(items, sigs, bounds, ty),
+            _ => flux_solve::traits::needs_drop(items, sigs, bounds, ty),
         }
     }
     let mut errors = Vec::new();
     for (id, data) in items.structs.iter() {
         if data.repr_pack.is_some() {
-            let parameters = flux_ty::unsized_params(items, None, &data.generics);
+            let parameters = flux_solve::unsized_params(items, None, &data.generics);
             let bounds = sigs.struct_predicates.get(id).map_or(&[][..], |b| b);
             if let Some(&tail) = sigs.structs.get(id).and_then(|fields| fields.last())
-                && flux_ty::maybe_unsized(items, sigs, tail, &parameters, bounds)
+                && flux_solve::maybe_unsized(items, sigs, tail, &parameters, bounds)
                 && tail_needs_drop(items, sigs, bounds, tail, &mut Vec::new())
             {
                 let mut error =

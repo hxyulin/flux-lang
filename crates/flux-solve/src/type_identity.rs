@@ -44,14 +44,9 @@ fn canonical(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> Result<
                             .sum::<usize>()
                 ];
                 let bound: Vec<_> = (0..recipe.bound).map(FnRegion::Bound).collect();
-                let expanded = crate::regions::instantiate_fn_pointer(
-                    items,
-                    sig,
-                    &own,
-                    &bound,
-                    FnRegion::Static,
-                )
-                .ok_or("function pointer identity has invalid region metadata")?;
+                let expanded =
+                    flux_ty_ir::fn_regions::instantiate(items, sig, &own, &bound, FnRegion::Static)
+                        .ok_or("function pointer identity has invalid region metadata")?;
                 // Only observed bound slots matter. Declaration names and
                 // unused binders do not contribute to Rust type identity.
                 let mut names = FxHashMap::default();

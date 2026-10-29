@@ -33,7 +33,7 @@ impl Cx<'_> {
         let written = self.items.functions[opaque.function]
             .opaques
             .get(opaque.index as usize)?;
-        let args = flux_ty::traits::opaque_args(opaque);
+        let args = flux_solve::traits::opaque_args(opaque);
         let mut types = Vec::new();
         let mut next = declaration.captures.len();
         for &ty in opaque.args {
@@ -245,7 +245,7 @@ mod tests {
             panic!("missing opaque output")
         };
         let sig = &typed.sigs.opaques[make][0];
-        let args = flux_ty::traits::opaque_args(opaque);
+        let args = flux_solve::traits::opaque_args(opaque);
         let goal = sig.predicates[0].subst(&args);
         let alias = sig.projections[0].subst(&args).alias;
         let body = Body::empty(None);

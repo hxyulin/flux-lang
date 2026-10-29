@@ -802,7 +802,7 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
         TyKind::Dynamic(object) => {
             let principal = items.traits.get(object.trait_)?;
             if object.args.len() != principal.generics.params.len()
-                || crate::objects::supertraits_of(items, object.trait_)
+                || flux_solve::objects::supertraits_of(items, object.trait_)
                     .iter()
                     .any(|&trait_| {
                         !items.traits[trait_].generics.lifetimes.is_empty()
@@ -813,7 +813,7 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
                         .traits
                         .get(marker.trait_)
                         .is_none_or(|data| marker.name != data.name)
-                        || !crate::traits::is_auto_trait(items, marker.trait_)
+                        || !flux_solve::traits::is_auto_trait(items, marker.trait_)
                         || marker.trait_ == object.trait_
                         || !marker.args.is_empty()
                 })
@@ -824,7 +824,7 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
             {
                 return None;
             }
-            let associated = crate::objects::dyn_assoc(items, object.trait_);
+            let associated = flux_solve::objects::dyn_assoc(items, object.trait_);
             if object.assoc_names.len() != associated.len()
                 || object.assoc_tys.len() != associated.len()
                 || object
@@ -917,7 +917,7 @@ fn region_free_edges(
     }
     let names = crate::generic_names(items, Some(Owner::Trait(id)), &Generics::default());
     let self_ty = Ty::param(0, flux_intern::kw::SelfUpper);
-    let bounds = [crate::traits::trait_self_predicate(items, id)];
+    let bounds = [flux_solve::traits::trait_self_predicate(items, id)];
     let scope = TypeScope {
         self_ty: Some(self_ty),
         generics: &names,
@@ -998,7 +998,7 @@ fn region_free_edges(
     // profile's ban on associated items on a general region-free supertrait.
     let mut type_bounds = Vec::new();
     for ty in &t.types {
-        let alias = Ty::alias(crate::traits::alias_of(
+        let alias = Ty::alias(flux_solve::traits::alias_of(
             items,
             bounds[0].trait_ref,
             self_ty,

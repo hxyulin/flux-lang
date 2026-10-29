@@ -165,7 +165,7 @@ fn select(
             }
             *next += 1;
             let input_row: Vec<_> = input.args.iter().flatten().copied().collect();
-            let normalized = crate::traits::normalize(items, sigs, &[], ty);
+            let normalized = flux_solve::traits::normalize(items, sigs, &[], ty);
             if normalized != ty {
                 let row = selected::projection(items, sigs, alias, &input_row)?;
                 if row.len() != slots(items, normalized) {

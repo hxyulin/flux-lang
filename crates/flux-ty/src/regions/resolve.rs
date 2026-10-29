@@ -54,7 +54,7 @@ fn inherit_static_self(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::
             && let Some(regions) = sigs.regions.traits.get_mut(id)
             && !self_static(&regions.outlives)
         {
-            let self_ty = crate::traits::trait_self_predicate(items, id).self_ty;
+            let self_ty = flux_solve::traits::trait_self_predicate(items, id).self_ty;
             let mut outlives = regions.outlives.to_vec();
             outlives.push(Outlives::Type(self_ty, Region::Static));
             regions.outlives = outlives.into();
@@ -100,11 +100,11 @@ fn family_contract(
     names.extend(own_names(generics));
     let type_names = crate::generic_names(items, Some(owner), generics);
     let constants = crate::generic_consts(items, Some(owner), generics);
-    let mut predicates = crate::traits::owner_predicates(items, sigs, Some(owner));
+    let mut predicates = flux_solve::traits::owner_predicates(items, sigs, Some(owner));
     if let Some(schema) = schema {
         predicates.extend(schema.predicates.iter().copied());
     }
-    let predicates = crate::traits::elaborate(sigs, &predicates);
+    let predicates = flux_solve::traits::elaborate(sigs, &predicates);
     let mut walker = Walker::new(items, module, names.iter().map(|n| n.name).collect());
     walker.scope = TypeScope {
         self_ty: Some(self_ty),
@@ -281,8 +281,9 @@ pub(super) fn ordinary_associated_contract(
     let owner_names: Vec<_> = own_names(&data.generics).collect();
     let names = crate::generic_names(items, Some(flux_hir::Owner::Trait(owner)), &family.generics);
     let self_ty = Ty::param(0, kw::SelfUpper);
-    let predicate = crate::traits::trait_self_predicate(items, owner);
-    let bounds = crate::traits::owner_predicates(items, sigs, Some(flux_hir::Owner::Trait(owner)));
+    let predicate = flux_solve::traits::trait_self_predicate(items, owner);
+    let bounds =
+        flux_solve::traits::owner_predicates(items, sigs, Some(flux_hir::Owner::Trait(owner)));
     let scope = TypeScope {
         self_ty: Some(self_ty),
         generics: &names,
@@ -291,7 +292,7 @@ pub(super) fn ordinary_associated_contract(
         struct_fields: Some(&sigs.structs),
         ..TypeScope::default()
     };
-    let alias = Ty::alias(crate::traits::alias_of(
+    let alias = Ty::alias(flux_solve::traits::alias_of(
         items,
         predicate.trait_ref,
         self_ty,
@@ -392,7 +393,7 @@ fn resolve_impl_families(
             .types
             .iter()
             .map(|family| {
-                let ty = crate::traits::impl_type(sigs, id, family.name).unwrap_or(Ty::ERROR);
+                let ty = flux_solve::traits::impl_type(sigs, id, family.name).unwrap_or(Ty::ERROR);
                 let schema = sigs
                     .impl_families
                     .get(id)
@@ -454,7 +455,7 @@ fn check_family_equality_outlives(
                 let valid = match *requirement {
                     Outlives::Region(a, b) => outlives_known(Outlives::Region(a, b), assumptions),
                     Outlives::Type(ty, b) => {
-                        let ty = crate::traits::normalize(items, sigs, &[], ty.subst(&args));
+                        let ty = flux_solve::traits::normalize(items, sigs, &[], ty.subst(&args));
                         outlives_type_components(sigs, ty)
                             .into_iter()
                             .all(|component| {
@@ -914,12 +915,12 @@ fn structs(
                 fields,
                 // Mutation through a shared reference makes the payload
                 // invariant, despite storing `T` directly in these core types.
-                variances: if crate::is_lang_struct(items, id, "unsafe_cell")
-                    || crate::is_lang_struct(items, id, "cell")
-                    || crate::is_lang_struct(items, id, "ref_cell")
+                variances: if flux_solve::is_lang_struct(items, id, "unsafe_cell")
+                    || flux_solve::is_lang_struct(items, id, "cell")
+                    || flux_solve::is_lang_struct(items, id, "ref_cell")
                 {
                     vec![Variance::Invariant; count].into()
-                } else if crate::is_lang_struct(items, id, "phantom_data") {
+                } else if flux_solve::is_lang_struct(items, id, "phantom_data") {
                     // `PhantomData<T>` acts as if it held a `T`.
                     vec![Variance::Covariant; count].into()
                 } else {
@@ -1107,7 +1108,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
                 if !t.generics.is_empty() || !t.generics.lifetimes.is_empty() {
                     return (t.name, Box::default());
                 }
-                let ty = crate::traits::impl_type(sigs, id, t.name).unwrap_or(Ty::ERROR);
+                let ty = flux_solve::traits::impl_type(sigs, id, t.name).unwrap_or(Ty::ERROR);
                 walker.selections = Some(Vec::new());
                 let regions = walker.regions(&t.ty, ty);
                 type_selections
@@ -1262,7 +1263,7 @@ fn inherited_self_regions(
     actual: &[Region],
     name: Symbol,
 ) -> Option<Box<[Region]>> {
-    let (imp, args) = crate::traits::select_impl(items, sigs, goal)?;
+    let (imp, args) = flux_solve::traits::select_impl(items, sigs, goal)?;
     let header = sigs.impls[imp];
     let regions = sigs.regions.impls.get(imp)?;
     if header.subst(&args) != goal.self_ty
@@ -1290,7 +1291,7 @@ fn inherited_self_regions(
             _ => return None,
         }
     }
-    let ty = crate::traits::impl_type(sigs, imp, name)?;
+    let ty = flux_solve::traits::impl_type(sigs, imp, name)?;
     let table = regions.types.iter().find(|(n, _)| *n == name)?.1.as_ref();
     if slots(items, ty) != table.len() || slots(items, ty.subst(&args)) != table.len() {
         return None;
@@ -1322,7 +1323,7 @@ pub(super) fn safe_method_contract(
     let owner_names: Vec<_> = own_names(&declaration.generics).collect();
     let names = crate::generic_names(items, function.owner, &function.generics);
     let self_ty = Ty::param(0, kw::SelfUpper);
-    let owner_bounds = crate::traits::owner_predicates(items, sigs, function.owner);
+    let owner_bounds = flux_solve::traits::owner_predicates(items, sigs, function.owner);
     let lens = crate::ArrayLens {
         values: &sigs.array_lens,
         missing: Default::default(),
@@ -1353,7 +1354,7 @@ pub(super) fn safe_method_contract(
         .chain(&bounds.predicates)
         .copied()
         .collect();
-    let environment = crate::traits::elaborate(sigs, &environment);
+    let environment = flux_solve::traits::elaborate(sigs, &environment);
     let scope = TypeScope {
         bounds: &environment,
         ..scope
@@ -1565,7 +1566,7 @@ fn functions(
         let mut inherited_self_types = Vec::new();
         if let Some(flux_hir::Owner::Impl(imp)) = function.owner {
             let self_ty = sigs.impls[imp];
-            let candidates = crate::traits::associated_self_bounds(
+            let candidates = flux_solve::traits::associated_self_bounds(
                 sigs,
                 sigs.impl_traits.get(imp).copied(),
                 Some(self_ty),
@@ -2142,7 +2143,7 @@ pub fn trait_bound_regions(
     let mut next_super = written.len();
     let mut next_own = 0;
     let mut own_indices = Vec::new();
-    let mut bounds = vec![crate::traits::trait_self_predicate(items, id)];
+    let mut bounds = vec![flux_solve::traits::trait_self_predicate(items, id)];
     bounds.extend_from_slice(own_predicates);
     let scope = TypeScope {
         self_ty: Some(self_ty),
@@ -2807,7 +2808,7 @@ fn bounds_outlives(
     // signature do, so `I::Item: 'a` retains the declaring trait identity.
     let mut scratch = Vec::new();
     let predicates = crate::resolve_predicates(items, sigs, module, generics, scope, &mut scratch);
-    let bounds = crate::traits::elaborate(sigs, &predicates.predicates);
+    let bounds = flux_solve::traits::elaborate(sigs, &predicates.predicates);
     let scope = TypeScope {
         bounds: &bounds,
         ..scope
@@ -3245,7 +3246,7 @@ mod static_bound_tests {
         assert_eq!(
             sigs.regions.traits[grandchild].outlives.as_ref(),
             [Outlives::Type(
-                crate::traits::trait_self_predicate(&hir.items, grandchild).self_ty,
+                flux_solve::traits::trait_self_predicate(&hir.items, grandchild).self_ty,
                 Region::Static
             )]
         );

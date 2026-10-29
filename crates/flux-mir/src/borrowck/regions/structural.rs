@@ -9,7 +9,7 @@ impl Cx<'_> {
         depth: u32,
     ) -> Option<bool> {
         let requirements =
-            flux_ty::traits::auto_trait_requirements(self.items, self.sigs, goal.predicate)?;
+            flux_solve::traits::auto_trait_requirements(self.items, self.sigs, goal.predicate)?;
         Some(
             self.auto_super_goals(goal, &requirements, env, depth)
                 .is_some_and(|goals| {
@@ -51,7 +51,7 @@ impl Cx<'_> {
             if at != row.len() {
                 return None;
             }
-            if flux_ty::is_lang_struct(self.items, adt.strukt, "phantom_data") {
+            if flux_solve::is_lang_struct(self.items, adt.strukt, "phantom_data") {
                 return self.auto_component_goals(requirements, args, &arg_rows, env, depth);
             }
             let fields = self.sigs.structs.get(adt.strukt)?;
@@ -208,7 +208,7 @@ impl Cx<'_> {
             return None;
         }
         let root = ImplRegionGoal {
-            predicate: flux_ty::traits::dyn_principal(goal.predicate.self_ty, object),
+            predicate: flux_solve::traits::dyn_principal(goal.predicate.self_ty, object),
             vars: std::iter::once(row.clone()).chain(args).collect(),
             lifetimes: Vec::new(),
             bound: Vec::new(),
@@ -347,7 +347,10 @@ mod tests {
                 cx.known_pairs.push((b, STATIC));
             }
             let goal = ImplRegionGoal {
-                predicate: flux_ty::traits::dyn_principal(Ty::new(TyKind::Dynamic(object)), object),
+                predicate: flux_solve::traits::dyn_principal(
+                    Ty::new(TyKind::Dynamic(object)),
+                    object,
+                ),
                 vars: vec![vec![STATIC, a, b], vec![STATIC], vec![STATIC]],
                 lifetimes: Vec::new(),
                 bound: Vec::new(),

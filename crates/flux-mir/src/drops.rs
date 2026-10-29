@@ -77,7 +77,7 @@ pub(crate) fn elaborate(
     }
     let paths = MovePaths::new(body, sigs, |local| roots.contains(&local));
     let entry = analyze(body, &paths, true);
-    let needs_drop = |ty| flux_ty::traits::needs_drop(items, sigs, env, ty);
+    let needs_drop = |ty| flux_solve::traits::needs_drop(items, sigs, env, ty);
 
     // What each drop becomes, and the flags that takes.
     let mut plans: Vec<(BasicBlock, usize, Vec<Step>)> = Vec::new();
@@ -260,7 +260,7 @@ impl Open<'_> {
         }
         let has_drop_impl = match ty.kind() {
             TyKind::Adt(adt, _) => {
-                flux_ty::traits::drop_impl(self.items, self.sigs, adt.strukt).is_some()
+                flux_solve::traits::drop_impl(self.items, self.sigs, adt.strukt).is_some()
             }
             _ => false,
         };
@@ -270,7 +270,7 @@ impl Open<'_> {
         // (`Unique`, whose `Drop` frees it), but not its own `Drop`,
         // which would drop the contents, as rustc's drop elaboration
         // frees a box.
-        if let Some(pointee) = flux_ty::box_pointee(ty)
+        if let Some(pointee) = flux_solve::box_pointee(ty)
             && let Some(contents) = self
                 .paths
                 .children(path)
@@ -290,7 +290,7 @@ impl Open<'_> {
             return;
         }
         if let (Some(variants), false, false) = (
-            flux_ty::variants(self.sigs, ty),
+            flux_solve::variants(self.sigs, ty),
             !has_children,
             has_drop_impl,
         ) {
@@ -381,7 +381,7 @@ impl Open<'_> {
             }
             return;
         }
-        let fields = flux_ty::fields(self.sigs, ty);
+        let fields = flux_solve::fields(self.sigs, ty);
         let (Some(fields), false, false) = (fields, !has_children, has_drop_impl) else {
             self.step(place, Some(path));
             return;

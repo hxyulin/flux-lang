@@ -62,7 +62,9 @@ impl Cx<'_> {
             flux_ty::regions::slots(items, ty) == 0
                 && ty.children().all(|child| type_only(items, child))
         }
-        for projection in flux_ty::traits::implied_projections(self.sigs, &self.header_predicates) {
+        for projection in
+            flux_solve::traits::implied_projections(self.sigs, &self.header_predicates)
+        {
             if type_only(self.items, Ty::alias(projection.alias))
                 && type_only(self.items, projection.ty)
                 && !self.env.iter().any(|known| known.alias == projection.alias)
@@ -91,7 +93,7 @@ impl Cx<'_> {
             .impl_predicates
             .get(imp)
             .map_or(Vec::new(), |predicates| {
-                flux_ty::traits::elaborate(self.sigs, predicates)
+                flux_solve::traits::elaborate(self.sigs, predicates)
             });
         self.header_type_equalities();
         self.new_universal("'static".into());

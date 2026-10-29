@@ -428,7 +428,7 @@ fn check_patterns(
         ) -> Option<flux_ty::PatternConst> {
             use crate::eval::Value;
             use flux_ty::PatternConst;
-            let ty = flux_ty::traits::normalize(items, sigs, &[], ty);
+            let ty = flux_solve::traits::normalize(items, sigs, &[], ty);
             if !flux_ty::structural_pattern_type(items, sigs, ty) {
                 return None;
             }
@@ -441,7 +441,7 @@ fn check_patterns(
                 Value::Aggregate(fields) => {
                     let types = match ty.kind() {
                         TyKind::Array(elem, _) => vec![elem; fields.len()],
-                        _ => flux_ty::fields(sigs, ty)?.to_vec(),
+                        _ => flux_solve::fields(sigs, ty)?.to_vec(),
                     };
                     PatternConst::Aggregate(
                         fields
@@ -453,7 +453,7 @@ fn check_patterns(
                     )
                 }
                 Value::Variant { index, fields, .. } => {
-                    let types = flux_ty::variant_fields(sigs, ty, index)?;
+                    let types = flux_solve::variant_fields(sigs, ty, index)?;
                     PatternConst::Variant {
                         index,
                         fields: fields
@@ -468,7 +468,7 @@ fn check_patterns(
             })
         }
         let value = evaluator.eval_instance(c).ok()?;
-        let ty = flux_ty::traits::normalize(
+        let ty = flux_solve::traits::normalize(
             items,
             &typed.sigs,
             &[],
@@ -572,7 +572,8 @@ fn evaluate_consts(
         .iter()
         .filter(|&(id, _)| {
             let data = &items.functions[id];
-            data.generics.is_empty() && flux_ty::traits::owner_param_count(items, data.owner) == 0
+            data.generics.is_empty()
+                && flux_solve::traits::owner_param_count(items, data.owner) == 0
         })
         .map(|(_, body)| body)
         .chain(
@@ -720,13 +721,17 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
 pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
     let (body, source_map) = hir.body(function).expect("functions built have bodies");
     // Its associated types as its bounds and `impl` blocks say.
-    let env = flux_ty::traits::projections_of(&hir.items, &typed.sigs, function);
-    let norm = |ty| flux_ty::traits::normalize(&hir.items, &typed.sigs, &env, ty);
+    let env = flux_solve::traits::projections_of(&hir.items, &typed.sigs, function);
+    let norm = |ty| flux_solve::traits::normalize(&hir.items, &typed.sigs, &env, ty);
     let sig = &typed.sigs[function];
     let sig = &flux_ty::FnSig {
         params: sig.params.iter().map(|&p| norm(p)).collect(),
         // What its body returns: its opaque types' hidden types.
-        ret: norm(flux_ty::traits::reveal_own(&typed.sigs, function, sig.ret)),
+        ret: norm(flux_solve::traits::reveal_own(
+            &typed.sigs,
+            function,
+            sig.ret,
+        )),
     };
     let data = &hir.items.functions[function];
     let mut built = build_body(
@@ -764,7 +769,7 @@ pub fn build_closure(hir: &Hir, typed: &TypedFile, owner: ClosureOwner, expr: Ex
     };
     let parts = flux_ty::ClosureArgs::split(args);
     let env = closure_projections(hir, typed, owner);
-    let norm = |ty| flux_ty::traits::normalize(&hir.items, &typed.sigs, &env, ty);
+    let norm = |ty| flux_solve::traits::normalize(&hir.items, &typed.sigs, &env, ty);
     let sig = flux_ty::FnSig {
         params: Box::new([closure_self(info.kind, info.ty), norm(parts.params())]),
         ret: norm(parts.ret()),
@@ -813,7 +818,7 @@ fn capture_name(
                     }
                     _ => text = format!("{text}.{f}"),
                 }
-                ty = flux_ty::fields(sigs, ty)
+                ty = flux_solve::fields(sigs, ty)
                     .and_then(|fields| fields.get(f as usize).copied())
                     .unwrap_or(Ty::ERROR);
             }
@@ -851,7 +856,7 @@ pub fn closure_shims(
     };
     let parts = flux_ty::ClosureArgs::split(args);
     let env = closure_projections(hir, typed, owner);
-    let norm = |ty| flux_ty::traits::normalize(items, &typed.sigs, &env, ty);
+    let norm = |ty| flux_solve::traits::normalize(items, &typed.sigs, &env, ty);
     let (params, ret) = (norm(parts.params()), norm(parts.ret()));
     let range = closure_body(hir, owner)
         .1
@@ -984,22 +989,30 @@ fn build_body(
     // The bounds in scope, for what is `Copy`.
     let env = match item {
         Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => {
-            flux_ty::traits::elaborate(
+            flux_solve::traits::elaborate(
                 &typed.sigs,
-                &flux_ty::traits::predicates_of(&hir.items, &typed.sigs, f),
+                &flux_solve::traits::predicates_of(&hir.items, &typed.sigs, f),
             )
         }
-        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => flux_ty::traits::elaborate(
+        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => flux_solve::traits::elaborate(
             &typed.sigs,
-            &flux_ty::traits::owner_predicates(&hir.items, &typed.sigs, hir.items.consts[c].owner),
+            &flux_solve::traits::owner_predicates(
+                &hir.items,
+                &typed.sigs,
+                hir.items.consts[c].owner,
+            ),
         ),
     };
     let projections = match item {
         Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => {
-            flux_ty::traits::projections_of(&hir.items, &typed.sigs, f)
+            flux_solve::traits::projections_of(&hir.items, &typed.sigs, f)
         }
         Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => {
-            flux_ty::traits::owner_projections(&hir.items, &typed.sigs, hir.items.consts[c].owner)
+            flux_solve::traits::owner_projections(
+                &hir.items,
+                &typed.sigs,
+                hir.items.consts[c].owner,
+            )
         }
     };
     let mut b = Builder {
@@ -1552,7 +1565,7 @@ impl Builder<'_> {
             }
             match pointee.kind() {
                 TyKind::Ref(_, inner) => pointee = inner,
-                TyKind::Adt(..) if let Some(inner) = flux_ty::box_pointee(pointee) => {
+                TyKind::Adt(..) if let Some(inner) = flux_solve::box_pointee(pointee) => {
                     pointee = inner
                 }
                 _ => return ty,
@@ -1613,7 +1626,7 @@ impl Builder<'_> {
         if let Some(&known) = self.needs_drop.borrow().get(&ty) {
             return known;
         }
-        let needs = flux_ty::traits::needs_drop(self.items, &self.typed.sigs, &self.env, ty);
+        let needs = flux_solve::traits::needs_drop(self.items, &self.typed.sigs, &self.env, ty);
         self.needs_drop.borrow_mut().insert(ty, needs);
         needs
     }
@@ -1666,7 +1679,7 @@ impl Builder<'_> {
     /// Reads `place`: copies a `Copy` value, moves any other.
     fn read(&self, place: Place) -> Operand {
         let ty = self.place_ty(&place);
-        if flux_ty::traits::is_copy(self.items, &self.typed.sigs, &self.env, ty) {
+        if flux_solve::traits::is_copy(self.items, &self.typed.sigs, &self.env, ty) {
             Operand::Copy(place)
         } else {
             Operand::Move(place)
@@ -1678,7 +1691,7 @@ impl Builder<'_> {
         let ty = place.projection.iter().fold(local_ty, |ty, &elem| {
             let ty = ty.project(elem, &self.typed.sigs);
             if ty.ty.has_aliases() {
-                let normalized = flux_ty::traits::normalize(
+                let normalized = flux_solve::traits::normalize(
                     self.items,
                     &self.typed.sigs,
                     &self.projections,
@@ -2095,7 +2108,7 @@ impl Builder<'_> {
                 let ty = PlaceTy::from(ty.unwrap_or(Ty::ERROR));
                 let ty = proj.iter().fold(ty, |ty, &p| {
                     let elem = match p {
-                        flux_ty::CaptureProj::Deref if flux_ty::box_pointee(ty.ty).is_some() => {
+                        flux_ty::CaptureProj::Deref if flux_solve::box_pointee(ty.ty).is_some() => {
                             ProjectionElem::BoxDeref
                         }
                         flux_ty::CaptureProj::Deref => ProjectionElem::Deref,
@@ -2358,7 +2371,7 @@ impl Builder<'_> {
 
     /// `ty` with its associated types normalized by the bounds in scope.
     fn normalize(&self, ty: Ty) -> Ty {
-        flux_ty::traits::normalize(self.items, &self.typed.sigs, &self.projections, ty)
+        flux_solve::traits::normalize(self.items, &self.typed.sigs, &self.projections, ty)
     }
 
     fn field_index(&self, expr: ExprId) -> u32 {
@@ -2421,7 +2434,7 @@ impl Builder<'_> {
                 let ty = self.own_ty(expr);
                 if !constant.args.is_empty()
                     || ((self.needs_drop(ty)
-                        || flux_ty::traits::has_interior_mutability(
+                        || flux_solve::traits::has_interior_mutability(
                             self.items,
                             &self.typed.sigs,
                             ty,
@@ -2565,7 +2578,7 @@ impl Builder<'_> {
             };
             let structural = pointee(reference)
                 .zip(pointee(ty))
-                .is_some_and(|(a, b)| flux_ty::array_unsize(&self.typed.sigs, a, b).is_some());
+                .is_some_and(|(a, b)| flux_solve::array_unsize(&self.typed.sigs, a, b).is_some());
             // Normalize pointer kind and mutability before adding metadata.
             if let TyKind::RawPtr(m, _) = ty.kind()
                 && (to_object || structural)
@@ -2641,10 +2654,10 @@ impl Builder<'_> {
         // payload does not run a destructor or expose interior mutability.
         // An explicit destructor or an interior-mutable root still forbids it.
         if let TyKind::Adt(adt, _) = ty.kind()
-            && (flux_ty::traits::drop_impl(self.items, &self.typed.sigs, adt.strukt).is_some()
+            && (flux_solve::traits::drop_impl(self.items, &self.typed.sigs, adt.strukt).is_some()
                 || ["cell", "ref_cell", "unsafe_cell"]
                     .iter()
-                    .any(|lang| flux_ty::is_lang_struct(self.items, adt.strukt, lang)))
+                    .any(|lang| flux_solve::is_lang_struct(self.items, adt.strukt, lang)))
         {
             return None;
         }
@@ -2869,7 +2882,7 @@ impl Builder<'_> {
                 let ty = types.expr_types.get(expr).copied()?;
                 if !constant.args.is_empty()
                     || ((self.needs_drop(ty)
-                        || flux_ty::traits::has_interior_mutability(
+                        || flux_solve::traits::has_interior_mutability(
                             self.items,
                             &self.typed.sigs,
                             ty,
@@ -4057,8 +4070,8 @@ impl Builder<'_> {
                 }
             }
             Pat::Tuple { pats, rest } => {
-                let count =
-                    flux_ty::fields(&self.typed.sigs, self.place_ty(&place)).map_or(0, |f| f.len());
+                let count = flux_solve::fields(&self.typed.sigs, self.place_ty(&place))
+                    .map_or(0, |f| f.len());
                 for (i, p) in positions(&self.body.lists[*pats], *rest, count) {
                     self.annotated_pattern(p, place.field(i));
                 }
@@ -4375,7 +4388,7 @@ impl Builder<'_> {
                 exits
             }
             Pat::Tuple { pats, rest } => {
-                let count = flux_ty::fields(&self.typed.sigs, self.pat_place_ty(&place))
+                let count = flux_solve::fields(&self.typed.sigs, self.pat_place_ty(&place))
                     .map_or(0, |f| f.len());
                 let parts = positions(&self.body.lists[*pats], *rest, count)
                     .map(|(i, p)| (p, place.field(i)))
@@ -4808,7 +4821,7 @@ impl Builder<'_> {
                 fail,
                 range,
             );
-            let variants = flux_ty::variants(&self.typed.sigs, ty).expect("an enum");
+            let variants = flux_solve::variants(&self.typed.sigs, ty).expect("an enum");
             let join = self.new_block();
             let mut targets = Vec::new();
             for _ in &variants {
@@ -4857,7 +4870,7 @@ impl Builder<'_> {
                     range,
                 );
             }
-        } else if let Some(fields) = flux_ty::fields(&self.typed.sigs, ty) {
+        } else if let Some(fields) = flux_solve::fields(&self.typed.sigs, ty) {
             for (index, &field) in fields.iter().enumerate() {
                 self.structural_constant_test(
                     place.field(index as u32),
@@ -4970,7 +4983,7 @@ impl Builder<'_> {
             matches!(
                 self.place_ty(&base).kind(),
                 TyKind::Adt(adt, _)
-                    if flux_ty::traits::drop_impl(self.items, &self.typed.sigs, adt.strukt).is_some()
+                    if flux_solve::traits::drop_impl(self.items, &self.typed.sigs, adt.strukt).is_some()
             )
         })
     }
@@ -4982,7 +4995,7 @@ impl Builder<'_> {
             return false;
         }
         let ty = self.locals[self.binding_locals[binding]].ty;
-        !flux_ty::traits::is_copy(self.items, &self.typed.sigs, &self.env, ty)
+        !flux_solve::traits::is_copy(self.items, &self.typed.sigs, &self.env, ty)
     }
 
     /// `match scrutinee { arms }`: each arm's pattern is tested in turn,
@@ -5540,10 +5553,12 @@ fn closure_projections(
     owner: ClosureOwner,
 ) -> Vec<flux_ty::Projection> {
     match owner {
-        ClosureOwner::Function(f) => flux_ty::traits::projections_of(&hir.items, &typed.sigs, f),
-        ClosureOwner::Const(c) => {
-            flux_ty::traits::owner_projections(&hir.items, &typed.sigs, hir.items.consts[c].owner)
-        }
+        ClosureOwner::Function(f) => flux_solve::traits::projections_of(&hir.items, &typed.sigs, f),
+        ClosureOwner::Const(c) => flux_solve::traits::owner_projections(
+            &hir.items,
+            &typed.sigs,
+            hir.items.consts[c].owner,
+        ),
     }
 }
 
@@ -5551,9 +5566,9 @@ fn closure_unsized_parameters(hir: &Hir, owner: ClosureOwner) -> Vec<bool> {
     match owner {
         ClosureOwner::Function(f) => {
             let data = &hir.items.functions[f];
-            flux_ty::unsized_params(&hir.items, data.owner, &data.generics)
+            flux_solve::unsized_params(&hir.items, data.owner, &data.generics)
         }
-        ClosureOwner::Const(c) => flux_ty::unsized_params(
+        ClosureOwner::Const(c) => flux_solve::unsized_params(
             &hir.items,
             hir.items.consts[c].owner,
             &flux_hir::Generics::default(),

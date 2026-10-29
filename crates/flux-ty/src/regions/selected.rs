@@ -8,7 +8,7 @@ pub(super) fn field_type(items: &ItemTree, sigs: &Signatures, written: &TypeRef,
         (TypeRef::Path(path), TyKind::Alias(alias))
             if path.qself.is_some() && !has_projection_inputs(alias) =>
         {
-            let output = crate::traits::normalize(items, sigs, &[], ty);
+            let output = flux_solve::traits::normalize(items, sigs, &[], ty);
             if output.has_aliases() { ty } else { output }
         }
         (TypeRef::Ptr { pointee, .. }, TyKind::RawPtr(..))
@@ -56,7 +56,7 @@ pub(super) fn projection(
             args: &alias.args[1..],
         },
     };
-    let (imp, args) = crate::traits::select_impl(items, sigs, goal)?;
+    let (imp, args) = flux_solve::traits::select_impl(items, sigs, goal)?;
     let metadata = sigs.regions.impls.get(imp)?;
     if !metadata.trait_lifetimes.is_empty()
         || !metadata.bounds.is_empty()
@@ -114,12 +114,12 @@ pub(super) fn projection(
     }) {
         return None;
     }
-    let template = crate::traits::impl_type(sigs, imp, alias.name)?;
+    let template = flux_solve::traits::impl_type(sigs, imp, alias.name)?;
     // Unresolved child projections keep their original identity and slots.
     // A further selection that changes this RHS shape needs its own occurrence
     // mapping; never infer that row from a recursively normalized output.
     let output = template.subst(&args);
-    if output != crate::traits::normalize(items, sigs, &[], Ty::alias(alias)) {
+    if output != flux_solve::traits::normalize(items, sigs, &[], Ty::alias(alias)) {
         return None;
     }
     let own = &metadata

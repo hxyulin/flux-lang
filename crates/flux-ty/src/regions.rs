@@ -40,10 +40,7 @@ pub use flux_ty_ir::regions::{
     instantiate, object_associated_range, object_region_types, slots,
 };
 
-pub use crate::fn_regions::{
-    same_binders as same_fn_pointer_binders, same_shape as same_fn_pointer_shape,
-    variances as fn_pointer_variances,
-};
+pub use crate::fn_regions::variances as fn_pointer_variances;
 
 pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
     "lifetimes in associated type annotations are not supported yet";
@@ -473,7 +470,7 @@ impl<'a> Walker<'a> {
             );
             if let TyKind::Alias(alias) = raw.kind()
                 && !has_projection_inputs(alias)
-                && crate::traits::normalize(self.items, sigs, &[], raw) == ty
+                && flux_solve::traits::normalize(self.items, sigs, &[], raw) == ty
                 && raw != ty
             {
                 let mut inputs = Vec::new();
@@ -1429,7 +1426,7 @@ fn implied_at<R: Copy + PartialEq>(
             // A selected projection must prove its applicability before it
             // normalizes. Only an abstract family contributes implied facts;
             // its eventual caller must establish those prerequisites.
-            if crate::traits::select_impl(
+            if flux_solve::traits::select_impl(
                 items,
                 sigs,
                 crate::Predicate {

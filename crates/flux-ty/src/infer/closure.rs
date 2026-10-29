@@ -254,7 +254,7 @@ impl Ctx<'_> {
                     let declared = self.normalize(declared, head);
                     let expected = self.normalize(expected, head);
                     if !self.can_unify(declared, expected)
-                        || !crate::fn_regions::same_binders(self.items, declared, expected)
+                        || !flux_solve::fn_regions::same_binders(self.items, declared, expected)
                     {
                         if self.mismatched_closures.insert(id) {
                             self.error(head, "type mismatch in closure arguments");
@@ -284,7 +284,7 @@ impl Ctx<'_> {
             (Some(declared), Some(expected)) => {
                 let declared = self.normalize(declared, head);
                 let expected = self.normalize(expected, head);
-                if !crate::fn_regions::same_binders(self.items, declared, expected) {
+                if !flux_solve::fn_regions::same_binders(self.items, declared, expected) {
                     self.error(head, "type mismatch in closure return type");
                 } else if self.can_unify(declared, expected) {
                     self.unify(declared, expected);
@@ -376,7 +376,7 @@ impl Ctx<'_> {
         let (items, sigs) = (self.items, self.sigs);
         let mut kind: Option<ClosureKind> = None;
         let mut params = None;
-        for p in crate::traits::predicates_of(items, sigs, function) {
+        for p in flux_solve::traits::predicates_of(items, sigs, function) {
             let Some(k) = crate::fn_trait_kind(items, p.trait_ref.trait_) else {
                 continue;
             };
@@ -390,7 +390,7 @@ impl Ctx<'_> {
         let (kind, params) = (kind?, params?);
         let range = TextRange::default();
         let params = self.normalize(params, range);
-        let ret = crate::traits::declared_projections(items, sigs, function)
+        let ret = flux_solve::traits::declared_projections(items, sigs, function)
             .into_iter()
             .find_map(|p| {
                 let is_output = crate::fn_trait_kind(items, p.alias.trait_)
@@ -541,8 +541,8 @@ impl Ctx<'_> {
                 // object's its trait.
                 let base = self.known(base);
                 let own = match base.kind() {
-                    TyKind::Opaque(opaque) => crate::traits::opaque_bounds(self.sigs, opaque),
-                    TyKind::Dynamic(d) => crate::traits::dyn_bounds(self.sigs, base, d),
+                    TyKind::Opaque(opaque) => flux_solve::traits::opaque_bounds(self.sigs, opaque),
+                    TyKind::Dynamic(d) => flux_solve::traits::dyn_bounds(self.sigs, base, d),
                     _ => Vec::new(),
                 };
                 let found = [ClosureKind::Fn, ClosureKind::FnMut, ClosureKind::FnOnce]
@@ -577,7 +577,7 @@ impl Ctx<'_> {
                     args: Ty::list(&[tupled]),
                 };
                 let output =
-                    crate::traits::alias_of(self.items, once, base, Symbol::intern("Output"));
+                    flux_solve::traits::alias_of(self.items, once, base, Symbol::intern("Output"));
                 self.normalize(Ty::alias(output), self.range(id))
             }
             TyKind::Infer(var) if !self.unknown(var).0 => {
@@ -666,7 +666,7 @@ impl Ctx<'_> {
         }
         let a = self.known(a);
         let b = self.known(b);
-        crate::fn_regions::same_binders(self.items, a, b)
+        flux_solve::fn_regions::same_binders(self.items, a, b)
     }
 
     /// For the solver: whether a `Fn`-family bound of kind `kind` with
@@ -940,7 +940,7 @@ impl Ctx<'_> {
             if !self.is_copy_ty(ty) {
                 let dropped = (0..proj.len()).find(|&i| match tys[i].kind() {
                     TyKind::Adt(adt, _) => {
-                        crate::traits::drop_impl(self.items, self.sigs, adt.strukt).is_some()
+                        flux_solve::traits::drop_impl(self.items, self.sigs, adt.strukt).is_some()
                     }
                     _ => false,
                 });
@@ -966,11 +966,11 @@ impl Ctx<'_> {
         let ty = self.known(ty);
         match (proj, ty.kind()) {
             (CaptureProj::Deref, TyKind::Ref(_, t) | TyKind::RawPtr(_, t)) => self.known(t),
-            (CaptureProj::Deref, TyKind::Adt(..)) if let Some(t) = crate::box_pointee(ty) => {
+            (CaptureProj::Deref, TyKind::Adt(..)) if let Some(t) = flux_solve::box_pointee(ty) => {
                 self.known(t)
             }
             (CaptureProj::Field(i), _) => {
-                let field = crate::fields(self.sigs, ty)
+                let field = flux_solve::fields(self.sigs, ty)
                     .and_then(|f| f.get(i as usize).copied())
                     .unwrap_or(Ty::ERROR);
                 let field = self.normalize(field, TextRange::default());
@@ -1074,7 +1074,7 @@ impl Ctx<'_> {
 
     fn is_copy_ty(&mut self, ty: Ty) -> bool {
         let ty = self.known(ty);
-        crate::traits::is_copy(self.items, self.sigs, &self.param_env, ty)
+        flux_solve::traits::is_copy(self.items, self.sigs, &self.param_env, ty)
     }
 
     /// A use of the place `expr` denotes, as `kind` finds it from the
@@ -1644,7 +1644,7 @@ impl Ctx<'_> {
 
     fn place_field_count(&mut self, place: &Place) -> usize {
         let ty = self.capture_place_ty(place.0, &place.1);
-        crate::fields(self.sigs, ty).map_or(0, <[Ty]>::len)
+        flux_solve::fields(self.sigs, ty).map_or(0, <[Ty]>::len)
     }
 
     /// For the solver: whether `pred`, on a closure's type, holds: a
@@ -1656,8 +1656,8 @@ impl Ctx<'_> {
             return ClosureSelection::Unmet;
         };
         let closure = self.shallow(pred.self_ty);
-        match crate::traits::closure_goal(self.items, pred.trait_ref.trait_, args) {
-            crate::traits::ClosureGoal::Fn(kind, _) => {
+        match flux_solve::traits::closure_goal(self.items, pred.trait_ref.trait_, args) {
+            flux_solve::traits::ClosureGoal::Fn(kind, _) => {
                 let params = pred.trait_ref.args.first().copied().unwrap_or(Ty::ERROR);
                 if self.select_closure_fn(closure, kind, params) {
                     ClosureSelection::Met(Vec::new())
@@ -1665,12 +1665,12 @@ impl Ctx<'_> {
                     ClosureSelection::Unmet
                 }
             }
-            crate::traits::ClosureGoal::Upvars(_) => {
+            flux_solve::traits::ClosureGoal::Upvars(_) => {
                 let upvars = self.shallow(ClosureArgs::split(args).upvars);
                 match upvars.kind() {
                     TyKind::Tuple(list) => {
-                        let trait_ref =
-                            crate::traits::copy_trait_ref(self.items).unwrap_or(pred.trait_ref);
+                        let trait_ref = flux_solve::traits::copy_trait_ref(self.items)
+                            .unwrap_or(pred.trait_ref);
                         ClosureSelection::Met(
                             list.iter()
                                 .map(|&ty| Predicate {
@@ -1683,7 +1683,7 @@ impl Ctx<'_> {
                     _ => ClosureSelection::Ambiguous,
                 }
             }
-            crate::traits::ClosureGoal::No => ClosureSelection::Unmet,
+            flux_solve::traits::ClosureGoal::No => ClosureSelection::Unmet,
         }
     }
 }

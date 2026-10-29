@@ -13,11 +13,12 @@ use rustc_hash::FxHashSet;
 
 use flux_hir::{AssocItem, ExprId, FunctionId, ImplId, Owner, TraitId};
 use flux_intern::Symbol;
+use flux_solve::traits::{owner_param_count, predicates_of};
 use flux_syntax::TextRange;
 
 use super::Ctx;
 use crate::Mutability;
-use crate::traits::{Predicate, TraitRef, owner_param_count, predicates_of};
+use crate::traits::{Predicate, TraitRef};
 use crate::ty::{AliasTy, IntTy, Ty, TyKind};
 
 type ProbeGoal = (Ty, TraitId, Option<&'static [Ty]>, u32);
@@ -330,7 +331,8 @@ impl Ctx<'_> {
                         ..ob.pred.trait_ref
                     },
                 };
-                let auto_trait = crate::traits::is_auto_trait(self.items, pred.trait_ref.trait_);
+                let auto_trait =
+                    flux_solve::traits::is_auto_trait(self.items, pred.trait_ref.trait_);
                 if auto_trait
                     && !pred.self_ty.has_infer()
                     && !pred.trait_ref.args.iter().any(|t| t.has_infer())
@@ -402,7 +404,7 @@ impl Ctx<'_> {
                         for pred in nested {
                             let pred = self.normalize_predicate(pred, ob.range);
                             let auto_parent = auto_parent.filter(|_| {
-                                crate::traits::is_auto_trait(self.items, pred.trait_ref.trait_)
+                                flux_solve::traits::is_auto_trait(self.items, pred.trait_ref.trait_)
                             });
                             self.obligations.push(Obligation {
                                 pred,
@@ -605,14 +607,16 @@ impl Ctx<'_> {
         let mut candidates = self.env_projections.clone();
         match self.shallow(alias.args[0]).kind() {
             TyKind::Alias(outer) => {
-                candidates.extend(crate::traits::alias_projections(self.sigs, outer));
+                candidates.extend(flux_solve::traits::alias_projections(self.sigs, outer));
             }
             TyKind::Opaque(opaque) => {
-                candidates.extend(crate::traits::opaque_projections(self.sigs, opaque));
+                candidates.extend(flux_solve::traits::opaque_projections(self.sigs, opaque));
             }
             TyKind::Dynamic(d) => {
                 let ty = self.shallow(alias.args[0]);
-                candidates.extend(crate::traits::dyn_projections(self.items, self.sigs, ty, d));
+                candidates.extend(flux_solve::traits::dyn_projections(
+                    self.items, self.sigs, ty, d,
+                ));
             }
             _ => {}
         }
@@ -627,7 +631,7 @@ impl Ctx<'_> {
             }
             let key = p.alias.map_args(|ty| {
                 let ty = self.known(ty);
-                crate::traits::normalize(self.items, self.sigs, &self.env_projections, ty)
+                flux_solve::traits::normalize(self.items, self.sigs, &self.env_projections, ty)
             });
             if self.probe(|cx| cx.unify(Ty::alias(key), target)) {
                 self.unify(Ty::alias(key), target);
@@ -648,7 +652,7 @@ impl Ctx<'_> {
                 args: Ty::list(&[&[self_ty][..], &alias.args[1..]].concat()),
                 ..alias
             };
-            return crate::traits::closure_output(self.items, alias);
+            return flux_solve::traits::closure_output(self.items, alias);
         }
         let pred = Predicate {
             self_ty,
@@ -696,7 +700,7 @@ impl Ctx<'_> {
         };
         let args = self.unify_impl(*imp, pred)?;
         self.register_impl_projections(*imp, &args);
-        crate::traits::instantiate_impl_type(self.sigs, *imp, alias, &args)
+        flux_solve::traits::instantiate_impl_type(self.sigs, *imp, alias, &args)
     }
 
     /// What the bounds of `impl` block `imp`, used with generic arguments
@@ -740,7 +744,8 @@ impl Ctx<'_> {
                     qself.map_or(range, |q| q.ty_range),
                     ObligationKind::Bound,
                 );
-                let requirements = crate::traits::family_requirements(self.items, self.sigs, alias);
+                let requirements =
+                    flux_solve::traits::family_requirements(self.items, self.sigs, alias);
                 for predicate in requirements.predicates {
                     self.register(predicate, range, ObligationKind::Bound);
                 }
@@ -998,10 +1003,10 @@ impl Ctx<'_> {
     }
 
     /// The bounds associated type `ty` has by its trait's declaration, if
-    /// it is one, as [`crate::traits::alias_bounds`].
+    /// it is one, as [`flux_solve::traits::alias_bounds`].
     fn alias_bounds(&mut self, ty: Ty) -> Vec<Predicate> {
         let ty = self.known(ty);
-        crate::traits::alias_bounds(self.sigs, &self.param_env, ty)
+        flux_solve::traits::alias_bounds(self.sigs, &self.param_env, ty)
     }
 
     /// Erased membership is one proof only when its caller equalities agree.
@@ -1074,13 +1079,13 @@ impl Ctx<'_> {
                 // normalizing that would simply choose one winning equality.
                 // Probe rolls inference back; generic parameters remain rigid.
                 if !self.probe(|cx| {
-                    let a = crate::traits::normalize_projection_rhs(
+                    let a = flux_solve::traits::normalize_projection_rhs(
                         cx.items,
                         cx.sigs,
                         &cx.env_projections,
                         previous,
                     );
-                    let b = crate::traits::normalize_projection_rhs(
+                    let b = flux_solve::traits::normalize_projection_rhs(
                         cx.items,
                         cx.sigs,
                         &cx.env_projections,
@@ -1098,7 +1103,7 @@ impl Ctx<'_> {
 
     fn caller_proof_key(&mut self, projections: &[crate::Projection], ty: Ty) -> Ty {
         let ty = self.known(ty);
-        crate::traits::normalize(self.items, self.sigs, projections, ty)
+        flux_solve::traits::normalize(self.items, self.sigs, projections, ty)
     }
 
     /// Follow the output before normalization erases which equalities it uses.
@@ -1184,7 +1189,8 @@ impl Ctx<'_> {
             return Selection::Ambiguous;
         }
         let t = pred.trait_ref.trait_;
-        if crate::traits::is_auto_trait(self.items, t) && matches!(self_ty.kind(), TyKind::Infer(_))
+        if flux_solve::traits::is_auto_trait(self.items, t)
+            && matches!(self_ty.kind(), TyKind::Infer(_))
         {
             return Selection::Ambiguous;
         }
@@ -1197,7 +1203,7 @@ impl Ctx<'_> {
                 Selection::Met(Vec::new())
             };
         }
-        if crate::traits::is_builtin_trait(self.items, t, self_ty) {
+        if flux_solve::traits::is_builtin_trait(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
         }
         // Other traits than the `Fn` family, `Copy` and `Clone` hold of
@@ -1205,16 +1211,16 @@ impl Ctx<'_> {
         // -> bool> Pattern for F`), as for any type.
         if let TyKind::Closure(_, args) = self_ty.kind()
             && !matches!(
-                crate::traits::closure_goal(self.items, t, args),
-                crate::traits::ClosureGoal::No
+                flux_solve::traits::closure_goal(self.items, t, args),
+                flux_solve::traits::ClosureGoal::No
             )
         {
             return self.select_closure(pred);
         }
-        if let Some(found) = crate::traits::fn_goal(self.items, t, self_ty) {
+        if let Some(found) = flux_solve::traits::fn_goal(self.items, t, self_ty) {
             let params = pred.trait_ref.args.first().copied().unwrap_or(Ty::ERROR);
             return match found {
-                crate::traits::ClosureGoal::Fn(_, expected)
+                flux_solve::traits::ClosureGoal::Fn(_, expected)
                     if self.unify_callable_types(params, expected) =>
                 {
                     Selection::Met(Vec::new())
@@ -1295,7 +1301,7 @@ impl Ctx<'_> {
             found
         };
         match found.as_slice() {
-            [] => crate::traits::auto_trait_requirements(
+            [] => flux_solve::traits::auto_trait_requirements(
                 self.items,
                 self.sigs,
                 Predicate { self_ty, ..pred },
@@ -1376,13 +1382,13 @@ impl Ctx<'_> {
         }
         let resolved = self.known(header.self_ty);
         let actual = self.known(pred.self_ty);
-        if !crate::fn_regions::same_binders(self.items, resolved, actual) {
+        if !flux_solve::fn_regions::same_binders(self.items, resolved, actual) {
             return None;
         }
         for (&a, &b) in header.trait_ref.args.iter().zip(pred.trait_ref.args) {
             let a = self.known(a);
             let b = self.known(b);
-            if !crate::fn_regions::same_binders(self.items, a, b) {
+            if !flux_solve::fn_regions::same_binders(self.items, a, b) {
                 return None;
             }
         }
@@ -1522,7 +1528,8 @@ impl Ctx<'_> {
         if ty == Ty::ERROR || matches!(ty.kind(), TyKind::Infer(v) if !self.unknown(v).0) {
             return true;
         }
-        if crate::traits::is_auto_trait(self.items, t) && matches!(ty.kind(), TyKind::Infer(_)) {
+        if flux_solve::traits::is_auto_trait(self.items, t) && matches!(ty.kind(), TyKind::Infer(_))
+        {
             return true;
         }
         // Deep enough, or (from `has_impl_header`) bounds aside.
@@ -1530,20 +1537,20 @@ impl Ctx<'_> {
         if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
             return !self.is_unsized(ty);
         }
-        if crate::traits::is_builtin_trait(self.items, t, ty) {
+        if flux_solve::traits::is_builtin_trait(self.items, t, ty) {
             return true;
         }
-        if let Some(found) = crate::traits::fn_goal(self.items, t, ty) {
+        if let Some(found) = flux_solve::traits::fn_goal(self.items, t, ty) {
             return match found {
-                crate::traits::ClosureGoal::Fn(_, params) => args
+                flux_solve::traits::ClosureGoal::Fn(_, params) => args
                     .and_then(|a| a.first())
                     .is_none_or(|&a| self.unify_callable_types(a, params)),
                 _ => false,
             };
         }
         if let TyKind::Closure(_, closure_args) = ty.kind() {
-            match crate::traits::closure_goal(self.items, t, closure_args) {
-                crate::traits::ClosureGoal::Fn(kind, params) => {
+            match flux_solve::traits::closure_goal(self.items, t, closure_args) {
+                flux_solve::traits::ClosureGoal::Fn(kind, params) => {
                     let parts = crate::ClosureArgs::split(closure_args);
                     let kind_ok = crate::ClosureKind::from_ty(self.shallow(parts.kind))
                         .is_none_or(|k| k <= kind);
@@ -1552,9 +1559,9 @@ impl Ctx<'_> {
                             .and_then(|a| a.first())
                             .is_none_or(|&a| self.unify_callable_types(a, params));
                 }
-                crate::traits::ClosureGoal::Upvars(_) => return true,
+                flux_solve::traits::ClosureGoal::Upvars(_) => return true,
                 // Through blanket `impl` blocks, below.
-                crate::traits::ClosureGoal::No => {}
+                flux_solve::traits::ClosureGoal::No => {}
             }
         }
         let alias_bounds = self.alias_bounds(ty);
@@ -1597,7 +1604,7 @@ impl Ctx<'_> {
                 args: Ty::list(args.unwrap_or(&[])),
             },
         };
-        if let Some(nested) = crate::traits::auto_trait_requirements(items, sigs, goal) {
+        if let Some(nested) = flux_solve::traits::auto_trait_requirements(items, sigs, goal) {
             return !check_bounds
                 || nested.into_iter().all(|p| {
                     self.may_hold(
@@ -1974,7 +1981,7 @@ impl Ctx<'_> {
         };
         match data.owner {
             Some(Owner::Trait(t)) => {
-                let pred = crate::traits::trait_self_predicate(items, t).subst(args);
+                let pred = flux_solve::traits::trait_self_predicate(items, t).subst(args);
                 let qself = match self.body.exprs[expr] {
                     flux_hir::Expr::Path(flux_hir::Res::Assoc {
                         ty: Some(ty),
@@ -2182,7 +2189,7 @@ impl Ctx<'_> {
             self.register(pred, range, kind);
         }
         // `T: Tr<Out = u8>`: what the arguments' associated types must be.
-        let projections = crate::traits::declared_projections(items, sigs, function);
+        let projections = flux_solve::traits::declared_projections(items, sigs, function);
         for p in projections {
             // On a method's `Self` (`Self: Iterator<Item = &'a T>`), at
             // the receiver, as rustc reports it.
@@ -2482,7 +2489,7 @@ pub(super) mod tests {
             }
         };
         let input = cx.new_var(false, TextRange::default());
-        let alias = crate::traits::alias_of(
+        let alias = flux_solve::traits::alias_of(
             &hir.items,
             trait_ref("Family"),
             input,
