@@ -499,10 +499,20 @@ impl Report<'_> {
             .filter(|&p| state.maybe_moved[p])
             .last()
             .or_else(|| state.maybe_moved[path].then_some(path));
-        let moves: Vec<usize> = match moved {
+        let mut moves: Vec<usize> = match moved {
             Some(moved) => vec![moved],
             None => below.clone().filter(|&p| state.maybe_moved[p]).collect(),
         };
+        // Or an array's element or rest that overlaps one moved: rustc
+        // splits a rest's move into its elements', so an element is
+        // moved, and a rest partially.
+        let mut overlap = None;
+        if moves.is_empty()
+            && let Some((part, moved)) = self.overlapping_move(path, state)
+        {
+            moves.push(moved);
+            overlap = Some(part);
+        }
         if !moves.is_empty() {
             // rustc does not name places inside variants.
             let named = |path: usize| {
@@ -517,9 +527,18 @@ impl Report<'_> {
                     format!(": `{name}`")
                 }
             };
-            let message = match moved {
-                Some(moved) => format!("{used} of moved value{}", named(moved)),
-                None => format!("{used} of partially moved value{}", named(path)),
+            let message = match (moved, overlap) {
+                (Some(moved), _) => format!("{used} of moved value{}", named(moved)),
+                (None, Some(part)) => match self.paths.paths[part].fields.last() {
+                    Some(ProjectionElem::ConstantIndex { .. }) => {
+                        format!("{used} of moved value{}", named(part))
+                    }
+                    _ => {
+                        let array = self.paths.paths[part].parent.expect("an element's array");
+                        format!("{used} of partially moved value{}", named(array))
+                    }
+                },
+                (None, None) => format!("{used} of partially moved value{}", named(path)),
             };
             let specific = place.projection.len();
             match self.moved_uses.get(&moves).copied() {
@@ -630,6 +649,43 @@ impl Report<'_> {
     }
 
     /// The place of a move path, as rustc writes it: `s.inner.0`.
+    /// For `path` or one of its ancestors that is an array's element or
+    /// rest, that part and a maybe moved path in another part of the
+    /// array overlapping it, as `a[1:3]` and `a[1 of 3]` do.
+    fn overlapping_move(&self, path: usize, state: &State) -> Option<(usize, usize)> {
+        // The elements an array's part covers; arrays' are counted from
+        // the start.
+        let elements = |path: usize| match self.paths.paths[path].fields.last() {
+            Some(&ProjectionElem::ConstantIndex {
+                offset,
+                from_end: false,
+                ..
+            }) => Some(offset..offset + 1),
+            Some(&ProjectionElem::Subslice {
+                from,
+                to,
+                from_end: false,
+            }) => Some(from..to),
+            _ => None,
+        };
+        std::iter::once(path)
+            .chain(self.paths.ancestors(path))
+            .find_map(|part| {
+                let covered = elements(part)?;
+                let array = self.paths.paths[part].parent?;
+                self.paths
+                    .children(array)
+                    .filter(|&other| {
+                        other != part
+                            && elements(other)
+                                .is_some_and(|r| r.start < covered.end && covered.start < r.end)
+                    })
+                    .flat_map(|other| self.paths.subtree(other))
+                    .find(|&p| state.maybe_moved[p])
+                    .map(|moved| (part, moved))
+            })
+    }
+
     fn path_name(&self, path: usize) -> String {
         let path = &self.paths.paths[path];
         let place = Place {
