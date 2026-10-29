@@ -142,6 +142,10 @@ pub fn check(
 /// How far each local's known value may be propagated.
 fn modes(body: &Body) -> Vec<Mode> {
     let mut assignments = vec![0u32; body.locals.len()];
+    // Parameters are assigned on entry, as in rustc's KnownPanicsLint.
+    for count in assignments.iter_mut().skip(1).take(body.param_count) {
+        *count = 1;
+    }
     let mut modes = vec![Mode::Everywhere; body.locals.len()];
     for data in body.blocks.values() {
         for statement in &data.statements {

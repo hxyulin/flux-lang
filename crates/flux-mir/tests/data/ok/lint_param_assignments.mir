@@ -1,0 +1,149 @@
+fn assigned_on_one_path(_1: u8, _2: bool) -> u8 {
+    let mut _0: u8;
+    let _3: ();
+    let _4: bool;
+    let _5: ();
+    let _6: u8;
+
+    bb0: {
+        _4 = copy _2;
+        switchInt(copy _4) -> [0: bb2, otherwise: bb1];
+    }
+
+    bb1: {
+        _1 = const 255_u8;
+        _5 = const ();
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _6 = copy _1;
+        _0 = Add(copy _6, const 1_u8);
+        return;
+    }
+}
+
+fn assigned_in_loop(_1: i8, _2: u32) -> i8 {
+    let mut _0: i8;
+    let _3: ();
+    let _4: Range<u32>;
+    let _5: Range<u32>;
+    let _6: u32;
+    let mut _7: Range<u32>; // iter
+    let _8: ();
+    let _9: ();
+    let _10: Option<u32>;
+    let _11: &mut Range<u32>;
+    let _12: &mut Range<u32>;
+    let _13: isize;
+    let _14: !;
+    let _15: isize;
+    let _16: ();
+    let _17: i8;
+
+    bb0: {
+        _6 = copy _2;
+        _5 = Range { start: const 0_u32, end: copy _6 };
+        _4 = into_iter::<Range<u32>>(move _5) -> bb1;
+    }
+
+    bb1: {
+        _7 = move _4;
+        goto -> bb4;
+    }
+
+    bb2: {
+        StorageDead(_4);
+        _17 = copy _1;
+        _0 = Add(copy _17, const 1_i8);
+        return;
+    }
+
+    bb3: {
+        unreachable;
+    }
+
+    bb4: {
+        goto -> bb5;
+    }
+
+    bb5: {
+        _12 = &mut _7;
+        _11 = &mut (*_12);
+        _10 = next::<Range<u32>>(move _11) -> bb7;
+    }
+
+    bb6: {
+        StorageDead(_7);
+        goto -> bb2;
+    }
+
+    bb7: {
+        _13 = discriminant(_10);
+        switchInt(copy _13) -> [0: bb10, otherwise: bb9];
+    }
+
+    bb8: {
+        StorageDead(_10);
+        _8 = const ();
+        goto -> bb5;
+    }
+
+    bb9: {
+        _15 = discriminant(_10);
+        switchInt(copy _15) -> [1: bb13, otherwise: bb12];
+    }
+
+    bb10: {
+        goto -> bb11;
+    }
+
+    bb11: {
+        _3 = const ();
+        StorageDead(_10);
+        goto -> bb6;
+    }
+
+    bb12: {
+        unreachable;
+    }
+
+    bb13: {
+        goto -> bb14;
+    }
+
+    bb14: {
+        _1 = const 127_i8;
+        _16 = const ();
+        _9 = const ();
+        goto -> bb8;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: u8;
+    let _2: i8;
+
+    bb0: {
+        _1 = assigned_on_one_path(const 1_u8, const false) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_1);
+        _2 = assigned_in_loop(const 1_i8, const 0_u32) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        _0 = const ();
+        return;
+    }
+}
+
