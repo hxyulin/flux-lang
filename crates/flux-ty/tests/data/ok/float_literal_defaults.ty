@@ -1,0 +1,12 @@
+fn show<T>(T) -> T
+    t@0: T
+fn main() -> ()
+    args@0: (&f64,)
+    x@1: f64
+    args@2: (&f64, &f64)
+    y@3: f64
+    pair@4: (f64, i32)
+    args@5: (&(f64, i32),)
+    z@6: f64
+    c@7: {closure}
+    args@8: (&f64, &f64)

@@ -769,12 +769,18 @@ impl Ctx<'_> {
         }
     }
 
-    /// Integer variables take their default, `i32`, as rustc's fallback
-    /// does before it analyzes closures.
-    pub(super) fn default_int_vars(&mut self) {
+    /// Integer and float variables take their defaults, `i32` and
+    /// `f64`, as rustc's fallback does before it analyzes closures.
+    pub(super) fn default_numeric_vars(&mut self) {
         for (value, _) in &mut self.vars {
-            if let super::VarValue::Unknown { int: true, .. } = value {
-                *value = super::VarValue::Known(Ty::int(crate::IntTy::I32));
+            match value {
+                super::VarValue::Unknown { float: true, .. } => {
+                    *value = super::VarValue::Known(Ty::float(crate::FloatTy::F64));
+                }
+                super::VarValue::Unknown { int: true, .. } => {
+                    *value = super::VarValue::Known(Ty::int(crate::IntTy::I32));
+                }
+                _ => {}
             }
         }
         self.select_obligations();

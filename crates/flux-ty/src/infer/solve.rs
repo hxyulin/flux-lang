@@ -804,20 +804,25 @@ impl Ctx<'_> {
         }
     }
 
-    /// Once the body is inferred: integer variables in waiting
-    /// obligations take their default, and what still waits is
+    /// Once the body is inferred: integer and float variables in
+    /// waiting obligations take their default, and what still waits is
     /// reported.
     pub(super) fn finish_obligations(&mut self, reported: &mut FxHashSet<crate::ty::InferVar>) {
         self.select_obligations();
         let pending = self.obligations.clone();
         for ob in &pending {
             let mut vars = Vec::new();
-            self.int_vars(ob.pred.self_ty, &mut vars);
+            self.numeric_vars(ob.pred.self_ty, &mut vars);
             for &arg in ob.pred.trait_ref.args {
-                self.int_vars(arg, &mut vars);
+                self.numeric_vars(arg, &mut vars);
             }
             for var in vars {
-                self.vars[var.0 as usize].0 = super::VarValue::Known(Ty::int(IntTy::I32));
+                let default = if self.float_var(var) {
+                    Ty::float(crate::FloatTy::F64)
+                } else {
+                    Ty::int(IntTy::I32)
+                };
+                self.vars[var.0 as usize].0 = super::VarValue::Known(default);
             }
         }
         self.select_obligations();
@@ -855,31 +860,34 @@ impl Ctx<'_> {
         }
     }
 
-    fn int_vars(&mut self, ty: Ty, out: &mut Vec<crate::ty::InferVar>) {
+    /// The unknown integer and float variables in `ty`.
+    fn numeric_vars(&mut self, ty: Ty, out: &mut Vec<crate::ty::InferVar>) {
         let ty = self.shallow(ty);
         match ty.kind() {
-            TyKind::Infer(var) if self.unknown(var).0 => out.push(self.root(var)),
+            TyKind::Infer(var) if self.unknown(var).0 || self.float_var(var) => {
+                out.push(self.root(var))
+            }
             TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
                 for &t in list {
-                    self.int_vars(t, out);
+                    self.numeric_vars(t, out);
                 }
             }
             TyKind::Alias(alias) => {
                 for &t in alias.args.iter().chain(alias.family_args) {
-                    self.int_vars(t, out);
+                    self.numeric_vars(t, out);
                 }
             }
             TyKind::Opaque(opaque) => {
                 for &t in opaque.args {
-                    self.int_vars(t, out);
+                    self.numeric_vars(t, out);
                 }
             }
             TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
-                self.int_vars(t, out)
+                self.numeric_vars(t, out)
             }
             TyKind::FnDef(_) | TyKind::FnPtr(_) => {
                 for t in ty.children() {
-                    self.int_vars(t, out);
+                    self.numeric_vars(t, out);
                 }
             }
             _ => {}
@@ -2206,7 +2214,7 @@ impl Ctx<'_> {
     pub(super) fn has_unknown(&mut self, ty: Ty) -> bool {
         let mut unknown = Vec::new();
         self.unknown_vars(ty, &mut unknown);
-        self.int_vars(ty, &mut unknown);
+        self.numeric_vars(ty, &mut unknown);
         !unknown.is_empty()
     }
 

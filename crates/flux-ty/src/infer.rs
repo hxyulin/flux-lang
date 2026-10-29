@@ -6200,10 +6200,10 @@ impl Ctx<'_> {
             self.deferred.push(check);
         }
         // What closures capture needs the types, as rustc finds it after
-        // inference, integer literals' defaults included.
+        // inference, numeric literals' defaults included.
         if !self.closures.is_empty() {
             self.select_obligations();
-            self.default_int_vars();
+            self.default_numeric_vars();
             self.analyze_closures();
         }
         // As in rustc, a hidden type nothing decides (the function only
