@@ -245,6 +245,10 @@ or stale suites select source mode for the process. Corrupt matching suites
 name the artifact and instruct the user to run `flux build-builtins` again.
 Staging validates an existing matching suite without rebuilding it. New contents
 are written to a temporary file in the same directory and renamed into place.
+An atomically written `flux-builtins.flib.stamp` caches the suite file's own stat
+fields after staging. The loader compares them with its opened file and skips
+the payload checksum only on a match. A missing/stale sidecar uses the checksum;
+loading never rewrites either file.
 
 `FLUX_BUILTINS_SOURCE=1` forces source mode. `FLUX_BUILTINS_TRACE=1` reports the
 selected mode, identity check and suite load time. The CLI selects its mode once;
@@ -280,7 +284,7 @@ a statistical performance guarantee. Decoding every built-in MIR body increases
 memory even when hello reaches only a small subset; indexed, lazy MIR decoding
 is follow-up work.
 
-A separate three-process trace measured 194.8 ms of loading: 1.7 ms for file
+Before suite stat caching, a separate three-process trace measured 194.8 ms of loading: 1.7 ms for file
 reading/archive framing, 0.010 ms for executable identity, 36.0 ms for checksum,
 19.8 ms for HIR/source records, 10.4 ms for types/signatures, and 128.1 ms for
 MIR/values. The phase medians need not sum exactly to the median total. Deferring
@@ -290,6 +294,12 @@ An indexed body format is a proposal, not implemented here. It needs an owner
 index, independent type/allocation decoding state, and validation when each
 function/closure bundle is requested. Constants and their required roots must
 remain available eagerly.
+
+With the suite stat cache, three fresh None builds measured 0.202 seconds and
+220 MB peak RSS, against a 0.681-second/169 MB source control. Loading took
+160.9 ms, including a 0.035 ms checksum-cache check. Cold staging took 2.223
+seconds; its matching no-op took 42.8 ms. This follow-up used the same setup but
+a compiler with the stat-cache change, so it is a separate measurement group.
 
 ## Delivery and acceptance
 

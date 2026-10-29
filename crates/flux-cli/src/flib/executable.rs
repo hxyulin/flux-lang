@@ -87,6 +87,11 @@ fn fingerprint(path: &Path) -> Result<ExecutableIdentity, String> {
 }
 
 impl ExecutableIdentity {
+    /// Checks stat fields for an already opened file without reading its content.
+    pub fn matches_metadata(&self, metadata: &std::fs::Metadata) -> bool {
+        cfg!(unix) && Stamp::of(metadata) == self.stamp
+    }
+
     /// Records the complete executable content and its stat fields.
     pub fn capture(path: &Path) -> Result<Self, String> {
         fingerprint(path)
@@ -102,7 +107,7 @@ impl ExecutableIdentity {
     pub fn check(&self, path: &Path) -> Result<CheckedIdentity, String> {
         let metadata =
             std::fs::metadata(path).map_err(|e| format!("cannot stat {}: {e}", path.display()))?;
-        if cfg!(unix) && Stamp::of(&metadata) == self.stamp {
+        if self.matches_metadata(&metadata) {
             return Ok(CheckedIdentity {
                 hash: self.hash,
                 method: CheckMethod::Stat,

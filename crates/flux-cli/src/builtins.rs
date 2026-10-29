@@ -1,5 +1,6 @@
 //! Explicitly staged, compiler-owned built-in metadata for fresh CLI processes.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -99,11 +100,14 @@ fn measured<T>(phase: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, 
 /// Loads matching metadata, or returns source fallback for a missing/stale suite.
 pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, CheckMethod)>, String> {
     let start = Instant::now();
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(invalid(path, e)),
     };
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| invalid(path, e))?;
+    let metadata = file.metadata().map_err(|e| invalid(path, e))?;
     let archive = Archive::decode(&bytes).map_err(|e| invalid(path, e))?;
     if std::env::var_os("FLUX_BUILTINS_TRACE").is_some() {
         eprintln!(
@@ -119,7 +123,14 @@ pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, Chec
         return Ok(None);
     }
     measured("checksum", || {
-        if checksum.as_slice() != digest(payload) {
+        let cached = cached_checksum(path, &metadata);
+        if std::env::var_os("FLUX_BUILTINS_TRACE").is_some() {
+            eprintln!(
+                "flux builtins: checksum={}",
+                if cached { "Stat" } else { "Hash" }
+            );
+        }
+        if !cached && checksum.as_slice() != digest(payload) {
             return Err("built-in suite checksum mismatch".into());
         }
         Ok(())
@@ -128,6 +139,17 @@ pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, Chec
     let mut suite = decode_payload(payload, archive.object).map_err(|e| invalid(path, e))?;
     suite.compiler = checked.hash;
     Ok(Some((suite, checked.method)))
+}
+
+fn cached_checksum(path: &Path, metadata: &std::fs::Metadata) -> bool {
+    let check = (|| {
+        let bytes = std::fs::read(path.with_extension("flib.stamp")).ok()?;
+        let mut d = Decoder::new(&bytes);
+        let identity = ExecutableIdentity::decode(&mut d).ok()?;
+        d.finish().ok()?;
+        Some(identity.matches_metadata(metadata))
+    })();
+    check.unwrap_or(false)
 }
 
 fn envelope(
@@ -379,6 +401,17 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     .encode()
     .map_err(|e| e.to_string())?;
     write_atomic(&path, &bytes).map_err(|e| invalid(&path, e))?;
+    let stamp = ExecutableIdentity::capture(&path)?;
+    if stamp.hash() != digest(&bytes) {
+        return Err(invalid(
+            &path,
+            "built-in suite changed while recording its stat fields",
+        ));
+    }
+    let mut record = Encoder::new();
+    stamp.encode(&mut record).map_err(|e| e.to_string())?;
+    write_atomic(&path.with_extension("flib.stamp"), &record.into_bytes())
+        .map_err(|e| invalid(&path, e))?;
     Ok(path)
 }
 

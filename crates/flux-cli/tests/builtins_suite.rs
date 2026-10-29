@@ -277,6 +277,22 @@ fn main() { fail(); }
 }
 
 #[test]
+fn suite_checksum_stat_cache_rechecks_a_replaced_file() {
+    let staged = Staged::new(false);
+    let file = staged.write("main.rs", "fn main() {}\n");
+    assert!(staged.suite.with_extension("flib.stamp").is_file());
+    let output = staged.compiler(false, "mir", &file);
+    success(&output);
+    trace(&output, "checksum=Stat");
+    let replacement = staged.suite.with_extension("replacement");
+    std::fs::copy(&staged.suite, &replacement).unwrap();
+    std::fs::rename(&replacement, &staged.suite).unwrap();
+    let output = staged.compiler(false, "mir", &file);
+    success(&output);
+    trace(&output, "checksum=Hash");
+}
+
+#[test]
 fn executable_identity_fallback_and_suite_corruption_are_distinct() {
     let staged = Staged::new(false);
     let file = staged.write("main.rs", "fn main() {}\n");
