@@ -1,0 +1,2 @@
+fn main() -> ()
+error 84..102: conflicting implementations of trait `Tr` for type `fn(u8)`

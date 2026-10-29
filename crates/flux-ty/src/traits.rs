@@ -5117,6 +5117,10 @@ fn unify_headers_with_predicates(
                 .iter()
                 .chain(object.assoc_tys)
                 .any(|&t| occurs(bound, var, (side, t), depth + 1)),
+            TyKind::FnPtr(sig) => sig
+                .inputs_output
+                .iter()
+                .any(|&t| occurs(bound, var, (side, t), depth + 1)),
             _ => false,
         }
     }
@@ -5165,6 +5169,11 @@ fn unify_headers_with_predicates(
                     && x.assoc_names == y.assoc_names
                     && all(x.args, y.args)
                     && all(x.assoc_tys, y.assoc_tys)
+            }
+            (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
+                x.is_unsafe == y.is_unsafe
+                    && x.is_c == y.is_c
+                    && all(x.inputs_output, y.inputs_output)
             }
             _ => a.1 == b.1,
         }
