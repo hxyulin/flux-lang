@@ -2065,21 +2065,11 @@ impl Lower<'_, '_, '_> {
         }
         let join = self.b.create_block();
         let blocks: Vec<Block> = variants.iter().map(|_| self.b.create_block()).collect();
-        let cases = (0..variants.len())
-            .map(|v| {
-                let bits = self.ctx.discriminant(strukt, v as u32);
-                let call = BlockCall {
-                    block: blocks[v],
-                    args: Vec::new(),
-                };
-                (bits as i64, call)
-            })
+        let cases: Vec<(u128, Block)> = (0..variants.len())
+            .map(|v| (self.ctx.discriminant(strukt, v as u32), blocks[v]))
             .collect();
-        let default = BlockCall {
-            block: *blocks.last().expect("an enum with a tag has variants"),
-            args: Vec::new(),
-        };
-        self.b.ins().switch(values[0], default, cases);
+        let default = *blocks.last().expect("an enum with a tag has variants");
+        self.switch_bits(values[0], default, &cases);
         for (v, &block) in blocks.iter().enumerate() {
             self.b.switch_to_block(block);
             store_variant(self, v);
@@ -2087,6 +2077,38 @@ impl Lower<'_, '_, '_> {
             self.b.ins().jump(join, &[]);
         }
         self.b.switch_to_block(join);
+    }
+
+    /// Branches to the block of the case in `cases` (bits of `value`'s
+    /// type) equal to `value`, or to `default`. keel's `switch` takes at
+    /// most 64 bits, so a wider `value` is compared with each case in turn.
+    fn switch_bits(&mut self, value: Value, default: Block, cases: &[(u128, Block)]) {
+        if self.b.function().value_type(value) != Type::I128 {
+            let cases = cases
+                .iter()
+                .map(|&(bits, block)| {
+                    let call = BlockCall {
+                        block,
+                        args: Vec::new(),
+                    };
+                    (bits as i64, call)
+                })
+                .collect();
+            let default = BlockCall {
+                block: default,
+                args: Vec::new(),
+            };
+            self.b.ins().switch(value, default, cases);
+            return;
+        }
+        for &(bits, block) in cases {
+            let case = self.int_const(bits, IntTy::U128);
+            let equal = self.b.ins().icmp(IntCC::Eq, value, case);
+            let next = self.b.create_block();
+            self.b.ins().brif(equal, block, &[], next, &[]);
+            self.b.switch_to_block(next);
+        }
+        self.b.ins().jump(default, &[]);
     }
 
     /// Stores the tag of variant `variant` of `ty`, an enum of `strukt`,
@@ -3348,21 +3370,11 @@ impl Lower<'_, '_, '_> {
                         self.b.ins().brif(value, otherwise, &[], zero, &[]);
                     }
                     _ => {
-                        let cases = targets
+                        let cases: Vec<(u128, Block)> = targets
                             .iter()
-                            .map(|&(value, block)| {
-                                let call = BlockCall {
-                                    block: self.blocks[block.index()],
-                                    args: Vec::new(),
-                                };
-                                (value as i64, call)
-                            })
+                            .map(|&(bits, block)| (bits, self.blocks[block.index()]))
                             .collect();
-                        let default = BlockCall {
-                            block: otherwise,
-                            args: Vec::new(),
-                        };
-                        self.b.ins().switch(value, default, cases);
+                        self.switch_bits(value, otherwise, &cases);
                     }
                 }
             }
