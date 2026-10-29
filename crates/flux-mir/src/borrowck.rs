@@ -599,6 +599,11 @@ impl Checker<'_> {
                         borrows: true,
                     } => self.access(place, Access::Borrow(Mutability::Not), live, range),
                     Rvalue::Len { .. } => {}
+                    // A `match` reads the discriminant, which conflicts with
+                    // a live mutable loan (E0503).
+                    Rvalue::Discriminant(place) => {
+                        self.access(place, Access::Read, live, range);
+                    }
                     _ => {
                         self.in_aggregate =
                             matches!(rvalue, Rvalue::Aggregate(..) | Rvalue::InlineAsm { .. });

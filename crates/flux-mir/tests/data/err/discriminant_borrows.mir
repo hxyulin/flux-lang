@@ -1,0 +1,173 @@
+fn match_while_borrowed() -> () {
+    let mut _0: ();
+    let mut _1: Option<i32>; // o
+    let _2: &mut Option<i32>; // r
+    let _3: ();
+    let _4: isize;
+    let _5: isize;
+    let _6: ();
+    let _7: Option<i32>;
+
+    bb0: {
+        _1 = Option::Some(const 1_i32);
+        _2 = &mut _1;
+        _4 = discriminant(_1);
+        switchInt(copy _4) -> [1: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        _7 = Option::None;
+        (*_2) = copy _7;
+        _6 = const ();
+        _0 = const ();
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+
+    bb2: {
+        _5 = discriminant(_1);
+        switchInt(copy _5) -> [0: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _3 = const ();
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        goto -> bb7;
+    }
+
+    bb7: {
+        _3 = const ();
+        goto -> bb1;
+    }
+}
+
+fn if_let_while_borrowed() -> () {
+    let mut _0: ();
+    let mut _1: Option<i32>; // o
+    let _2: &mut Option<i32>; // r
+    let _3: ();
+    let _4: isize;
+    let _5: ();
+    let _6: Option<i32>;
+
+    bb0: {
+        _1 = Option::None;
+        _2 = &mut _1;
+        _4 = discriminant(_1);
+        switchInt(copy _4) -> [1: bb4, otherwise: bb2];
+    }
+
+    bb1: {
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb2: {
+        _3 = const ();
+        goto -> bb3;
+    }
+
+    bb3: {
+        _6 = Option::Some(const 2_i32);
+        (*_2) = copy _6;
+        _5 = const ();
+        _0 = const ();
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+
+    bb4: {
+        goto -> bb1;
+    }
+}
+
+fn shared_borrow_is_fine() -> () {
+    let mut _0: ();
+    let _1: Option<i32>; // o
+    let _2: &Option<i32>; // r
+    let _3: ();
+    let _4: isize;
+    let _5: isize;
+
+    bb0: {
+        _1 = Option::Some(const 1_i32);
+        _2 = &_1;
+        _4 = discriminant(_1);
+        switchInt(copy _4) -> [1: bb3, otherwise: bb2];
+    }
+
+    bb1: {
+        PlaceMention(_2);
+        _0 = const ();
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+
+    bb2: {
+        _5 = discriminant(_1);
+        switchInt(copy _5) -> [0: bb6, otherwise: bb5];
+    }
+
+    bb3: {
+        goto -> bb4;
+    }
+
+    bb4: {
+        _3 = const ();
+        goto -> bb1;
+    }
+
+    bb5: {
+        unreachable;
+    }
+
+    bb6: {
+        goto -> bb7;
+    }
+
+    bb7: {
+        _3 = const ();
+        goto -> bb1;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: ();
+    let _2: ();
+    let _3: ();
+
+    bb0: {
+        _1 = match_while_borrowed() -> bb1;
+    }
+
+    bb1: {
+        _2 = if_let_while_borrowed() -> bb2;
+    }
+
+    bb2: {
+        _3 = shared_borrow_is_fine() -> bb3;
+    }
+
+    bb3: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 83..84: cannot use `o` because it was mutably borrowed
+error 257..258: cannot use `o` because it was mutably borrowed
