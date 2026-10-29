@@ -3424,12 +3424,20 @@ impl Lower<'_, '_, '_> {
                     let source = self.ctx.layouts.of(from);
                     let destination = self.ctx.layouts.of(to);
                     assert_eq!(source.size, destination.size, "validated transmute sizes");
-                    let address =
-                        self.aligned_slot(source.size, source.align.max(destination.align));
                     let values = self.operand(&args[0]);
-                    self.store(address, from, &values);
-                    let values = self.load(Location::Memory(address), to);
-                    self.write(dest, &values);
+                    // An integer and a float of one size: a register move.
+                    let int_float = |a: Ty, b: Ty| a.as_int().is_some() && b.as_float().is_some();
+                    if int_float(from, to) || int_float(to, from) {
+                        let target = keel_type(to).expect("a numeric scalar");
+                        let value = self.b.ins().convert(ConvertOp::Bitcast, target, values[0]);
+                        self.write(dest, &[value]);
+                    } else {
+                        let address =
+                            self.aligned_slot(source.size, source.align.max(destination.align));
+                        self.store(address, from, &values);
+                        let values = self.load(Location::Memory(address), to);
+                        self.write(dest, &values);
+                    }
                     if let Some(target) = target {
                         self.b.ins().jump(self.blocks[target.index()], &[]);
                     } else {
