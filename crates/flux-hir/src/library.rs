@@ -8,6 +8,9 @@
 //! program, so neither their files nor lazy bodies depend on a program.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static SOURCE_LOADING_FORBIDDEN: AtomicBool = AtomicBool::new(false);
 
 use flux_arena::ArenaMap;
 
@@ -38,7 +41,17 @@ pub struct Core {
 }
 
 impl Core {
+    /// Permanently forbids the source library cache in this process.
+    /// Drivers call this after selecting a complete checked builtin artifact.
+    pub fn forbid_source_loading() {
+        SOURCE_LOADING_FORBIDDEN.store(true, Ordering::Release);
+    }
+
     pub fn get() -> &'static Core {
+        assert!(
+            !SOURCE_LOADING_FORBIDDEN.load(Ordering::Acquire),
+            "source builtin loading is forbidden after artifact selection"
+        );
         static CORE: OnceLock<Core> = OnceLock::new();
         CORE.get_or_init(Core::build)
     }
