@@ -1,3 +1,5 @@
+#[path = "../../../tests/support/scratch.rs"]
+mod scratch;
 use flux_cli::flib::semantic::{
     CheckedCrate, Dependency, DependencyState, resolve_paths, write_checked,
 };
@@ -65,15 +67,8 @@ fn sibling_artifacts_resolve_transitive_hashes_before_semantic_loading() {
         freshness: None,
     })
     .unwrap();
-    let directory = std::env::temp_dir().join(format!("flux-flib-graph-{}", std::process::id()));
-    std::fs::create_dir(&directory).unwrap();
-    struct Remove(std::path::PathBuf);
-    impl Drop for Remove {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _remove = Remove(directory.clone());
+    let scratch = scratch::Scratch::new(std::env::temp_dir().join("flux-flib-graph"));
+    let directory = scratch.path();
     let a_path = directory.join("renamed-a.flib");
     let b_path = directory.join("b.flib");
     std::fs::write(&a_path, a_bytes).unwrap();

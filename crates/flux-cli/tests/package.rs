@@ -992,7 +992,7 @@ fn package_timings_cover_compilation_and_exclude_program_execution() {
         for scope in [
             "manifest loading",
             "planning (inclusive of manifest loading)",
-            "source dependency load/parse",
+            "dependency artifact load",
             "hir (includes module load/parse)",
             "backend (inclusive)",
             "backend verify",

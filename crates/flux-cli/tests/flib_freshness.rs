@@ -2,34 +2,24 @@ mod flib_support;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use flux_cli::flib::freshness::Snapshot;
 use flux_hir::{CrateId, ItemTree, SourceDb};
 use flux_intern::Symbol;
 
-struct Scratch(PathBuf);
+#[path = "../../../tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
+fn scratch() -> Scratch {
+    Scratch::new(std::env::temp_dir().join("flux-flib-tests"))
+}
 impl Scratch {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "flux-flib-freshness-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
     fn write(&self, path: &str, bytes: impl AsRef<[u8]>) -> PathBuf {
-        let path = self.0.join(path);
+        let path = self.path().join(path);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, bytes).unwrap();
         path
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 fn lower(path: &Path, environment: Option<&BTreeMap<String, String>>) -> (ItemTree, CrateId) {
@@ -52,7 +42,7 @@ fn capture(path: &Path) -> Snapshot {
 
 #[test]
 fn unchanged_inputs_round_trip_and_configuration_changes_invalidate() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root = dir.write("lib.rs", "pub fn value() -> u32 { 1 }\n");
     let snapshot = capture(&root);
     assert!(snapshot.is_fresh(b"config", &[[1; 32]], None).unwrap());
@@ -77,7 +67,7 @@ fn unchanged_inputs_round_trip_and_configuration_changes_invalidate() {
 
 #[test]
 fn same_size_edits_with_original_mtime_still_invalidate() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root = dir.write("lib.rs", "pub fn value() -> u32 { 1 }\n");
     let modified = std::fs::metadata(&root).unwrap().modified().unwrap();
     let snapshot = capture(&root);
@@ -93,7 +83,7 @@ fn same_size_edits_with_original_mtime_still_invalidate() {
 
 #[test]
 fn loaded_modules_and_new_alternate_candidates_invalidate() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root = dir.write(
         "lib.rs",
         "mod child; pub fn value() -> u32 { child::value() }\n",
@@ -121,7 +111,7 @@ fn include_bytes_and_include_str_inputs_are_content_tracked() {
             "pub const DATA: &[u8] = include_bytes!(\"data\");\n",
         ),
     ] {
-        let dir = Scratch::new();
+        let dir = scratch();
         let root = dir.write("lib.rs", literal);
         let data = dir.write("data", b"first");
         let snapshot = capture(&root);
@@ -139,7 +129,7 @@ fn include_bytes_and_include_str_inputs_are_content_tracked() {
 
 #[test]
 fn source_include_inputs_are_content_tracked() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root = dir.write("lib.rs", "include!(\"included.rs\");\n");
     let included = dir.write("included.rs", "pub const N: u32 = 1;\n");
     let snapshot = capture(&root);
@@ -150,7 +140,7 @@ fn source_include_inputs_are_content_tracked() {
 
 #[test]
 fn explicit_environment_values_and_absence_are_part_of_snapshot() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root=dir.write("lib.rs","pub const VALUE: &str = env!(\"FLUX_PRESENT\"); pub const MAYBE: Option<&str> = option_env!(\"FLUX_ABSENT\");\n");
     let mut environment = BTreeMap::new();
     environment.insert("FLUX_PRESENT".into(), "one".into());
@@ -181,10 +171,10 @@ fn explicit_environment_values_and_absence_are_part_of_snapshot() {
 #[cfg(unix)]
 #[test]
 fn symlink_retargeting_invalidates_even_equal_file_contents() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let first = dir.write("first.rs", "pub fn value() -> u32 { 1 }\n");
     let second = dir.write("second.rs", "pub fn value() -> u32 { 1 }\n");
-    let root = dir.0.join("lib.rs");
+    let root = dir.path().join("lib.rs");
     std::os::unix::fs::symlink(first, &root).unwrap();
     let snapshot = capture(&root);
     std::fs::remove_file(&root).unwrap();
@@ -194,7 +184,7 @@ fn symlink_retargeting_invalidates_even_equal_file_contents() {
 
 #[test]
 fn generated_source_at_a_different_disk_content_is_not_reusable() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root = dir.write("lib.rs", "pub fn old() {}\n");
     let mut db = SourceDb::new();
     let id = db.add(&root, "pub fn generated() {}\n");
@@ -215,7 +205,7 @@ fn process_environment_change_is_stale() {
         assert!(!snapshot.is_fresh(b"config", &[[1; 32]], None).unwrap());
         return;
     }
-    let dir = Scratch::new();
+    let dir = scratch();
     let root = dir.write(
         "lib.rs",
         format!("pub const VALUE: Option<&str> = option_env!(\"{INPUT}\");\n"),
@@ -245,7 +235,7 @@ fn process_environment_change_is_stale() {
 
 #[test]
 fn indirect_include_macro_inputs_are_tracked() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root=dir.write("lib.rs","macro_rules! read_text { () => { include_str!(\"data\") }; } pub const DATA: &str = read_text!();\n");
     let data = dir.write("data", b"first");
     let snapshot = capture(&root);
@@ -256,7 +246,7 @@ fn indirect_include_macro_inputs_are_tracked() {
 
 #[test]
 fn module_candidate_created_during_compilation_declines_reuse() {
-    let dir = Scratch::new();
+    let dir = scratch();
     let root = dir.write("lib.rs", "mod child;\n");
     dir.write("child/mod.rs", "pub fn value() {}\n");
     let (items, krate) = lower(&root, None);

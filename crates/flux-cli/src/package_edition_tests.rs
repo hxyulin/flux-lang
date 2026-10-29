@@ -26,6 +26,7 @@ fn cached_unicode_ident_normalized_manifest_selects_2021_library() {
         &Options {
             manifest_path: root.join("Cargo.toml"),
             bin: None,
+            lib: false,
             optimize: false,
             timings: false,
             macro_host_compiler: MacroHostCompiler::Rustc,

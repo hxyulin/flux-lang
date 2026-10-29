@@ -8,11 +8,11 @@ mod manifest;
 use manifest::{Package, Target};
 
 use crate::BuildOptions;
-use crate::build::{self, CompileRequest, SourceInput};
+use crate::build::{self, SourceInput};
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Command {
-    /// Always rebuild one binary with Flux/Keel from local manifests.
+    /// Build one binary and reuse fresh Flux library artifacts.
     Build(Options),
     /// Rebuild and run one binary, preserving its exit status.
     Run {
@@ -27,8 +27,11 @@ pub(crate) enum Command {
 pub(crate) struct Options {
     #[arg(long)]
     manifest_path: PathBuf,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "lib")]
     bin: Option<String>,
+    /// Build the package library as a private Fluxlib artifact.
+    #[arg(long)]
+    lib: bool,
     /// Enable Flux/Keel backend optimization (not a Cargo release profile).
     #[arg(short = 'O', long)]
     optimize: bool,
@@ -47,14 +50,16 @@ enum MacroHostCompiler {
 }
 
 struct Plan {
-    source: PathBuf,
-    crate_name: String,
+    kind: crate::CrateType,
     output: PathBuf,
     sources: Vec<SourceInput>,
 }
 
 pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     let (Command::Build(options) | Command::Run { options, .. }) = command;
+    if matches!(command, Command::Run { .. }) && options.lib {
+        return Err("package run requires a binary target".into());
+    }
     // This boundary includes planning, output-directory setup and compilation
     // (including its timing report), but stops before execution. On success the
     // returned Plan is destroyed outside this scope.
@@ -67,16 +72,11 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         }
         std::fs::create_dir_all(plan.output.parent().unwrap())
             .map_err(|e| format!("cannot create output directory: {e}"))?;
-        let compiled = build::compile(CompileRequest {
-            file: &plan.source,
-            crate_name: &plan.crate_name,
-            output: &plan.output,
-            sources: &plan.sources,
-            options: BuildOptions {
-                optimize: options.optimize,
-                timings: options.timings,
-            },
-        })?;
+        let build_options = BuildOptions {
+            optimize: options.optimize,
+            timings: options.timings,
+        };
+        let compiled = compile_libraries(&plan, build_options)?;
         (plan, compiled)
     };
     if !compiled {
@@ -118,9 +118,8 @@ fn plan_inner(options: &Options, timings: &mut build::Timings) -> Result<Plan, S
         host_output: root.join("target/flux-host"),
         macro_host_compiler: options.macro_host_compiler,
     };
-    let index = loader.visit(&manifest, false, options.bin.as_deref())?;
+    let index = loader.visit(&manifest, options.lib, options.bin.as_deref())?;
     let target_name = &loader.target_names[index];
-    let main = loader.sources.last().unwrap();
     // Keep the executable inside our output namespace.
     let mut components = Path::new(target_name).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
@@ -130,9 +129,17 @@ fn plan_inner(options: &Options, timings: &mut build::Timings) -> Result<Plan, S
     }
     // The output name retains the target spelling, unlike the Rust crate name.
     Ok(Plan {
-        source: main.file.clone(),
-        crate_name: main.name.clone(),
-        output: root.join("target/flux").join(target_name),
+        kind: if options.lib {
+            crate::CrateType::Lib
+        } else {
+            crate::CrateType::Bin
+        },
+        output: if options.lib {
+            root.join("target/flux/deps")
+                .join(format!("{target_name}.flib"))
+        } else {
+            root.join("target/flux").join(target_name)
+        },
         sources: loader.sources,
     })
 }
@@ -737,3 +744,52 @@ fn validate_configuration(root: &Path) -> Result<(), String> {
 #[cfg(test)]
 #[path = "package_edition_tests.rs"]
 mod edition_tests;
+
+fn compile_libraries(plan: &Plan, options: BuildOptions) -> Result<bool, String> {
+    let parent = plan.output.parent().expect("package output has a parent");
+    let directory = if plan.kind == crate::CrateType::Lib {
+        parent.to_owned()
+    } else {
+        parent.join("deps")
+    };
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| format!("cannot create artifact directory: {e}"))?;
+    let mut artifacts: Vec<PathBuf> = Vec::new();
+    for (index, source) in plan.sources.iter().enumerate() {
+        let externs: Vec<_> = source
+            .dependencies
+            .iter()
+            .map(|(alias, target)| (alias.clone(), artifacts[*target].clone()))
+            .collect();
+        if index + 1 == plan.sources.len() {
+            if plan.kind == crate::CrateType::Lib
+                && crate::flib_build::is_fresh(source, &plan.output, options, &externs)?
+            {
+                return Ok(true);
+            }
+            return crate::flib_build::compile(
+                source,
+                &plan.output,
+                options,
+                plan.kind,
+                false,
+                &externs,
+            );
+        }
+        let artifact = directory.join(format!("{}-{index}.flib", source.name));
+        if !crate::flib_build::is_fresh(source, &artifact, options, &externs)?
+            && !crate::flib_build::compile(
+                source,
+                &artifact,
+                options,
+                crate::CrateType::Lib,
+                false,
+                &externs,
+            )?
+        {
+            return Ok(false);
+        }
+        artifacts.push(artifact);
+    }
+    Err("package plan has no source target".into())
+}

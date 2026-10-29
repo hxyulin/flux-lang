@@ -1,34 +1,21 @@
 mod flib_support;
 
-use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "flux-flib-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        Self(path)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+#[path = "../../../tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
+fn scratch() -> Scratch {
+    Scratch::new(std::env::temp_dir().join("flux-flib-tests"))
 }
 
 #[test]
 fn library_output_contains_checked_metadata_and_one_object() {
-    let scratch = Scratch::new();
-    let source = scratch.0.join("a.rs");
+    let scratch = scratch();
+    let source = scratch.path().join("a.rs");
     std::fs::write(&source,"pub fn double(x: u32) -> u32 { x * 2 } pub fn identity<T>(x: T) -> T { x } pub const fn add(x: u32) -> u32 { x + 1 }").unwrap();
-    let output = scratch.0.join("a.flib");
+    let output = scratch.path().join("a.flib");
     let result = flib_support::run(
         Command::new(env!("CARGO_BIN_EXE_flux"))
             .args(["build", "--crate-type", "lib", "--crate-name", "a"])
@@ -45,7 +32,7 @@ fn library_output_contains_checked_metadata_and_one_object() {
     let archive = flux_cli::flib::Archive::decode(&std::fs::read(&output).unwrap()).unwrap();
     assert!(archive.metadata.starts_with(b"FLUXMETA"));
     assert!(archive.object.as_ref().is_some_and(|o| !o.is_empty()));
-    let metadata = scratch.0.join("check.flib");
+    let metadata = scratch.path().join("check.flib");
     let result = flib_support::run(
         Command::new(env!("CARGO_BIN_EXE_flux"))
             .args(["build", "--crate-type", "lib", "--metadata-only"])
@@ -62,7 +49,7 @@ fn library_output_contains_checked_metadata_and_one_object() {
     let archive = flux_cli::flib::Archive::decode(&std::fs::read(&metadata).unwrap()).unwrap();
     assert!(archive.object.is_none());
     std::fs::write(&source, "pub fn identity<T>(x: T) -> T { x }").unwrap();
-    let generic = scratch.0.join("generic.flib");
+    let generic = scratch.path().join("generic.flib");
     let result = flib_support::run(
         Command::new(env!("CARGO_BIN_EXE_flux"))
             .args(["build", "--crate-type", "lib"])
@@ -85,10 +72,10 @@ fn library_output_contains_checked_metadata_and_one_object() {
 
 #[test]
 fn erroneous_library_does_not_write_an_artifact() {
-    let scratch = Scratch::new();
-    let source = scratch.0.join("bad.rs");
+    let scratch = scratch();
+    let source = scratch.path().join("bad.rs");
     std::fs::write(&source, "pub fn bad() -> u32 { true }").unwrap();
-    let output = scratch.0.join("bad.flib");
+    let output = scratch.path().join("bad.flib");
     let result = flib_support::run(
         Command::new(env!("CARGO_BIN_EXE_flux"))
             .args(["build", "--crate-type", "lib"])
@@ -100,4 +87,70 @@ fn erroneous_library_does_not_write_an_artifact() {
     assert!(!result.status.success());
     assert!(!output.exists());
     assert!(String::from_utf8_lossy(&result.stderr).contains("mismatched types"));
+}
+
+#[test]
+fn metadata_only_dependencies_support_checking_and_reject_native_linking() {
+    let s = scratch();
+    std::fs::write(
+        s.path().join("a.rs"),
+        "pub const N: usize = 2; pub fn twice(x: u32) -> u32 { x * 2 }",
+    )
+    .unwrap();
+    std::fs::write(
+        s.path().join("b.rs"),
+        "pub fn value() -> u32 { a::twice(a::N as u32) }",
+    )
+    .unwrap();
+    std::fs::write(
+        s.path().join("main.rs"),
+        "fn main() { println!(\"{}\", a::twice(21)); }",
+    )
+    .unwrap();
+    for args in [
+        vec![
+            "build",
+            "a.rs",
+            "--crate-type",
+            "lib",
+            "--metadata-only",
+            "-o",
+            "a.flib",
+        ],
+        vec![
+            "build",
+            "b.rs",
+            "--crate-type",
+            "lib",
+            "--metadata-only",
+            "--extern",
+            "a=a.flib",
+            "-o",
+            "b.flib",
+        ],
+    ] {
+        let output = flib_support::run(
+            Command::new(env!("CARGO_BIN_EXE_flux"))
+                .current_dir(s.path())
+                .args(args),
+            "metadata-check",
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if s.path().join("a.rs").exists() {
+            std::fs::remove_file(s.path().join("a.rs")).unwrap();
+        }
+    }
+    let output = flib_support::run(
+        Command::new(env!("CARGO_BIN_EXE_flux"))
+            .current_dir(s.path())
+            .args(["build", "main.rs", "--extern", "a=a.flib", "-o", "program"]),
+        "metadata-link-rejection",
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no native object"));
+    assert!(!s.path().join("program").exists());
 }

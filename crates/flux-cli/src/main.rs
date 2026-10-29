@@ -56,6 +56,9 @@ enum Command {
         /// Write metadata without native code (libraries only).
         #[arg(long)]
         metadata_only: bool,
+        /// Load an external Flux library as alias=path.
+        #[arg(long = "extern", value_parser = parse_extern)]
+        externs: Vec<(String, PathBuf)>,
         /// Where to write the executable; the file's name without `.rs` by
         /// default.
         #[arg(short, long)]
@@ -195,16 +198,27 @@ fn run(command: Command) -> Result<bool, String> {
             crate_type,
             crate_name,
             metadata_only,
+            externs,
         } => {
             let name = crate_name.unwrap_or_else(|| build::crate_name(&file));
             if crate_type == CrateType::Lib {
                 let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.flib")));
-                flib_build::library(&file, &output, &name, options, metadata_only)
+                flib_build::library(&file, &output, &name, options, metadata_only, &externs)
             } else {
                 if metadata_only {
                     return Err("metadata-only output requires --crate-type lib".into());
                 }
                 let output = output.unwrap_or_else(|| PathBuf::from(&name));
+                if !externs.is_empty() {
+                    return flib_build::compile(
+                        &build::SourceInput::standalone(&file, &name),
+                        &output,
+                        options,
+                        CrateType::Bin,
+                        false,
+                        &externs,
+                    );
+                }
                 build::compile(build::CompileRequest {
                     file: &file,
                     crate_name: &name,
@@ -285,4 +299,20 @@ fn line_column(text: &str, offset: u32) -> (usize, usize) {
     let line = before.matches('\n').count() + 1;
     let column = before[line_start..].chars().count() + 1;
     (line, column)
+}
+
+fn parse_extern(value: &str) -> Result<(String, PathBuf), String> {
+    let (name, path) = value
+        .split_once('=')
+        .ok_or("expected alias=path for --extern")?;
+    if name.is_empty()
+        || path.is_empty()
+        || !name
+            .chars()
+            .enumerate()
+            .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+    {
+        return Err("expected a crate alias and artifact path".into());
+    }
+    Ok((name.to_owned(), PathBuf::from(path)))
 }

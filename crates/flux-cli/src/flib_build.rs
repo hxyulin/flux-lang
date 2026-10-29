@@ -3,10 +3,8 @@
 use crate::build::SourceInput;
 use crate::{BuildOptions, CrateType, report_all};
 use flux_cli::flib::semantic::Capability;
-use flux_cli::flib::semantic::{CheckedCrate, Dependency, crate_hash, write_checked};
-use flux_hir::flib::{CrateIndices, digest};
+use flux_cli::flib::semantic::{CheckedCrate, crate_hash, write_checked};
 use flux_hir::flib::{Encode, Encoder};
-use flux_hir::{CrateId, SourceDb};
 use std::path::Path;
 
 pub(crate) fn library(
@@ -15,102 +13,236 @@ pub(crate) fn library(
     name: &str,
     options: BuildOptions,
     metadata_only: bool,
+    externs: &[(String, std::path::PathBuf)],
 ) -> Result<bool, String> {
-    let input = SourceInput::standalone(file, name);
-    let mut db = SourceDb::new();
-    let root = db.load(file)?;
-    let hir = flux_hir::lower(&mut db, root, flux_intern::Symbol::intern(name));
-    let mut errors = db.syntax_errors();
-    errors.extend(flux_cli::identifiers::diagnostics(&db));
-    errors.extend(hir.diagnostics.iter().cloned());
-    let typed = flux_mir::check_file(&hir);
-    errors.extend(typed.diagnostics.iter().cloned());
-    if !errors.is_empty() {
-        report_all(&db, &mut errors);
-        return Ok(false);
-    }
-    let mir = flux_mir::build_file(&hir, &typed);
-    errors.extend(mir.diagnostics.iter().cloned());
-    if !errors.is_empty() {
-        report_all(&db, &mut errors);
-        return Ok(false);
-    }
-    let own = hir.items.main_crate();
-    let compiler_identity = flux_cli::flib::compiler_identity()?;
-    let dependencies: Vec<_> = hir
-        .items
-        .crates
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| *i != own.0 as usize)
-        .map(|(i, c)| {
-            let krate = CrateId(i as u32);
-            let mut key = compiler_identity.to_vec();
-            key.extend_from_slice(c.name.as_str().as_bytes());
-            Dependency {
-                krate,
-                hash: digest(&key),
-                indices: CrateIndices::collect(&hir.items, krate),
-            }
-        })
-        .collect();
-    let target = flux_codegen::Target::host().ok_or("unsupported host target")?;
+    compile(
+        &SourceInput::standalone(file, name),
+        output,
+        options,
+        CrateType::Lib,
+        metadata_only,
+        externs,
+    )
+}
+
+/// Compiles one source crate against a closed set of checked Flux libraries.
+pub(crate) fn compile(
+    input: &SourceInput,
+    output: &Path,
+    options: BuildOptions,
+    kind: CrateType,
+    metadata_only: bool,
+    externs: &[(String, std::path::PathBuf)],
+) -> Result<bool, String> {
+    let mut timings = crate::build::Timings::new(options.timings, "compile scoped elapsed");
     let capability = if metadata_only {
         Capability::Metadata
     } else {
         Capability::Object
     };
-    let configuration = configuration(&input, options, CrateType::Lib, capability, &[])?;
-    let hash = crate_hash(&hir.items, own, &dependencies, &configuration)?;
-    let hashes: Vec<_> = dependencies
+    let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
+    let mut state = timings.time("dependency artifact load", || {
+        flux_cli::flib::semantic::DependencyState::new()?.load(&paths)
+    })?;
+    let mut aliases = Vec::new();
+    let mut imports = Vec::new();
+    for (alias, path) in externs {
+        if imports
+            .iter()
+            .any(|(name, _)| name == &flux_intern::Symbol::intern(alias))
+        {
+            return Err(format!("duplicate external crate alias `{alias}`"));
+        }
+        if matches!(
+            alias.as_str(),
+            "core" | "alloc" | "std" | "self" | "super" | "crate"
+        ) {
+            return Err(format!("external crate alias `{alias}` is reserved"));
+        }
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let manifest = flux_cli::flib::semantic::manifest(&bytes)?;
+        let dependency = state
+            .dependencies
+            .iter()
+            .find(|d| d.hash == manifest.hash)
+            .ok_or("missing loaded dependency")?;
+        imports.push((flux_intern::Symbol::intern(alias), dependency.krate));
+        aliases.push((alias.clone(), manifest.hash));
+    }
+    let builtin_count = flux_hir::Core::get().items.crates.len();
+    let loaded_hashes: Vec<_> = state
+        .dependencies
+        .iter()
+        .filter(|d| d.krate.0 as usize >= builtin_count)
+        .map(|d| (d.krate, d.hash))
+        .collect();
+    if capability == Capability::Object && state.objects.len() != loaded_hashes.len() {
+        return Err("a dependency Fluxlib has no native object".into());
+    }
+    let loaded = flux_ty::flib::LoadedTypes::new(&state.items, state.sigs, &loaded_hashes)
+        .map_err(|e| e.to_string())?;
+    let imported = flux_mir::imported::ImportedMir::new(state.mir, state.items.counts())
+        .map_err(|e| e.to_string())?;
+    let root = if let Some(exports) = &input.host_macros {
+        state
+            .db
+            .add_proc_macro_crate(input.file.clone(), exports.clone())
+    } else {
+        state.db.load_with_edition(&input.file, input.edition)?
+    };
+    state.db.set_crate_cfg(root, input.cfg.clone())?;
+    if let Some(directory) = &input.compilation_dir {
+        state.db.set_crate_directory(root, directory.clone())?;
+    }
+    if let Some(environment) = &input.environment {
+        state.db.set_crate_env(root, environment.clone())?;
+    }
+    let hir = timings.time("hir (includes module load/parse)", || {
+        flux_hir::lower_source_on(
+            &mut state.db,
+            state.items,
+            root,
+            flux_intern::Symbol::intern(&input.name),
+            imports,
+        )
+    });
+    let own = hir.items.main_crate();
+    let configuration = configuration(input, options, kind, capability, &aliases)?;
+    let hash = crate_hash(&hir.items, own, &state.dependencies, &configuration)?;
+    let hashes: Vec<_> = state
+        .dependencies
         .iter()
         .map(|d| (d.krate, d.hash))
         .chain(std::iter::once((own, hash)))
         .collect();
+    loaded.signatures().type_ids.set_crate_hashes(&hashes);
+    let roots = imported.required_functions(&hir.items, loaded.signatures());
+    let typed = timings.time("types (includes const evaluation)", || {
+        flux_mir::check_file_from(&hir, &loaded, &imported, &roots)
+    });
+    let mut errors = state.db.syntax_errors();
+    errors.extend(flux_cli::identifiers::diagnostics(&state.db));
+    errors.extend(hir.diagnostics.iter().cloned());
+    errors.extend(typed.diagnostics.iter().cloned());
+    if kind == CrateType::Bin
+        && let Some(error) = flux_ty::check_main(&hir.items, &typed.sigs)
+    {
+        errors.push(error);
+    }
+    if !errors.is_empty() {
+        errors.extend(flux_mir::check_clean_bodies_from(
+            &hir, &typed, &errors, &imported,
+        ));
+        report_all(&state.db, &mut errors);
+        return Ok(false);
+    }
+    let mir = timings.time("mir build + checks", || {
+        flux_mir::build_file_from(&hir, &typed, &imported, &roots)
+    });
+    errors.extend(mir.diagnostics.iter().cloned());
+    if !errors.is_empty() {
+        report_all(&state.db, &mut errors);
+        return Ok(false);
+    }
+    let target = flux_codegen::Target::host().ok_or("unsupported host target")?;
+    let imported_crates: Vec<_> = loaded_hashes.iter().map(|&(krate, _)| krate).collect();
     let object = if metadata_only {
         None
     } else {
-        let mut module = flux_codegen::lower_crate(
-            &hir,
-            &typed,
-            &mir,
-            flux_codegen::Compilation {
-                kind: flux_codegen::OutputKind::Library(own),
-                crate_hashes: &hashes,
-                imported: &[],
-                required_functions: &[],
-            },
-        )
-        .map_err(|mut errors| {
-            report_all(&db, &mut errors);
-            "cannot lower library".to_owned()
-        })?;
+        let mut module = timings
+            .time("mono + keel lowering", || {
+                flux_codegen::lower_crate(
+                    &hir,
+                    &typed,
+                    &mir,
+                    flux_codegen::Compilation {
+                        kind: match kind {
+                            CrateType::Lib => flux_codegen::OutputKind::Library(own),
+                            CrateType::Bin => flux_codegen::OutputKind::Executable,
+                        },
+                        crate_hashes: &hashes,
+                        imported: &imported_crates,
+                        required_functions: &roots,
+                    },
+                )
+            })
+            .map_err(|mut errors| {
+                report_all(&state.db, &mut errors);
+                "cannot lower crate".to_owned()
+            })?;
         let tier = if options.optimize {
             flux_codegen::OptimizationTier::Full
         } else {
             flux_codegen::OptimizationTier::None
         };
-        Some(flux_codegen::compile_object(&mut module, target, tier).map_err(|e| e.to_string())?)
+        let object = if options.timings {
+            let (result, backend) = timings.time("backend (inclusive)", || {
+                flux_codegen::compile_object_with_timings(&mut module, target, tier)
+            });
+            for (name, duration) in [
+                ("  backend verify", backend.verify),
+                ("  backend optimize", backend.optimize),
+                ("  backend native codegen", backend.codegen),
+                ("  backend assemble", backend.assemble),
+            ] {
+                if let Some(duration) = duration {
+                    timings.record(name, duration);
+                }
+            }
+            result
+        } else {
+            flux_codegen::compile_object(&mut module, target, tier)
+        };
+        Some(object.map_err(|e| e.to_string())?)
     };
-    let dependency_hashes: Vec<_> = dependencies.iter().map(|d| d.hash).collect();
-    let freshness = flux_cli::flib::freshness::Snapshot::capture(
-        &hir.items,
-        own,
-        &configuration,
-        &dependency_hashes,
-    )?;
-    let bytes = write_checked(CheckedCrate {
-        items: &hir.items,
-        sigs: &typed.sigs,
-        mir: &mir,
-        krate: own,
-        hash,
-        dependencies: &dependencies,
-        object,
-        freshness: freshness.as_ref(),
-    })?;
-    flux_cli::flib::write_atomic(output, &bytes)
-        .map_err(|e| format!("cannot write {}: {e}", output.display()))?;
+    if kind == CrateType::Bin {
+        let object = object.expect("executable compilation emits an object");
+        let mut inputs = vec![flux_codegen::ObjectInput {
+            name: &input.name,
+            bytes: &object,
+        }];
+        let names: Vec<_> = state
+            .objects
+            .iter()
+            .map(|(path, _)| path.to_string_lossy().into_owned())
+            .collect();
+        inputs.extend(
+            state
+                .objects
+                .iter()
+                .zip(&names)
+                .map(|((_, bytes), name)| flux_codegen::ObjectInput { name, bytes }),
+        );
+        for warning in timings
+            .time("link", || {
+                flux_codegen::link_objects(&inputs, target, output, &hir.items.native_libraries)
+            })
+            .map_err(|e| e.to_string())?
+        {
+            eprintln!("warning: {warning}");
+        }
+    } else {
+        let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
+        let freshness = flux_cli::flib::freshness::Snapshot::capture(
+            &hir.items,
+            own,
+            &configuration,
+            &dependency_hashes,
+        )?;
+        let bytes = write_checked(CheckedCrate {
+            items: &hir.items,
+            sigs: &typed.sigs,
+            mir: &mir,
+            krate: own,
+            hash,
+            dependencies: &state.dependencies,
+            object,
+            freshness: freshness.as_ref(),
+        })?;
+        flux_cli::flib::write_atomic(output, &bytes)
+            .map_err(|e| format!("cannot write {}: {e}", output.display()))?;
+    }
     Ok(true)
 }
 
@@ -136,6 +268,21 @@ fn configuration(
     encode(input.cfg.names.encode(&mut e))?;
     encode(input.cfg.values.encode(&mut e))?;
     encode(input.environment.encode(&mut e))?;
+    encode(input.host_macros.is_some().encode(&mut e))?;
+    if let Some(exports) = &input.host_macros {
+        encode((exports.len() as u32).encode(&mut e))?;
+        for export in exports {
+            encode(export.name.encode(&mut e))?;
+            encode(export.kind.encode(&mut e))?;
+            encode(export.helpers.encode(&mut e))?;
+            let descriptor = export
+                .expander
+                .flib_descriptor()
+                .ok_or("procedural macro host has no artifact descriptor")?;
+            encode(descriptor.encode(&mut e))?;
+        }
+    }
+
     encode(options.optimize.encode(&mut e))?;
     encode(
         match kind {
@@ -160,4 +307,37 @@ fn configuration(
     aliases.sort();
     encode(aliases.encode(&mut e))?;
     Ok(e.into_bytes())
+}
+
+/// Checks the exact source/configuration/dependency snapshot before reusing a package artifact.
+pub(crate) fn is_fresh(
+    input: &SourceInput,
+    output: &Path,
+    options: BuildOptions,
+    externs: &[(String, std::path::PathBuf)],
+) -> Result<bool, String> {
+    let Ok(bytes) = std::fs::read(output) else {
+        return Ok(false);
+    };
+    let known = flux_cli::flib::semantic::DependencyState::new()?.dependencies;
+    let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
+    let artifacts = flux_cli::flib::semantic::resolve_paths(&paths, &known)?;
+    let mut dependencies: Vec<_> = known.iter().map(|d| d.hash).collect();
+    dependencies.extend(artifacts.iter().map(|a| a.manifest.hash));
+    let mut aliases = Vec::new();
+    for (alias, path) in externs {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        aliases.push((
+            alias.clone(),
+            flux_cli::flib::semantic::manifest(&data)?.hash,
+        ));
+    }
+    let config = configuration(input, options, CrateType::Lib, Capability::Object, &aliases)?;
+    flux_cli::flib::semantic::is_fresh(
+        &bytes,
+        &config,
+        &dependencies,
+        input.environment.as_ref(),
+        Capability::Object,
+    )
 }
