@@ -18,10 +18,11 @@
 
 pub mod const_dependencies;
 pub mod entry;
+pub mod flib;
 pub mod inline_asm;
 mod signature;
 pub mod sized_dispatch;
-pub use signature::{signatures, signatures_checked};
+pub use signature::{signatures, signatures_checked, signatures_from};
 
 mod resolve;
 pub use resolve::{

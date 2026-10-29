@@ -62,6 +62,24 @@ pub fn signatures_checked(
     (sigs, diagnostics)
 }
 
+/// Resolves signatures only for source items appended after checked dependencies.
+/// `from` is the item count before source collection. Existing hidden types and
+/// region rows remain in `seed`; all lookup indexes are rebuilt for the graph.
+pub fn signatures_from(
+    items: &ItemTree,
+    seed: Signatures,
+    from: ItemCounts,
+    lens: Option<&ArrayLens<'_>>,
+) -> (Signatures, Vec<Diagnostic>) {
+    if let Some(lens) = lens {
+        return extend_signatures(items, seed, from, from.impls, Some(lens));
+    }
+    let values = seed.array_lens.clone();
+    let arg_tys = seed.arg_tys.clone();
+    let lens = ArrayLens::new(&values, &arg_tys);
+    extend_signatures(items, seed, from, from.impls, Some(&lens))
+}
+
 /// The signatures of [`Core`]'s items, its `impl` blocks unchecked as in
 /// every build, resolved the first time they are asked for.
 pub(super) fn core_signatures() -> &'static (Signatures, Vec<Diagnostic>) {

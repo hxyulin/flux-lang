@@ -5,19 +5,27 @@ use rustc_hash::FxHashMap;
 
 use crate::{FnPtrRegions, FnRegion, Signatures, Ty, TyKind};
 
-/// Identity after substitution and normalization. Hash collisions are resolved
-/// by full structural key equality before an ID is assigned.
+/// Identity after substitution and normalization, with stable fingerprints
+/// and full structural key checks for fingerprint collisions.
 pub fn of(items: &ItemTree, sigs: &Signatures, ty: Ty) -> Result<u128, &'static str> {
-    let key = canonical(items, sigs, ty, 0)?;
-    let mut ids = sigs.type_ids.0.lock().unwrap();
-    let next = ids.len() as u128 + 1;
-    Ok(*ids.entry(key).or_insert(next))
+    let key = canonical(items, sigs, ty, 0, &mut FxHashMap::default())?;
+    sigs.type_ids.of(items, key)
 }
 
-fn canonical(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> Result<Ty, &'static str> {
+fn canonical(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    depth: u32,
+    memo: &mut FxHashMap<(Ty, u32), Ty>,
+) -> Result<Ty, &'static str> {
     if depth > 128 {
         return Err("type identity recursion limit reached");
     }
+    if let Some(&result) = memo.get(&(ty, depth)) {
+        return Ok(result);
+    }
+    let input = ty;
     let ty = crate::traits::reveal(sigs, crate::traits::normalize(items, sigs, &[], ty));
     match ty.kind() {
         TyKind::Error
@@ -30,7 +38,7 @@ fn canonical(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> Result<
         TyKind::FnPtr(mut sig) => {
             let mut types = Vec::new();
             for &ty in sig.inputs_output {
-                types.push(canonical(items, sigs, ty, depth + 1)?);
+                types.push(canonical(items, sigs, ty, depth + 1, memo)?);
             }
             let mut rows = Vec::new();
             if let Some(recipe) = sig.regions {
@@ -76,17 +84,78 @@ fn canonical(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> Result<
                 return Err("function pointer identity requires region metadata");
             }
             sig.inputs_output = Ty::list(&types);
-            return Ok(Ty::new(TyKind::FnPtr(sig)));
+            let result = Ty::new(TyKind::FnPtr(sig));
+            memo.insert((input, depth), result);
+            return Ok(result);
         }
         _ => {}
     }
     let mut failure = None;
-    let ty = ty.map_children(|child| match canonical(items, sigs, child, depth + 1) {
-        Ok(child) => child,
-        Err(error) => {
-            failure = Some(error);
-            Ty::ERROR
+    let ty = ty.map_children(
+        |child| match canonical(items, sigs, child, depth + 1, memo) {
+            Ok(child) => child,
+            Err(error) => {
+                failure = Some(error);
+                Ty::ERROR
+            }
+        },
+    );
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    memo.insert((input, depth), ty);
+    Ok(ty)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn repeated_tuple_dag_canonicalization_visits_distinct_type_depth_pairs() {
+        let mut ty = Ty::BOOL;
+        for _ in 0..40 {
+            ty = Ty::tuple(&[ty, ty]);
         }
-    });
-    failure.map_or(Ok(ty), Err)
+        let items = ItemTree::default();
+        let sigs = Signatures::default();
+        let mut memo = FxHashMap::default();
+        assert_eq!(canonical(&items, &sigs, ty, 0, &mut memo).unwrap(), ty);
+        assert_eq!(
+            memo.len(),
+            41,
+            "canonicalization should cache each DAG node"
+        );
+        assert_eq!(
+            of(&items, &sigs, ty).unwrap(),
+            flux_ty_ir::type_identity::stable_id(&items, &[], ty).unwrap()
+        );
+    }
+    #[test]
+    fn memoized_shallow_subtree_does_not_skip_deeper_recursion_limit() {
+        let shared = Ty::raw_ptr(crate::Mutability::Not, Ty::BOOL);
+        let mut deep = shared;
+        for _ in 0..127 {
+            deep = Ty::raw_ptr(crate::Mutability::Not, deep);
+        }
+        let root = Ty::tuple(&[shared, deep]);
+        let mut memo = FxHashMap::default();
+        assert_eq!(
+            canonical(
+                &ItemTree::default(),
+                &Signatures::default(),
+                root,
+                0,
+                &mut memo
+            ),
+            Err("type identity recursion limit reached")
+        );
+        assert!(
+            memo.contains_key(&(shared, 1)),
+            "shallow occurrence must succeed before deep occurrence"
+        );
+        assert!(
+            !memo.contains_key(&(shared, 128)),
+            "failed deep occurrence must not be cached"
+        );
+    }
 }

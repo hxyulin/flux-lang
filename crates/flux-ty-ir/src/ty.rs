@@ -790,6 +790,17 @@ impl Ty {
         })
     }
 
+    /// Internal memoization key; never written as an artifact type reference.
+    pub(crate) fn flib_cache_key(self) -> u32 {
+        self.0
+    }
+
+    /// Resolves only a live interner handle returned by a decoder's private cache.
+    pub(crate) fn from_flib_cache_key(raw: u32) -> Option<Self> {
+        LazyLock::force(&INTERNER);
+        KINDS.get(raw).map(|_| Self(raw))
+    }
+
     pub fn kind(self) -> TyKind {
         self.entry().0
     }

@@ -6,6 +6,7 @@
 //! Everything here is data and pure functions over it. Resolving types
 //! from the item tree is `flux-ty`'s, and trait solving is `flux-solve`'s.
 
+pub mod flib;
 pub mod fn_regions;
 pub mod impl_index;
 pub mod in_scope;
@@ -202,7 +203,7 @@ impl Signatures {
     /// The lookup indexes are rebuilt for the extended item tree.
     pub fn fork_for_extension(&self) -> Self {
         Self {
-            type_ids: self.type_ids.clone(),
+            type_ids: self.type_ids.fork(),
             sized_dispatch: self.sized_dispatch.clone(),
             unions: self.unions.clone(),
             fns: self.fns.clone(),

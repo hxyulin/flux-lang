@@ -1,12 +1,589 @@
-//! Opaque runtime type identities. Keys are types, never diagnostic spellings.
+//! Stable runtime type identities shared by evaluation and monomorphization.
 
 use std::sync::{Arc, Mutex};
 
+use flux_hir::flib::{Encode, Encoder, IdKind, IdMap};
+use flux_hir::{CrateId, ItemTree};
 use rustc_hash::FxHashMap;
 
-use crate::Ty;
+use crate::{ClosureOwner, Ty, TyKind};
 
-/// A collision-free table shared by signature snapshots, evaluators and mono.
-/// The numeric IDs are private to the compiled graph, not an external ABI.
+/// Exact identities supplied by an artifact compilation graph.
+pub type CrateHashes = Vec<(CrateId, [u8; 32])>;
+
+/// Shared identity cache and the exact crate hashes of a compilation graph.
 #[derive(Debug, Clone, Default)]
-pub struct TypeIds(pub Arc<Mutex<FxHashMap<Ty, u128>>>);
+pub struct TypeIds(
+    pub Arc<Mutex<FxHashMap<Ty, u128>>>,
+    pub Arc<Mutex<CrateHashes>>,
+);
+
+impl TypeIds {
+    /// Creates an independent identity cache for another compilation graph.
+    pub fn fork(&self) -> Self {
+        Self(
+            Arc::new(Mutex::new(FxHashMap::default())),
+            Arc::new(Mutex::new(
+                self.1.lock().expect("type identity lock poisoned").clone(),
+            )),
+        )
+    }
+
+    /// Installs crate identities before constant evaluation or code generation.
+    pub fn set_crate_hashes(&self, hashes: &[(CrateId, [u8; 32])]) {
+        *self.1.lock().expect("type identity lock poisoned") = hashes.to_vec();
+        self.0.lock().expect("type identity lock poisoned").clear();
+    }
+
+    /// Assigns a deterministic ID to an already normalized type.
+    /// A fingerprint collision is an internal error rather than an alias.
+    pub fn of(&self, items: &ItemTree, canonical_ty: Ty) -> Result<u128, &'static str> {
+        if let Some(&id) = self
+            .0
+            .lock()
+            .expect("type identity lock poisoned")
+            .get(&canonical_ty)
+        {
+            return Ok(id);
+        }
+        let hashes = self.1.lock().expect("type identity lock poisoned");
+        let fingerprint = stable_id(items, &hashes, canonical_ty)?;
+        let mut ids = self.0.lock().expect("type identity lock poisoned");
+        if ids
+            .iter()
+            .any(|(&key, &id)| id == fingerprint && key != canonical_ty)
+        {
+            return Err("type identity fingerprint collision");
+        }
+        ids.insert(canonical_ty, fingerprint);
+        Ok(fingerprint)
+    }
+}
+
+/// Stable definition identity: owning crate, definition path and disambiguator.
+/// The ordinal disambiguates repeated names, impl methods and anonymous items.
+/// Explicit hashes carry package/source/configuration identity for artifacts.
+pub fn definition_key(
+    items: &ItemTree,
+    hashes: &[(CrateId, [u8; 32])],
+    kind: IdKind,
+    raw: u32,
+) -> Result<Vec<u8>, &'static str> {
+    definition_key_inner(items, hashes, kind, raw, None)
+}
+
+/// Encodes a definition using a crate-local ordinal computed by the caller.
+/// This avoids rescanning arenas when naming every definition in a crate.
+pub fn definition_key_with_ordinal(
+    items: &ItemTree,
+    hashes: &[(CrateId, [u8; 32])],
+    kind: IdKind,
+    raw: u32,
+    ordinal: u32,
+) -> Result<Vec<u8>, &'static str> {
+    definition_key_inner(items, hashes, kind, raw, Some(ordinal as usize))
+}
+
+fn definition_key_inner(
+    items: &ItemTree,
+    hashes: &[(CrateId, [u8; 32])],
+    kind: IdKind,
+    raw: u32,
+    ordinal: Option<usize>,
+) -> Result<Vec<u8>, &'static str> {
+    let (krate, ordinal) = match kind {
+        IdKind::Struct => {
+            let item = items
+                .structs
+                .get(flux_hir::StructId::from_raw(raw))
+                .ok_or("invalid type definition")?;
+            let krate = items.modules[item.loc.module].krate;
+            (
+                krate,
+                ordinal.unwrap_or_else(|| {
+                    items
+                        .structs
+                        .iter()
+                        .take(raw as usize)
+                        .filter(|(_, i)| items.modules[i.loc.module].krate == krate)
+                        .count()
+                }),
+            )
+        }
+        IdKind::Trait => {
+            let item = items
+                .traits
+                .get(flux_hir::TraitId::from_raw(raw))
+                .ok_or("invalid trait definition")?;
+            let krate = items.modules[item.loc.module].krate;
+            (
+                krate,
+                ordinal.unwrap_or_else(|| {
+                    items
+                        .traits
+                        .iter()
+                        .take(raw as usize)
+                        .filter(|(_, i)| items.modules[i.loc.module].krate == krate)
+                        .count()
+                }),
+            )
+        }
+        IdKind::Function => {
+            let item = items
+                .functions
+                .get(flux_hir::FunctionId::from_raw(raw))
+                .ok_or("invalid function definition")?;
+            let krate = items.modules[item.loc.module].krate;
+            (
+                krate,
+                ordinal.unwrap_or_else(|| {
+                    items
+                        .functions
+                        .iter()
+                        .take(raw as usize)
+                        .filter(|(_, i)| items.modules[i.loc.module].krate == krate)
+                        .count()
+                }),
+            )
+        }
+        IdKind::Const => {
+            let item = items
+                .consts
+                .get(flux_hir::ConstId::from_raw(raw))
+                .ok_or("invalid constant definition")?;
+            let krate = items.modules[item.loc.module].krate;
+            (
+                krate,
+                ordinal.unwrap_or_else(|| {
+                    items
+                        .consts
+                        .iter()
+                        .take(raw as usize)
+                        .filter(|(_, i)| items.modules[i.loc.module].krate == krate)
+                        .count()
+                }),
+            )
+        }
+        _ => return Err("unsupported type definition kind"),
+    };
+    let mut e = Encoder::new();
+    e.write(b"flux-definition-v1");
+    if let Some((_, hash)) = hashes.iter().find(|(id, _)| *id == krate) {
+        e.write(hash);
+    } else {
+        // Standalone graphs have no package hash yet. Paths disambiguate
+        // same-named source crates; artifact drivers always provide hashes.
+        let data = &items.crates[krate.0 as usize];
+        data.name
+            .encode(&mut e)
+            .map_err(|_| "invalid crate identity")?;
+        let root = &items.modules[data.root];
+        let file = items
+            .files
+            .get(&root.file)
+            .ok_or("missing crate root source identity")?;
+        file.path.encode(&mut e).map_err(|_| "invalid crate path")?;
+        let source_hash = flux_hir::flib::digest(file.parse.tree().text().as_bytes());
+        e.write(&source_hash);
+        format!("{:?}", data.edition)
+            .encode(&mut e)
+            .map_err(|_| "invalid crate edition")?;
+    }
+    let (module, name, file, range) = match kind {
+        IdKind::Struct => {
+            let i = &items.structs[flux_hir::StructId::from_raw(raw)];
+            (i.loc.module, i.name.to_string(), i.loc.file, i.def_range)
+        }
+        IdKind::Trait => {
+            let i = &items.traits[flux_hir::TraitId::from_raw(raw)];
+            (i.loc.module, i.name.to_string(), i.loc.file, i.def_range)
+        }
+        IdKind::Function => {
+            let i = &items.functions[flux_hir::FunctionId::from_raw(raw)];
+            (
+                i.loc.module,
+                items.function_path(i),
+                i.loc.file,
+                i.def_range,
+            )
+        }
+        IdKind::Const => {
+            let i = &items.consts[flux_hir::ConstId::from_raw(raw)];
+            (
+                i.loc.module,
+                items.const_name(flux_hir::ConstId::from_raw(raw)),
+                i.loc.file,
+                i.def_range,
+            )
+        }
+        _ => return Err("unsupported type definition kind"),
+    };
+    let mut modules = Vec::new();
+    let mut current = Some(module);
+    while let Some(id) = current {
+        let module = &items.modules[id];
+        let span = if module.block.is_some() {
+            Some(span_key(items, module.file, module.def_range)?)
+        } else {
+            None
+        };
+        modules.push((module.name, span));
+        current = module.parent;
+    }
+    modules.reverse();
+    modules
+        .encode(&mut e)
+        .map_err(|_| "invalid definition path")?;
+    name.encode(&mut e).map_err(|_| "invalid definition name")?;
+    span_key(items, file, range)?
+        .encode(&mut e)
+        .map_err(|_| "invalid definition range")?;
+    let tag = match kind {
+        IdKind::Struct => 0u8,
+        IdKind::Trait => 1,
+        IdKind::Function => 2,
+        IdKind::Const => 3,
+        _ => unreachable!(),
+    };
+    tag.encode(&mut e).map_err(|_| "invalid type definition")?;
+    u32::try_from(ordinal)
+        .map_err(|_| "type definition index overflow")?
+        .encode(&mut e)
+        .map_err(|_| "invalid type definition")?;
+    Ok(e.into_bytes())
+}
+
+fn span_key(
+    items: &ItemTree,
+    file: flux_hir::FileId,
+    range: flux_syntax::TextRange,
+) -> Result<(std::path::PathBuf, flux_syntax::TextRange), &'static str> {
+    let (file, range) = items.source_span(file, range);
+    let source = items
+        .files
+        .get(&file)
+        .ok_or("missing definition source identity")?;
+    Ok((source.path.clone(), range))
+}
+
+/// Encodes a fully normalized type with process-independent references.
+/// Normalization and function-pointer binder canonicalization remain solver work.
+pub fn stable_key(
+    items: &ItemTree,
+    hashes: &[(CrateId, [u8; 32])],
+    canonical_ty: Ty,
+) -> Result<Vec<u8>, &'static str> {
+    let mut refs = std::collections::BTreeSet::new();
+    let mut pending = vec![(canonical_ty, 0u32)];
+    let mut visited = rustc_hash::FxHashSet::default();
+    while let Some((ty, depth)) = pending.pop() {
+        if !visited.insert(ty) {
+            continue;
+        }
+        if depth > 128 {
+            return Err("type identity recursion limit reached");
+        }
+        match ty.kind() {
+            TyKind::Adt(adt, _) => {
+                refs.insert((IdKind::Struct, adt.strukt.into_raw()));
+            }
+            TyKind::Dynamic(d) => {
+                refs.insert((IdKind::Trait, d.trait_.into_raw()));
+                for auto in d.auto_traits {
+                    refs.insert((IdKind::Trait, auto.trait_.into_raw()));
+                    for &arg in auto.args {
+                        pending.push((arg, depth + 1));
+                    }
+                }
+            }
+            TyKind::FnDef(f) => {
+                refs.insert((IdKind::Function, f.function.into_raw()));
+            }
+            TyKind::Closure(id, _) => {
+                refs.insert(match id.owner {
+                    ClosureOwner::Function(f) => (IdKind::Function, f.into_raw()),
+                    ClosureOwner::Const(c) => (IdKind::Const, c.into_raw()),
+                });
+            }
+            TyKind::Alias(_)
+            | TyKind::Opaque(_)
+            | TyKind::Param(_)
+            | TyKind::Infer(_)
+            | TyKind::Error => return Err("type identity requires a fully resolved type"),
+            _ => {}
+        }
+        pending.extend(ty.children().map(|child| (child, depth + 1)));
+    }
+    let mut definitions = Vec::new();
+    for (kind, raw) in refs {
+        definitions.push((definition_key(items, hashes, kind, raw)?, kind, raw));
+    }
+    definitions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    let mut ids = IdMap::strict();
+    let mut prefix = Encoder::new();
+    prefix.write(b"flux-type-id-v1");
+    definitions
+        .len()
+        .encode(&mut prefix)
+        .map_err(|_| "type identity overflow")?;
+    for (index, (key, kind, raw)) in definitions.into_iter().enumerate() {
+        key.encode(&mut prefix)
+            .map_err(|_| "type identity overflow")?;
+        ids.insert(kind, raw, index as u32);
+    }
+    // Auto-trait ordering in the interner may follow process-local IDs.
+    fn ordered(ty: Ty, ids: &IdMap, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
+        if let Some(&ordered) = memo.get(&ty) {
+            return ordered;
+        }
+        let original = ty;
+        let ty = ty.map_children(|child| ordered(child, ids, memo));
+        if let TyKind::Dynamic(mut d) = ty.kind() {
+            let mut autos = d.auto_traits.to_vec();
+            autos.sort_unstable_by_key(|tr| {
+                ids.get(IdKind::Trait, tr.trait_.into_raw())
+                    .unwrap_or(u32::MAX)
+            });
+            d.auto_traits = crate::ty::object_auto_traits(&autos);
+            let ty = Ty::new(TyKind::Dynamic(d));
+            memo.insert(original, ty);
+            return ty;
+        }
+        memo.insert(original, ty);
+        ty
+    }
+    let mut e = Encoder::with_ids(ids);
+    ordered(canonical_ty, &e.ids, &mut FxHashMap::default())
+        .encode(&mut e)
+        .map_err(|_| "invalid type identity metadata")?;
+    prefix.write(&e.into_bytes());
+    Ok(prefix.into_bytes())
+}
+
+/// Fingerprints canonical structural type bytes using 128 bits of SHA-256.
+pub fn stable_id(
+    items: &ItemTree,
+    hashes: &[(CrateId, [u8; 32])],
+    canonical_ty: Ty,
+) -> Result<u128, &'static str> {
+    let digest = flux_hir::flib::digest(&stable_key(items, hashes, canonical_ty)?);
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    Ok(u128::from_le_bytes(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{IntTy, Mutability};
+    use flux_intern::Symbol;
+
+    #[test]
+    fn query_order_does_not_assign_runtime_identity() {
+        let items = ItemTree::default();
+        let first = TypeIds::default();
+        let second = TypeIds::default();
+        let a = Ty::tuple(&[Ty::BOOL, Ty::int(IntTy::U32)]);
+        let b = Ty::raw_ptr(Mutability::Not, Ty::BOOL);
+        let first_a = first.of(&items, a).unwrap();
+        let first_b = first.of(&items, b).unwrap();
+        let second_b = second.of(&items, b).unwrap();
+        let second_a = second.of(&items, a).unwrap();
+        assert_eq!(first_a, second_a);
+        assert_eq!(first_b, second_b);
+        assert_ne!(first_a, first_b);
+    }
+
+    #[test]
+    fn crate_hash_and_local_identity_survive_graph_offsets() {
+        fn graph(extra: bool) -> (ItemTree, Ty, CrateId) {
+            let mut db = flux_hir::SourceDb::new();
+            let mut sources = Vec::new();
+            if extra {
+                let root = db.add("/unrelated/lib.rs", "pub struct Other; fn unrelated() {}\n");
+                sources.push(flux_hir::SourceCrate {
+                    root,
+                    name: Symbol::intern("unrelated"),
+                    dependencies: vec![],
+                });
+            }
+            let root = db.add("/packet/lib.rs", "pub struct Packet;\n");
+            sources.push(flux_hir::SourceCrate {
+                root,
+                name: Symbol::intern("packet"),
+                dependencies: vec![],
+            });
+            let hir = flux_hir::lower_sources(&mut db, &sources);
+            assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+            let (id, item) = hir
+                .items
+                .structs
+                .iter()
+                .find(|(_, s)| {
+                    s.name.as_str() == "Packet"
+                        && hir.items.crates[hir.items.modules[s.loc.module].krate.0 as usize]
+                            .name
+                            .as_str()
+                            == "packet"
+                })
+                .unwrap();
+            let krate = hir.items.modules[item.loc.module].krate;
+            let ty = Ty::adt(id, item.name, &[]);
+            (hir.items, ty, krate)
+        }
+        let (a, ta, ka) = graph(false);
+        let (b, tb, kb) = graph(true);
+        assert_ne!(
+            ta,
+            tb,
+            "test must exercise a shifted arena index: {:?} {:?} counts {} {}",
+            ta.kind(),
+            tb.kind(),
+            a.structs.len(),
+            b.structs.len()
+        );
+        let hash = [7; 32];
+        let TyKind::Adt(adt, _) = ta.kind() else {
+            panic!("expected test ADT");
+        };
+        assert_eq!(
+            definition_key(&a, &[(ka, hash)], IdKind::Struct, adt.strukt.into_raw()).unwrap(),
+            definition_key_with_ordinal(
+                &a,
+                &[(ka, hash)],
+                IdKind::Struct,
+                adt.strukt.into_raw(),
+                0
+            )
+            .unwrap()
+        );
+        let ia = stable_id(&a, &[(ka, hash)], ta).unwrap();
+        let ib = stable_id(&b, &[(kb, hash)], tb).unwrap();
+        assert_eq!(ia, ib);
+        assert_ne!(ia, stable_id(&a, &[(ka, [8; 32])], ta).unwrap());
+    }
+
+    #[test]
+    fn fingerprint_collision_is_reported() {
+        let items = ItemTree::default();
+        let ids = TypeIds::default();
+        let fingerprint = stable_id(&items, &[], Ty::BOOL).unwrap();
+        ids.0
+            .lock()
+            .unwrap()
+            .insert(Ty::int(IntTy::U8), fingerprint);
+        assert_eq!(
+            ids.of(&items, Ty::BOOL),
+            Err("type identity fingerprint collision")
+        );
+    }
+}
+
+#[cfg(test)]
+mod process_tests {
+    use super::*;
+    use crate::{FnPtrRegions, FnRegion, FnSigTy, Mutability};
+
+    #[test]
+    fn identity_matches_fresh_process() {
+        let items = ItemTree::default();
+        let ty = Ty::tuple(&[Ty::BOOL, Ty::raw_ptr(Mutability::Mut, Ty::CHAR)]);
+        let id = stable_id(&items, &[], ty).unwrap();
+        if let Ok(expected) = std::env::var("FLUX_TYPE_ID_CHILD_EXPECTED") {
+            assert_eq!(id.to_string(), expected);
+            return;
+        }
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "type_identity::process_tests::identity_matches_fresh_process",
+            ])
+            .env("FLUX_TYPE_ID_CHILD_EXPECTED", id.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
+
+    #[test]
+    fn callable_binders_contribute_to_identity() {
+        let items = ItemTree::default();
+        let reference = Ty::new(TyKind::Ref(Mutability::Not, Ty::BOOL));
+        let sig = |rows: &[Vec<FnRegion>]| {
+            Ty::new(TyKind::FnPtr(FnSigTy {
+                inputs_output: Ty::list(&[reference, reference]),
+                is_unsafe: false,
+                is_c: false,
+                regions: Some(FnPtrRegions::intern(1, 0, rows, &[])),
+            }))
+        };
+        let bound = sig(&[vec![FnRegion::Bound(0)], vec![FnRegion::Bound(0)]]);
+        let static_return = sig(&[vec![FnRegion::Bound(0)], vec![FnRegion::Static]]);
+        assert_ne!(
+            stable_id(&items, &[], bound).unwrap(),
+            stable_id(&items, &[], static_return).unwrap()
+        );
+    }
+}
+
+#[cfg(test)]
+mod source_identity_tests {
+    use super::*;
+    use flux_intern::Symbol;
+
+    #[test]
+    fn same_name_crates_in_one_directory_keep_distinct_identities() {
+        let mut db = flux_hir::SourceDb::new();
+        let first = db.add("/same/first.rs", "pub struct SourceIdentity;\n");
+        let second = db.add("/same/second.rs", "pub struct SourceIdentity;\n");
+        let sources = [
+            flux_hir::SourceCrate {
+                root: first,
+                name: Symbol::intern("same_name"),
+                dependencies: vec![],
+            },
+            flux_hir::SourceCrate {
+                root: second,
+                name: Symbol::intern("same_name"),
+                dependencies: vec![],
+            },
+        ];
+        let hir = flux_hir::lower_sources(&mut db, &sources);
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let identities: Vec<_> = hir
+            .items
+            .structs
+            .iter()
+            .filter(|(_, s)| s.name.as_str() == "SourceIdentity")
+            .map(|(id, s)| stable_id(&hir.items, &[], Ty::adt(id, s.name, &[])).unwrap())
+            .collect();
+        assert_eq!(identities.len(), 2);
+        assert_ne!(identities[0], identities[1]);
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+    #[test]
+    fn extension_graphs_do_not_share_hash_configuration() {
+        let source = TypeIds::default();
+        source.set_crate_hashes(&[(CrateId(0), [1; 32])]);
+        let fork = source.fork();
+        let same_graph = source.clone();
+        fork.set_crate_hashes(&[(CrateId(0), [2; 32])]);
+        assert_eq!(
+            source.1.lock().unwrap().as_slice(),
+            &[(CrateId(0), [1; 32])]
+        );
+        same_graph.set_crate_hashes(&[(CrateId(0), [3; 32])]);
+        assert_eq!(
+            source.1.lock().unwrap().as_slice(),
+            &[(CrateId(0), [3; 32])]
+        );
+        assert_eq!(fork.1.lock().unwrap().as_slice(), &[(CrateId(0), [2; 32])]);
+    }
+}
