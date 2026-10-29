@@ -141,3 +141,29 @@ impl LoadedTypes {
         crate::signatures_from(items, self.signatures.clone(), self.source_counts, lens)
     }
 }
+
+/// Chooses the checked owner before inference can ask for a source body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyOrigin {
+    Library,
+    Imported,
+    Source,
+}
+
+/// Embedded library ownership takes precedence over user artifact ownership.
+pub fn body_origin(
+    library: Option<&crate::LibraryTypes>,
+    loaded: Option<&LoadedTypes>,
+    owner: crate::ClosureOwner,
+) -> BodyOrigin {
+    if library.is_some_and(|library| library.owns(owner)) {
+        return BodyOrigin::Library;
+    }
+    if loaded.is_some_and(|loaded| match owner {
+        crate::ClosureOwner::Function(f) => loaded.owns_function(f),
+        crate::ClosureOwner::Const(c) => loaded.owns_const(c),
+    }) {
+        return BodyOrigin::Imported;
+    }
+    BodyOrigin::Source
+}

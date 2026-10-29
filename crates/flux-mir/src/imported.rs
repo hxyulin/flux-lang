@@ -169,3 +169,72 @@ impl ImportedMir {
         Ok(())
     }
 }
+
+/// The checked provider for an owner, before falling back to source MIR.
+pub(crate) enum SharedMir<'a> {
+    Library(&'static crate::library::LibraryMir),
+    Imported(&'a ImportedMir),
+}
+
+impl ImportedMir {
+    /// Whether an owner belongs to a decoded user crate, excluding the core prefix.
+    pub fn owns(&self, owner: ClosureOwner, core: ItemCounts) -> bool {
+        match owner {
+            ClosureOwner::Function(id) => {
+                (core.functions..self.source_counts.functions).contains(&id.into_raw())
+            }
+            ClosureOwner::Const(id) => {
+                (core.consts..self.source_counts.consts).contains(&id.into_raw())
+            }
+        }
+    }
+
+    pub(crate) fn built(&self, owner: ClosureOwner) -> Option<crate::build::Built> {
+        let body = match owner {
+            ClosureOwner::Function(id) => self.function(id),
+            ClosureOwner::Const(id) => self.konst(id),
+        }?;
+        Some(crate::build::Built {
+            body: body.clone(),
+            closures: self
+                .closures(owner)
+                .map(|((id, kind), body)| crate::build::BuiltClosure {
+                    id,
+                    kind,
+                    body: body.clone(),
+                    shims: Vec::new(),
+                })
+                .collect(),
+            closure_errors: Vec::new(),
+            errors: Vec::new(),
+        })
+    }
+}
+
+impl<'a> SharedMir<'a> {
+    pub(crate) fn of(
+        hir: &flux_hir::Hir,
+        imported: Option<&'a ImportedMir>,
+        owner: ClosureOwner,
+    ) -> Option<Self> {
+        if let Some(library) =
+            crate::library::LibraryMir::of(hir).filter(|library| library.owns(owner))
+        {
+            Some(Self::Library(library))
+        } else {
+            imported
+                .filter(|imported| imported.owns(owner, hir.items.core))
+                .map(Self::Imported)
+        }
+    }
+
+    pub(crate) fn built(&self, owner: ClosureOwner) -> Option<crate::build::Built> {
+        match self {
+            Self::Library(library) => match owner {
+                ClosureOwner::Function(id) => library.function(id).cloned(),
+                ClosureOwner::Const(id) => Some(library.konst(id).clone()),
+            },
+            Self::Imported(imported) => imported.built(owner),
+        }
+    }
+}

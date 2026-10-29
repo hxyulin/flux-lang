@@ -4,13 +4,35 @@
 //! function that infers the constants and the `const fn`s they call,
 //! builds their MIR and evaluates them, as rustc's queries do.
 
+use crate::imported::{ImportedMir, SharedMir};
 use flux_arena::ArenaMap;
 use flux_hir::{ConstId, Diagnostic, FunctionId, Hir};
+use flux_ty::flib::{BodyOrigin, LoadedTypes, body_origin};
 use flux_ty::{ClosureOwner, LibraryTypes, Signatures, TypedFile};
 
 /// Type-checks `hir`, evaluating the constants array lengths name.
 pub fn check_file(hir: &Hir) -> TypedFile {
     flux_ty::check_file_with(hir, &eval_lens)
+}
+
+/// Checks source with decoded dependency interfaces, MIR and constant values.
+/// The driver computes imported required functions once for all compiler stages.
+pub fn check_file_from(
+    hir: &Hir,
+    loaded: &LoadedTypes,
+    imported: &ImportedMir,
+    required_functions: &[FunctionId],
+) -> TypedFile {
+    flux_ty::check_from(hir, loaded, required_functions, &|hir, sigs, wanted| {
+        eval_lens_from(
+            hir,
+            sigs,
+            wanted,
+            Some(loaded),
+            Some(imported),
+            required_functions,
+        )
+    })
 }
 
 /// The values of `wanted`, each `None` if its evaluation failed (the
@@ -23,33 +45,64 @@ fn eval_lens(
     sigs: &Signatures,
     wanted: &[ConstId],
 ) -> (Vec<(ConstId, Option<u128>)>, Vec<Diagnostic>) {
+    eval_lens_from(hir, sigs, wanted, None, None, &[])
+}
+
+fn eval_lens_from(
+    hir: &Hir,
+    sigs: &Signatures,
+    wanted: &[ConstId],
+    loaded: Option<&LoadedTypes>,
+    imported: Option<&ImportedMir>,
+    required_functions: &[FunctionId],
+) -> (Vec<(ConstId, Option<u128>)>, Vec<Diagnostic>) {
     let items = &hir.items;
-    // The embedded libraries' MIR is built once per process.
-    let library = crate::library::LibraryMir::of(hir);
-    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
+    let shared = |owner| SharedMir::of(hir, imported, owner);
     let mut sigs = sigs.clone();
     let mut done: Vec<(ConstId, Option<u128>)> = Vec::new();
     let mut diagnostics = Vec::new();
     let mut pending: Vec<ConstId> = wanted.to_vec();
     while !pending.is_empty() {
-        let typed = infer_consts(hir, sigs.clone());
+        let typed = infer_consts(hir, sigs.clone(), loaded, required_functions);
         let clean = typed.consts.iter().all(|(_, r)| r.diagnostics.is_empty())
             && typed.bodies.iter().all(|(_, r)| r.diagnostics.is_empty());
         let mut consts = ArenaMap::new();
+        if let Some(imported) = imported {
+            for (id, body) in imported.mir().consts.iter() {
+                consts.insert(id, body.clone());
+            }
+        }
         for (id, result) in typed.consts.iter() {
             if result.diagnostics.is_empty() && result.missing_lens.is_empty() {
                 let body = match shared(ClosureOwner::Const(id)) {
-                    Some(library) => library.konst(id).body.clone(),
+                    Some(provider) => {
+                        provider
+                            .built(ClosureOwner::Const(id))
+                            .expect("inferred constant has checked provider MIR")
+                            .body
+                    }
                     None => crate::build::build_const(hir, &typed, id),
                 };
                 consts.insert(id, body);
             }
         }
         let mut bodies = ArenaMap::new();
+        if let Some(imported) = imported {
+            for (id, body) in imported.mir().bodies.iter() {
+                if items.functions[id].is_const {
+                    bodies.insert(id, body.clone());
+                }
+            }
+        }
         for (id, result) in typed.bodies.iter() {
             if result.diagnostics.is_empty() && result.missing_lens.is_empty() {
                 let body = match shared(ClosureOwner::Function(id)) {
-                    Some(library) => library.function(id).expect("it has a body").body.clone(),
+                    Some(provider) => {
+                        provider
+                            .built(ClosureOwner::Function(id))
+                            .expect("inferred function has checked provider MIR")
+                            .body
+                    }
                     None => crate::build::build(hir, &typed, id),
                 };
                 bodies.insert(id, body);
@@ -63,8 +116,13 @@ fn eval_lens(
                 .chain(bodies.iter().map(|(_, b)| b))
                 .all(|b| b.bugs.is_empty());
         let names = |id: ConstId| items.const_name(id);
-        let mut evaluator =
-            crate::eval::Evaluator::new(items, &typed.sigs, &bodies, &consts, &names);
+        let evaluator = crate::eval::Evaluator::new(items, &typed.sigs, &bodies, &consts, &names);
+        let mut evaluator = match imported {
+            Some(imported) => {
+                evaluator.with_imported(&imported.mir().const_values, &imported.mir().discriminants)
+            }
+            None => evaluator,
+        };
         let mut waiting = Vec::new();
         let mut progress = false;
         for &c in &pending {
@@ -138,9 +196,14 @@ fn eval_lens(
 
 /// Every constant's value inferred against `sigs`, and the functions
 /// they may call.
-fn infer_consts(hir: &Hir, sigs: Signatures) -> TypedFile {
+fn infer_consts(
+    hir: &Hir,
+    sigs: Signatures,
+    loaded: Option<&LoadedTypes>,
+    required_functions: &[FunctionId],
+) -> TypedFile {
     let items = &hir.items;
-    let mut queue: Vec<FunctionId> = Vec::new();
+    let mut queue: Vec<FunctionId> = required_functions.to_vec();
     let reached = |result: &flux_ty::InferenceResult, queue: &mut Vec<FunctionId>| {
         let called = result.calls.iter().map(|(_, i)| i.function);
         let methods = result.methods.iter().map(|(_, m)| m.function);
@@ -151,12 +214,16 @@ fn infer_consts(hir: &Hir, sigs: Signatures) -> TypedFile {
     };
     // The embedded libraries' bodies are inferred once per process.
     let library = LibraryTypes::of(hir);
-    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
+    let origin = |owner| body_origin(library, loaded, owner);
     let mut consts = ArenaMap::new();
     for (id, (body, source_map)) in hir.const_bodies() {
-        let result = match shared(ClosureOwner::Const(id)) {
-            Some(library) => library.konst(id).clone(),
-            None => flux_ty::infer_const(items, &sigs, id, body, source_map),
+        let result = match origin(ClosureOwner::Const(id)) {
+            BodyOrigin::Library => library
+                .expect("library ownership has a provider")
+                .konst(id)
+                .clone(),
+            BodyOrigin::Imported => continue,
+            BodyOrigin::Source => flux_ty::infer_const(items, &sigs, id, body, source_map),
         };
         reached(&result, &mut queue);
         consts.insert(id, result);
@@ -166,12 +233,15 @@ fn infer_consts(hir: &Hir, sigs: Signatures) -> TypedFile {
         if bodies.get(id).is_some() || !items.functions[id].is_const {
             continue;
         }
-        let result = match shared(ClosureOwner::Function(id)) {
-            Some(library) => match library.body(id) {
-                Some(result) => result.clone(),
-                None => continue,
-            },
-            None => {
+        let result = match origin(ClosureOwner::Function(id)) {
+            BodyOrigin::Library => {
+                match library.expect("library ownership has a provider").body(id) {
+                    Some(result) => result.clone(),
+                    None => continue,
+                }
+            }
+            BodyOrigin::Imported => continue,
+            BodyOrigin::Source => {
                 let Some((body, source_map)) = hir.body(id) else {
                     continue;
                 };

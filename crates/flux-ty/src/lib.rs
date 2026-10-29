@@ -588,19 +588,30 @@ fn unresolved_trait(items: &ItemTree) -> bool {
 /// literals: evaluating others needs MIR, which
 /// [`check_file_with`]'s caller provides.
 pub fn check_file(hir: &Hir) -> TypedFile {
-    check(hir, false, &literal_lens)
+    check(hir, false, &literal_lens, None, &[])
 }
 
 /// Like [`check_file`], with every body of `core` too: for tests of
 /// `core` itself.
 pub fn check_file_all(hir: &Hir) -> TypedFile {
-    check(hir, true, &literal_lens)
+    check(hir, true, &literal_lens, None, &[])
 }
 
 /// Like [`check_file`], with `eval` evaluating the constants array
 /// lengths name.
 pub fn check_file_with(hir: &Hir, eval: LenEvaluator<'_>) -> TypedFile {
-    check(hir, false, eval)
+    check(hir, false, eval, None, &[])
+}
+
+/// Checks source bodies against loaded interfaces without inferring dependency bodies.
+/// Required roots are computed once from imported MIR by the compilation driver.
+pub fn check_from(
+    hir: &Hir,
+    loaded: &flib::LoadedTypes,
+    required_functions: &[FunctionId],
+    eval: LenEvaluator<'_>,
+) -> TypedFile {
+    check(hir, false, eval, Some(loaded), required_functions)
 }
 
 /// The values of constants whose values are integer literals: what
@@ -667,13 +678,31 @@ fn literal_values<'b>(
 /// constants their array lengths name, if any: then they are resolved
 /// twice, the first time to type-check the constants.
 fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures, Vec<Diagnostic>) {
+    lens_signatures_from(hir, all, eval, None)
+}
+
+fn lens_signatures_from(
+    hir: &Hir,
+    all: bool,
+    eval: LenEvaluator<'_>,
+    loaded: Option<&flib::LoadedTypes>,
+) -> (Signatures, Vec<Diagnostic>) {
     let items = &hir.items;
     // Most constants lengths name are literals, known without
     // evaluation; the others need the signatures resolved first.
-    let mut known = literal_values(hir.const_bodies());
-    let mut arg_tys = ArgTys::default();
+    let mut known = loaded.map_or_else(LenValues::default, |loaded| {
+        loaded.signatures().array_lens.clone()
+    });
+    known.extend(literal_values(hir.const_bodies()));
+    let mut arg_tys = loaded.map_or_else(ArgTys::default, |loaded| {
+        loaded.signatures().arg_tys.clone()
+    });
+    let resolve = |lens: &ArrayLens<'_>| match loaded {
+        Some(loaded) => loaded.extend_source_signatures(items, Some(lens)),
+        None => signatures_checked(items, all, Some(lens)),
+    };
     let lens = ArrayLens::new(&known, &arg_tys);
-    let (mut sigs, diagnostics) = signatures_checked(items, all, Some(&lens));
+    let (mut sigs, diagnostics) = resolve(&lens);
     let missing = lens.missing.into_inner();
     let new_tys = lens.new_arg_tys.into_inner();
     if missing.is_empty() && new_tys.is_empty() {
@@ -689,7 +718,7 @@ fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures,
     let (values, mut failures) = eval(hir, &sigs, &missing);
     known.extend(values);
     let lens = ArrayLens::new(&known, &arg_tys);
-    let (mut sigs, mut diagnostics) = signatures_checked(items, all, Some(&lens));
+    let (mut sigs, mut diagnostics) = resolve(&lens);
     sigs.array_lens = known;
     sigs.arg_tys = arg_tys;
     diagnostics.append(&mut failures);
@@ -770,8 +799,14 @@ pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
     out
 }
 
-fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
-    let (mut sigs, mut diagnostics) = lens_signatures(hir, all, eval);
+fn check(
+    hir: &Hir,
+    all: bool,
+    eval: LenEvaluator<'_>,
+    loaded: Option<&flib::LoadedTypes>,
+    required_functions: &[FunctionId],
+) -> TypedFile {
+    let (mut sigs, mut diagnostics) = lens_signatures_from(hir, all, eval, loaded);
     let mut bodies = ArenaMap::new();
     if sigs.cyclic || unresolved_trait(&hir.items) {
         Diagnostic::sort(&mut diagnostics);
@@ -842,12 +877,16 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
     // What this compilation does not infer: the embedded libraries'
     // bodies, inferred once per process, unless every body is checked.
     let library = (!all).then(|| LibraryTypes::of(hir)).flatten();
-    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
+    let origin = |owner| flib::body_origin(library, loaded, owner);
     let mut consts = ArenaMap::new();
     for (id, (body, source_map)) in hir.const_bodies() {
-        let result = match shared(ClosureOwner::Const(id)) {
-            Some(library) => library.konst(id).clone(),
-            None => infer_const(items, &sigs, id, body, source_map),
+        let result = match origin(ClosureOwner::Const(id)) {
+            flib::BodyOrigin::Library => library
+                .expect("library ownership has a provider")
+                .konst(id)
+                .clone(),
+            flib::BodyOrigin::Imported => continue,
+            flib::BodyOrigin::Source => infer_const(items, &sigs, id, body, source_map),
         };
         reached(&result, &mut queue);
         consts.insert(id, result);
@@ -856,6 +895,7 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
     // functions code generation calls, then the program's bodies, then
     // the `core` bodies they reach.
     queue.extend(core_roots(items));
+    queue.extend_from_slice(required_functions);
     queue.extend(entry::main_runner(items, &sigs));
     queue.extend(
         hir.bodies
@@ -872,12 +912,15 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         if bodies.get(id).is_some() {
             continue;
         }
-        let result = match shared(ClosureOwner::Function(id)) {
-            Some(library) => match library.body(id) {
-                Some(result) => result.clone(),
-                None => continue,
-            },
-            None => {
+        let result = match origin(ClosureOwner::Function(id)) {
+            flib::BodyOrigin::Library => {
+                match library.expect("library ownership has a provider").body(id) {
+                    Some(result) => result.clone(),
+                    None => continue,
+                }
+            }
+            flib::BodyOrigin::Imported => continue,
+            flib::BodyOrigin::Source => {
                 let Some((body, source_map)) = hir.body(id) else {
                     continue;
                 };

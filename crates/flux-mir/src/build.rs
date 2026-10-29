@@ -23,11 +23,30 @@ use crate::{
 /// The embedded libraries' bodies are built and checked once per
 /// process ([`crate::library`]); a compilation copies those it reaches.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
-    build_file_with_roots(hir, typed, &[])
+    build_file_inner(hir, typed, None, &[])
 }
 
 /// Builds and checks additional function roots, including otherwise unused library code.
 pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId]) -> FileMir {
+    build_file_inner(hir, typed, None, roots)
+}
+
+/// Builds source MIR using already checked dependency templates and values.
+pub fn build_file_from(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: &crate::imported::ImportedMir,
+    required_functions: &[FunctionId],
+) -> FileMir {
+    build_file_inner(hir, typed, Some(imported), required_functions)
+}
+
+fn build_file_inner(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: Option<&crate::imported::ImportedMir>,
+    required_functions: &[FunctionId],
+) -> FileMir {
     let mut diagnostics = crate::alignment::check_declarations(&hir.items, &typed.sigs);
     let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
         let (found, own) = check_body(hir, typed, body, is_const, requirements);
@@ -39,8 +58,7 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
     };
     // What this compilation does not build: the embedded libraries'
     // bodies, built and checked once per process.
-    let library = crate::library::LibraryMir::of(hir);
-    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
+    let shared = |owner| crate::imported::SharedMir::of(hir, imported, owner);
     // Every constant, and every function of the program; `core`'s
     // functions only if something calls them.
     let mut queue: Vec<FunctionId> = Vec::new();
@@ -62,7 +80,9 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
     };
     for (id, _) in hir.const_bodies() {
         let built = match shared(ClosureOwner::Const(id)) {
-            Some(library) => library.konst(id).clone(),
+            Some(provider) => provider
+                .built(ClosureOwner::Const(id))
+                .expect("checked constant has MIR"),
             None => {
                 let mut built = Built::konst(hir, typed, id);
                 built.check(hir, typed, hir.items.consts[id].loc.file, true);
@@ -79,7 +99,7 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
         consts.insert(id, built.body);
     }
     queue.extend(flux_ty::core_roots(&hir.items));
-    queue.extend_from_slice(roots);
+    queue.extend_from_slice(required_functions);
     queue.extend(flux_ty::entry::main_runner(&hir.items, &typed.sigs));
     queue.extend(
         hir.bodies
@@ -91,12 +111,20 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
     // The callees whose targets are queued already.
     let mut expanded = rustc_hash::FxHashSet::default();
     while let Some(id) = queue.pop() {
-        if bodies.get(id).is_some() || hir.body(id).is_none() || typed.bodies.get(id).is_none() {
+        if bodies.get(id).is_some()
+            || (shared(ClosureOwner::Function(id)).is_none()
+                && (hir.body(id).is_none() || typed.bodies.get(id).is_none()))
+        {
             continue;
         }
         // Checked below, after the patterns, unless it is shared.
         let built = match shared(ClosureOwner::Function(id)) {
-            Some(library) => library.function(id).expect("it has a body").clone(),
+            Some(provider) => {
+                let Some(built) = provider.built(ClosureOwner::Function(id)) else {
+                    continue;
+                };
+                built
+            }
             None => Built::function(hir, typed, id),
         };
         let mut callees = built.body.callees();
@@ -109,6 +137,17 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
         // Its closures, innermost first, and what they call.
         add_closures(built.closures, &mut queue);
         bodies.insert(id, built.body);
+    }
+    if let Some(imported) = imported {
+        for (id, body) in imported.mir().bodies.iter() {
+            bodies.insert(id, body.clone());
+        }
+        for (id, body) in imported.mir().consts.iter() {
+            consts.insert(id, body.clone());
+        }
+        for (&key, body) in &imported.mir().closures {
+            closures.insert(key, body.clone());
+        }
     }
     // Code that type checking should have ruled out, in a program
     // without errors: a bug in flux, which must not compile to a trap.
@@ -145,13 +184,15 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
         &hir.items,
         &typed.sigs,
     ));
-    let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true);
+    let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true, imported);
     diagnostics.extend(found);
     for (id, body) in bodies.iter() {
         let data = &hir.items.functions[id];
-        if let Some(library) = shared(ClosureOwner::Function(id)) {
+        if let Some(provider) = shared(ClosureOwner::Function(id)) {
             if !failed.contains(&id) {
-                let built = library.function(id).expect("built above");
+                let built = provider
+                    .built(ClosureOwner::Function(id))
+                    .expect("built above");
                 diagnostics.extend(built.errors.iter().cloned());
                 diagnostics.extend(built.closure_errors.iter().cloned());
             }
@@ -178,8 +219,12 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
             diagnostics.extend(found);
         }
     }
-    let mut const_values = crate::eval::ConstValues::default();
-    let mut discriminants = crate::Discriminants::new();
+    let mut const_values = imported
+        .map(|i| i.mir().const_values.clone())
+        .unwrap_or_default();
+    let mut discriminants = imported
+        .map(|i| i.mir().discriminants.clone())
+        .unwrap_or_default();
     if diagnostics.is_empty() {
         diagnostics.extend(evaluate_consts(
             hir,
@@ -188,6 +233,7 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
             &consts,
             &mut const_values,
             &mut discriminants,
+            imported,
         ));
         // Enum sizes can depend on the discriminants just evaluated.
         let checked = bodies
@@ -200,6 +246,9 @@ pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId])
                     .map(|(c, body)| (ClosureOwner::Const(c), body)),
             );
         for (owner, body) in checked {
+            if shared(owner).is_some() {
+                continue;
+            }
             let parameters = closure_unsized_parameters(hir, owner);
             diagnostics.extend(
                 crate::transmute::check(&hir.items, &typed.sigs, body, &parameters, &discriminants)
@@ -298,7 +347,26 @@ pub fn check_clean_bodies(
     typed: &TypedFile,
     errors: &[flux_hir::Diagnostic],
 ) -> Vec<flux_hir::Diagnostic> {
-    let (mut diagnostics, failed) = check_clean_patterns(hir, typed);
+    check_clean_bodies_inner(hir, typed, errors, None)
+}
+
+/// Checks clean source bodies against decoded dependency constants and MIR.
+pub fn check_clean_bodies_from(
+    hir: &Hir,
+    typed: &TypedFile,
+    errors: &[flux_hir::Diagnostic],
+    imported: &crate::imported::ImportedMir,
+) -> Vec<flux_hir::Diagnostic> {
+    check_clean_bodies_inner(hir, typed, errors, Some(imported))
+}
+
+fn check_clean_bodies_inner(
+    hir: &Hir,
+    typed: &TypedFile,
+    errors: &[flux_hir::Diagnostic],
+    imported: Option<&crate::imported::ImportedMir>,
+) -> Vec<flux_hir::Diagnostic> {
+    let (mut diagnostics, failed) = check_clean_patterns(hir, typed, imported);
     for (id, _) in hir.bodies.iter() {
         if failed.contains(&id) {
             continue;
@@ -358,19 +426,24 @@ pub fn check_clean_bodies(
 fn check_clean_patterns(
     hir: &Hir,
     typed: &TypedFile,
+    imported: Option<&crate::imported::ImportedMir>,
 ) -> (Vec<flux_hir::Diagnostic>, Vec<FunctionId>) {
     if !has_deferred_patterns(typed) {
         return Default::default();
     }
     let clean = |result: Option<&InferenceResult>| result.is_some_and(|r| r.diagnostics.is_empty());
-    let library = crate::library::LibraryMir::of(hir);
-    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
+    let shared = |owner| crate::imported::SharedMir::of(hir, imported, owner);
     let mut queue = Vec::new();
     let mut consts = ArenaMap::new();
     for (id, _) in hir.const_bodies() {
         if clean(typed.consts.get(id)) && typed.sigs.consts.get(id) != Some(&Ty::ERROR) {
             let body = match shared(ClosureOwner::Const(id)) {
-                Some(library) => library.konst(id).body.clone(),
+                Some(provider) => {
+                    provider
+                        .built(ClosureOwner::Const(id))
+                        .expect("checked constant has MIR")
+                        .body
+                }
                 None => build_const(hir, typed, id),
             };
             queue.extend(body.callees());
@@ -385,7 +458,12 @@ fn check_clean_patterns(
             continue;
         }
         let body = match shared(ClosureOwner::Function(id)) {
-            Some(library) => library.function(id).expect("it has a body").body.clone(),
+            Some(provider) => {
+                provider
+                    .built(ClosureOwner::Function(id))
+                    .expect("it has a body")
+                    .body
+            }
             None => build(hir, typed, id),
         };
         let mut callees = body.callees();
@@ -397,7 +475,15 @@ fn check_clean_patterns(
         }
         bodies.insert(id, body);
     }
-    check_patterns(hir, typed, &bodies, &consts, &[], false)
+    if let Some(imported) = imported {
+        for (id, body) in imported.mir().bodies.iter() {
+            bodies.insert(id, body.clone());
+        }
+        for (id, body) in imported.mir().consts.iter() {
+            consts.insert(id, body.clone());
+        }
+    }
+    check_patterns(hir, typed, &bodies, &consts, &[], false, imported)
 }
 
 /// Whether some body's pattern checks wait for the values of
@@ -420,6 +506,7 @@ fn check_patterns(
     consts: &ArenaMap<flux_hir::Const, Body>,
     skip: &[ConstId],
     report: bool,
+    imported: Option<&crate::imported::ImportedMir>,
 ) -> (Vec<flux_hir::Diagnostic>, Vec<FunctionId>) {
     if !has_deferred_patterns(typed) {
         return Default::default();
@@ -427,6 +514,10 @@ fn check_patterns(
     let items = &hir.items;
     let names = |id: ConstId| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
+    if let Some(imported) = imported {
+        evaluator =
+            evaluator.with_imported(&imported.mir().const_values, &imported.mir().discriminants);
+    }
     let mut unsupported_patterns = Vec::new();
     let (mut diagnostics, failed) = flux_ty::check_deferred_patterns(hir, typed, &mut |c| {
         if skip.contains(&c.konst) {
@@ -681,10 +772,15 @@ fn evaluate_consts(
     consts: &ArenaMap<flux_hir::Const, Body>,
     values: &mut crate::eval::ConstValues,
     discriminants: &mut crate::Discriminants,
+    imported: Option<&crate::imported::ImportedMir>,
 ) -> Vec<flux_hir::Diagnostic> {
     let items = &hir.items;
     let names = |id: ConstId| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
+    if let Some(imported) = imported {
+        evaluator =
+            evaluator.with_imported(&imported.mir().const_values, &imported.mir().discriminants);
+    }
     let mut checked = evaluate_discriminants(items, &mut evaluator, discriminants);
     let mut wanted: Vec<flux_ty::ConstInstance> = items
         .consts

@@ -156,7 +156,7 @@ pub struct EvalError {
 /// The values of constants: of those without generic parameters by
 /// item, and of the instances of others that code without generic
 /// parameters names.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ConstValues {
     pub items: ArenaMap<flux_hir::Const, Value>,
     pub instances: FxHashMap<ConstInstance, Value>,

@@ -1,7 +1,9 @@
-//! Native metadata round trip independent of the driver's pending cache integration.
+//! Native metadata round trip through the checked artifact providers.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 
 mod flib_support;
+#[path = "../../../tests/support/scratch.rs"]
+mod scratch;
 
 use flux_cli::flib::semantic::{CheckedCrate, Dependency, load_checked, write_checked};
 use flux_hir::flib::{CrateIndices, digest};
@@ -21,16 +23,8 @@ fn empty_mir() -> flux_mir::FileMir {
 
 #[test]
 fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
-    let source_dir =
-        std::env::temp_dir().join(format!("flux-flib-native-sources-{}", std::process::id()));
-    std::fs::create_dir(&source_dir).unwrap();
-    struct RemoveSources(std::path::PathBuf);
-    impl Drop for RemoveSources {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-    let _sources = RemoveSources(source_dir.clone());
+    let sources = scratch::Scratch::new("out/flib-native/sources");
+    let source_dir = sources.path();
     let included = source_dir.join("api.rs");
     std::fs::write(&included,"pub fn double(x:u32)->u32 { x * 2 } pub fn id<T>(x:T)->T { x }\n#[track_caller] pub fn location()->u32 { std::panic::Location::caller().line() }\npub fn generic_location<T>(_:T)->u32 { location() }\n").unwrap();
     let (_db, _, a) = flux_hir::lower_text(
@@ -116,6 +110,9 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
         .unwrap();
         let counts = items.counts();
         let a_id = loaded.dependency.krate;
+        let loaded_types =
+            flux_ty::flib::LoadedTypes::new(&items, base_types.sigs, &[(a_id, a_hash)]).unwrap();
+        let provider = flux_mir::imported::ImportedMir::new(imported_mir, counts).unwrap();
         let root=db.add("downstream.rs","fn main() { assert!(a::id(a::double(21)) == 42); assert!(a::location() == 1); assert!(a::generic_location(0u8) == 3); }");
         let hir = flux_hir::lower_source_on(
             &mut db,
@@ -125,59 +122,12 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
             vec![(Symbol::intern("a"), a_id)],
         );
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-        let (sigs, errors) = flux_ty::signatures_from(&hir.items, base_types.sigs, counts, None);
-        assert!(errors.is_empty(), "{errors:?}");
-        let mut typed = flux_ty::TypedFile {
-            sigs,
-            bodies: base_types.bodies,
-            consts: base_types.consts,
-            diagnostics: Vec::new(),
-        };
-        let provider = flux_mir::imported::ImportedMir::new(imported_mir, counts).unwrap();
-        let required_functions = provider.required_functions(&hir.items, &typed.sigs);
-        let mut queue = required_functions.clone();
-        queue.extend(hir.bodies.iter().map(|(id, _)| id));
-        while let Some(id) = queue.pop() {
-            if typed.bodies.get(id).is_some() {
-                continue;
-            }
-            let Some((body, map)) = hir.body(id) else {
-                continue;
-            };
-            let result = flux_ty::infer_body(&hir.items, &typed.sigs, id, body, map);
-            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-            for (index, &ty) in result.opaques.iter().enumerate() {
-                typed.sigs.hidden.insert((id, index as u32), ty);
-            }
-            typed.bodies.insert(id, result);
-            let body = flux_mir::build(&hir, &typed, id);
-            for called in body
-                .callees()
-                .into_iter()
-                .chain(body.object_methods(&hir.items))
-            {
-                queue.extend(flux_ty::call_targets(&hir.items, called));
-            }
-        }
-        let mut mir = flux_mir::build_file(&hir, &typed);
+        let required_functions = provider.required_functions(&hir.items, loaded_types.signatures());
+        let typed = flux_mir::check_file_from(&hir, &loaded_types, &provider, &required_functions);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = flux_mir::build_file_from(&hir, &typed, &provider, &required_functions);
         assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
-        // The production cache seam will supply these compiler-owned checked
-        // templates. They are deliberately absent from a user artifact.
-        for (id, body) in a_mir.bodies.iter() {
-            if id.index() < hir.items.core.functions as usize && mir.bodies.get(id).is_none() {
-                mir.bodies.insert(id, body.clone());
-            }
-        }
-        for (&key, body) in &a_mir.closures {
-            let embedded = match key.0.owner {
-                flux_ty::ClosureOwner::Function(f) => f.index() < hir.items.core.functions as usize,
-                flux_ty::ClosureOwner::Const(c) => c.index() < hir.items.core.consts as usize,
-            };
-            if embedded {
-                mir.closures.entry(key).or_insert_with(|| body.clone());
-            }
-        }
-        provider.seed_into(&mut mir).unwrap();
+        assert!(mir.bugs.is_empty(), "{:?}", mir.bugs);
         let b_id = hir.items.main_crate();
         let hashes: Vec<_> = dependencies
             .iter()
@@ -197,17 +147,8 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
         )
         .unwrap();
         let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
-        let directory =
-            std::env::temp_dir().join(format!("flux-flib-native-{}-{tier:?}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        struct Remove(std::path::PathBuf);
-        impl Drop for Remove {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _remove = Remove(directory.clone());
-        let output = directory.join("program");
+        let directory = scratch::Scratch::new("out/flib-native/programs");
+        let output = directory.path().join("program");
         flux_codegen::link_objects(
             &[
                 flux_codegen::ObjectInput {
