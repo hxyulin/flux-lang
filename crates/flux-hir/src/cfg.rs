@@ -36,6 +36,12 @@ fn cfg_predicate(
         return Err((at, "expected identifier".into()));
     };
     *pos += 1;
+    // `cfg(true)` and `cfg(false)` are literals, not names.
+    match name.kind {
+        T![true] => return Ok(true),
+        T![false] => return Ok(false),
+        _ => {}
+    }
     let name = name.text.as_str();
     if matches!(name, "all" | "any" | "not") && toks.get(*pos).is_some_and(|t| t.kind == T!['(']) {
         *pos += 1;
@@ -277,6 +283,11 @@ mod tests {
             ("feature = \"enabled\"", false),
             ("target_os = \"imaginary\",", false),
             ("target_pointer_width = r#\"64\"#", true),
+            ("true", true),
+            ("false", false),
+            ("r#true", false),
+            ("all(true, not(false), any(false, true))", true),
+            ("any(false, not(true))", false),
         ] {
             assert_eq!(evaluate(text), Ok(expected), "{text}");
         }
@@ -300,6 +311,8 @@ mod tests {
             "all(test))",
             "all(test,,)",
             "target_os = \"\\q\"",
+            "true = \"x\"",
+            "all(false(test))",
         ] {
             assert!(evaluate(text).is_err(), "accepted {text}");
         }
