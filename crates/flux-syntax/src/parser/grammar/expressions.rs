@@ -665,11 +665,28 @@ fn record_expr_field_list(p: &mut Parser<'_>) {
     p.bump(T!['{']);
     while !p.at(T!['}']) && !p.at_end() {
         if p.at(T![..]) {
+            // The base comes last: `S { a, ..base }`.
             p.bump(T![..]);
             if at_expr_start(p, DEFAULT) {
                 expr(p);
             }
-            continue;
+            if p.at(T![,]) {
+                p.err_and_bump("cannot use a comma after the base struct");
+            }
+            if !p.at(T!['}']) && !p.at_end() {
+                // Skip to this list's `}` so that it does not close a
+                // block around it.
+                let m = p.start();
+                p.error("expected `}`");
+                while !p.at(T!['}']) && !p.at_end() {
+                    match p.current() {
+                        T!['('] | T!['['] | T!['{'] => attributes::token_tree(p),
+                        _ => p.bump_any(),
+                    }
+                }
+                m.complete(p, ERROR);
+            }
+            break;
         }
         if !matches!(p.current(), IDENT | INT_NUMBER | T![#]) {
             p.err_and_bump("expected a field");
@@ -677,10 +694,17 @@ fn record_expr_field_list(p: &mut Parser<'_>) {
         }
         let m = p.start();
         attributes::outer_attrs(p);
-        if p.nth(1) == T![:] && !p.nth_at(1, T![::]) {
+        if matches!(p.current(), IDENT | INT_NUMBER) && p.nth(1) == T![:] && !p.nth_at(1, T![::]) {
             name_ref_or_index(p);
             p.bump(T![:]);
             expr(p);
+        } else if matches!(p.current(), T!['('] | T!['['] | T!['{']) {
+            // Attributes and no field: skip the group, which would
+            // otherwise close a block with its `}`.
+            let e = p.start();
+            p.error("expected a field name or tuple index");
+            attributes::token_tree(p);
+            e.complete(p, ERROR);
         } else {
             name_ref_or_index(p);
         }

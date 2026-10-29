@@ -1,0 +1,179 @@
+SOURCE_FILE@0..131
+  FN@0..54
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..8
+      IDENT@3..8 "attrs"
+    PARAM_LIST@8..10
+      L_PAREN@8..9 "("
+      R_PAREN@9..10 ")"
+    WHITESPACE@10..11 " "
+    BLOCK_EXPR@11..54
+      L_CURLY@11..12 "{"
+      WHITESPACE@12..17 "\n    "
+      EXPR_STMT@17..36
+        RECORD_EXPR@17..35
+          PATH@17..18
+            PATH_SEGMENT@17..18
+              NAME_REF@17..18
+                IDENT@17..18 "S"
+          WHITESPACE@18..19 " "
+          RECORD_EXPR_FIELD_LIST@19..35
+            L_CURLY@19..20 "{"
+            WHITESPACE@20..21 " "
+            RECORD_EXPR_FIELD@21..33
+              ATTR@21..25
+                POUND@21..22 "#"
+                L_BRACK@22..23 "["
+                META@23..24
+                  PATH@23..24
+                    PATH_SEGMENT@23..24
+                      NAME_REF@23..24
+                        IDENT@23..24 "a"
+                R_BRACK@24..25 "]"
+              WHITESPACE@25..26 " "
+              ERROR@26..33
+                TOKEN_TREE@26..33
+                  L_CURLY@26..27 "{"
+                  WHITESPACE@27..28 " "
+                  COLON@28..29 ":"
+                  WHITESPACE@29..30 " "
+                  INT_NUMBER@30..31 "0"
+                  WHITESPACE@31..32 " "
+                  R_CURLY@32..33 "}"
+            WHITESPACE@33..34 " "
+            R_CURLY@34..35 "}"
+        SEMICOLON@35..36 ";"
+      WHITESPACE@36..41 "\n    "
+      EXPR_STMT@41..52
+        RECORD_EXPR@41..51
+          PATH@41..42
+            PATH_SEGMENT@41..42
+              NAME_REF@41..42
+                IDENT@41..42 "S"
+          WHITESPACE@42..43 " "
+          RECORD_EXPR_FIELD_LIST@43..51
+            L_CURLY@43..44 "{"
+            WHITESPACE@44..45 " "
+            RECORD_EXPR_FIELD@45..49
+              ATTR@45..49
+                POUND@45..46 "#"
+                L_BRACK@46..47 "["
+                META@47..48
+                  PATH@47..48
+                    PATH_SEGMENT@47..48
+                      NAME_REF@47..48
+                        IDENT@47..48 "a"
+                R_BRACK@48..49 "]"
+            WHITESPACE@49..50 " "
+            R_CURLY@50..51 "}"
+        SEMICOLON@51..52 ";"
+      WHITESPACE@52..53 "\n"
+      R_CURLY@53..54 "}"
+  WHITESPACE@54..56 "\n\n"
+  FN@56..130
+    FN_KW@56..58 "fn"
+    WHITESPACE@58..59 " "
+    NAME@59..63
+      IDENT@59..63 "base"
+    PARAM_LIST@63..69
+      L_PAREN@63..64 "("
+      PARAM@64..68
+        IDENT_PAT@64..65
+          NAME@64..65
+            IDENT@64..65 "s"
+        COLON@65..66 ":"
+        WHITESPACE@66..67 " "
+        PATH_TYPE@67..68
+          PATH@67..68
+            PATH_SEGMENT@67..68
+              NAME_REF@67..68
+                IDENT@67..68 "S"
+      R_PAREN@68..69 ")"
+    WHITESPACE@69..70 " "
+    BLOCK_EXPR@70..130
+      L_CURLY@70..71 "{"
+      WHITESPACE@71..76 "\n    "
+      EXPR_STMT@76..91
+        RECORD_EXPR@76..90
+          PATH@76..77
+            PATH_SEGMENT@76..77
+              NAME_REF@76..77
+                IDENT@76..77 "S"
+          WHITESPACE@77..78 " "
+          RECORD_EXPR_FIELD_LIST@78..90
+            L_CURLY@78..79 "{"
+            WHITESPACE@79..80 " "
+            DOT2@80..82 ".."
+            PATH_EXPR@82..83
+              PATH@82..83
+                PATH_SEGMENT@82..83
+                  NAME_REF@82..83
+                    IDENT@82..83 "s"
+            WHITESPACE@83..84 " "
+            ERROR@84..88
+              IDENT@84..85 "b"
+              COLON@85..86 ":"
+              WHITESPACE@86..87 " "
+              INT_NUMBER@87..88 "3"
+            WHITESPACE@88..89 " "
+            R_CURLY@89..90 "}"
+        SEMICOLON@90..91 ";"
+      WHITESPACE@91..96 "\n    "
+      EXPR_STMT@96..107
+        RECORD_EXPR@96..106
+          PATH@96..97
+            PATH_SEGMENT@96..97
+              NAME_REF@96..97
+                IDENT@96..97 "S"
+          WHITESPACE@97..98 " "
+          RECORD_EXPR_FIELD_LIST@98..106
+            L_CURLY@98..99 "{"
+            WHITESPACE@99..100 " "
+            DOT2@100..102 ".."
+            PATH_EXPR@102..103
+              PATH@102..103
+                PATH_SEGMENT@102..103
+                  NAME_REF@102..103
+                    IDENT@102..103 "s"
+            ERROR@103..104
+              COMMA@103..104 ","
+            WHITESPACE@104..105 " "
+            R_CURLY@105..106 "}"
+        SEMICOLON@106..107 ";"
+      WHITESPACE@107..112 "\n    "
+      EXPR_STMT@112..128
+        RECORD_EXPR@112..127
+          PATH@112..113
+            PATH_SEGMENT@112..113
+              NAME_REF@112..113
+                IDENT@112..113 "S"
+          WHITESPACE@113..114 " "
+          RECORD_EXPR_FIELD_LIST@114..127
+            L_CURLY@114..115 "{"
+            WHITESPACE@115..116 " "
+            RECORD_EXPR_FIELD@116..120
+              NAME_REF@116..117
+                IDENT@116..117 "a"
+              COLON@117..118 ":"
+              WHITESPACE@118..119 " "
+              LITERAL@119..120
+                INT_NUMBER@119..120 "1"
+            COMMA@120..121 ","
+            WHITESPACE@121..122 " "
+            DOT2@122..124 ".."
+            PATH_EXPR@124..125
+              PATH@124..125
+                PATH_SEGMENT@124..125
+                  NAME_REF@124..125
+                    IDENT@124..125 "s"
+            WHITESPACE@125..126 " "
+            R_CURLY@126..127 "}"
+        SEMICOLON@127..128 ";"
+      WHITESPACE@128..129 "\n"
+      R_CURLY@129..130 "}"
+  WHITESPACE@130..131 "\n"
+error 26..26: expected a field name or tuple index
+error 49..49: expected a field name or tuple index
+error 84..84: expected `}`
+error 103..103: cannot use a comma after the base struct
