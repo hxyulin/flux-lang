@@ -873,3 +873,43 @@ fn dead<T>() { dead::<(T, T)>(); }
         "42\n",
     );
 }
+
+#[test]
+fn hidden_strong_definitions_allow_inlining_without_changing_linkage() {
+    let mut module = staged_module(
+        &[(
+            "a",
+            "pub fn leaf(x: u64) -> u64 { x + 1 } pub fn combined(x: u64) -> u64 { leaf(x) * 2 }",
+            &[],
+            111,
+        )],
+        Some(0),
+    );
+    let leaf = module
+        .functions
+        .iter()
+        .find(|f| f.name.contains("4leaf"))
+        .unwrap()
+        .name
+        .clone();
+    let calls_leaf = |function: &keel_ir::Function| {
+        function.layout_insts().any(|(_, inst)| {
+        matches!(function.inst_data(inst), keel_ir::InstData::Call { func, .. } if function.callee(*func).name == leaf)
+    })
+    };
+    assert!(module.functions.iter().any(calls_leaf));
+    assert!(
+        module
+            .functions
+            .iter()
+            .all(|f| f.hidden && !f.local && f.attrs.noninterposable)
+    );
+    keel_opt::optimize_with_tier(&mut module, OptimizationTier::Full).unwrap();
+    assert!(!module.functions.iter().any(calls_leaf));
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|f| f.name == leaf && !f.local && !f.weak_odr)
+    );
+}

@@ -200,6 +200,11 @@ source visibility does not imply a dynamic symbol export. Imported C declaration
 keep their external linkage. Hidden visibility is an image-local linkage policy,
 not a workaround for the older Keel address-relocation bug.
 
+Hidden strong definitions set `noninterposable`, so Keel's Full tier can inline
+direct calls within their owning object while retaining the exported definition.
+Keel `e4c72445` still rejects `weak_odr` bodies for inlining. Generic instances
+retain shared linkage and address identity despite that optimization restriction.
+
 Native regressions verify one shared generic definition and equal function
 addresses, data relocations, vtable calls and optimized/unoptimized output on
 arm64 macOS. Immutable local data can use object-local copies; exported shared
