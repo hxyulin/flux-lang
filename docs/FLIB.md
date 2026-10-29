@@ -204,6 +204,11 @@ Hidden strong definitions set `noninterposable`, so Keel's Full tier can inline
 direct calls within their owning object while retaining the exported definition.
 Keel `e4c72445` still rejects `weak_odr` bodies for inlining. Generic instances
 retain shared linkage and address identity despite that optimization restriction.
+Separate objects also prevent inlining non-generic functions across crates, and
+use the fixed reified calling convention rather than the whole-program fast
+convention. The tree pipeline fixture currently runs slower through separate
+objects. Cross-crate inlining and improvements to Keel's weak ODR optimization
+and fixed calling conventions remain follow-up work.
 
 Native regressions verify one shared generic definition and equal function
 addresses, data relocations, vtable calls and optimized/unoptimized output on
