@@ -1663,10 +1663,11 @@ synchronization follow the bounded APIs described above.
 
 ## Not supported yet
 
-- Contextual keywords: `union`, `auto trait`, `default fn`, `safe` items in
+- Contextual keywords: `auto trait`, `default fn`, `safe` items in
   `extern` blocks. The parser sees only token kinds, so these need the
-  lexer to mark candidate identifiers first (`&raw const` needs none: only
-  there may `const` or `mut` follow an identifier).
+  lexer to mark candidate identifiers first, as it does for `union` and
+  `dyn` (`&raw const` needs none: only there may `const` or `mut` follow
+  an identifier).
 - Negative impls (`impl !Send for T`), `box` patterns, `yield` and `gen`
   blocks, `try` blocks.
 - Shebang lines and frontmatter.

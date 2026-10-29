@@ -24,9 +24,10 @@
 //! - **Interning** hashes the string once and first checks a small cache
 //!   owned by the calling thread. Names follow a steep frequency curve
 //!   (`self`, `T`, `new`...), so most lookups end there without touching
-//!   shared memory. On a miss, the hash picks one of 32 shards, each a mutex
-//!   around a hash table and a [`DroplessArena`] holding that shard's
-//!   strings. Without the cache, every thread would queue on the shards of
+//!   shared memory. On a miss, the hash picks one of 128 shards, each a
+//!   hash table behind a `RwLock` and a [`DroplessArena`], behind a
+//!   mutex, holding that shard's strings. A lookup that finds its name takes only the read
+//!   lock. Without the cache, every thread would queue on the shards of
 //!   the most common names.
 //! - **Resolving** takes no lock. Symbols are numbered from one atomic
 //!   counter and each number's string is published in an append-only table
