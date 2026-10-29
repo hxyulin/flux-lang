@@ -289,9 +289,11 @@ impl Open<'_> {
             }
             return;
         }
-        if let (Some(variants), false, false) =
-            (self.sigs.variants(ty), !has_children, has_drop_impl)
-        {
+        if let (Some(variants), false, false) = (
+            flux_ty::variants(self.sigs, ty),
+            !has_children,
+            has_drop_impl,
+        ) {
             // Each variant's fields, if it is the one the enum holds.
             for (v, fields) in variants.into_iter().enumerate() {
                 let v = v as u32;
@@ -379,7 +381,7 @@ impl Open<'_> {
             }
             return;
         }
-        let fields = self.sigs.fields(ty);
+        let fields = flux_ty::fields(self.sigs, ty);
         let (Some(fields), false, false) = (fields, !has_children, has_drop_impl) else {
             self.step(place, Some(path));
             return;

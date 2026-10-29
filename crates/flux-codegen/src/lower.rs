@@ -567,8 +567,7 @@ fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Array(..) => true,
         TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt) => true,
-        TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..) => sigs
-            .contents(ty)
+        TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..) => flux_ty::contents(sigs, ty)
             .is_some_and(|fields| fields.iter().any(|&f| is_memory(sigs, f))),
         _ => false,
     }
@@ -626,7 +625,7 @@ fn leaves(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
         out.push(metadata_leaf(ty));
         return;
     }
-    if let Some(variants) = sigs.variants(ty) {
+    if let Some(variants) = flux_ty::variants(sigs, ty) {
         if !variants.is_empty() {
             out.push(Ty::int(discriminant(sigs, ty)));
         }
@@ -637,7 +636,7 @@ fn leaves(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
         }
         return;
     }
-    match sigs.fields(ty) {
+    match flux_ty::fields(sigs, ty) {
         Some(fields) => {
             for &field in fields {
                 leaves(sigs, field, out);
@@ -661,7 +660,7 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
     if is_fat(sigs, ty) {
         return 2;
     }
-    if let Some(variants) = sigs.variants(ty) {
+    if let Some(variants) = flux_ty::variants(sigs, ty) {
         return usize::from(!variants.is_empty())
             + variants
                 .iter()
@@ -669,7 +668,7 @@ fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
                 .map(|&f| leaf_count(sigs, f))
                 .sum::<usize>();
     }
-    match sigs.fields(ty) {
+    match flux_ty::fields(sigs, ty) {
         Some(fields) => fields.iter().map(|&f| leaf_count(sigs, f)).sum(),
         None => usize::from(keel_type(ty).is_some()),
     }
@@ -690,7 +689,7 @@ fn bytes_layout(size: u64, align: u64) -> Layout {
 /// The fields of a value of `place`'s type: of the variant it was
 /// downcast to, or its own.
 fn place_fields(sigs: &Signatures, place: PlaceTy) -> &'static [Ty] {
-    sigs.variant_fields(place.ty, place.variant.unwrap_or(0))
+    flux_ty::variant_fields(sigs, place.ty, place.variant.unwrap_or(0))
         .expect("fields are of aggregates")
 }
 
@@ -1000,7 +999,8 @@ impl Ctx<'_> {
                 P::Downcast(v) => variant = v,
                 P::Field(i) => {
                     offset += self.layouts.of(ty).field_offset(variant, i);
-                    ty = self.typed.sigs.variant_fields(ty, variant).unwrap()[i as usize];
+                    ty =
+                        flux_ty::variant_fields(&self.typed.sigs, ty, variant).unwrap()[i as usize];
                     variant = 0;
                 }
                 P::Index(i) => {
@@ -1157,7 +1157,7 @@ impl Ctx<'_> {
                 }
             }
             V::Aggregate(fields) => {
-                let types = self.typed.sigs.fields(ty).unwrap_or_default();
+                let types = flux_ty::fields(&self.typed.sigs, ty).unwrap_or_default();
                 for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
                     let offset = layout.field_offset(0, i as u32) as usize;
                     self.write_bytes(field, field_ty, at + offset, bytes, addresses);
@@ -1168,11 +1168,8 @@ impl Ctx<'_> {
                 index,
                 fields,
             } => {
-                let types = self
-                    .typed
-                    .sigs
-                    .variant_fields(ty, *index)
-                    .unwrap_or_default();
+                let types =
+                    flux_ty::variant_fields(&self.typed.sigs, ty, *index).unwrap_or_default();
                 for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
                     let offset = layout.field_offset(*index, i as u32) as usize;
                     self.write_bytes(field, field_ty, at + offset, bytes, addresses);
@@ -1674,7 +1671,7 @@ impl Lower<'_, '_, '_> {
                     Location::Memory(self.offset(address, offset))
                 }
                 (ProjectionElem::Downcast(variant), Location::Vars { local, start, .. }) => {
-                    let variants = sigs.variants(ty.ty).expect("downcasts are of enums");
+                    let variants = flux_ty::variants(sigs, ty.ty).expect("downcasts are of enums");
                     let count = |fields: &[Ty]| -> usize {
                         fields.iter().map(|&f| leaf_count(sigs, f)).sum()
                     };
@@ -1910,7 +1907,7 @@ impl Lower<'_, '_, '_> {
         let sigs = self.sigs;
         match rvalue {
             Rvalue::Aggregate(AggregateKind::Union(_, field), operands) => {
-                let field_ty = sigs.fields(ty).unwrap()[*field as usize];
+                let field_ty = flux_ty::fields(sigs, ty).unwrap()[*field as usize];
                 let values = self.operand(&operands[0]);
                 self.store(address, field_ty, &values);
             }
@@ -1924,7 +1921,7 @@ impl Lower<'_, '_, '_> {
             }
             Rvalue::Aggregate(AggregateKind::Variant(strukt, index), operands) => {
                 let layout = self.ctx.layouts.of(ty);
-                let fields = sigs.variant_fields(ty, *index).unwrap_or_default();
+                let fields = flux_ty::variant_fields(sigs, ty, *index).unwrap_or_default();
                 for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
                     let values = self.operand(operand);
                     let at = self.offset(address, layout.field_offset(*index, i as u32));
@@ -1934,7 +1931,7 @@ impl Lower<'_, '_, '_> {
             }
             Rvalue::Aggregate(_, operands) => {
                 let layout = self.ctx.layouts.of(ty);
-                let fields = sigs.fields(ty).unwrap_or_default();
+                let fields = flux_ty::fields(sigs, ty).unwrap_or_default();
                 for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
                     let values = self.operand(operand);
                     let at = self.offset(address, layout.field_offset(0, i as u32));
@@ -1988,11 +1985,11 @@ impl Lower<'_, '_, '_> {
             );
             return;
         }
-        if let Some(variants) = sigs.variants(ty) {
+        if let Some(variants) = flux_ty::variants(sigs, ty) {
             self.store_enum(address, ty, &variants, values);
             return;
         }
-        if let Some(fields) = sigs.fields(ty) {
+        if let Some(fields) = flux_ty::fields(sigs, ty) {
             let layout = self.ctx.layouts.of(ty);
             let mut at = 0;
             for (i, &field) in fields.iter().enumerate() {
@@ -2265,7 +2262,7 @@ impl Lower<'_, '_, '_> {
             ));
             return;
         }
-        if let Some(variants) = sigs.variants(ty) {
+        if let Some(variants) = flux_ty::variants(sigs, ty) {
             // An empty enum has no discriminant or scalar leaves. It may be
             // a field of an inactive variant whose flattened leaves we load.
             if variants.is_empty() {
@@ -2281,7 +2278,7 @@ impl Lower<'_, '_, '_> {
             }
             return;
         }
-        if let Some(fields) = sigs.fields(ty) {
+        if let Some(fields) = flux_ty::fields(sigs, ty) {
             let layout = self.ctx.layouts.of(ty);
             for (i, &field) in fields.iter().enumerate() {
                 let at = self.offset(address, layout.field_offset(0, i as u32));
@@ -2403,7 +2400,7 @@ impl Lower<'_, '_, '_> {
                 }
             }
             (V::Aggregate(fields), _) => {
-                let types = sigs.fields(ty).unwrap_or_default();
+                let types = flux_ty::fields(sigs, ty).unwrap_or_default();
                 for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
                     let at = self.offset(address, layout.field_offset(0, i as u32));
                     self.store_value(at, field, field_ty);
@@ -2417,7 +2414,7 @@ impl Lower<'_, '_, '_> {
                 },
                 _,
             ) => {
-                let types = sigs.variant_fields(ty, *index).unwrap_or_default();
+                let types = flux_ty::variant_fields(sigs, ty, *index).unwrap_or_default();
                 for (i, (field, &field_ty)) in fields.iter().zip(types).enumerate() {
                     let at = self.offset(address, layout.field_offset(*index, i as u32));
                     self.store_value(at, field, field_ty);
@@ -2537,7 +2534,7 @@ impl Lower<'_, '_, '_> {
                 }
             }
             V::Aggregate(fields) => {
-                let types = self.sigs.fields(ty).unwrap_or_default();
+                let types = flux_ty::fields(self.sigs, ty).unwrap_or_default();
                 for (field, &field_ty) in fields.iter().zip(types) {
                     self.value_leaves(field, field_ty, out);
                 }
@@ -2550,7 +2547,7 @@ impl Lower<'_, '_, '_> {
                 let bits = self.ctx.discriminant(*strukt, *index);
                 let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
                 out.push(self.int_const(bits, int));
-                let variants = self.sigs.variants(ty).unwrap_or_default();
+                let variants = flux_ty::variants(self.sigs, ty).unwrap_or_default();
                 for (v, types) in variants.into_iter().enumerate() {
                     if v as u32 == *index {
                         for (field, &field_ty) in fields.iter().zip(types) {
@@ -2653,7 +2650,7 @@ impl Lower<'_, '_, '_> {
                 let bits = self.ctx.discriminant(*strukt, *index);
                 let int = flux_ty::discriminant_ty(&self.ctx.hir.items, *strukt);
                 let mut leaves = smallvec![self.int_const(bits, int)];
-                let variants = self.sigs.variants(ty).unwrap_or_default();
+                let variants = flux_ty::variants(self.sigs, ty).unwrap_or_default();
                 for (v, types) in variants.into_iter().enumerate() {
                     if v as u32 == *index {
                         for operand in operands {
@@ -2915,7 +2912,7 @@ impl Lower<'_, '_, '_> {
         // that could be mistaken for the address of that entire tuple.
         let address = is_memory(self.sigs, result_ty).then(|| self.new_slot(result_ty));
         let layout = self.ctx.layouts.of(result_ty);
-        let fields = self.sigs.fields(result_ty).unwrap_or_default();
+        let fields = flux_ty::fields(self.sigs, result_ty).unwrap_or_default();
         let mut values = Values::new();
         for (index, (mut value, (original, widened, vector))) in
             results.into_iter().zip(transports).enumerate()

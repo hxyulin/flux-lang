@@ -970,9 +970,7 @@ impl Ctx<'_> {
                 self.known(t)
             }
             (CaptureProj::Field(i), _) => {
-                let field = self
-                    .sigs
-                    .fields(ty)
+                let field = crate::fields(self.sigs, ty)
                     .and_then(|f| f.get(i as usize).copied())
                     .unwrap_or(Ty::ERROR);
                 let field = self.normalize(field, TextRange::default());
@@ -1646,7 +1644,7 @@ impl Ctx<'_> {
 
     fn place_field_count(&mut self, place: &Place) -> usize {
         let ty = self.capture_place_ty(place.0, &place.1);
-        self.sigs.fields(ty).map_or(0, <[Ty]>::len)
+        crate::fields(self.sigs, ty).map_or(0, <[Ty]>::len)
     }
 
     /// For the solver: whether `pred`, on a closure's type, holds: a

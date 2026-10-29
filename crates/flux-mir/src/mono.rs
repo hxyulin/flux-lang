@@ -580,7 +580,7 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
                     return true;
                 }
                 active.push(adt.strukt);
-                let children = sigs.contents(ty).unwrap_or(args);
+                let children = flux_ty::contents(sigs, ty).unwrap_or(args);
                 pending.extend(children.iter().map(|&child| (child, active.clone())));
             }
             TyKind::Tuple(fields) => {
@@ -588,7 +588,7 @@ fn may_contain_function_address(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
             }
             TyKind::Closure(_, _) => {
                 pending.extend(
-                    sigs.contents(ty)
+                    flux_ty::contents(sigs, ty)
                         .unwrap_or_default()
                         .iter()
                         .map(|&child| (child, active.clone())),
@@ -1677,7 +1677,7 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
             if flux_ty::traits::drop_impl(items, sigs, adt.strukt).is_some() {
                 out.push(Glue::Drop(place.clone(), ty));
             }
-            if let Some(variants) = sigs.variants(ty) {
+            if let Some(variants) = flux_ty::variants(sigs, ty) {
                 let glue: Vec<Vec<Glue>> = variants
                     .iter()
                     .enumerate()
@@ -1727,7 +1727,11 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
         }
         _ => return,
     }
-    for (i, &field) in sigs.fields(ty).unwrap_or_default().iter().enumerate() {
+    for (i, &field) in flux_ty::fields(sigs, ty)
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         let field_place = place.field(i as u32);
         let packed =
             matches!(ty.kind(),TyKind::Adt(adt,_) if items.structs[adt.strukt].repr_pack.is_some());
@@ -2158,8 +2162,8 @@ pub fn volatile_scalar(sigs: &Signatures, mut ty: Ty) -> Option<Ty> {
                 return Some(ty);
             }
             TyKind::Tuple([]) => return Some(Ty::UNIT),
-            TyKind::Adt(..) if sigs.variants(ty).is_none() => {
-                let fields = sigs.fields(ty)?;
+            TyKind::Adt(..) if flux_ty::variants(sigs, ty).is_none() => {
+                let fields = flux_ty::fields(sigs, ty)?;
                 match fields {
                     [] => return Some(Ty::UNIT),
                     [field] => ty = *field,

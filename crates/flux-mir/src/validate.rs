@@ -203,16 +203,15 @@ impl Validator<'_> {
             Rvalue::Aggregate(kind, ops) => {
                 let (fields, ok) = match (kind, ty.kind()) {
                     (AggregateKind::Union(s, field), TyKind::Adt(adt, _)) => (
-                        self.sigs
-                            .fields(ty)
+                        flux_ty::fields(self.sigs, ty)
                             .and_then(|fs| fs.get(*field as usize..*field as usize + 1)),
                         adt.strukt == *s && self.sigs.unions.contains(s),
                     ),
                     (AggregateKind::Struct(s), TyKind::Adt(adt, _)) => {
-                        (self.sigs.variant_fields(ty, 0), adt.strukt == *s)
+                        (flux_ty::variant_fields(self.sigs, ty, 0), adt.strukt == *s)
                     }
                     (AggregateKind::Variant(s, v), TyKind::Adt(adt, _)) => {
-                        (self.sigs.variant_fields(ty, *v), adt.strukt == *s)
+                        (flux_ty::variant_fields(self.sigs, ty, *v), adt.strukt == *s)
                     }
                     (AggregateKind::Closure, TyKind::Closure(_, args)) => {
                         (Some(flux_ty::ClosureArgs::split(args).upvar_types()), true)
@@ -297,7 +296,7 @@ impl Validator<'_> {
                         }),
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| {
-                    if let Some((x, y)) = self.sigs.array_unsize(a, b) {
+                    if let Some((x, y)) = flux_ty::array_unsize(self.sigs, a, b) {
                         return self.same(x, y);
                     }
                     match (a.kind(), b.kind()) {

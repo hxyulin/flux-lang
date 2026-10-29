@@ -740,7 +740,10 @@ impl Ctx<'_> {
                     return Some(equalities);
                 }
                 (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => {
-                    let (a, b) = (self.sigs.fields(from)?, self.sigs.fields(to)?);
+                    let (a, b) = (
+                        crate::fields(self.sigs, from)?,
+                        crate::fields(self.sigs, to)?,
+                    );
                     let last = a.len().checked_sub(1)?;
                     if a.len() != b.len()
                         || !a[..last]

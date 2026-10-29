@@ -1669,7 +1669,7 @@ impl Ctx<'_> {
 
     /// The types of the fields of variant `variant` of `ty`, normalized.
     fn variant_fields_of(&mut self, ty: Ty, variant: u32, range: TextRange) -> &'static [Ty] {
-        let fields = self.sigs.variant_fields(ty, variant).unwrap_or(&[]);
+        let fields = crate::variant_fields(self.sigs, ty, variant).unwrap_or(&[]);
         if !fields.iter().any(|f| f.has_aliases()) {
             return fields;
         }
@@ -4654,7 +4654,7 @@ impl Ctx<'_> {
                 .and_then(|i| Some((i, *elements.get(i)?))),
             TyKind::Adt(adt, args) => items.structs[adt.strukt]
                 .field(name)
-                .map(|(i, _)| (i, sigs.field_types(adt.strukt, args)[i]))
+                .map(|(i, _)| (i, crate::field_types(sigs, adt.strukt, args)[i]))
                 .map(|(i, ty)| (i, self.normalize(ty, range))),
             TyKind::Error => return Ty::ERROR,
             TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool => {
@@ -7383,7 +7383,7 @@ impl Ctx<'_> {
                         (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !self.is_unsized(pointee),
                         // A fieldless enum, to its discriminant.
                         (TyKind::Adt(adt, _), TyKind::Int(_)) => {
-                            self.sigs.variants(from).is_some_and(|variants| {
+                            crate::variants(self.sigs, from).is_some_and(|variants| {
                                 variants.iter().all(|fields| fields.is_empty())
                             }) && crate::traits::drop_impl(self.items, self.sigs, adt.strukt)
                                 .is_none()

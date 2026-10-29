@@ -13,7 +13,7 @@ pub enum Metadata {
     Generic(Ty),
 }
 
-pub(crate) fn tail(
+pub fn tail(
     fields: Option<&LayeredArenaMap<Struct, &'static [Ty]>>,
     mut ty: Ty,
     is_enum: impl Fn(flux_hir::StructId) -> bool,
@@ -60,27 +60,6 @@ impl Signatures {
             }
             _ => Metadata::Thin,
         }
-    }
-
-    /// The array and slice element types at matching structural tails.
-    /// Prefix fields must be unchanged by this built-in unsizing coercion.
-    pub fn array_unsize(&self, from: Ty, to: Ty) -> Option<(Ty, Ty)> {
-        let mut pair = (from, to);
-        for _ in 0..256 {
-            match (pair.0.kind(), pair.1.kind()) {
-                (TyKind::Array(a, _), TyKind::Slice(b)) => return Some((a, b)),
-                (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => {
-                    let (from, to) = (self.fields(pair.0)?, self.fields(pair.1)?);
-                    let last = from.len().checked_sub(1)?;
-                    if from.len() != to.len() || from[..last] != to[..last] {
-                        return None;
-                    }
-                    pair = (from[last], to[last]);
-                }
-                _ => return None,
-            }
-        }
-        None
     }
 
     /// Definitely unsized after substitution. Generic tails additionally need

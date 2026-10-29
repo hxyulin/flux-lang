@@ -1,9 +1,10 @@
 //! Resolve written types and declaration-scoped generic arguments.
 use super::{
-    ConstId, Def, Diagnostic, FloatTy, FnSigTy, FunctionId, Generics, Hir, ImplTarget, IntTy,
-    ItemTree, LayeredArenaMap, ModuleId, Mutability, Ns, OpaqueTy, Owner, Path, Predicate,
-    ResolveError, Resolved, Signatures, Struct, StructId, Symbol, TextRange, TraitRef, Ty, TyKind,
-    TypeRef, fn_regions, kw, metadata, objects, params_of_names, regions, sym, traits, ty,
+    ArgTys, ConstId, Def, Diagnostic, FloatTy, FnSigTy, FunctionId, Generics, Hir, ImplTarget,
+    IntTy, ItemTree, LayeredArenaMap, LenValues, ModuleId, Mutability, Ns, OpaqueTy, Owner, Path,
+    Predicate, ResolveError, Resolved, Signatures, Struct, StructId, Symbol, TextRange, TraitRef,
+    Ty, TyKind, TypeRef, fn_regions, kw, metadata, objects, params_of_names, regions, sym, traits,
+    ty,
 };
 
 /// What the names in a type mean besides items: `Self`, if anything,
@@ -69,13 +70,6 @@ pub struct ArrayLens<'a> {
     /// Those found as types were resolved that `arg_tys` lacks.
     pub new_arg_tys: std::cell::RefCell<Vec<(ConstId, Ty)>>,
 }
-
-/// The types of the anonymous constants of const generic arguments.
-pub type ArgTys = rustc_hash::FxHashMap<ConstId, Ty>;
-
-/// The evaluated values of constants that array lengths and const
-/// generic arguments name, as bits (`1` for `true`).
-pub type LenValues = rustc_hash::FxHashMap<ConstId, Option<u128>>;
 
 /// Evaluates the constants array lengths name, given the signatures
 /// so far (whose [`Signatures::array_lens`] it may extend as it needs):

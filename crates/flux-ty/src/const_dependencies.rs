@@ -32,7 +32,7 @@ pub fn stores_adt(
                 pending.push((element, depth + 1))
             }
             _ => pending.extend(
-                sigs.contents(ty)
+                crate::contents(sigs, ty)
                     .unwrap_or_default()
                     .iter()
                     .map(|&field| (field, depth + 1)),

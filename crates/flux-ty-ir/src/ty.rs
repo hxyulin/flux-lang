@@ -247,7 +247,7 @@ pub struct OpaqueTy {
 
 /// `dyn Tr<A, Out = B>`: its trait, the trait's generic arguments after
 /// `Self`, and the associated types of the trait and its supertraits,
-/// each named and given, in the order [`crate::objects::dyn_assoc`]
+/// each named and given, in the order `flux_solve::objects::dyn_assoc`
 /// gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DynTy {
@@ -570,12 +570,12 @@ pub struct ParamTy {
 
 /// A type variable of one body's inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InferVar(pub(crate) u32);
+pub struct InferVar(pub u32);
 
 impl InferVar {
     /// `_` written in a type in a body, before inference gives it a
     /// variable of its own.
-    pub(crate) const PLACEHOLDER: InferVar = InferVar(u32::MAX);
+    pub const PLACEHOLDER: InferVar = InferVar(u32::MAX);
 }
 
 /// The interning side: what each kind's and list's index is, split into
@@ -1151,7 +1151,7 @@ impl TyKind {
 
 /// Maps a list using stack scratch for the common short-list case.
 /// Recursive mappings get independent scratch, so no borrow or lock spans `f`.
-pub(crate) fn map_list(list: &[Ty], f: impl FnMut(Ty) -> Ty) -> &'static [Ty] {
+pub fn map_list(list: &[Ty], f: impl FnMut(Ty) -> Ty) -> &'static [Ty] {
     intern_types(list.iter().copied().map(f))
 }
 

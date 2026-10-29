@@ -4300,8 +4300,7 @@ impl<'a> Cx<'a> {
             return (Ty::ERROR, Slots::new());
         };
         let sigs = self.sigs;
-        let Some(field_ty) = sigs
-            .variant_fields(ty, variant.unwrap_or(0))
+        let Some(field_ty) = flux_ty::variant_fields(sigs, ty, variant.unwrap_or(0))
             .and_then(|f| f.get(field as usize).copied())
         else {
             return (Ty::ERROR, Slots::new());
@@ -8061,9 +8060,7 @@ impl<'a> Cx<'a> {
                         .get(adt.strukt)
                         .map_or(1, |v| v.len().saturating_sub(1));
                     for variant in 0..variants {
-                        let fields = cx
-                            .sigs
-                            .variant_fields(ty, variant as u32)
+                        let fields = flux_ty::variant_fields(cx.sigs, ty, variant as u32)
                             .map_or(0, |f| f.len());
                         for field in 0..fields {
                             let (field_ty, field_vars) =

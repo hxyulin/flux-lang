@@ -275,7 +275,7 @@ impl<'a> Layouts<'a> {
                 Some((0, elem.size, elem.align))
             }
             TyKind::Adt(..) if self.sigs.is_unsized(ty) => {
-                let fields = self.sigs.fields(ty)?;
+                let fields = flux_ty::fields(self.sigs, ty)?;
                 let last = fields.len().checked_sub(1)?;
                 let (prefix, stride, _) = self.length_layout(fields[last])?;
                 let layout = self.of(ty);
@@ -406,8 +406,8 @@ impl<'a> Layouts<'a> {
         let items = self.items;
         let data = &items.structs[strukt];
         let lang = |name: &str| flux_ty::is_lang_struct(items, strukt, name);
-        let Some(variants) = self.sigs.variants(ty) else {
-            let fields = self.sigs.fields(ty).unwrap_or_default();
+        let Some(variants) = flux_ty::variants(self.sigs, ty) else {
+            let fields = flux_ty::fields(self.sigs, ty).unwrap_or_default();
             if data.is_union {
                 let align = fields
                     .iter()

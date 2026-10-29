@@ -441,7 +441,7 @@ fn check_patterns(
                 Value::Aggregate(fields) => {
                     let types = match ty.kind() {
                         TyKind::Array(elem, _) => vec![elem; fields.len()],
-                        _ => sigs.fields(ty)?.to_vec(),
+                        _ => flux_ty::fields(sigs, ty)?.to_vec(),
                     };
                     PatternConst::Aggregate(
                         fields
@@ -453,7 +453,7 @@ fn check_patterns(
                     )
                 }
                 Value::Variant { index, fields, .. } => {
-                    let types = sigs.variant_fields(ty, index)?;
+                    let types = flux_ty::variant_fields(sigs, ty, index)?;
                     PatternConst::Variant {
                         index,
                         fields: fields
@@ -813,8 +813,7 @@ fn capture_name(
                     }
                     _ => text = format!("{text}.{f}"),
                 }
-                ty = sigs
-                    .fields(ty)
+                ty = flux_ty::fields(sigs, ty)
                     .and_then(|fields| fields.get(f as usize).copied())
                     .unwrap_or(Ty::ERROR);
             }
@@ -2566,7 +2565,7 @@ impl Builder<'_> {
             };
             let structural = pointee(reference)
                 .zip(pointee(ty))
-                .is_some_and(|(a, b)| self.typed.sigs.array_unsize(a, b).is_some());
+                .is_some_and(|(a, b)| flux_ty::array_unsize(&self.typed.sigs, a, b).is_some());
             // Normalize pointer kind and mutability before adding metadata.
             if let TyKind::RawPtr(m, _) = ty.kind()
                 && (to_object || structural)
@@ -4058,11 +4057,8 @@ impl Builder<'_> {
                 }
             }
             Pat::Tuple { pats, rest } => {
-                let count = self
-                    .typed
-                    .sigs
-                    .fields(self.place_ty(&place))
-                    .map_or(0, |f| f.len());
+                let count =
+                    flux_ty::fields(&self.typed.sigs, self.place_ty(&place)).map_or(0, |f| f.len());
                 for (i, p) in positions(&self.body.lists[*pats], *rest, count) {
                     self.annotated_pattern(p, place.field(i));
                 }
@@ -4379,10 +4375,7 @@ impl Builder<'_> {
                 exits
             }
             Pat::Tuple { pats, rest } => {
-                let count = self
-                    .typed
-                    .sigs
-                    .fields(self.pat_place_ty(&place))
+                let count = flux_ty::fields(&self.typed.sigs, self.pat_place_ty(&place))
                     .map_or(0, |f| f.len());
                 let parts = positions(&self.body.lists[*pats], *rest, count)
                     .map(|(i, p)| (p, place.field(i)))
@@ -4815,7 +4808,7 @@ impl Builder<'_> {
                 fail,
                 range,
             );
-            let variants = self.typed.sigs.variants(ty).expect("an enum");
+            let variants = flux_ty::variants(&self.typed.sigs, ty).expect("an enum");
             let join = self.new_block();
             let mut targets = Vec::new();
             for _ in &variants {
@@ -4864,7 +4857,7 @@ impl Builder<'_> {
                     range,
                 );
             }
-        } else if let Some(fields) = self.typed.sigs.fields(ty) {
+        } else if let Some(fields) = flux_ty::fields(&self.typed.sigs, ty) {
             for (index, &field) in fields.iter().enumerate() {
                 self.structural_constant_test(
                     place.field(index as u32),

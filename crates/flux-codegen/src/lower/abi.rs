@@ -135,10 +135,10 @@ fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
                 u32::try_from(count.as_usize()?).ok()?,
             ),
             TyKind::Adt(adt, _) => {
-                if sigs.unions.contains(&adt.strukt) || sigs.variants(ty).is_some() {
+                if sigs.unions.contains(&adt.strukt) || flux_ty::variants(sigs, ty).is_some() {
                     return None;
                 }
-                let fields = sigs.fields(ty)?;
+                let fields = flux_ty::fields(sigs, ty)?;
                 let fields: Option<Vec<_>> = fields
                     .iter()
                     .map(|&field| c_layout(sigs, layouts, field))
@@ -164,7 +164,7 @@ fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
 /// still contain decoded discriminants and payloads; call boundaries marshal
 /// through the actual layout rather than exposing those internal leaves.
 pub(super) fn c_scalar(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Ty> {
-    let variants = sigs.variants(ty)?;
+    let variants = flux_ty::variants(sigs, ty)?;
     let actual = layouts.of(ty);
     if !actual.exact {
         return None;
@@ -246,7 +246,7 @@ fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, layouts: &Layouts, 
             // classification differs from an integer struct of the same size.
             let vector = items.is_core(data.loc.module)
                 && items.modules[data.loc.module].name.as_str() == "aarch64";
-            if let Some(variants) = sigs.variants(ty) {
+            if let Some(variants) = flux_ty::variants(sigs, ty) {
                 return c_scalar(sigs, layouts, ty).is_some()
                     && ((variants.iter().any(|v| !v.is_empty())
                         && items.is_core(data.loc.module)
@@ -258,8 +258,8 @@ fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, layouts: &Layouts, 
             data.repr_c
                 && !vector
                 && !sigs.unions.contains(&adt.strukt)
-                && sigs.variants(ty).is_none()
-                && sigs.fields(ty).is_some_and(|fields| {
+                && flux_ty::variants(sigs, ty).is_none()
+                && flux_ty::fields(sigs, ty).is_some_and(|fields| {
                     fields
                         .iter()
                         .all(|&ty| c_admitted(items, sigs, layouts, ty))
@@ -278,8 +278,7 @@ fn c_contains_ref(sigs: &Signatures, ty: Ty) -> bool {
         // passed nor inspected, and may form recursive type graphs.
         TyKind::RawPtr(..) => false,
         TyKind::Array(ty, _) | TyKind::Slice(ty) => c_contains_ref(sigs, ty),
-        TyKind::Adt(..) => sigs
-            .contents(ty)
+        TyKind::Adt(..) => flux_ty::contents(sigs, ty)
             .is_some_and(|fields| fields.iter().any(|&ty| c_contains_ref(sigs, ty))),
         TyKind::Tuple(fields) => fields.iter().any(|&ty| c_contains_ref(sigs, ty)),
         _ => false,

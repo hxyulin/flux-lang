@@ -21,15 +21,17 @@ pub mod entry;
 pub mod inline_asm;
 mod signature;
 pub mod sized_dispatch;
+mod struct_fields;
 pub use signature::{signatures, signatures_checked};
+pub use struct_fields::{array_unsize, contents, field_types, fields, variant_fields, variants};
 
 mod resolve;
 pub use resolve::{
-    ArgTys, ArrayLens, LenEvaluator, LenValues, TypeScope, alias_type, arc_pointee, array_len,
-    box_pointee, check_const_params, const_param_ty, const_value, generic_consts, generic_names,
-    impl_target, is_lang_struct, maybe_unsized, nonzero_integer, param_const_ty, primitive,
-    resolve_generic_arg, resolve_generic_args, resolve_type, self_ty, struct_type, unsized_error,
-    unsized_params, wrong_arg_count,
+    ArrayLens, LenEvaluator, TypeScope, alias_type, arc_pointee, array_len, box_pointee,
+    check_const_params, const_param_ty, const_value, generic_consts, generic_names, impl_target,
+    is_lang_struct, maybe_unsized, nonzero_integer, param_const_ty, primitive, resolve_generic_arg,
+    resolve_generic_args, resolve_type, self_ty, struct_type, unsized_error, unsized_params,
+    wrong_arg_count,
 };
 use resolve::{
     alias_cycle, check_type_defaults, reaches_alias, resolve_or_report, resolve_predicates,
@@ -38,607 +40,38 @@ use resolve::{
 pub(crate) use resolve::{contains_ref, expand_alias, fill_type_defaults, type_arg_count};
 
 mod fn_regions;
-mod impl_index;
-mod in_scope;
 mod infer;
-mod metadata;
 pub mod objects;
 mod pats;
 pub mod regions;
 pub mod traits;
-mod ty;
 pub mod type_identity;
 
 use std::fmt::Write;
-use std::ops::Index;
 use std::sync::OnceLock;
 
 use flux_arena::{ArenaMap, LayeredArenaMap};
 use flux_hir::def_map::{Def, Ns, ResolveError, Resolved};
 use flux_hir::{
     Const, ConstId, Core, Diagnostic, Function, FunctionId, Generics, Hir, Impl, ImplId,
-    ImplTarget, ItemCounts, ItemLoc, ItemTree, ModuleId, Owner, Path, Struct, StructId, Trait,
-    TypeRef,
+    ImplTarget, ItemCounts, ItemLoc, ItemTree, ModuleId, Owner, Path, Struct, StructId, TypeRef,
 };
 use flux_intern::{Symbol, kw, sym};
 use flux_syntax::TextRange;
 use rustc_hash::FxHashMap;
 
+pub use flux_ty_ir::{
+    AdtId, AliasTy, ArgTys, Builtins, ClosureArgs, ClosureId, ClosureKind, ClosureOwner,
+    ConstInstance, DynTy, FloatTy, FnDefTy, FnPtrRegions, FnRegion, FnSig, FnSigTy, GenericArgs,
+    InferVar, Instance, IntTy, LenValues, Metadata, Mutability, OpaqueSig, OpaqueTy, ParamTy,
+    Signatures, Ty, TyKind, fn_trait, fn_trait_kind, params_of, subst_list, symbol_list,
+};
+use flux_ty_ir::{impl_index, in_scope, max_param, mentions_param, metadata, overlap, ty};
 pub use infer::{
     BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, InferenceResult, Method,
     OverloadedDeref, c_char_ptr, c_str_ref, infer_body, infer_const,
 };
-pub use metadata::Metadata;
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
-pub use ty::{
-    AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, ClosureOwner, DynTy, FloatTy, FnDefTy,
-    FnPtrRegions, FnRegion, FnSigTy, GenericArgs, InferVar, IntTy, Mutability, OpaqueTy, ParamTy,
-    Ty, TyKind, subst_list, symbol_list,
-};
-
-/// Which `Fn`-family trait `t` is, if it is one: `core`'s
-/// `#[lang = "fn"]`, `"fn_mut"` or `"fn_once"`.
-pub fn fn_trait_kind(items: &ItemTree, t: flux_hir::TraitId) -> Option<ClosureKind> {
-    match items.traits[t].lang?.as_str() {
-        "fn" => Some(ClosureKind::Fn),
-        "fn_mut" => Some(ClosureKind::FnMut),
-        "fn_once" => Some(ClosureKind::FnOnce),
-        _ => None,
-    }
-}
-
-/// The `Fn`-family trait of `kind`, if `core` has it.
-pub fn fn_trait(items: &ItemTree, kind: ClosureKind) -> Option<flux_hir::TraitId> {
-    let lang = match kind {
-        ClosureKind::Fn => "fn",
-        ClosureKind::FnMut => "fn_mut",
-        ClosureKind::FnOnce => "fn_once",
-    };
-    items.lang_traits.get(&Symbol::intern(lang)).copied()
-}
-
-/// A function's resolved signature. A generic function's mentions its
-/// parameters, its `impl` block's first.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FnSig {
-    pub params: Box<[Ty]>,
-    pub ret: Ty,
-}
-
-/// A function with generic arguments for its parameters, its `impl`
-/// block's first: what a call calls, and, once monomorphized, a function
-/// in the output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Instance {
-    pub function: FunctionId,
-    pub args: GenericArgs,
-}
-
-/// A constant with generic arguments for its owner's parameters: a
-/// trait's, `Self` first, or its `impl` block's. What a path to an
-/// associated constant names; which value it is follows once the
-/// arguments are known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ConstInstance {
-    pub konst: ConstId,
-    pub args: GenericArgs,
-}
-
-impl FnSig {
-    /// The signature of the instance with generic arguments `args`.
-    pub fn subst(&self, args: &[Ty]) -> FnSig {
-        FnSig {
-            params: self.params.iter().map(|p| p.subst(args)).collect(),
-            ret: self.ret.subst(args),
-        }
-    }
-}
-
-/// Everything about a file's items that bodies depend on: each
-/// function's signature, each struct's field types, each `impl` block's
-/// type and trait, and the bounds of each item, in terms of their
-/// generic parameters.
-#[derive(Debug, Clone, Default)]
-pub struct Signatures {
-    /// Shared by constant evaluation and monomorphization of this graph.
-    pub type_ids: type_identity::TypeIds,
-    pub sized_dispatch: rustc_hash::FxHashMap<FunctionId, flux_hir::SizedDispatch>,
-    pub unions: rustc_hash::FxHashSet<StructId>,
-    pub fns: LayeredArenaMap<Function, FnSig>,
-    /// The types of each struct's fields, and of each enum's, every
-    /// variant's in turn: all that a value of it may contain.
-    pub structs: LayeredArenaMap<Struct, &'static [Ty]>,
-    /// Where each variant of an enum starts in its `structs` entry, and
-    /// where the last ends.
-    pub variant_starts: LayeredArenaMap<Struct, Box<[u32]>>,
-    /// The type of each enum's discriminant: [`discriminant_ty`].
-    pub discriminants: LayeredArenaMap<Struct, IntTy>,
-    pub impls: LayeredArenaMap<Impl, Ty>,
-    pub consts: LayeredArenaMap<Const, Ty>,
-    pub traits: LayeredArenaMap<Trait, TraitSig>,
-    /// The trait each trait's `impl` block implements, if it resolved.
-    pub impl_traits: LayeredArenaMap<Impl, TraitRef>,
-    /// The bounds of each `impl` block, trait and function, their own
-    /// only: a function's are after its owner's.
-    pub impl_predicates: LayeredArenaMap<Impl, Box<[Predicate]>>,
-    /// The bounds of each struct, which every type naming it must meet.
-    pub struct_predicates: LayeredArenaMap<Struct, Box<[Predicate]>>,
-    pub trait_predicates: LayeredArenaMap<Trait, Box<[Predicate]>>,
-    pub fn_predicates: LayeredArenaMap<Function, Box<[Predicate]>>,
-    /// What the bounds of each `impl` block, trait and function say
-    /// associated types are (`T: Tr<Out = i32>`), their own only.
-    pub impl_projections: LayeredArenaMap<Impl, Box<[Projection]>>,
-    pub struct_projections: LayeredArenaMap<Struct, Box<[Projection]>>,
-    pub trait_projections: LayeredArenaMap<Trait, Box<[Projection]>>,
-    pub fn_projections: LayeredArenaMap<Function, Box<[Projection]>>,
-    /// The associated types each trait's `impl` block defines, by name.
-    pub impl_types: LayeredArenaMap<Impl, Box<[(Symbol, Ty)]>>,
-    pub impl_families: LayeredArenaMap<Impl, Box<[(Symbol, traits::AssociatedTypeSig)]>>,
-    /// The bounds of each function's opaque types (the `impl Trait`s of
-    /// its return type), by index: [`traits::opaque_bounds`].
-    pub opaques: LayeredArenaMap<Function, Box<[OpaqueSig]>>,
-    /// The hidden type of each opaque type, in terms of its function's
-    /// generic parameters, once the function's body is inferred: what
-    /// code generation sees ([`traits::reveal`]).
-    pub hidden: rustc_hash::FxHashMap<(FunctionId, u32), Ty>,
-    /// The defaults of each trait's parameters.
-    pub trait_defaults: traits::TraitDefaults,
-    /// The `impl` blocks of each trait by the constructor of their type.
-    pub impl_index: impl_index::ImplIndex,
-    /// The traits in scope in each module.
-    pub traits_in_scope: in_scope::TraitsInScope,
-    /// A trait is its own supertrait (reported): rustc stops before
-    /// type checking bodies.
-    pub cyclic: bool,
-    /// The values of the constants that array lengths name, evaluated
-    /// before bodies are inferred.
-    pub array_lens: LenValues,
-    /// The types of the anonymous constants of const generic arguments
-    /// (`f::<{ N + 1 }>`), their parameters'.
-    pub arg_tys: ArgTys,
-    /// The lifetimes in the signatures, for the borrow checker.
-    pub regions: regions::RegionSigs,
-    /// What field types need of the items to normalize without them.
-    pub builtins: Builtins,
-}
-
-/// What an opaque type is known to be: its bounds and what they say its
-/// associated types are, in terms of its function's generic parameters
-/// and, for itself, one more parameter after them.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct OpaqueSig {
-    /// Written bound index for each directly resolved predicate.
-    pub bound_origins: Box<[u32]>,
-    pub predicates: Box<[Predicate]>,
-    pub projections: Box<[Projection]>,
-}
-
-/// The traits of `core` that [`Signatures::field_types`] needs to know,
-/// recorded from the items: `Sized`, which every type implements.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Builtins {
-    pub sized: Option<flux_hir::TraitId>,
-}
-
-impl Builtins {
-    fn of(items: &ItemTree) -> Builtins {
-        Builtins {
-            sized: items.lang_traits.get(&flux_intern::sym::sized).copied(),
-        }
-    }
-}
-
-impl Index<FunctionId> for Signatures {
-    type Output = FnSig;
-
-    fn index(&self, function: FunctionId) -> &FnSig {
-        &self.fns[function]
-    }
-}
-
-impl Signatures {
-    /// The lookup indexes are rebuilt for the extended item tree.
-    fn fork_for_extension(&self) -> Self {
-        Self {
-            type_ids: self.type_ids.clone(),
-            sized_dispatch: self.sized_dispatch.clone(),
-            unions: self.unions.clone(),
-            fns: self.fns.clone(),
-            structs: self.structs.clone(),
-            variant_starts: self.variant_starts.clone(),
-            discriminants: self.discriminants.clone(),
-            impls: self.impls.clone(),
-            consts: self.consts.clone(),
-            traits: self.traits.clone(),
-            impl_traits: self.impl_traits.clone(),
-            impl_predicates: self.impl_predicates.clone(),
-            struct_predicates: self.struct_predicates.clone(),
-            trait_predicates: self.trait_predicates.clone(),
-            fn_predicates: self.fn_predicates.clone(),
-            impl_projections: self.impl_projections.clone(),
-            struct_projections: self.struct_projections.clone(),
-            trait_projections: self.trait_projections.clone(),
-            fn_projections: self.fn_projections.clone(),
-            impl_types: self.impl_types.clone(),
-            impl_families: self.impl_families.clone(),
-            opaques: self.opaques.clone(),
-            hidden: self.hidden.clone(),
-            trait_defaults: self.trait_defaults.clone(),
-            impl_index: Default::default(),
-            traits_in_scope: Default::default(),
-            cyclic: self.cyclic,
-            array_lens: self.array_lens.clone(),
-            arg_tys: self.arg_tys.clone(),
-            regions: self.regions.clone(),
-            builtins: self.builtins,
-        }
-    }
-
-    /// Freeze the library's maps once; copies retain a shared base and
-    /// clone individual inherited values only when they are changed.
-    fn freeze(&mut self) {
-        self.fns.freeze();
-        self.structs.freeze();
-        self.variant_starts.freeze();
-        self.discriminants.freeze();
-        self.impls.freeze();
-        self.consts.freeze();
-        self.traits.freeze();
-        self.impl_traits.freeze();
-        self.impl_predicates.freeze();
-        self.struct_predicates.freeze();
-        self.trait_predicates.freeze();
-        self.fn_predicates.freeze();
-        self.impl_projections.freeze();
-        self.struct_projections.freeze();
-        self.trait_projections.freeze();
-        self.fn_projections.freeze();
-        self.impl_types.freeze();
-        self.impl_families.freeze();
-        self.opaques.freeze();
-        self.trait_defaults.freeze();
-        self.regions.traits.freeze();
-        self.regions.fns.freeze();
-        self.regions.structs.freeze();
-        self.regions.impls.freeze();
-        self.regions.consts.freeze();
-    }
-
-    /// The types of the fields of `ty`, a tuple or struct; none for an
-    /// enum, whose fields are its variants'.
-    pub fn fields(&self, ty: Ty) -> Option<&'static [Ty]> {
-        match ty.kind() {
-            TyKind::Tuple(elements) => Some(elements),
-            TyKind::Adt(adt, _) if self.is_enum(adt.strukt) => None,
-            TyKind::Adt(adt, args) => Some(self.field_types(adt.strukt, args)),
-            TyKind::Closure(_, args) => Some(ClosureArgs::split(args).upvar_types()),
-            _ => None,
-        }
-    }
-
-    /// The type of the discriminant of `ty`, an enum.
-    pub fn discriminant_ty(&self, ty: Ty) -> Option<IntTy> {
-        match ty.kind() {
-            TyKind::Adt(adt, _) => self.discriminants.get(adt.strukt).copied(),
-            _ => None,
-        }
-    }
-
-    /// Whether `strukt` is an enum.
-    pub fn is_enum(&self, strukt: StructId) -> bool {
-        self.variant_starts.get(strukt).is_some()
-    }
-
-    /// The types of the fields of variant `variant` of `ty`, an enum, or
-    /// of `ty` itself, a struct or tuple, for variant 0.
-    pub fn variant_fields(&self, ty: Ty, variant: u32) -> Option<&'static [Ty]> {
-        match ty.kind() {
-            TyKind::Adt(adt, args) if self.is_enum(adt.strukt) => {
-                let starts = &self.variant_starts[adt.strukt];
-                let (start, end) = (
-                    *starts.get(variant as usize)? as usize,
-                    *starts.get(variant as usize + 1)? as usize,
-                );
-                Some(&self.field_types(adt.strukt, args)[start..end])
-            }
-            _ => self.fields(ty),
-        }
-    }
-
-    /// The types of everything a value of `ty` may hold directly: a
-    /// tuple's elements, a struct's fields, every variant's fields of an
-    /// enum.
-    pub fn contents(&self, ty: Ty) -> Option<&'static [Ty]> {
-        match ty.kind() {
-            TyKind::Tuple(elements) => Some(elements),
-            TyKind::Adt(adt, args) => Some(self.field_types(adt.strukt, args)),
-            TyKind::Closure(_, args) => Some(ClosureArgs::split(args).upvar_types()),
-            _ => None,
-        }
-    }
-
-    /// The variants of `ty`, an enum, by their fields' types.
-    pub fn variants(&self, ty: Ty) -> Option<Vec<&'static [Ty]>> {
-        let TyKind::Adt(adt, _) = ty.kind() else {
-            return None;
-        };
-        let count = self.variant_starts.get(adt.strukt)?.len() - 1;
-        (0..count as u32)
-            .map(|v| self.variant_fields(ty, v))
-            .collect()
-    }
-
-    /// The types of the fields of `strukt` with generic arguments `args`,
-    /// with the associated types they name (`T::Out`) normalized where
-    /// `args` make them known.
-    pub fn field_types(&self, strukt: StructId, args: &[Ty]) -> &'static [Ty] {
-        let fields = self.structs[strukt];
-        if args.is_empty() {
-            return fields;
-        }
-        let fields = ty::map_list(fields, |t| t.subst(args));
-        if !fields.iter().any(|f| f.has_aliases()) {
-            return fields;
-        }
-        let (mut done, mut active) = (rustc_hash::FxHashMap::default(), Vec::new());
-        ty::map_list(fields, |f| {
-            self.normalize_known(f, 0, &mut done, &mut active)
-        })
-    }
-
-    /// The generic arguments of `imp` for which its header is `args`
-    /// (the trait's `Self` and arguments), as far as the header has them.
-    fn match_header(&self, imp: ImplId, args: &[Ty]) -> Option<Vec<Option<Ty>>> {
-        let trait_ref = self.impl_traits.get(imp)?;
-        // Every parameter of a trait's block is in its header, but those
-        // only its bounds' associated types decide.
-        let header = std::iter::once(self.impls[imp]).chain(trait_ref.args.iter().copied());
-        let count = header.clone().map(max_param).max().unwrap_or(0);
-        let count = count as usize;
-        let mut short = [None; 8];
-        let mut long = Vec::new();
-        let binds = if count <= short.len() {
-            &mut short[..count]
-        } else {
-            long.resize(count, None);
-            &mut long[..]
-        };
-        header
-            .zip(args)
-            .all(|(x, &y)| traits::match_ty(x, y, binds))
-            .then(|| binds.to_vec())
-    }
-
-    /// Whether the bounds of `imp`, with generic arguments `binds`, hold:
-    /// `Some(true)` if they surely do, `Some(false)` if they may (on
-    /// parameters, or on types with the compiler's own impls, which only
-    /// the items know), `None` if one does not.
-    fn bounds_hold(&self, imp: ImplId, binds: &[Option<Ty>], depth: u32) -> Option<bool> {
-        let preds = self.impl_predicates.get(imp).map_or(&[][..], |p| p);
-        if preds.is_empty() {
-            return Some(true);
-        }
-        let known: Vec<Ty> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
-        let mut definite = true;
-        for p in preds {
-            let p = p.subst(&known);
-            definite &= self.may_hold(p, depth + 1)?;
-        }
-        Some(definite)
-    }
-
-    /// Whether `p` holds, as [`Self::bounds_hold`] says: surely only if
-    /// an `impl` block whose bounds surely hold is for its types; perhaps
-    /// for parameters, which bounds in scope may say implement it, and
-    /// types with the compiler's own impls (arrays, closures, functions,
-    /// references' `Copy`), which only the items know; not at all if no
-    /// block may be for its types.
-    fn may_hold(&self, p: Predicate, depth: u32) -> Option<bool> {
-        let rigid = |t: Ty| {
-            matches!(
-                t.kind(),
-                TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Infer(_)
-            )
-        };
-        if p.self_ty == Ty::ERROR || p.trait_ref.args.contains(&Ty::ERROR) {
-            return Some(true);
-        }
-        if Some(p.trait_ref.trait_) == self.builtins.sized {
-            return Some(!self.is_unsized(p.self_ty));
-        }
-        if rigid(p.self_ty) || depth > 8 {
-            return Some(false);
-        }
-        if matches!(
-            p.self_ty.kind(),
-            TyKind::Array(..)
-                | TyKind::Closure(..)
-                | TyKind::FnDef(_)
-                | TyKind::FnPtr(_)
-                | TyKind::Ref(Mutability::Not, _)
-                | TyKind::Never
-        ) {
-            return Some(false);
-        }
-        let mut args = vec![p.self_ty];
-        args.extend_from_slice(p.trait_ref.args);
-        let mut found = None;
-        for (imp, trait_ref) in self.impl_traits.iter() {
-            if trait_ref.trait_ != p.trait_ref.trait_ {
-                continue;
-            }
-            let Some(binds) = self.match_header(imp, &args) else {
-                continue;
-            };
-            match self.bounds_hold(imp, &binds, depth) {
-                Some(true) => return Some(true),
-                Some(false) => found = Some(false),
-                None => {}
-            }
-        }
-        if found.is_none() && p.trait_ref.args.iter().any(|&a| rigid(a)) {
-            return Some(false);
-        }
-        found
-    }
-
-    /// `ty` with each associated type of known types replaced by what
-    /// their trait's `impl` block for them says it is. `done` has what
-    /// the types met so far normalize to, and `active` the aliases being
-    /// normalized, as [`traits::normalize`] does.
-    fn normalize_known(
-        &self,
-        ty: Ty,
-        depth: u32,
-        done: &mut rustc_hash::FxHashMap<Ty, Ty>,
-        active: &mut Vec<Ty>,
-    ) -> Ty {
-        if !ty.has_aliases() || depth > 64 || active.contains(&ty) {
-            return ty;
-        }
-        if let Some(&done) = done.get(&ty) {
-            return done;
-        }
-        active.push(ty);
-        let mut go = |t: Ty| self.normalize_known(t, depth + 1, done, active);
-        let normalized = match ty.kind() {
-            TyKind::Alias(alias) => 'alias: {
-                let alias = alias.map_args(&mut go);
-                let args = alias.args;
-                // What a closure or function returns: `FnOnce`'s `Output`,
-                // the only trait with an associated type they implement.
-                if alias.name.as_str() == "Output" {
-                    if let Some(sig) = args[0].fn_sig()
-                        && !sig.is_unsafe
-                    {
-                        break 'alias go(sig.ret());
-                    }
-                    if let TyKind::Closure(_, closure) = args[0].kind() {
-                        break 'alias go(ClosureArgs::split(closure).ret());
-                    }
-                }
-                // The one block whose header matches and whose bounds can
-                // hold, as [`traits::select_impl`] picks it: one whose
-                // bounds surely hold, else, for a type whose shape picks
-                // it, the only one whose bounds may (on parameters).
-                let mut judged = Vec::new();
-                for (imp, trait_ref) in self.impl_traits.iter() {
-                    if trait_ref.trait_ != alias.trait_ {
-                        continue;
-                    }
-                    let Some(binds) = self.match_header(imp, args) else {
-                        continue;
-                    };
-                    let Some(definite) = self.bounds_hold(imp, &binds, 0) else {
-                        continue;
-                    };
-                    judged.push((imp, binds, definite));
-                }
-                let rigid = matches!(
-                    args[0].kind(),
-                    TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Infer(_)
-                );
-                let definite = judged.iter().filter(|j| j.2).count();
-                let chosen = match (definite, judged.len()) {
-                    (1, _) => judged.into_iter().find(|j| j.2),
-                    (0, 1) if !rigid => judged.into_iter().next(),
-                    _ => None,
-                };
-                if let Some((imp, binds, _)) = chosen
-                    && let Some(t) = traits::impl_type(self, imp, alias.name)
-                {
-                    let mut binds = binds;
-                    // Parameters only the block's bounds' associated
-                    // types decide (`T` in `impl<'a, T, I: Iterator<Item
-                    // = &'a T>> Iterator for Copied<I>`), from what
-                    // those are for the known ones.
-                    let projections = self.impl_projections.get(imp).map_or(&[][..], |p| p);
-                    let rhs_owner_params = self
-                        .impl_families
-                        .get(imp)
-                        .and_then(|families| families.iter().find(|(name, _)| *name == alias.name))
-                        .map_or_else(|| max_param(t), |(_, family)| family.owner_params);
-                    let needed = projections
-                        .iter()
-                        .map(|p| max_param(p.ty))
-                        .chain([rhs_owner_params])
-                        .max()
-                        .unwrap_or(0) as usize;
-                    if binds.len() < needed {
-                        binds.resize(needed, None);
-                    }
-                    let mut progress = true;
-                    while progress && binds.iter().any(Option::is_none) {
-                        progress = false;
-                        for p in projections {
-                            let known: Vec<Ty> =
-                                binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
-                            let projected = Ty::alias(p.alias).subst(&known);
-                            if projected.has_params() || projected.has_infer() {
-                                continue;
-                            }
-                            let ty = go(projected);
-                            if matches!(ty.kind(), TyKind::Alias(_) | TyKind::Error) {
-                                continue;
-                            }
-                            let mut found = binds.clone();
-                            if traits::match_ty(p.ty, ty, &mut found) && found != binds {
-                                binds = found;
-                                progress = true;
-                            }
-                        }
-                    }
-                    let binds: Vec<Ty> =
-                        binds.into_iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
-                    if let Some(t) = traits::instantiate_impl_type(self, imp, alias, &binds) {
-                        break 'alias go(t);
-                    }
-                }
-                Ty::alias(alias)
-            }
-            TyKind::Tuple(list) => Ty::new(TyKind::Tuple(ty::map_list(list, go))),
-            TyKind::Adt(adt, list) => {
-                let list = ty::map_list(list, go);
-                Ty::new(TyKind::Adt(adt, list))
-            }
-            TyKind::Closure(id, list) => {
-                let list = ty::map_list(list, go);
-                Ty::new(TyKind::Closure(id, list))
-            }
-            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, go(t))),
-            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, go(t)),
-            TyKind::Array(t, len) => Ty::array_of(go(t), len),
-            TyKind::Slice(t) => Ty::slice(go(t)),
-            TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.map_fn(go),
-            _ => ty,
-        };
-        active.pop();
-        done.insert(ty, normalized);
-        normalized
-    }
-}
-
-/// One more than the largest index of a generic parameter in `ty`, or 0.
-fn max_param(ty: Ty) -> u32 {
-    match ty.kind() {
-        TyKind::Param(p) => p.index + 1,
-        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
-            list.iter().map(|&t| max_param(t)).max().unwrap_or(0)
-        }
-        TyKind::Alias(alias) => alias
-            .args
-            .iter()
-            .chain(alias.family_args)
-            .map(|&t| max_param(t))
-            .max()
-            .unwrap_or(0),
-        TyKind::Opaque(opaque) => opaque.args.iter().map(|&t| max_param(t)).max().unwrap_or(0),
-        TyKind::Ref(_, t) | TyKind::RawPtr(_, t) | TyKind::Slice(t) => max_param(t),
-        TyKind::Array(t, len) => max_param(t).max(max_param(len)),
-        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().map(max_param).max().unwrap_or(0),
-        _ => 0,
-    }
-}
 
 /// Reports names defined twice by blocks for overlapping instances of a
 /// generic struct, `impl<T> S<T>` and `impl S<i32>`; the item tree
@@ -691,58 +124,6 @@ fn duplicate_assoc_items(
                 }
             }
         }
-    }
-}
-
-/// Whether two `impl` blocks' types, each in terms of its own
-/// parameters, may be the same type.
-pub(crate) fn overlap(a: Ty, b: Ty) -> bool {
-    match (a.kind(), b.kind()) {
-        (TyKind::Param(_) | TyKind::Error, _) | (_, TyKind::Param(_) | TyKind::Error) => true,
-        (TyKind::Adt(x, xs), TyKind::Adt(y, ys)) => {
-            x == y && xs.iter().zip(ys).all(|(&a, &b)| overlap(a, b))
-        }
-        (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
-            xs.len() == ys.len() && xs.iter().zip(ys).all(|(&a, &b)| overlap(a, b))
-        }
-        (TyKind::Ref(m, x), TyKind::Ref(n, y)) | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
-            m == n && overlap(x, y)
-        }
-        (TyKind::Array(x, m), TyKind::Array(y, n)) => overlap(m, n) && overlap(x, y),
-        (TyKind::Slice(x), TyKind::Slice(y)) => overlap(x, y),
-        (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_unsafe == y.is_unsafe
-                && x.is_c == y.is_c
-                && x.inputs_output.len() == y.inputs_output.len()
-                && (x.inputs_output.iter().zip(y.inputs_output)).all(|(&a, &b)| overlap(a, b))
-        }
-        (TyKind::FnDef(x), TyKind::FnDef(y)) => {
-            x.function == y.function && x.args.iter().zip(y.args).all(|(&a, &b)| overlap(a, b))
-        }
-        _ => a == b,
-    }
-}
-
-/// Whether `ty` mentions generic parameter `index`.
-pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
-    if !ty.has_params() {
-        return false;
-    }
-    match ty.kind() {
-        TyKind::Param(param) => param.index == index,
-        TyKind::RawPtr(_, t) | TyKind::Ref(_, t) | TyKind::Slice(t) => mentions_param(t, index),
-        TyKind::Array(t, len) => mentions_param(t, index) || mentions_param(len, index),
-        TyKind::Tuple(list) | TyKind::Adt(_, list) | TyKind::Closure(_, list) => {
-            list.iter().any(|&t| mentions_param(t, index))
-        }
-        TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().any(|t| mentions_param(t, index)),
-        TyKind::Opaque(opaque) => opaque.args.iter().any(|&t| mentions_param(t, index)),
-        TyKind::Dynamic(object) => object
-            .args
-            .iter()
-            .chain(object.assoc_tys.iter())
-            .any(|&t| mentions_param(t, index)),
-        _ => false,
     }
 }
 
@@ -840,15 +221,6 @@ fn opaque_sigs(
 fn params_of_names(names: &[Symbol]) -> Vec<Ty> {
     (names.iter().enumerate())
         .map(|(i, &name)| Ty::param(i as u32, name))
-        .collect()
-}
-
-pub fn params_of(generics: &Generics, first: usize) -> Vec<Ty> {
-    generics
-        .params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| Ty::param((first + i) as u32, p.name))
         .collect()
 }
 
@@ -980,7 +352,7 @@ fn contains(sigs: &Signatures, ty: Ty, strukt: StructId, seen: &mut Vec<StructId
         }
         seen.push(adt.strukt);
     }
-    let fields = sigs.contents(ty).unwrap_or(&[]);
+    let fields = crate::contents(sigs, ty).unwrap_or(&[]);
     fields
         .iter()
         .any(|&field| contains(sigs, field, strukt, seen))
@@ -1620,7 +992,7 @@ pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> b
                         .values()
                         .any(|f| f.derived == Some((adt.strukt, flux_hir::Derive::PartialEq)))
                     && (sigs.is_enum(adt.strukt)
-                        || sigs.fields(ty).is_some_and(|fields| {
+                        || crate::fields(sigs, ty).is_some_and(|fields| {
                             fields.iter().all(|&t| check(items, sigs, t, depth + 1))
                         }))
             }
@@ -1874,7 +1246,7 @@ fn supported_union_field(
                     matches!(arg.kind(), TyKind::Value(_))
                         || supported_union_field(items, sigs, arg, checked, depth + 1)
                 })
-                && sigs.contents(ty).is_some_and(|fields| {
+                && crate::contents(sigs, ty).is_some_and(|fields| {
                     fields
                         .iter()
                         .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1))

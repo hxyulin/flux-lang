@@ -365,10 +365,11 @@ impl PlaceTy {
                     variant: Some(variant),
                 };
             }
-            (ProjectionElem::Field(field), _) => sigs
-                .variant_fields(self.ty, self.variant.unwrap_or(0))
-                .and_then(|fields| fields.get(field as usize).copied())
-                .unwrap_or(Ty::ERROR),
+            (ProjectionElem::Field(field), _) => {
+                flux_ty::variant_fields(sigs, self.ty, self.variant.unwrap_or(0))
+                    .and_then(|fields| fields.get(field as usize).copied())
+                    .unwrap_or(Ty::ERROR)
+            }
             (ProjectionElem::Deref, TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee)) => {
                 pointee
             }

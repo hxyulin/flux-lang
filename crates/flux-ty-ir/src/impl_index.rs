@@ -11,7 +11,7 @@ use crate::{FloatTy, IntTy, Mutability, Signatures, Ty, TyKind};
 /// The outermost constructor of a type, when it has one that no other
 /// type it does not unify with shares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Head {
+pub enum Head {
     Int(IntTy),
     Float(FloatTy),
     Bool,
@@ -31,7 +31,7 @@ pub(crate) enum Head {
 
 /// The constructor of `ty`, or none if it may unify with types of any:
 /// a parameter, an associated type, a variable or an error.
-pub(crate) fn head(ty: Ty) -> Option<Head> {
+pub fn head(ty: Ty) -> Option<Head> {
     Some(match ty.kind() {
         TyKind::Int(int) => Head::Int(int),
         TyKind::Float(float) => Head::Float(float),
@@ -89,7 +89,7 @@ impl ImplIndex {
 
     /// The `impl` blocks of `t` that may be for a type with constructor
     /// `head`, or for any type without one, in source order.
-    pub(crate) fn impls_with_head<'s>(
+    pub fn impls_with_head<'s>(
         &'s self,
         items: &'s ItemTree,
         t: TraitId,
@@ -111,7 +111,7 @@ impl ImplIndex {
     /// [`ItemTree::trait_impls`] entry that may be for the same types as
     /// that one, as far as their outermost constructors tell, in source
     /// order.
-    pub(crate) fn earlier<'s>(
+    pub fn earlier<'s>(
         &'s self,
         items: &'s ItemTree,
         sigs: &Signatures,

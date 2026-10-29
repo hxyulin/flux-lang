@@ -378,12 +378,12 @@ pub(super) fn extend_signatures(
             }
         }
         for variant in 0..data.variant_count() as u32 {
-            let fields = sigs
-                .variant_fields(
-                    Ty::adt(id, data.name, &params_of(&data.generics, 0)),
-                    variant,
-                )
-                .unwrap_or_default();
+            let fields = crate::variant_fields(
+                &sigs,
+                Ty::adt(id, data.name, &params_of(&data.generics, 0)),
+                variant,
+            )
+            .unwrap_or_default();
             for (index, &ty) in fields.iter().enumerate() {
                 let scope = TypeScope {
                     struct_fields: Some(&sigs.structs),
@@ -983,7 +983,7 @@ fn transparent_field_shape(
                 return (false, false);
             }
             active.push(adt.strukt);
-            let fields = sigs.variant_fields(ty, 0).unwrap_or_default();
+            let fields = crate::variant_fields(sigs, ty, 0).unwrap_or_default();
             let shape = fields
                 .iter()
                 .fold((true, data.repr_align <= 1), |shape, &field| {

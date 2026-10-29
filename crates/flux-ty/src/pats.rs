@@ -695,13 +695,11 @@ impl Cx<'_> {
             {
                 false
             }
-            TyKind::Adt(..) => match self.sigs.variants(ty) {
+            TyKind::Adt(..) => match crate::variants(self.sigs, ty) {
                 Some(variants) => variants
                     .iter()
                     .all(|fields| fields.iter().any(|&f| self.uninhabited(f, depth + 1))),
-                None => self
-                    .sigs
-                    .fields(ty)
+                None => crate::fields(self.sigs, ty)
                     .is_some_and(|fields| fields.iter().any(|&f| self.uninhabited(f, depth + 1))),
             },
             _ => false,
@@ -717,11 +715,10 @@ impl Cx<'_> {
             }
             (Ctor::Slice(kind), TyKind::Slice(elem)) => vec![elem; kind.arity() as usize],
             (Ctor::Slice(_), _) => Vec::new(),
-            (Ctor::Single, _) => self.sigs.fields(ty).map_or(Vec::new(), |f| f.to_vec()),
-            (Ctor::Variant(v), _) => self
-                .sigs
-                .variant_fields(ty, v)
-                .map_or(Vec::new(), |f| f.to_vec()),
+            (Ctor::Single, _) => crate::fields(self.sigs, ty).map_or(Vec::new(), |f| f.to_vec()),
+            (Ctor::Variant(v), _) => {
+                crate::variant_fields(self.sigs, ty, v).map_or(Vec::new(), |f| f.to_vec())
+            }
             (Ctor::Bool(_) | Ctor::Float(_) | Ctor::FloatRemainder | Ctor::Range(..), _) => {
                 Vec::new()
             }

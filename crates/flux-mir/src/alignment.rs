@@ -67,7 +67,7 @@ fn alignment(
         }
         _ => {
             active.push(ty);
-            let fields = sigs.fields(ty)?;
+            let fields = flux_ty::fields(sigs, ty)?;
             let result = fields.iter().try_fold(1, |align, &field| {
                 alignment(items, sigs, field, active, parameters, bounds)
                     .map(|field| align.max(field))
@@ -152,11 +152,11 @@ pub(crate) fn check_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Dia
                     return false;
                 }
                 active.push(adt.strukt);
-                let found = sigs.fields(ty).is_some_and(|fields| {
+                let found = flux_ty::fields(sigs, ty).is_some_and(|fields| {
                     fields
                         .iter()
                         .any(|&field| aligned(items, sigs, field, active))
-                }) || sigs.variants(ty).is_some_and(|variants| {
+                }) || flux_ty::variants(sigs, ty).is_some_and(|variants| {
                     variants
                         .iter()
                         .flat_map(|fields| fields.iter())
@@ -185,7 +185,7 @@ pub(crate) fn check_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Dia
                     return true;
                 }
                 active.push(ty);
-                let result = sigs.fields(ty).is_some_and(|fields| {
+                let result = flux_ty::fields(sigs, ty).is_some_and(|fields| {
                     fields
                         .iter()
                         .any(|&field| tail_needs_drop(items, sigs, bounds, field, active))

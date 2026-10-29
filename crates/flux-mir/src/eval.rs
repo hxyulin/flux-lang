@@ -120,7 +120,7 @@ pub fn static_path_type(sigs: &Signatures, mut ty: Ty, path: &[StaticProjection]
         match *p {
             StaticProjection::Downcast(v) => variant = v,
             StaticProjection::Field(i) => {
-                ty = *sigs.variant_fields(ty, variant)?.get(i as usize)?;
+                ty = *flux_ty::variant_fields(sigs, ty, variant)?.get(i as usize)?;
                 variant = 0;
             }
             StaticProjection::Index(_) => ty = ty.sequence_elem()?,
@@ -355,7 +355,7 @@ impl<'a> Evaluator<'a> {
                 if let TyKind::Array(elem, _) | TyKind::Slice(elem) = ty.kind() {
                     fields.iter().any(|v| self.inline_lang(v, elem, langs))
                 } else {
-                    self.sigs.fields(ty).is_some_and(|types| {
+                    flux_ty::fields(self.sigs, ty).is_some_and(|types| {
                         fields
                             .iter()
                             .zip(types)
@@ -363,14 +363,13 @@ impl<'a> Evaluator<'a> {
                     })
                 }
             }
-            Value::Variant { index, fields, .. } => {
-                self.sigs.variant_fields(ty, *index).is_some_and(|types| {
+            Value::Variant { index, fields, .. } => flux_ty::variant_fields(self.sigs, ty, *index)
+                .is_some_and(|types| {
                     fields
                         .iter()
                         .zip(types)
                         .any(|(v, &t)| self.inline_lang(v, t, langs))
-                })
-            }
+                }),
             _ => false,
         }
     }
@@ -429,7 +428,7 @@ impl<'a> Evaluator<'a> {
                     TyKind::Array(elem, _) | TyKind::Slice(elem) => Some(elem),
                     _ => None,
                 };
-                let types = self.sigs.fields(ty);
+                let types = flux_ty::fields(self.sigs, ty);
                 for (i, field) in fields.iter().enumerate() {
                     // A raw-pointer cast can erase the original aggregate
                     // type. Its stored borrow origins must still be checked.
@@ -440,7 +439,7 @@ impl<'a> Evaluator<'a> {
                 }
             }
             Value::Variant { index, fields, .. } => {
-                let types = self.sigs.variant_fields(ty, *index);
+                let types = flux_ty::variant_fields(self.sigs, ty, *index);
                 for (i, field) in fields.iter().enumerate() {
                     let ty = types
                         .and_then(|types| types.get(i).copied())
@@ -626,9 +625,7 @@ impl<'a> Evaluator<'a> {
                         return Err(unsupported_view(range));
                     }
                     let at = layout.field_offset(variant, i);
-                    ty = *self
-                        .sigs
-                        .variant_fields(ty, variant)
+                    ty = *flux_ty::variant_fields(self.sigs, ty, variant)
                         .and_then(|f| f.get(i as usize))
                         .ok_or_else(|| unsupported_view(range))?;
                     sequence_len = ty.array_len();
@@ -728,9 +725,7 @@ impl<'a> Evaluator<'a> {
                 }
                 StaticProjection::Field(field) => {
                     let delta = self.view_layout(ty, range)?.field_offset(variant, field);
-                    ty = *self
-                        .sigs
-                        .variant_fields(ty, variant)
+                    ty = *flux_ty::variant_fields(self.sigs, ty, variant)
                         .and_then(|f| f.get(field as usize))
                         .ok_or_else(|| unsupported_view(range))?;
                     variant = 0;
@@ -1093,11 +1088,9 @@ impl<'a> Evaluator<'a> {
                 Ok(Value::Aggregate(fields.into()))
             }
             TyKind::Tuple(_) | TyKind::Adt(..) => {
-                let types = self
-                    .sigs
-                    .fields(to)
-                    .ok_or_else(|| unsupported_view(range))?;
-                if matches!(to.kind(), TyKind::Adt(adt, _) if self.sigs.variants(to).is_some() || self.sigs.unions.contains(&adt.strukt))
+                let types =
+                    flux_ty::fields(self.sigs, to).ok_or_else(|| unsupported_view(range))?;
+                if matches!(to.kind(), TyKind::Adt(adt, _) if flux_ty::variants(self.sigs, to).is_some() || self.sigs.unions.contains(&adt.strukt))
                 {
                     return Err(unsupported_view(range));
                 }
@@ -1157,7 +1150,7 @@ impl<'a> Evaluator<'a> {
             return Ok(index.clone());
         }
         let layout = self.view_layout(ty, range)?;
-        let types = self.sigs.variant_fields(ty, variant).unwrap_or_default();
+        let types = flux_ty::variant_fields(self.sigs, ty, variant).unwrap_or_default();
         let mut fields = Vec::with_capacity(types.len());
         for (i, &ty) in types.iter().enumerate() {
             let at = layout.field_offset(variant, i as u32);
@@ -1785,9 +1778,9 @@ impl<'a> Evaluator<'a> {
                     if self.items.structs[adt.strukt].has_const_discriminants() {
                         enums.push(adt.strukt);
                     }
-                    stack.extend(self.sigs.contents(ty).unwrap_or_default());
+                    stack.extend(flux_ty::contents(self.sigs, ty).unwrap_or_default());
                 }
-                _ => stack.extend(self.sigs.contents(ty).unwrap_or_default()),
+                _ => stack.extend(flux_ty::contents(self.sigs, ty).unwrap_or_default()),
             }
         }
         let mut known = crate::Discriminants::new();
@@ -1892,8 +1885,7 @@ impl<'a> Evaluator<'a> {
                 // following pointer-linked growing ADTs here never terminates.
                 TyKind::Ref(..) | TyKind::RawPtr(..) => false,
                 TyKind::Array(t, _) | TyKind::Slice(t) => has_union(sigs, t, seen),
-                _ => sigs
-                    .contents(ty)
+                _ => flux_ty::contents(sigs, ty)
                     .is_some_and(|fs| fs.iter().any(|&t| has_union(sigs, t, seen))),
             }
         }

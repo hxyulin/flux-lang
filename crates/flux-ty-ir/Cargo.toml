@@ -1,0 +1,20 @@
+[package]
+name = "flux-ty-ir"
+description = "Type representation shared by the flux type checker and trait solver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+publish = false
+
+[dependencies]
+flux-arena.workspace = true
+flux-hir.workspace = true
+flux-intern.workspace = true
+flux-syntax.workspace = true
+hashbrown = { version = "0.17", default-features = false }
+rustc-hash = "2"
+
+[lints]
+workspace = true

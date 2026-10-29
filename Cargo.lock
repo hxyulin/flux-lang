@@ -316,6 +316,19 @@ dependencies = [
  "flux-hir",
  "flux-intern",
  "flux-syntax",
+ "flux-ty-ir",
+ "hashbrown 0.17.1",
+ "rustc-hash",
+]
+
+[[package]]
+name = "flux-ty-ir"
+version = "0.1.0"
+dependencies = [
+ "flux-arena",
+ "flux-hir",
+ "flux-intern",
+ "flux-syntax",
  "hashbrown 0.17.1",
  "rustc-hash",
 ]
