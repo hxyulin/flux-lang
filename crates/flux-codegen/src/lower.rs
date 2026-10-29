@@ -31,6 +31,7 @@
 //! and its length.
 
 mod abi;
+mod reachability;
 use abi::{
     Argument, Convention, Return, attrs, c_signature, check_c_abi, ctx_signature, signature,
 };
@@ -69,7 +70,143 @@ pub fn lower_module(
     typed: &TypedFile,
     mir: &FileMir,
 ) -> Result<Module, Vec<Diagnostic>> {
-    let collected = flux_mir::mono::collect_all(hir, &typed.sigs, mir).map_err(|d| vec![d])?;
+    lower_inner(hir, typed, mir, None)
+}
+
+/// Which crate an object defines. Dependencies supply their own non-generic code.
+#[derive(Debug, Clone, Copy)]
+pub enum OutputKind {
+    /// Emits the entry point, local code and required embedded-library code.
+    Executable,
+    /// Emits this crate's non-generic definitions without a C entry point.
+    Library(flux_hir::CrateId),
+}
+
+/// Stable identities and ownership for a separately compiled object.
+#[derive(Debug, Clone, Copy)]
+pub struct Compilation<'a> {
+    /// Selects the owning library crate or the executable entry point.
+    pub kind: OutputKind,
+    /// Exact fingerprints for source and loaded crates, shared by all objects.
+    /// Artifact compatibility and freshness must already have been checked.
+    pub crate_hashes: &'a [(flux_hir::CrateId, [u8; 32])],
+    /// Crates whose non-generic definitions come from separately linked objects.
+    /// Each listed crate's object must be supplied to [`crate::link_objects`].
+    pub imported: &'a [flux_hir::CrateId],
+    /// Functions required by loaded MIR, shared with type and MIR checking.
+    /// Only monomorphic bodies become explicit roots; generic instances are
+    /// collected from calls with their concrete arguments.
+    pub required_functions: &'a [FunctionId],
+}
+
+/// Lowers one object using stable crate identities and a fixed Rust convention.
+///
+/// `hir`, `typed` and `mir` must contain the checked source crate and its loaded
+/// dependencies. Imported MIR is traversed to discover monomorphizations and
+/// embedded-library requirements, while its non-generic definitions stay in the
+/// owning object's code. Generic definitions use hidden, coalescible linkage.
+///
+/// This currently requires imported non-generic MIR as well as generic templates;
+/// it does not read archives or infer missing dependency bodies from source.
+///
+/// # Errors
+///
+/// Returns diagnostics for invalid native signatures, monomorphization failures
+/// and constant evaluation failures discovered while lowering concrete instances.
+pub fn lower_crate(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Compilation<'_>,
+) -> Result<Module, Vec<Diagnostic>> {
+    lower_inner(hir, typed, mir, Some(compilation))
+}
+
+fn lower_inner(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Option<Compilation<'_>>,
+) -> Result<Module, Vec<Diagnostic>> {
+    let monomorphic = |id: FunctionId| {
+        let function = &hir.items.functions[id];
+        let instance = Instance {
+            function: id,
+            args: &[],
+        };
+        (!generic_instance(&hir.items, instance)
+            && !function.is_extern
+            && mir.bodies.get(id).is_some())
+        .then_some(instance)
+    };
+    let mut retained_functions = FxHashSet::default();
+    let mut retained_statics = FxHashSet::default();
+    if let Some(c) = compilation {
+        // The imported provider also sees dead metadata bodies. Their user
+        // definitions enter through export/template reachability below, rather
+        // than becoming unconditional roots of the executable's source crate.
+        let source_required: Vec<_> = c
+            .required_functions
+            .iter()
+            .copied()
+            .filter(|&id| {
+                !c.imported
+                    .contains(&hir.items.modules[hir.items.functions[id].loc.module].krate)
+                    && monomorphic(id).is_some()
+            })
+            .collect();
+        let own = match c.kind {
+            OutputKind::Library(krate) => reachability::library(hir, &typed.sigs, mir, krate),
+            OutputKind::Executable => {
+                reachability::executable(hir, &typed.sigs, mir, &source_required)
+            }
+        };
+        retained_functions.extend(own.functions);
+        retained_statics.extend(own.statics);
+        if matches!(c.kind, OutputKind::Executable) {
+            for &krate in c.imported {
+                let imported = reachability::library(hir, &typed.sigs, mir, krate);
+                retained_functions.extend(imported.functions);
+                retained_statics.extend(imported.statics);
+            }
+            // Embedded definitions still belong to the executable. Their
+            // compiler-owned static roots retain the existing runtime policy.
+            retained_statics.extend(hir.items.consts.iter().filter_map(|(id, c)| {
+                (id.index() < hir.items.core.consts as usize && c.is_static.is_some()).then_some(id)
+            }));
+        }
+        for &function in c.required_functions {
+            let owner = hir.items.modules[hir.items.functions[function].loc.module].krate;
+            if !c.imported.contains(&owner) || retained_functions.contains(&function) {
+                retained_functions.insert(function);
+            }
+        }
+    }
+    let mut roots: Vec<_> = retained_functions
+        .into_iter()
+        .filter_map(monomorphic)
+        .collect();
+    roots.sort_unstable_by_key(|i| i.function);
+    let mut static_roots: Vec<_> = retained_statics.iter().copied().collect();
+    static_roots.sort_unstable();
+    let collected = match compilation.map(|c| c.kind) {
+        Some(OutputKind::Library(_)) => flux_mir::mono::collect_from_roots_and_statics(
+            hir,
+            &typed.sigs,
+            mir,
+            &roots,
+            &static_roots,
+        ),
+        Some(OutputKind::Executable) => flux_mir::mono::collect_all_with_roots_and_statics(
+            hir,
+            &typed.sigs,
+            mir,
+            &roots,
+            &static_roots,
+        ),
+        None => flux_mir::mono::collect_all(hir, &typed.sigs, mir),
+    }
+    .map_err(|d| vec![d])?;
     let instances = collected.instances;
     let errors = check_c_abi(hir, typed, mir, &instances);
     if !errors.is_empty() {
@@ -77,7 +214,21 @@ pub fn lower_module(
     }
     let mut module = Module::default();
     let items = &hir.items;
-    let symbols: FxHashMap<FunctionId, String> = items
+    let function_ordinals = definition_ordinals(
+        items,
+        items
+            .functions
+            .iter()
+            .map(|(id, f)| (id.into_raw(), f.loc.module)),
+    );
+    let const_ordinals = definition_ordinals(
+        items,
+        items
+            .consts
+            .iter()
+            .map(|(id, c)| (id.into_raw(), c.loc.module)),
+    );
+    let names: FxHashMap<FunctionId, String> = items
         .functions
         .iter()
         .map(|(id, f)| {
@@ -117,13 +268,22 @@ pub fn lower_module(
                     path.push(items.structs[strukt].name.as_str());
                 }
                 path.push(f.name.as_str());
-                // Source crates may share a library name, and an impl may
-                // live in a different crate from its target type. Item IDs
-                // disambiguate this whole-program compilation; they are not
-                // a stable identity for future separately compiled artifacts.
+                // An impl may live in a different crate from its target.
+                // Separate objects use the definition owner's crate identity;
+                // the whole-program path retains its process-local suffix.
                 let identity;
-                if id.index() >= items.core.functions as usize {
-                    identity = format!("__flux_f{}", id.index());
+                if compilation.is_some() || id.index() >= items.core.functions as usize {
+                    identity = if let Some(c) = compilation {
+                        definition_symbol(
+                            items,
+                            c.crate_hashes,
+                            flux_hir::flib::IdKind::Function,
+                            id.into_raw(),
+                            function_ordinals[&id.into_raw()],
+                        )
+                    } else {
+                        format!("__flux_f{}", id.index())
+                    };
                     path.push(&identity);
                 }
                 mangle(&path)
@@ -131,6 +291,12 @@ pub fn lower_module(
             (id, name)
         })
         .collect();
+    let symbols = Symbols {
+        names,
+        separate: compilation.is_some(),
+        identities: compilation.map_or(&[], |c| c.crate_hashes),
+        type_keys: std::cell::RefCell::new(FxHashMap::default()),
+    };
     let mut declared_abort = false;
     let mut declared = FxHashSet::default();
     let layouts = Layouts::new(items, &typed.sigs, &mir.discriminants);
@@ -180,8 +346,18 @@ pub fn lower_module(
             path.reverse();
             path.push(c.name.map_or("_", |n| n.as_str()));
             let identity;
-            if id.index() >= items.core.consts as usize {
-                identity = format!("__flux_s{}", id.index());
+            if compilation.is_some() || id.index() >= items.core.consts as usize {
+                identity = if let Some(cmp) = compilation {
+                    definition_symbol(
+                        items,
+                        cmp.crate_hashes,
+                        flux_hir::flib::IdKind::Const,
+                        id.into_raw(),
+                        const_ordinals[&id.into_raw()],
+                    )
+                } else {
+                    format!("__flux_s{}", id.index())
+                };
                 path.push(&identity);
             }
             (id, mangle(&path))
@@ -191,6 +367,13 @@ pub fn lower_module(
     let mut ctx = Ctx {
         hir,
         typed,
+        compilation,
+        retained_statics,
+        pending_statics: if compilation.is_some() {
+            static_roots
+        } else {
+            statics.keys().copied().collect()
+        },
         const_values: &mir.const_values,
         discriminants: &mir.discriminants,
         evaluator: flux_mir::eval::Evaluator::new(
@@ -199,7 +382,8 @@ pub fn lower_module(
             &mir.bodies,
             &mir.consts,
             &names,
-        ),
+        )
+        .with_imported(&mir.const_values, &mir.discriminants),
         instance_values: collected.const_values,
         symbols: &symbols,
         statics: &statics,
@@ -214,6 +398,27 @@ pub fn lower_module(
         layouts,
     };
     for instance in instances {
+        if compilation.is_some_and(|c| !owns_instance(items, instance, c)) {
+            let sig = flux_solve::traits::instance_sig(
+                items,
+                &typed.sigs,
+                instance.function,
+                instance.args,
+            );
+            module.decls.push(FuncDecl {
+                name: instance_symbol(hir, &symbols, instance),
+                sig: ctx.instance_signature(instance, &sig, false),
+                attrs: attrs(&sig),
+            });
+            if items.functions[instance.function].track_caller {
+                module.decls.push(FuncDecl {
+                    name: ctx.pointer_symbol(instance),
+                    sig: ctx.instance_signature(instance, &sig, true),
+                    attrs: attrs(&sig),
+                });
+            }
+            continue;
+        }
         let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
         flux_mir::validate::assert_valid(
             &hir.items,
@@ -222,8 +427,11 @@ pub fn lower_module(
             &body,
             &hir.items.functions[instance.function].name,
         );
-        let function = ctx.function(instance, &body);
+        let function = ctx.function(instance, &body, false);
         module.functions.push(function);
+        if compilation.is_some() && items.functions[instance.function].track_caller {
+            module.functions.push(ctx.function(instance, &body, true));
+        }
     }
     // Constants whose values depend on generic arguments fail only
     // once code needs them, as in rustc.
@@ -244,10 +452,15 @@ pub fn lower_module(
     }
     // Every static, with its initial value, in memory a `static mut`
     // may write.
-    for (&id, symbol) in &statics {
-        if items.consts[id].extern_symbol.is_some() {
+    let mut emitted_statics = FxHashSet::default();
+    while let Some(id) = ctx.pending_statics.pop() {
+        if !emitted_statics.insert(id)
+            || items.consts[id].extern_symbol.is_some()
+            || compilation.is_some_and(|c| !owns_static(items, id, c))
+        {
             continue;
         }
+        let symbol = &statics[&id];
         let Some(value) = mir.const_values.items.get(id) else {
             continue;
         };
@@ -256,12 +469,12 @@ pub fn lower_module(
         ctx.data.push(DataObject {
             name: symbol.clone(),
             thread_local: false,
-            local: true,
+            local: compilation.is_none(),
             weak_odr: false,
             weak: false,
             section: None,
             retain: false,
-            hidden: false,
+            hidden: compilation.is_some(),
             init: Some(DataInit {
                 constant: !items.consts[id].is_static_mut()
                     && !flux_solve::traits::has_interior_mutability(items, &typed.sigs, ty),
@@ -296,7 +509,9 @@ pub fn lower_module(
             && f.owner.is_none()
             && mir.bodies.get(*id).is_some()
     });
-    if let Some((id, _)) = main {
+    if let Some((id, _)) =
+        main.filter(|_| !matches!(compilation.map(|c| c.kind), Some(OutputKind::Library(_))))
+    {
         let instance = Instance {
             function: id,
             args: &[],
@@ -306,7 +521,7 @@ pub fn lower_module(
             &typed.sigs,
             &ctx.layouts,
             sig,
-            ctx.reified.contains(&instance),
+            compilation.is_some() || ctx.reified.contains(&instance),
         );
         let flush = items
             .lang_fns
@@ -317,7 +532,12 @@ pub fn lower_module(
                     function: f,
                     args: &[],
                 };
-                let flush_sig = ctx_signature(&typed.sigs, &ctx.layouts, &typed.sigs[f], false);
+                let flush_sig = ctx_signature(
+                    &typed.sigs,
+                    &ctx.layouts,
+                    &typed.sigs[f],
+                    compilation.is_some(),
+                );
                 (instance_symbol(hir, &symbols, instance), flush_sig)
             });
         let runner = if sig.ret != Ty::UNIT && sig.ret != Ty::NEVER {
@@ -330,7 +550,7 @@ pub fn lower_module(
                     flux_solve::traits::instance_sig(items, &typed.sigs, function, instance.args);
                 (
                     instance_symbol(hir, &symbols, instance),
-                    ctx_signature(&typed.sigs, &ctx.layouts, &signature, false),
+                    ctx_signature(&typed.sigs, &ctx.layouts, &signature, compilation.is_some()),
                 )
             })
         } else {
@@ -349,15 +569,142 @@ pub fn lower_module(
     Ok(module)
 }
 
+fn content_symbol(domain: &str, bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut name = format!("__flux_{domain}_");
+    for byte in flux_hir::flib::digest(bytes) {
+        write!(&mut name, "{byte:02x}").expect("writing to a string succeeds");
+    }
+    name
+}
+
+fn data_key(items: &[DataItem], align: u32) -> Vec<u8> {
+    let mut key = align.to_le_bytes().to_vec();
+    for item in items {
+        match item {
+            DataItem::Bytes(bytes) => {
+                key.push(0);
+                key.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+                key.extend_from_slice(bytes);
+            }
+            DataItem::Int { ty, value } => {
+                key.push(1);
+                let width: u32 = match ty {
+                    Type::I8 => 1,
+                    Type::I16 => 2,
+                    Type::I32 => 4,
+                    Type::I64 => 8,
+                    _ => unreachable!("integer data has an integer type"),
+                };
+                key.extend_from_slice(&width.to_le_bytes());
+                key.extend_from_slice(&value.to_le_bytes());
+            }
+            DataItem::Zero(len) => {
+                key.push(2);
+                key.extend_from_slice(&len.to_le_bytes());
+            }
+            DataItem::Ptr { symbol, addend } => {
+                key.push(3);
+                key.extend_from_slice(&(symbol.len() as u64).to_le_bytes());
+                key.extend_from_slice(symbol.as_bytes());
+                key.extend_from_slice(&addend.to_le_bytes());
+            }
+            DataItem::RttiName { symbol } => {
+                key.push(4);
+                key.extend_from_slice(&(symbol.len() as u64).to_le_bytes());
+                key.extend_from_slice(symbol.as_bytes());
+            }
+        }
+    }
+    key
+}
+
+struct Symbols<'a> {
+    names: FxHashMap<FunctionId, String>,
+    separate: bool,
+    identities: &'a [(flux_hir::CrateId, [u8; 32])],
+    type_keys: std::cell::RefCell<FxHashMap<Ty, Vec<u8>>>,
+}
+
+impl std::ops::Index<&FunctionId> for Symbols<'_> {
+    type Output = String;
+    fn index(&self, id: &FunctionId) -> &String {
+        &self.names[id]
+    }
+}
+
+fn definition_ordinals(
+    items: &flux_hir::ItemTree,
+    entries: impl Iterator<Item = (u32, flux_hir::ModuleId)>,
+) -> FxHashMap<u32, u32> {
+    let mut counts: FxHashMap<flux_hir::CrateId, u32> = FxHashMap::default();
+    entries
+        .map(|(raw, module)| {
+            let next = counts.entry(items.modules[module].krate).or_default();
+            let ordinal = *next;
+            *next += 1;
+            (raw, ordinal)
+        })
+        .collect()
+}
+
+fn definition_symbol(
+    items: &flux_hir::ItemTree,
+    hashes: &[(flux_hir::CrateId, [u8; 32])],
+    kind: flux_hir::flib::IdKind,
+    raw: u32,
+    ordinal: u32,
+) -> String {
+    let key =
+        flux_ty_ir::type_identity::definition_key_with_ordinal(items, hashes, kind, raw, ordinal)
+            .expect("code generation uses valid definition identities");
+    content_symbol("definition", &key)
+}
+
+fn generic_instance(items: &flux_hir::ItemTree, instance: Instance) -> bool {
+    let function = &items.functions[instance.function];
+    !instance.args.is_empty()
+        || !function.generics.is_empty()
+        || matches!(function.owner, Some(Owner::Trait(_)))
+        || items
+            .owner_generics(function.owner)
+            .is_some_and(|g| !g.is_empty())
+}
+
+fn owns_instance(
+    items: &flux_hir::ItemTree,
+    instance: Instance,
+    compilation: Compilation<'_>,
+) -> bool {
+    let owner = items.modules[items.functions[instance.function].loc.module].krate;
+    match compilation.kind {
+        OutputKind::Library(krate) => {
+            instance.function.index() >= items.core.functions as usize
+                && (owner == krate || generic_instance(items, instance))
+        }
+        OutputKind::Executable => {
+            !compilation.imported.contains(&owner) || generic_instance(items, instance)
+        }
+    }
+}
+
+fn owns_static(
+    items: &flux_hir::ItemTree,
+    id: flux_hir::ConstId,
+    compilation: Compilation<'_>,
+) -> bool {
+    let owner = items.modules[items.consts[id].loc.module].krate;
+    match compilation.kind {
+        OutputKind::Library(krate) => owner == krate,
+        OutputKind::Executable => !compilation.imported.contains(&owner),
+    }
+}
+
 /// The symbol of `instance`: its function's, with a hash as a last
 /// segment, as rustc's legacy mangling does, if it has generic arguments
 /// or is in one of a generic struct's blocks, which may each have a
 /// function of its name. The hash covers the arguments and the block.
-fn instance_symbol(
-    hir: &Hir,
-    symbols: &FxHashMap<FunctionId, String>,
-    instance: Instance,
-) -> String {
+fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> String {
     let base = &symbols[&instance.function];
     let items = &hir.items;
     // A trait's blocks for different types each have its methods.
@@ -372,131 +719,33 @@ fn instance_symbol(
     if instance.args.is_empty() && block.is_none() {
         return base.clone();
     }
-    // FNV-1a, over a structural encoding of the arguments.
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    let mut feed = |bytes: &[u8]| {
-        for &byte in bytes {
-            hash = (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01b3);
-        }
-    };
-    if let Some(block) = block {
-        feed(&(block.index() as u32).to_le_bytes());
-    }
-    fn encode(ty: Ty, feed: &mut impl FnMut(&[u8])) {
-        match ty.kind() {
-            TyKind::Int(int) => feed(int.name().as_str().as_bytes()),
-            TyKind::Float(float) => feed(float.name().as_str().as_bytes()),
-            TyKind::Bool => feed(b"b"),
-            TyKind::Char => feed(b"c"),
-            TyKind::Str => feed(b"str"),
-            TyKind::Never => feed(b"!"),
-            TyKind::CStr => feed(b"CStr"),
-            TyKind::Tuple(elements) => {
-                feed(b"(");
-                elements.iter().for_each(|&e| encode(e, feed));
-                feed(b")");
-            }
-            TyKind::Adt(adt, args) => {
-                feed(b"S");
-                feed(&(adt.strukt.index() as u32).to_le_bytes());
-                args.iter().for_each(|&a| encode(a, feed));
-                feed(b";");
-            }
-            TyKind::Array(elem, len) => {
-                feed(b"[");
-                encode(elem, feed);
-                feed(&array_len(len).to_le_bytes());
-                feed(b"]");
-            }
-            TyKind::Slice(elem) => {
-                feed(b"[");
-                encode(elem, feed);
-                feed(b"]");
-            }
-            TyKind::Closure(id, args) => {
-                feed(b"C");
-                let (tag, index) = match id.owner {
-                    flux_ty::ClosureOwner::Function(f) => (b"f", f.index()),
-                    flux_ty::ClosureOwner::Const(c) => (b"c", c.index()),
-                };
-                feed(tag);
-                feed(&(index as u32).to_le_bytes());
-                feed(&(id.expr.index() as u32).to_le_bytes());
-                args.iter().for_each(|&a| encode(a, feed));
-                feed(b";");
-            }
-            TyKind::RawPtr(m, pointee) | TyKind::Ref(m, pointee) => {
-                let pointer: &[u8] = if matches!(ty.kind(), TyKind::Ref(..)) {
-                    b"&"
-                } else {
-                    b"*"
-                };
-                feed(pointer);
-                feed(if m == Mutability::Mut { b"m" } else { b"c" });
-                encode(pointee, feed);
-            }
-            TyKind::FnPtr(sig) => {
-                feed(if sig.is_c { b"C" } else { b"R" });
-                feed(if sig.is_unsafe { b"uF(" } else { b"F(" });
-                sig.inputs_output.iter().for_each(|&t| encode(t, feed));
-                if let Some(recipe) = sig.regions {
-                    feed(b"regions");
-                    feed(&recipe.bound.to_le_bytes());
-                    feed(&recipe.free.to_le_bytes());
-                    for row in recipe.inputs_output {
-                        feed(&(row.len() as u32).to_le_bytes());
-                        for region in *row {
-                            let (tag, index) = match *region {
-                                flux_ty::FnRegion::Static => (0, 0),
-                                flux_ty::FnRegion::Bound(i) => (1, i),
-                                flux_ty::FnRegion::Free(i) => (2, i),
-                                flux_ty::FnRegion::Type(i) => (3, i),
-                            };
-                            feed(&[tag]);
-                            feed(&index.to_le_bytes());
-                        }
-                    }
-                    recipe.types.iter().for_each(|&t| encode(t, feed));
-                }
-                feed(b")");
-            }
-            TyKind::FnDef(def) => {
-                feed(b"D");
-                feed(&(def.function.index() as u32).to_le_bytes());
-                def.args.iter().for_each(|&a| encode(a, feed));
-                feed(b";");
-            }
-            TyKind::Value(value) => {
-                feed(b"V");
-                encode(value.ty, feed);
-                feed(&value.bits().to_le_bytes());
-            }
-            TyKind::Dynamic(d) => {
-                feed(b"dyn");
-                feed(&(d.trait_.index() as u32).to_le_bytes());
-                feed(&(d.auto_traits.len() as u32).to_le_bytes());
-                for marker in d.auto_traits {
-                    feed(&(marker.trait_.index() as u32).to_le_bytes());
-                }
-                d.args
-                    .iter()
-                    .chain(d.assoc_tys)
-                    .for_each(|&a| encode(a, feed));
-                feed(b";");
-            }
-            TyKind::Param(_)
-            | TyKind::Alias(_)
-            | TyKind::Opaque(_)
-            | TyKind::Infer(_)
-            | TyKind::Error => {
-                unreachable!("instances are of concrete types")
-            }
-        }
+    // The encoding uses stable item identities in separate objects.
+    let mut key = Vec::new();
+    let mut feed = |bytes: &[u8]| key.extend_from_slice(bytes);
+    feed(base.as_bytes());
+    if !symbols.separate {
+        // The legacy whole-program base can name several core impl methods.
+        // Separate bases already include the stable definition identity.
+        feed(&instance.function.into_raw().to_le_bytes());
     }
     for &arg in instance.args {
-        encode(arg, &mut feed);
+        encode_type(arg, hir, symbols, &mut feed);
     }
-    format!("{}17h{hash:016x}E", &base[..base.len() - 1])
+    use std::fmt::Write;
+    let mut hash = String::new();
+    for byte in flux_hir::flib::digest(&key) {
+        write!(&mut hash, "{byte:02x}").expect("writing to a string succeeds");
+    }
+    format!("{}65h{hash}E", &base[..base.len() - 1])
+}
+
+fn encode_type(ty: Ty, hir: &Hir, symbols: &Symbols<'_>, feed: &mut impl FnMut(&[u8])) {
+    let mut keys = symbols.type_keys.borrow_mut();
+    let key = keys.entry(ty).or_insert_with(|| {
+        flux_ty_ir::type_identity::stable_key(&hir.items, symbols.identities, ty)
+            .expect("code generation uses fully resolved types")
+    });
+    feed(key);
 }
 
 /// A legacy-style mangled name, `_ZN<len>crate<len>nameE` (with the
@@ -771,6 +1020,9 @@ fn entry_point(
 struct Ctx<'a> {
     hir: &'a Hir,
     typed: &'a TypedFile,
+    compilation: Option<Compilation<'a>>,
+    retained_statics: FxHashSet<flux_hir::ConstId>,
+    pending_statics: Vec<flux_hir::ConstId>,
     /// The values of constants that code without generic parameters
     /// names.
     const_values: &'a flux_mir::eval::ConstValues,
@@ -779,7 +1031,7 @@ struct Ctx<'a> {
     /// Evaluates the others, for the instances that use them.
     evaluator: flux_mir::eval::Evaluator<'a>,
     instance_values: FxHashMap<flux_ty::ConstInstance, flux_mir::eval::Value>,
-    symbols: &'a FxHashMap<FunctionId, String>,
+    symbols: &'a Symbols<'a>,
     /// The data object of each static.
     statics: &'a FxHashMap<flux_hir::ConstId, String>,
     /// The instances whose address the program takes.
@@ -812,38 +1064,37 @@ impl Ctx<'_> {
 
     /// `instance`, whose MIR is `body` with its generic arguments
     /// substituted.
-    fn function(&mut self, instance: Instance, body: &Body) -> Function {
+    fn function(&mut self, instance: Instance, body: &Body, pointer_wrapper: bool) -> Function {
         let sig = &flux_solve::traits::instance_sig(
             &self.hir.items,
             &self.typed.sigs,
             instance.function,
             instance.args,
         );
-        let takes_location = self.takes_location(instance);
+        let takes_location = !pointer_wrapper && self.takes_location(instance);
         let c_abi = self.hir.items.functions[instance.function].c_abi;
-        let mut signature = if c_abi {
-            c_signature(&self.typed.sigs, &self.layouts, sig, false)
-        } else {
-            ctx_signature(
-                &self.typed.sigs,
-                &self.layouts,
-                sig,
-                self.reified.contains(&instance),
-            )
-        };
-        if takes_location {
-            signature.params.push(AbiParam::new(Type::Ptr));
-        }
-        let mut function =
-            Function::new(instance_symbol(self.hir, self.symbols, instance), signature);
-        function.local = true;
+        let signature = self.instance_signature(instance, sig, pointer_wrapper);
+        let mut function = Function::new(
+            if pointer_wrapper {
+                self.pointer_symbol(instance)
+            } else {
+                instance_symbol(self.hir, self.symbols, instance)
+            },
+            signature,
+        );
+        function.local = self.compilation.is_none();
         function.attrs = attrs(sig);
+        function.weak_odr =
+            self.compilation.is_some() && generic_instance(&self.hir.items, instance);
+        // Separate instances coalesce inside the executable and cannot be
+        // interposed by another image. Hidden binding permits direct addresses.
+        function.hidden = self.compilation.is_some();
         let typed = self.typed;
         let owner = body.owner.unwrap_or(instance.function);
         let file = self.hir.items.functions[owner].loc.file;
         let convention = if c_abi {
             Convention::C
-        } else if self.reified.contains(&instance) {
+        } else if self.compilation.is_some() || self.reified.contains(&instance) {
             Convention::RustReified
         } else {
             Convention::RustFast
@@ -871,13 +1122,43 @@ impl Ctx<'_> {
         function
     }
 
+    fn instance_signature(
+        &self,
+        instance: Instance,
+        sig: &FnSig,
+        pointer_wrapper: bool,
+    ) -> Signature {
+        let mut signature = if self.hir.items.functions[instance.function].c_abi {
+            c_signature(&self.typed.sigs, &self.layouts, sig, false)
+        } else {
+            ctx_signature(
+                &self.typed.sigs,
+                &self.layouts,
+                sig,
+                self.compilation.is_some() || self.reified.contains(&instance),
+            )
+        };
+        if !pointer_wrapper && self.takes_location(instance) {
+            signature.params.push(AbiParam::new(Type::Ptr));
+        }
+        signature
+    }
+
     /// Whether `instance` takes where it is called from, as a pointer
     /// to a `Location` after its parameters: a `#[track_caller]`
     /// function's, unless its address is taken, as a pointer's
     /// signature has no room for it.
     fn takes_location(&self, instance: Instance) -> bool {
         self.hir.items.functions[instance.function].track_caller
-            && !self.reified.contains(&instance)
+            && (self.compilation.is_some() || !self.reified.contains(&instance))
+    }
+
+    fn pointer_symbol(&self, instance: Instance) -> String {
+        let mut symbol = instance_symbol(self.hir, self.symbols, instance);
+        if self.compilation.is_some() && self.hir.items.functions[instance.function].track_caller {
+            symbol.push_str(".__flux_reify");
+        }
+        symbol
     }
 
     /// The data object of the `Location` of `offset` in `file`: its
@@ -961,9 +1242,14 @@ impl Ctx<'_> {
     /// representation, but their data is emitted only when referenced.
     fn constant_storage(&mut self, id: flux_hir::ConstId) -> String {
         if let Some(name) = self.statics.get(&id) {
-            if self.hir.items.consts[id].extern_symbol.is_some()
-                && !self.data.iter().any(|data| data.name == *name)
-            {
+            let imported = self.hir.items.consts[id].extern_symbol.is_some()
+                || self
+                    .compilation
+                    .is_some_and(|c| !owns_static(&self.hir.items, id, c));
+            if !imported && self.retained_statics.insert(id) {
+                self.pending_statics.push(id);
+            }
+            if imported && !self.data.iter().any(|data| data.name == *name) {
                 self.data.push(DataObject {
                     name: name.clone(),
                     thread_local: false,
@@ -1038,7 +1324,7 @@ impl Ctx<'_> {
             V::RawAddr(address) => put(bytes, at, u128::from(*address), 8),
             V::Bool(b) => bytes[at] = u8::from(*b),
             V::Function(instance) => {
-                addresses.push((at, instance_symbol(self.hir, self.symbols, *instance), 0));
+                addresses.push((at, self.pointer_symbol(*instance), 0));
             }
             V::DynPointer {
                 pointer,
@@ -1214,11 +1500,11 @@ impl Ctx<'_> {
     /// `ty`: a promoted constant, shared by identical ones.
     fn promoted(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> String {
         let (items, align) = self.value_bytes(value, ty);
-        let key = (format!("{items:?}").into_bytes(), align);
+        let key = (data_key(&items, align), align);
         if let Some(name) = self.promoted.get(&key) {
             return name.clone();
         }
-        let name = format!("__flux_promoted{}", self.data.len());
+        let name = content_symbol("promoted", &key.0);
         self.promoted.insert(key, name.clone());
         self.data.push(DataObject {
             name: name.clone(),
@@ -1270,7 +1556,14 @@ impl Ctx<'_> {
         if let Some(name) = self.vtables.get(&(object, concrete)) {
             return name.clone();
         }
-        let name = format!("__flux_vtable{}", self.vtables.len());
+        let mut key = Vec::new();
+        encode_type(object, self.hir, self.symbols, &mut |bytes| {
+            key.extend_from_slice(bytes)
+        });
+        encode_type(concrete, self.hir, self.symbols, &mut |bytes| {
+            key.extend_from_slice(bytes)
+        });
+        let name = content_symbol("vtable", &key);
         self.vtables.insert((object, concrete), name.clone());
         let sigs = &self.typed.sigs;
         let layout = self.layouts.of(concrete);
@@ -1280,7 +1573,7 @@ impl Ctx<'_> {
         };
         let drop = match flux_mir::vtable::drop_entry(&self.hir.items, sigs, concrete) {
             Some(instance) => DataItem::Ptr {
-                symbol: instance_symbol(self.hir, self.symbols, instance),
+                symbol: self.pointer_symbol(instance),
                 addend: 0,
             },
             None => DataItem::Zero(8),
@@ -1291,7 +1584,7 @@ impl Ctx<'_> {
             items.push(match entry {
                 flux_mir::vtable::Entry::Null => DataItem::Zero(8),
                 flux_mir::vtable::Entry::Method(instance) => DataItem::Ptr {
-                    symbol: instance_symbol(self.hir, self.symbols, instance),
+                    symbol: self.pointer_symbol(instance),
                     addend: 0,
                 },
                 flux_mir::vtable::Entry::Super(sup) => DataItem::Ptr {
@@ -1324,7 +1617,7 @@ impl Ctx<'_> {
         if let Some(name) = self.strings.get(bytes) {
             return name.clone();
         }
-        let name = format!("__flux_str{}", self.data.len());
+        let name = content_symbol("str", bytes);
         let mut contents = bytes.to_vec();
         contents.push(0);
         self.data.push(DataObject {
@@ -2469,7 +2762,7 @@ impl Lower<'_, '_, '_> {
             }
             V::Bool(b) => out.push(self.b.ins().iconst(Type::I8, i64::from(*b))),
             V::Function(instance) => {
-                let callee = self.callee(instance.function, instance.args);
+                let callee = self.pointer_callee(instance.function, instance.args);
                 out.push(self.b.ins().symbol_addr(keel_ir::Symbol::Func(callee)));
             }
             V::DynPointer {
@@ -2602,7 +2895,7 @@ impl Lower<'_, '_, '_> {
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
             }
             Constant::Fn { function, args, .. } => {
-                let callee = self.callee(function, args);
+                let callee = self.pointer_callee(function, args);
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Func(callee)))
             }
         }
@@ -3951,6 +4244,29 @@ impl Lower<'_, '_, '_> {
         self.b.ins().symbol_addr(keel_ir::Symbol::Data(data))
     }
 
+    fn pointer_callee(&mut self, function: FunctionId, args: GenericArgs) -> FuncRef {
+        let instance = flux_solve::traits::resolve_instance(
+            &self.ctx.hir.items,
+            self.sigs,
+            Instance { function, args },
+        );
+        if self.ctx.compilation.is_some()
+            && self.ctx.hir.items.functions[instance.function].track_caller
+        {
+            let sig = flux_solve::traits::instance_sig(
+                &self.ctx.hir.items,
+                self.sigs,
+                instance.function,
+                instance.args,
+            );
+            let sig = ctx_signature(self.sigs, &self.ctx.layouts, &sig, true);
+            self.b
+                .import_function(&self.ctx.pointer_symbol(instance), sig)
+        } else {
+            self.callee(function, args)
+        }
+    }
+
     fn callee(&mut self, func: FunctionId, generic_args: GenericArgs) -> FuncRef {
         let instance = Instance {
             function: func,
@@ -3975,7 +4291,7 @@ impl Lower<'_, '_, '_> {
         let mut sig = if function.c_abi {
             c_signature(self.sigs, &self.ctx.layouts, &sig, function.is_variadic)
         } else {
-            let reified = self.ctx.reified.contains(&instance);
+            let reified = self.ctx.compilation.is_some() || self.ctx.reified.contains(&instance);
             ctx_signature(self.sigs, &self.ctx.layouts, &sig, reified)
         };
         if self.ctx.takes_location(instance) {

@@ -236,6 +236,7 @@ dependencies = [
  "flux-mir",
  "flux-solve",
  "flux-ty",
+ "flux-ty-ir",
  "keel-asm",
  "keel-codegen",
  "keel-frontend",

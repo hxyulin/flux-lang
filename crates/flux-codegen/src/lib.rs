@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 
 pub use keel_ir::Target;
 pub use keel_opt::OptimizationTier;
-pub use lower::lower_module;
+pub use lower::{Compilation, OutputKind, lower_crate, lower_module};
 
 /// Verifies, optimizes and compiles `module` to an object file for
 /// `target`.
@@ -126,6 +126,39 @@ pub fn link_executable_with_libraries(
     output: &Path,
     libraries: &[flux_intern::Symbol],
 ) -> Result<Vec<String>, Error> {
+    let input = ObjectInput {
+        name: "flux.o",
+        bytes: object,
+    };
+    link_objects(&[input], target, output, libraries)
+}
+
+/// One native object supplied to the executable link.
+#[derive(Debug, Clone, Copy)]
+pub struct ObjectInput<'a> {
+    /// A diagnostic label, such as the owning crate's object member name.
+    pub name: &'a str,
+    /// Relocatable native object bytes extracted from a validated artifact.
+    pub bytes: &'a [u8],
+}
+
+/// Links native objects and requested system libraries into a signed executable.
+///
+/// The caller supplies the executable object and each dependency object exactly
+/// once. Inputs are object bytes, not `.flib` archives; artifact resolution and
+/// dependency deduplication happen before this call. Returns linker warnings.
+/// Only arm64 macOS executable linking is currently supported.
+///
+/// # Errors
+///
+/// Reports unsupported targets, SDK or system-library lookup failures, invalid
+/// objects, unresolved or duplicate symbols, and output-writing failures.
+pub fn link_objects(
+    objects: &[ObjectInput<'_>],
+    target: Target,
+    output: &Path,
+    libraries: &[flux_intern::Symbol],
+) -> Result<Vec<String>, Error> {
     match target {
         Target::Aarch64AppleDarwin => {
             let sdk = macos_sdk()?;
@@ -144,12 +177,15 @@ pub fn link_executable_with_libraries(
                     .map_err(|message| Error::message(Stage::Sdk, message))?;
                 dylibs.push(dylib);
             }
-            let input = keel_link::Input {
-                name: "flux.o",
-                bytes: object,
-            };
+            let inputs: Vec<_> = objects
+                .iter()
+                .map(|o| keel_link::Input {
+                    name: o.name,
+                    bytes: o.bytes,
+                })
+                .collect();
             let executable = keel_link::link(
-                &[input],
+                &inputs,
                 keel_link::Options {
                     dylibs,
                     ..keel_link::Options::default()

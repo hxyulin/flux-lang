@@ -15,6 +15,7 @@ flux-intern.workspace = true
 flux-solve.workspace = true
 flux-mir.workspace = true
 flux-ty.workspace = true
+flux-ty-ir.workspace = true
 rustc-hash = "2"
 smallvec = "1"
 keel-asm.workspace = true
