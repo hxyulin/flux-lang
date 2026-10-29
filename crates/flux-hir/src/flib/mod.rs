@@ -709,9 +709,13 @@ impl<K: Encode + Eq + std::hash::Hash, V: Encode, S: std::hash::BuildHasher> Enc
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         let mut entries = Vec::new();
         for (key, value) in self {
-            let mut wire = Encoder::with_ids(e.ids.clone());
+            // Lend the map to the scratch encoder: cloning it per entry made
+            // encoding quadratic in the number of mapped items.
+            let mut wire = Encoder::with_ids(std::mem::take(&mut e.ids));
             wire.depth = e.depth;
-            key.encode(&mut wire)?;
+            let encoded = key.encode(&mut wire);
+            e.ids = std::mem::take(&mut wire.ids);
+            encoded?;
             entries.push((wire.into_bytes(), key, value));
         }
         entries.sort_by(|a, b| a.0.cmp(&b.0));

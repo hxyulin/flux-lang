@@ -404,6 +404,32 @@ fn record_limits_are_symmetric_for_encoding_and_decoding() {
 }
 
 #[test]
+fn hash_maps_encode_mapped_keys_and_keep_the_encoder_map() {
+    use flux_hir::flib::{Decode, Encode, IdKind};
+    use std::collections::HashMap;
+    let mut ids = IdMap::strict();
+    ids.insert(IdKind::Crate, 7, 0);
+    ids.insert(IdKind::Crate, 5, 1);
+    let map: HashMap<CrateId, u32> = [(CrateId(5), 50), (CrateId(7), 70)].into();
+    let mut encoder = Encoder::with_ids(ids);
+    map.encode(&mut encoder).unwrap();
+    // The encoder still resolves references after encoding the keys.
+    CrateId(5).encode(&mut encoder).unwrap();
+    let unmapped: HashMap<CrateId, u32> = [(CrateId(9), 90)].into();
+    assert!(unmapped.encode(&mut encoder).is_err());
+    assert!(encoder.ids.get(IdKind::Crate, 7).is_ok());
+    let bytes = encoder.into_bytes();
+    // Entries are sorted by their encoded keys, so artifact indices 0 then 1.
+    assert_eq!(&bytes[..4], &2u32.to_le_bytes());
+    let mut back = IdMap::strict();
+    back.insert(IdKind::Crate, 0, 7);
+    back.insert(IdKind::Crate, 1, 5);
+    let mut decoder = Decoder::with_ids(&bytes, back);
+    assert_eq!(HashMap::<CrateId, u32>::decode(&mut decoder).unwrap(), map);
+    assert_eq!(CrateId::decode(&mut decoder).unwrap(), CrateId(5));
+}
+
+#[test]
 fn artifact_root_cannot_borrow_embedded_std_file_privileges() {
     let mut db = SourceDb::new();
     let root = db.add("forged.rs", "pub fn value() {}");
