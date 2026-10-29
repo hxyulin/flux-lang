@@ -401,7 +401,7 @@ fn unsupported_path_dependency_graphs_are_rejected() {
     fixture.reject("cyclic path dependencies");
     fixture.write(
         "dep/Cargo.toml",
-        "[package]\nname='dep'\nversion='0.1.0'\nedition='2024'\n[lib]\nproc-macro=true\n",
+        "[package]\nname='dep'\nversion='0.1.0'\nedition='2024'\n[lib]\ncrate-type=['dylib']\n",
     );
     fixture.reject("library option");
     fixture.write(

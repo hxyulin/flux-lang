@@ -2,6 +2,10 @@
 
 Historical research/design, 2026-10-23. For the implemented Cargo-backed source
 driver, including host proc-macro expansion, see [the current CLI contract](../crates/flux-cli/README.md#cargo-backed-source-builds).
+The standalone package driver also supports
+[local macro hosts](PACKAGE_DRIVER.md#local-procedural-macro-hosts), built by
+direct rustc calls or by Flux for dependency-free hosts. These implement the
+existing host expansion interface; they do not replace Cargo's host protocol.
 The route comparisons below retain their original experiment scope. The bounded C0 manifest driver is now
 implemented as `flux package build/run`; see [the exact supported
 subset](PACKAGE_DRIVER.md). A bounded local path source graph is also

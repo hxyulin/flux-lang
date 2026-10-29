@@ -1,0 +1,2 @@
+# Keep the upstream source byte-for-byte, including CRLF and comment spacing.
+src/lib.rs -text -whitespace

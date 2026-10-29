@@ -4,6 +4,7 @@ use std::process::ExitCode;
 mod build;
 mod cargo;
 mod package;
+mod proc_macro_native;
 use flux_cli::proc_macro;
 
 use clap::{Parser, Subcommand};
@@ -150,6 +151,7 @@ fn run(command: Command) -> Result<bool, String> {
             let (db, hir) = load(&file)?;
             print!("{}", hir.debug_dump());
             let mut errors = db.syntax_errors();
+            errors.extend(flux_cli::identifiers::diagnostics(&db));
             errors.extend(hir.diagnostics.iter().cloned());
             Ok(report_all(&db, &mut errors))
         }
@@ -157,6 +159,7 @@ fn run(command: Command) -> Result<bool, String> {
             let (db, hir) = load(&file)?;
             let typed = flux_mir::check_file(&hir);
             let mut errors = db.syntax_errors();
+            errors.extend(flux_cli::identifiers::diagnostics(&db));
             errors.extend(hir.diagnostics.iter().cloned());
             errors.extend(typed.diagnostics.iter().cloned());
             if !errors.is_empty() {

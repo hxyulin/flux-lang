@@ -6,6 +6,11 @@ Explicit source graphs also accept a bounded edition-2018 implementation
 with legacy macro, capture, iteration and temporary-scope semantics. The
 [edition-2021 subset](EDITION_2021.md) has separate restrictions. File commands
 default to 2024.
+The command-line compiler rejects non-NFC identifier spellings in physical
+source files. Semantic name paths still retain source spelling, while
+procedural macro tokens normalize identifiers. The rejection prevents those
+paths from selecting different bindings. String and doc-comment contents are
+unaffected. Parse-only commands do not apply this semantic restriction.
 This page covers syntax; later stages will narrow what is accepted further
 (no `async` at first, for example) and will be documented here as they land.
 
@@ -1691,6 +1696,12 @@ Direct file builds do not discover host artifacts. Unsupported hygiene and token
 representations produce diagnostics rather than silently changing expansion
 semantics. See the [driver contract](../crates/flux-cli/README.md#cargo-backed-source-builds)
 for the exact toolchain and host-process restrictions.
+
+The standalone package driver also supplies local hosts through this same
+interface. `--macro-host-compiler flux` compiles dependency-free macro hosts
+and their replacement token runtime with Flux. Cargo-built macros retain
+their compiled catalogs and toolchain server. See
+[local host limits](PACKAGE_DRIVER.md#local-procedural-macro-hosts).
 
 
 ### Backend library API additions

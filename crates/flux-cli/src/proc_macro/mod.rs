@@ -1,4 +1,5 @@
 //! Toolchain-matched, out-of-process host execution. No dylib enters Flux.
+pub mod local;
 mod protocol;
 mod tokens;
 use flux_hir::{ProcMacro, ProcMacroExpander, ProcMacroInput, ProcMacroToken};

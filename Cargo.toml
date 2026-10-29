@@ -6,6 +6,7 @@ members = [
     "crates/flux-syntax",
     "crates/flux-sourcegen",
     "crates/flux-hir",
+    "crates/flux-proc-macro",
     "crates/flux-ty-ir",
     "crates/flux-solve",
     "crates/flux-ty",
@@ -26,6 +27,7 @@ flux-arena = { path = "crates/flux-arena" }
 flux-intern = { path = "crates/flux-intern" }
 flux-syntax = { path = "crates/flux-syntax" }
 flux-hir = { path = "crates/flux-hir" }
+flux-proc-macro = { path = "crates/flux-proc-macro" }
 flux-ty-ir = { path = "crates/flux-ty-ir" }
 flux-solve = { path = "crates/flux-solve" }
 flux-ty = { path = "crates/flux-ty" }

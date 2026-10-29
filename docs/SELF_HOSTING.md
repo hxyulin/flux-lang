@@ -209,6 +209,15 @@ Library and language support remain subject to [LANGUAGE.md](LANGUAGE.md).
 
 ## Remaining boundaries
 
+The standalone package driver's `--macro-host-compiler flux` mode compiles
+the host token API and dependency-free procedural macro implementations with
+Flux. Tests exercise all three macro kinds with rustc replaced by a rejecting
+executable, and compare the unchanged published `default_new_macros 0.1.0`
+derive with rustc. The host adapter uses the existing HIR proc-macro interface.
+HIR and type-checker dependency graphs do not gain the host token runtime.
+Cargo-built macros and build scripts retain their existing bootstrap path;
+this local mode is not a claim about compiling the full CLI source closure.
+
 The complete HIR, type-checker and MIR source graphs have guarded native
 comparison harnesses. Keel IR, assembly IR, bumpalo and the actual Keel
 floating-point constant folder also have native comparisons. These milestones

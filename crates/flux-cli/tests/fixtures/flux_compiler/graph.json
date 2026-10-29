@@ -1,6 +1,6 @@
 {
   "target": "aarch64-apple-darwin",
-  "root_index": 85,
+  "root_index": 86,
   "packages": [
     {
       "name": "anstyle",
@@ -1648,6 +1648,18 @@
       ]
     },
     {
+      "name": "flux-proc-macro",
+      "version": "0.1.0",
+      "source": null,
+      "edition": "2024",
+      "features": [
+        "default",
+        "host"
+      ],
+      "proc_macro": false,
+      "dependencies": []
+    },
+    {
       "name": "flux-cli",
       "version": "0.1.0",
       "source": null,
@@ -1674,6 +1686,10 @@
         {
           "name": "flux_mir",
           "index": 28
+        },
+        {
+          "name": "flux_proc_macro",
+          "index": 85
         },
         {
           "name": "flux_syntax",

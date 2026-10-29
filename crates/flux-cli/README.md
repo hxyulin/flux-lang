@@ -22,6 +22,11 @@ These commands always use the lockfile. Select one binary with `--bin` if the
 package has several. `--features` and `--no-default-features` are forwarded to
 Cargo. A virtual workspace requires `-p` unless it has one default member.
 The existing `flux package` driver retains its smaller, standalone contract.
+It can build local macro hosts with direct rustc calls or dependency-free
+hosts with `--macro-host-compiler flux`; see
+[local macro hosts](../../docs/PACKAGE_DRIVER.md#local-procedural-macro-hosts).
+Both host routes implement the same HIR expansion interface. The Cargo-backed
+host protocol and lifecycle described here retain their existing behavior.
 
 Cargo resolves the graph, checks the Rust target sources, runs build scripts,
 and compiles host proc macros. Flux then compiles original target source roots,

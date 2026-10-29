@@ -21,8 +21,10 @@ The outer audit is bounded to 20 minutes and its Flux worker to 18 minutes,
 including frontend checks, both object builds and native compiler smoke tests.
 
 The current graph uses git-pinned Keel `d17902eb`, without local path patches.
-It contains 86 packages after adding the backend's bbtree/Verus closure and
-splitting `flux-ty-ir` and `flux-solve` out of `flux-ty`. The
+It contains 87 packages after adding the backend's bbtree/Verus closure and
+splitting `flux-ty-ir` and `flux-solve` out of `flux-ty`, plus the CLI-only
+`flux-proc-macro` host token API. HIR and type-checker source graphs keep
+their existing dependencies. The
 recorded stage-1 results later in this document use the prior patched backend;
 they do not establish self-hosting of the new pin. Its complete backend audit
 initially stopped during discovery of the host-generated `Structural` proc
@@ -31,7 +33,7 @@ and 339 HIR diagnostics in `out/keel-backend-readiness/31393`. No new complete
 compiler native claim follows from that admission-only result.
 
 `graph.json` records the locked package versions, sources, declared editions,
-resolved features and normal dependency edges. It contains 86 packages, including
+resolved features and normal dependency edges. It contains 87 packages, including
 host-only dependencies of procedural macros. The target closure is recorded by the resolved graph. Each ordinary target library is loaded from its unchanged source;
 procedural macro crates are represented by their actual rustc-built host artifacts.
 The unchanged `flux-cli/src/main.rs` is a separate final source root, with the

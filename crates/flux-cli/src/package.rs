@@ -1,4 +1,4 @@
-//! A deliberately bounded Cargo manifest driver, not a rustc adapter.
+//! A bounded manifest driver. Target crates use Flux; macro hosts bootstrap with rustc.
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -32,6 +32,15 @@ pub(crate) struct Options {
     /// Print scoped compilation timings (excludes execution of the program).
     #[arg(long)]
     timings: bool,
+    /// Select the compiler used to build procedural macro host executables.
+    #[arg(long, value_enum, default_value_t = MacroHostCompiler::Rustc)]
+    macro_host_compiler: MacroHostCompiler,
+}
+
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum MacroHostCompiler {
+    Rustc,
+    Flux,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +135,11 @@ fn plan_inner(options: &Options, timings: &mut build::Timings) -> Result<Plan, S
         sources: Vec::new(),
         active: Vec::new(),
         target_names: Vec::new(),
+        host_artifacts: Vec::new(),
+        next_host_id: 0,
+        active_hosts: Vec::new(),
+        host_output: root.join("target/flux-host"),
+        macro_host_compiler: options.macro_host_compiler,
     };
     let index = loader.visit(&manifest, false, options.bin.as_deref())?;
     let target_name = &loader.target_names[index];
@@ -157,11 +171,16 @@ fn canonical_manifest(path: &Path) -> Result<PathBuf, String> {
 }
 
 struct SourceGraph<'a> {
+    macro_host_compiler: MacroHostCompiler,
     timings: &'a mut build::Timings,
     manifests: Vec<PathBuf>,
     sources: Vec<SourceInput>,
     active: Vec<PathBuf>,
     target_names: Vec<String>,
+    host_artifacts: Vec<(PathBuf, PathBuf)>,
+    next_host_id: usize,
+    active_hosts: Vec<PathBuf>,
+    host_output: PathBuf,
 }
 
 impl SourceGraph<'_> {
@@ -185,6 +204,9 @@ impl SourceGraph<'_> {
         let root = manifest.parent().unwrap();
         validate_configuration(root)?;
         let table = read_toml(manifest)?;
+        if library && is_proc_macro(&table) {
+            return self.visit_proc_macro(manifest, &table);
+        }
         let mut dependencies = Vec::new();
         if let Some(deps) = table.get("dependencies") {
             let deps = deps.as_table().ok_or("expected a dependencies table")?;
@@ -240,20 +262,258 @@ impl SourceGraph<'_> {
         let target = select_target(&package, library, bin)?;
         let index = self.sources.len();
         self.sources.push(SourceInput {
-            host_macros: None,
-            compilation_dir: None,
-            cfg: Default::default(),
-            environment: None,
             edition: edition(&target.edition)?,
             file: target.src_path.clone(),
             name: target.name.replace('-', "_"),
             dependencies,
+            host_macros: None,
+            compilation_dir: None,
+            cfg: Default::default(),
+            environment: None,
         });
         self.target_names.push(target.name.clone());
         self.manifests.push(manifest.to_owned());
         self.active.pop();
         Ok(index)
     }
+
+    fn host_directory(&mut self) -> Result<PathBuf, String> {
+        let directory = self.host_output.join(format!("host-{}", self.next_host_id));
+        self.next_host_id += 1;
+        std::fs::create_dir_all(&directory)
+            .map_err(|e| format!("cannot create macro host directory: {e}"))?;
+        Ok(directory)
+    }
+
+    fn visit_proc_macro(&mut self, manifest: &Path, table: &toml::Table) -> Result<usize, String> {
+        let package = self
+            .timings
+            .time("  cargo metadata + decode/validate", || {
+                metadata_package(manifest)
+            })?;
+        let target = host_target(&package, true)?;
+        let directory = self.host_directory()?;
+        let proc_macros = if matches!(self.macro_host_compiler, MacroHostCompiler::Flux) {
+            if table
+                .get("dependencies")
+                .and_then(toml::Value::as_table)
+                .is_some_and(|deps| !deps.is_empty())
+            {
+                return Err(
+                    "dependencies of flux-compiled macro hosts are not supported yet".into(),
+                );
+            }
+            crate::proc_macro_native::build_host(
+                &target.src_path,
+                &target.name.replace('-', "_"),
+                edition(&target.edition)?,
+                &directory.join("host"),
+            )?
+        } else {
+            let dependencies = self.host_dependencies(manifest, table)?;
+            crate::proc_macro::local::build_host(
+                &target.src_path,
+                &target.name.replace('-', "_"),
+                edition(&target.edition)?,
+                &directory.join("host"),
+                &dependencies,
+                &self
+                    .host_artifacts
+                    .iter()
+                    .filter_map(|(_, library)| library.parent().map(Path::to_path_buf))
+                    .collect::<Vec<_>>(),
+                manifest.parent().unwrap(),
+            )?
+        };
+        // The target graph sees only macro exports, never the host implementation.
+        let empty = directory.join("exports.rs");
+        std::fs::write(&empty, "")
+            .map_err(|e| format!("cannot write macro exports source: {e}"))?;
+        let index = self.sources.len();
+        self.sources.push(SourceInput {
+            edition: edition(&target.edition)?,
+            file: empty,
+            name: target.name.replace('-', "_"),
+            dependencies: Vec::new(),
+            host_macros: Some(proc_macros),
+            compilation_dir: None,
+            cfg: Default::default(),
+            environment: None,
+        });
+        self.target_names.push(target.name.clone());
+        self.manifests.push(manifest.to_owned());
+        self.active.pop();
+        Ok(index)
+    }
+
+    fn host_dependencies(
+        &mut self,
+        manifest: &Path,
+        table: &toml::Table,
+    ) -> Result<Vec<(String, PathBuf)>, String> {
+        let mut dependencies = Vec::new();
+        if let Some(deps) = table.get("dependencies") {
+            for (alias, value) in deps.as_table().ok_or("expected a dependencies table")? {
+                let spec = value
+                    .as_table()
+                    .ok_or("only local path dependencies are supported yet")?;
+                allowed_keys(spec, &["path", "package"], "dependency option")?;
+                let path = spec
+                    .get("path")
+                    .and_then(toml::Value::as_str)
+                    .ok_or("only local path dependencies are supported yet")?;
+                let child =
+                    canonical_manifest(&manifest.parent().unwrap().join(path).join("Cargo.toml"))?;
+                let child_table = read_toml(&child)?;
+                let expected = spec
+                    .get("package")
+                    .map(|p| p.as_str().ok_or("expected a dependency package name"))
+                    .transpose()?
+                    .unwrap_or(alias);
+                if child_table
+                    .get("package")
+                    .and_then(|p| p.get("name"))
+                    .and_then(toml::Value::as_str)
+                    != Some(expected)
+                {
+                    return Err(format!(
+                        "path dependency `{alias}` does not name package `{expected}`"
+                    ));
+                }
+                let name = if spec.contains_key("package") {
+                    alias.replace('-', "_")
+                } else {
+                    child_table
+                        .get("lib")
+                        .and_then(|lib| lib.get("name"))
+                        .and_then(toml::Value::as_str)
+                        .unwrap_or(alias)
+                        .replace('-', "_")
+                };
+                if matches!(
+                    name.as_str(),
+                    "core" | "alloc" | "std" | "self" | "super" | "crate" | "proc_macro"
+                ) {
+                    return Err(format!("host dependency name `{name}` is reserved"));
+                }
+                if dependencies.iter().any(|(other, _)| other == &name) {
+                    return Err(format!("duplicate host dependency import name `{name}`"));
+                }
+                dependencies.push((name, self.host_artifact(&child)?));
+            }
+        }
+        Ok(dependencies)
+    }
+
+    fn host_artifact(&mut self, manifest: &Path) -> Result<PathBuf, String> {
+        if self.active_hosts.iter().any(|p| p == manifest)
+            || self.active.iter().any(|p| p == manifest)
+        {
+            return Err(format!(
+                "cyclic path dependencies at {}",
+                manifest.display()
+            ));
+        }
+        if let Some((_, output)) = self.host_artifacts.iter().find(|(p, _)| p == manifest) {
+            return Ok(output.clone());
+        }
+        self.active_hosts.push(manifest.to_owned());
+        validate_manifest(manifest, true)?;
+        validate_configuration(manifest.parent().unwrap())?;
+        let table = read_toml(manifest)?;
+        let package = self
+            .timings
+            .time("  cargo metadata + decode/validate", || {
+                metadata_package(manifest)
+            })?;
+        let proc_macro = is_proc_macro(&table);
+        let target = host_target(&package, proc_macro)?;
+        let dependencies = self.host_dependencies(manifest, &table)?;
+        let directory = self.host_directory()?;
+        let name = target.name.replace('-', "_");
+        let extension = if proc_macro {
+            std::env::consts::DLL_EXTENSION
+        } else {
+            "rlib"
+        };
+        let output = directory.join(format!("lib{name}.{extension}"));
+        let crate_type = if proc_macro { "proc-macro" } else { "rlib" };
+        let mut command = std::process::Command::new("rustc");
+        command
+            .current_dir(manifest.parent().unwrap())
+            .env("CARGO_MANIFEST_DIR", manifest.parent().unwrap())
+            .arg(&target.src_path)
+            .args([
+                "--crate-type",
+                crate_type,
+                "--crate-name",
+                &name,
+                "--edition",
+                &target.edition,
+            ])
+            .args(["-C", &format!("metadata=flux_host_{}", self.next_host_id)])
+            .arg("-o")
+            .arg(&output);
+        for (alias, library) in &dependencies {
+            command
+                .arg("--extern")
+                .arg(format!("{alias}={}", library.display()));
+        }
+        if proc_macro {
+            // Cargo normally exposes the compiler's proc_macro crate this way.
+            command.args(["--extern", "proc_macro"]);
+        }
+        // rustc also loads transitive metadata, including helpers shared by hosts.
+        for (_, library) in &self.host_artifacts {
+            if let Some(parent) = library.parent() {
+                command
+                    .arg("-L")
+                    .arg(format!("dependency={}", parent.display()));
+            }
+        }
+        let result = command
+            .output()
+            .map_err(|e| format!("cannot compile macro host dependency: {e}"))?;
+        if !result.status.success() {
+            return Err(format!(
+                "macro host dependency `{name}` failed: {}",
+                String::from_utf8_lossy(&result.stderr).trim()
+            ));
+        }
+        self.active_hosts.pop();
+        self.host_artifacts
+            .push((manifest.to_owned(), output.clone()));
+        Ok(output)
+    }
+}
+
+fn is_proc_macro(table: &toml::Table) -> bool {
+    table
+        .get("lib")
+        .and_then(|lib| lib.get("proc-macro"))
+        .and_then(toml::Value::as_bool)
+        == Some(true)
+}
+
+fn host_target(package: &Package, proc_macro: bool) -> Result<&Target, String> {
+    if package
+        .targets
+        .iter()
+        .any(|target| target.kind.iter().any(|kind| kind == "custom-build"))
+    {
+        return Err("build scripts are not supported yet".into());
+    }
+    let kind = if proc_macro { "proc-macro" } else { "lib" };
+    let target = package
+        .targets
+        .iter()
+        .find(|target| target.kind == [kind])
+        .ok_or_else(|| format!("expected a matching {kind} target"))?;
+    if target.crate_types != [kind] {
+        return Err("unsupported host target crate types".into());
+    }
+    edition(&target.edition)?;
+    Ok(target)
 }
 
 fn metadata_package(manifest: &Path) -> Result<Package, String> {
@@ -457,9 +717,14 @@ fn validate_manifest(path: &Path, library: bool) -> Result<(), String> {
         }
     }
     if let Some(lib) = table.get("lib") {
+        if let Some(value) = lib.get("proc-macro")
+            && value.as_bool().is_none()
+        {
+            return Err("expected a boolean proc-macro option".into());
+        }
         allowed_keys(
             lib.as_table().ok_or("expected a library table")?,
-            &["name", "path", "test", "bench", "doctest"],
+            &["name", "path", "test", "bench", "doctest", "proc-macro"],
             "library option",
         )?;
     }

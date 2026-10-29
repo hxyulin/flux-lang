@@ -110,10 +110,21 @@ pub(crate) struct SourceInput {
 // driver error formatting, program execution, and process/global teardown.
 pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
     let mut timings = Timings::new(request.options.timings, "compile scoped elapsed");
-    compile_inner(request, &mut timings)
+    compile_inner(request, &mut timings, None)
 }
 
-fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<bool, String> {
+/// Compiles a generated root under its original physical path, preserving
+/// relative modules, includes, and source locations without rewriting source.
+pub(crate) fn compile_generated(request: CompileRequest<'_>, text: &str) -> Result<bool, String> {
+    let mut timings = Timings::new(request.options.timings, "compile scoped elapsed");
+    compile_inner(request, &mut timings, Some(text))
+}
+
+fn compile_inner(
+    request: CompileRequest<'_>,
+    timings: &mut Timings,
+    generated: Option<&str>,
+) -> Result<bool, String> {
     let CompileRequest {
         file,
         crate_name,
@@ -127,7 +138,10 @@ fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<b
         let edition = sources
             .last()
             .map_or(flux_syntax::Edition::E2024, |s| s.edition);
-        let root = db.load_with_edition(file, edition);
+        let root = match generated {
+            Some(text) => Ok(db.add_with_edition(file, text, edition)),
+            None => db.load_with_edition(file, edition),
+        };
         (db, root)
     });
     let root = root?;
@@ -136,6 +150,8 @@ fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<b
         for source in sources {
             let source_root = if let Some(exports) = &source.host_macros {
                 db.add_proc_macro_crate(source.file.clone(), exports.clone())
+            } else if generated.is_some() && source.file == file {
+                root
             } else {
                 db.load_with_edition(&source.file, source.edition)?
             };
@@ -169,6 +185,7 @@ fn compile_inner(request: CompileRequest<'_>, timings: &mut Timings) -> Result<b
         flux_mir::check_file(&hir)
     });
     let mut errors = db.syntax_errors();
+    errors.extend(flux_cli::identifiers::diagnostics(&db));
     errors.extend(hir.diagnostics.iter().cloned());
     errors.extend(typed.diagnostics.iter().cloned());
     if let Some(d) = flux_ty::check_main(&hir.items, &typed.sigs) {

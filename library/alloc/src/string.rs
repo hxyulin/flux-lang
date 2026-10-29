@@ -11,6 +11,12 @@ pub struct String {
     vec: Vec<u8>,
 }
 
+impl AsRef<[u8]> for String {
+    fn as_ref(&self) -> &[u8] {
+        self.vec.as_slice()
+    }
+}
+
 impl From<crate::boxed::Box<str>> for String {
     fn from(value: crate::boxed::Box<str>) -> Self {
         let bytes = crate::boxed::Box::into_raw(value) as *mut [u8];
