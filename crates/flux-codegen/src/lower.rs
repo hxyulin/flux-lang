@@ -2992,7 +2992,7 @@ impl Lower<'_, '_, '_> {
                 // integer as a pointer is extended to 64 bits first.
                 let (from_ptr, to_ptr) = (
                     from.is_pointer() || matches!(from.kind(), TyKind::FnPtr(_)),
-                    to.is_pointer(),
+                    to.is_pointer() || matches!(to.kind(), TyKind::FnPtr(_)),
                 );
                 if from_ptr && to_ptr {
                     return Some(value);
