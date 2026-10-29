@@ -82,23 +82,49 @@ fn invalid(path: &Path, message: impl std::fmt::Display) -> String {
     )
 }
 
+fn measured<T>(phase: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let start = std::env::var_os("FLUX_BUILTINS_TRACE")
+        .is_some()
+        .then(Instant::now);
+    let result = f();
+    if let Some(start) = start {
+        eprintln!(
+            "flux builtins: phase={phase} elapsed={:.3}ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    result
+}
+
 /// Loads matching metadata, or returns source fallback for a missing/stale suite.
 pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, CheckMethod)>, String> {
+    let start = Instant::now();
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(invalid(path, e)),
     };
     let archive = Archive::decode(&bytes).map_err(|e| invalid(path, e))?;
+    if std::env::var_os("FLUX_BUILTINS_TRACE").is_some() {
+        eprintln!(
+            "flux builtins: phase=read-and-framing elapsed={:.3}ms",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
     let (identity, payload, checksum) =
         envelope(&archive.metadata).map_err(|e| invalid(path, e))?;
-    let checked = identity.check(executable).map_err(|e| invalid(path, e))?;
+    let checked =
+        measured("identity", || identity.check(executable)).map_err(|e| invalid(path, e))?;
     if checked.hash != identity.hash() {
         return Ok(None);
     }
-    if checksum.as_slice() != digest(payload) {
-        return Err(invalid(path, "built-in suite checksum mismatch"));
-    }
+    measured("checksum", || {
+        if checksum.as_slice() != digest(payload) {
+            return Err("built-in suite checksum mismatch".into());
+        }
+        Ok(())
+    })
+    .map_err(|e| invalid(path, e))?;
     let mut suite = decode_payload(payload, archive.object).map_err(|e| invalid(path, e))?;
     suite.compiler = checked.hash;
     Ok(Some((suite, checked.method)))
@@ -169,13 +195,19 @@ fn decode_payload(payload: &[u8], object: Option<Vec<u8>>) -> Result<BuiltinSuit
         (None, None) => {}
         _ => return Err("built-in object checksum mismatch".into()),
     }
-    let (db, items) = flux_hir::flib::read_builtin_suite(&mut d).map_err(|e| e.to_string())?;
+    let (db, items) = measured("hir-and-sources", || {
+        flux_hir::flib::read_builtin_suite(&mut d).map_err(|e| e.to_string())
+    })?;
     let mut sigs = Signatures::default();
-    sigs.decode_flib_into(&mut d, &items)
-        .map_err(|e| e.to_string())?;
+    measured("types-and-signatures", || {
+        sigs.decode_flib_into(&mut d, &items)
+            .map_err(|e| e.to_string())
+    })?;
     let mut mir = empty_mir();
-    mir.decode_flib_into(&mut d, &items, &sigs)
-        .map_err(|e| e.to_string())?;
+    measured("mir-and-values", || {
+        mir.decode_flib_into(&mut d, &items, &sigs)
+            .map_err(|e| e.to_string())
+    })?;
     d.finish().map_err(|e| e.to_string())?;
     Ok(BuiltinSuite {
         compiler: [0; 32],

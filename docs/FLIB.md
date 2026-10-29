@@ -259,6 +259,38 @@ native target forces source mode, and the suite target stages its own scratch
 compiler to compare both modes. Neither the runner nor compilation assumes that
 an existing suite remains fresh after another compiler build.
 
+### Initial suite measurements
+
+On arm64 macOS, the same 34,147,768-byte test-profile compiler built hello in
+three fresh processes per mode. The following are medians at None; every native
+output matched. The optional object was compiled at None as well.
+
+| Mode | Build wall time | Peak compiler RSS | Executable bytes | Link time |
+| --- | ---: | ---: | ---: | ---: |
+| Source | 0.688 s | 171 MB | 83,840 | — |
+| MIR suite, default | 0.241 s | 222 MB | 83,840 | 6.49 ms |
+| Native suite, optional | 0.273 s | 241 MB | 2,333,312 | 18.50 ms |
+
+At Full, source/MIR/native build medians were 0.692/0.249/0.270 seconds.
+The Full native-suite executable was 2,366,336 bytes. The MIR suite loaded in
+about 197 ms and occupied 12.92 MB on disk. Cold MIR staging took 2.122 seconds;
+its matching no-op took 41.5 ms and left the file unchanged. Native staging took
+2.418–2.736 seconds and its no-op about 50 ms. These are local measurements, not
+a statistical performance guarantee. Decoding every built-in MIR body increases
+memory even when hello reaches only a small subset; indexed, lazy MIR decoding
+is follow-up work.
+
+A separate three-process trace measured 194.8 ms of loading: 1.7 ms for file
+reading/archive framing, 0.010 ms for executable identity, 36.0 ms for checksum,
+19.8 ms for HIR/source records, 10.4 ms for types/signatures, and 128.1 ms for
+MIR/values. The phase medians need not sum exactly to the median total. Deferring
+all MIR work would save at most 128 ms; actual savings are smaller because
+constants, allocations, required bodies and validation remain necessary.
+An indexed body format is a proposal, not implemented here. It needs an owner
+index, independent type/allocation decoding state, and validation when each
+function/closure bundle is requested. Constants and their required roots must
+remain available eagerly.
+
 ## Delivery and acceptance
 
 1. Commit this design and link it from the Cargo integration later gates.

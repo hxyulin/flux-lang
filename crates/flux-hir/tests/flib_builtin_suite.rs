@@ -9,10 +9,7 @@ use flux_intern::Symbol;
 #[test]
 fn trusted_prefix_preserves_ids_roles_files_and_source_graph_resolution() {
     let mut db = SourceDb::new();
-    db.add(
-        "unused-library-diagnostic.rs",
-        "const UNUSED: u8 = 0;",
-    );
+    db.add("unused-library-diagnostic.rs", "const UNUSED: u8 = 0;");
     let original = &Core::get().items;
     let mut encoder = Encoder::new();
     write_builtin_suite(original, &db, &mut encoder).unwrap();
