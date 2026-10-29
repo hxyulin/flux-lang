@@ -164,8 +164,15 @@ pub fn dyn_incompatibility(items: &ItemTree, t: TraitId) -> Option<String> {
                 ));
             }
         }
-        // `trait Tr: PartialEq` is `PartialEq<Self>`.
-        for bound in data.supertraits.iter() {
+        // `trait Tr: PartialEq` is `PartialEq<Self>`, as is
+        // `where Self: PartialEq`.
+        let where_self = data
+            .generics
+            .predicates
+            .iter()
+            .filter(|p| is_self(&p.ty))
+            .map(|p| &p.bound);
+        for bound in data.supertraits.iter().chain(where_self) {
             let last = bound.path.segments.len().saturating_sub(1);
             let args = bound.path.args(last);
             let explicit = args.is_some_and(|a| a.types.iter().any(mentions_self));

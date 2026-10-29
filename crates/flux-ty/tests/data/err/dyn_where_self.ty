@@ -1,0 +1,3 @@
+fn main() -> ()
+    a@0: {error}
+error 179..181: the trait `Tr` is not dyn compatible
