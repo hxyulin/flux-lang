@@ -6,6 +6,7 @@ use serde::Deserialize;
 #[derive(Debug)]
 pub(super) struct Package {
     pub(super) name: String,
+    pub(super) version: Option<String>,
     pub(super) targets: Vec<Target>,
 }
 
@@ -129,6 +130,7 @@ pub(super) fn load(manifest: &Path) -> Result<Package, String> {
     }
     Ok(Package {
         name: package.name,
+        version: package.version,
         targets,
     })
 }

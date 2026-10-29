@@ -258,6 +258,7 @@ fn configuration(
     encode("FLIB-REQUEST-v1".encode(&mut e))?;
     encode(input.file.encode(&mut e))?;
     encode(input.name.encode(&mut e))?;
+    encode(input.package_identity.encode(&mut e))?;
     encode(input.edition.encode(&mut e))?;
     encode(input.compilation_dir.encode(&mut e))?;
     encode(

@@ -247,6 +247,11 @@ impl SourceGraph<'_> {
             edition: edition(&target.edition)?,
             file: target.src_path.clone(),
             name: target.name.replace('-', "_"),
+            package_identity: Some((
+                manifest.to_owned(),
+                package.name.clone(),
+                package.version.clone(),
+            )),
             dependencies,
             host_macros: None,
             compilation_dir: None,
@@ -316,6 +321,11 @@ impl SourceGraph<'_> {
             edition: edition(&target.edition)?,
             file: empty,
             name: target.name.replace('-', "_"),
+            package_identity: Some((
+                manifest.to_owned(),
+                package.name.clone(),
+                package.version.clone(),
+            )),
             dependencies: Vec::new(),
             host_macros: Some(proc_macros),
             compilation_dir: None,

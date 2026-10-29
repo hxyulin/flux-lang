@@ -100,6 +100,8 @@ pub(crate) struct SourceInput {
     pub edition: flux_syntax::Edition,
     pub file: std::path::PathBuf,
     pub name: String,
+    /// Canonical manifest path, package name and declared version.
+    pub package_identity: Option<(std::path::PathBuf, String, Option<String>)>,
     pub dependencies: Vec<(String, usize)>,
     pub cfg: flux_hir::CrateCfg,
     pub environment: Option<std::collections::BTreeMap<String, String>>,
@@ -113,6 +115,7 @@ impl SourceInput {
             edition: flux_syntax::Edition::E2024,
             file: file.to_owned(),
             name: name.to_owned(),
+            package_identity: None,
             dependencies: Vec::new(),
             cfg: flux_hir::CrateCfg::default(),
             environment: None,

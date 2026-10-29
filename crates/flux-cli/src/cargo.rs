@@ -261,6 +261,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         hosts.insert(host.package_id.as_str(), sources.len());
         sources.push(SourceInput {
             compilation_dir: None,
+            package_identity: None,
             host_macros: Some(exports),
             file: host.artifact.clone(),
             name: host.name.clone(),
@@ -287,6 +288,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         }
         sources.push(SourceInput {
             compilation_dir: Some(metadata.workspace_root.clone()),
+            package_identity: None,
             host_macros: None,
             edition: edition(&source.edition)?,
             file: source.root.clone(),

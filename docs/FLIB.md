@@ -109,8 +109,9 @@ when supported. HIR records the actual paths and SHA-256 contents read by
 of variables read by `env!` and `option_env!`. These observations enter crate
 identity. Freshness also checks symlink targets and absent module alternatives;
 modification times alone never establish freshness. Dependency aliases belong to the consuming crate's input.
-Distinct package versions or source identities must remain distinct even when
-their crate names match. Do not include output paths or archive timestamps.
+Package compilation records the canonical manifest path, package name and
+declared version. Distinct package versions or source identities remain distinct
+even when their crate names and physical source files match. Do not include output paths or archive timestamps.
 
 The compiler identity must cover compiler sources, embedded library contents,
 the pinned Keel revision and build configuration that changes compilation.

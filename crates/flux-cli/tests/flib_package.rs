@@ -190,3 +190,146 @@ fn package_library_target_writes_a_reusable_fluxlib() {
     assert!(output.status.success());
     assert_eq!(output.stdout, b"42\n");
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn package_versions_and_manifests_distinguish_the_same_source() {
+    use std::os::unix::fs::MetadataExt;
+    let scratch = Scratch::new(std::env::temp_dir().join("flux-flib-package-identity"));
+    let root = scratch.path();
+    std::fs::write(
+        root.join("shared.rs"),
+        "pub struct Marker; pub fn answer() -> u32 { 42 }",
+    )
+    .unwrap();
+    let manifest_text = |version| {
+        format!(
+            "[package]\nname='library'\nversion='{version}'\nedition='2024'\n[lib]\npath='../shared.rs'\n"
+        )
+    };
+    for directory in ["first", "second"] {
+        std::fs::create_dir(root.join(directory)).unwrap();
+        std::fs::write(
+            root.join(directory).join("Cargo.toml"),
+            manifest_text("0.1.0"),
+        )
+        .unwrap();
+    }
+    let build = |directory: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        command
+            .current_dir(root)
+            .args(["package", "build", "--lib", "--manifest-path"])
+            .arg(root.join(directory).join("Cargo.toml"));
+        for (key, _) in std::env::vars_os() {
+            let name = key.to_string_lossy();
+            if name.contains("RUSTFLAGS")
+                || name.contains("RUSTDOCFLAGS")
+                || name.starts_with("CARGO_BUILD_")
+                || name.starts_with("CARGO_TARGET_")
+                || name.starts_with("CARGO_PROFILE_")
+                || name.starts_with("CARGO_UNSTABLE_")
+                || name == "CARGO_INCREMENTAL"
+            {
+                command.env_remove(key);
+            }
+        }
+        let output = flib_support::run(&mut command, "package-identity");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        root.join(directory).join("target/flux/deps/library.flib")
+    };
+    let compiler = flux_hir::flib::digest(&std::fs::read(env!("CARGO_BIN_EXE_flux")).unwrap());
+    let hash = |bytes: &[u8]| {
+        use flux_hir::flib::{Decode, Decoder};
+        let archive = flux_cli::flib::Archive::decode(bytes).unwrap();
+        let metadata = flux_cli::flib::Metadata::decode(&archive.metadata, compiler).unwrap();
+        let identity = metadata
+            .sections
+            .iter()
+            .find(|section| section.tag == 1)
+            .unwrap();
+        let mut decoder = Decoder::new(&identity.bytes);
+        let _name = String::decode(&mut decoder).unwrap();
+        Vec::<u8>::decode(&mut decoder).unwrap()
+    };
+    let first = build("first");
+    let original = std::fs::read(&first).unwrap();
+    let original_hash = hash(&original);
+    let inode = std::fs::metadata(&first).unwrap().ino();
+    build("first");
+    assert_eq!(
+        inode,
+        std::fs::metadata(&first).unwrap().ino(),
+        "unchanged package must reuse its artifact"
+    );
+    std::fs::write(root.join("original.flib"), original).unwrap();
+    std::fs::write(root.join("first/Cargo.toml"), manifest_text("0.2.0")).unwrap();
+    build("first");
+    assert_ne!(
+        inode,
+        std::fs::metadata(&first).unwrap().ino(),
+        "version-only edit must rebuild"
+    );
+    let versioned = std::fs::read(&first).unwrap();
+    let versioned_hash = hash(&versioned);
+    assert_ne!(original_hash, versioned_hash);
+    let inode = std::fs::metadata(&first).unwrap().ino();
+    build("first");
+    assert_eq!(inode, std::fs::metadata(&first).unwrap().ino());
+    std::fs::write(root.join("second/Cargo.toml"), manifest_text("0.2.0")).unwrap();
+    let second = build("second");
+    let other = std::fs::read(&second).unwrap();
+    let other_hash = hash(&other);
+    assert_ne!(
+        versioned_hash, other_hash,
+        "distinct manifests sharing source must keep distinct identities"
+    );
+    std::fs::write(
+        root.join("consumer.rs"),
+        r#"
+fn main() {
+    use std::any::TypeId;
+    assert!(TypeId::of::<old::Marker>() != TypeId::of::<new::Marker>());
+    assert!(TypeId::of::<new::Marker>() != TypeId::of::<other::Marker>());
+    assert!(TypeId::of::<old::Marker>() != TypeId::of::<other::Marker>());
+    println!("{} {} {}", old::answer(), new::answer(), other::answer());
+}
+"#,
+    )
+    .unwrap();
+    std::fs::remove_file(root.join("shared.rs")).unwrap();
+    let executable = root.join("consumer");
+    let output = flib_support::run(
+        Command::new(env!("CARGO_BIN_EXE_flux"))
+            .current_dir(root)
+            .args([
+                "build",
+                "consumer.rs",
+                "--extern",
+                "old=original.flib",
+                "--extern",
+                "new=first/target/flux/deps/library.flib",
+                "--extern",
+                "other=second/target/flux/deps/library.flib",
+                "-o",
+            ])
+            .arg(&executable),
+        "package-identity-consumer",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output = flib_support::run(&mut Command::new(executable), "package-identity-run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"42 42 42\n");
+}
