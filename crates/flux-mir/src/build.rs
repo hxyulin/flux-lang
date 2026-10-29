@@ -111,14 +111,17 @@ fn build_file_inner(
     // The callees whose targets are queued already.
     let mut expanded = rustc_hash::FxHashSet::default();
     while let Some(id) = queue.pop() {
+        let provider = shared(ClosureOwner::Function(id));
+        // Source and cached-library bodies retain the source inference gate.
+        // Only decoded user bodies deliberately have no inference record.
+        let imported_owner = matches!(&provider, Some(crate::imported::SharedMir::Imported(_)));
         if bodies.get(id).is_some()
-            || (shared(ClosureOwner::Function(id)).is_none()
-                && (hir.body(id).is_none() || typed.bodies.get(id).is_none()))
+            || (!imported_owner && (hir.body(id).is_none() || typed.bodies.get(id).is_none()))
         {
             continue;
         }
         // Checked below, after the patterns, unless it is shared.
-        let built = match shared(ClosureOwner::Function(id)) {
+        let built = match provider {
             Some(provider) => {
                 let Some(built) = provider.built(ClosureOwner::Function(id)) else {
                     continue;
