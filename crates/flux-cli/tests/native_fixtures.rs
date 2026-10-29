@@ -156,3 +156,18 @@ fn const_pointer_offsets() {
 fn qualified_lifetime_regions() {
     support::oracle::compare_fixture("qualified_lifetime_regions");
 }
+
+// Programs in `tests/run/pending` fail today for the reason at the top of
+// each file. Once one passes, move it to `tests/run` and delete its test.
+
+#[test]
+#[ignore = "trait solver consolidation"]
+fn repeated_impl_parameters() {
+    support::oracle::compare_fixture("pending/repeated_impl_parameters");
+}
+
+#[test]
+#[ignore = "trait solver consolidation"]
+fn deep_iterator_chain() {
+    support::oracle::compare_fixture("pending/deep_iterator_chain");
+}
