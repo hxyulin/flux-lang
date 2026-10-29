@@ -1,4 +1,4 @@
-//! Offline manifest-driver tests. Cargo is never allowed to invoke rustc.
+//! Standalone manifest-driver tests. Package builds must not invoke Cargo or rustc.
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -27,11 +27,18 @@ impl Fixture {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                fixture.0.join("deny-rustc"),
-                std::fs::Permissions::from_mode(0o755),
-            )
-            .unwrap();
+            fixture.write(
+                "tools/cargo",
+                "#!/bin/sh\nprintf 'cargo invoked\\n' >> \"$CARGO_CALL_LOG\"\nexit 86\n",
+            );
+            std::fs::copy(fixture.0.join("deny-rustc"), fixture.0.join("tools/rustc")).unwrap();
+            for path in ["deny-rustc", "tools/rustc", "tools/cargo"] {
+                std::fs::set_permissions(
+                    fixture.0.join(path),
+                    std::fs::Permissions::from_mode(0o755),
+                )
+                .unwrap();
+            }
         }
         fixture
     }
@@ -51,7 +58,16 @@ impl Fixture {
             .env("RUSTC", self.0.join("deny-rustc"))
             .env("RUSTC_WRAPPER", self.0.join("deny-rustc"))
             .env("RUSTC_WORKSPACE_WRAPPER", self.0.join("deny-rustc"))
-            .env("RUSTC_CALL_LOG", self.0.join("rustc-calls"));
+            .env("RUSTC_CALL_LOG", self.0.join("rustc-calls"))
+            .env("CARGO_CALL_LOG", self.0.join("cargo-calls"));
+        #[cfg(unix)]
+        command.env(
+            "PATH",
+            std::env::join_paths(std::iter::once(self.0.join("tools")).chain(
+                std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+            ))
+            .unwrap(),
+        );
         for (key, _) in std::env::vars_os() {
             let name = key.to_string_lossy();
             if name.contains("RUSTFLAGS")
@@ -71,6 +87,7 @@ impl Fixture {
     fn run(&self, subcommand: &str, args: &[&str]) -> Output {
         let output = self.command(subcommand).args(args).output().unwrap();
         assert!(!self.0.join("rustc-calls").exists(), "rustc was invoked");
+        assert!(!self.0.join("cargo-calls").exists(), "cargo was invoked");
         output
     }
 
@@ -293,6 +310,38 @@ fn malformed_manifest_is_reported() {
 }
 
 #[test]
+fn malformed_manifest_fields_fail_before_compilation() {
+    for (fields, expected) in [
+        ("name=42\nversion='0.1.0'", "name"),
+        ("name='probe-bin'\nversion=42", "version"),
+        (
+            "name='probe-bin'\nversion='0.1.0'\nauthors='author'",
+            "authors",
+        ),
+        (
+            "name='probe-bin'\nversion='0.1.0'\nautobins='false'",
+            "autobins",
+        ),
+        (
+            "name='probe-bin'\nversion='0.1.0'\n[[bin]]\nname=42\npath='src/main.rs'",
+            "name",
+        ),
+        (
+            "name='probe-bin'\nversion='0.1.0'\n[[bin]]\nname='custom'\npath=42",
+            "path",
+        ),
+    ] {
+        let fixture = Fixture::new();
+        fixture.write(
+            "Cargo.toml",
+            &format!("[package]\nedition='2024'\n{fields}\n"),
+        );
+        fixture.write("src/main.rs", "invalid source that must not be compiled");
+        fixture.reject(expected);
+    }
+}
+
+#[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn selecting_an_inferred_binary_and_existing_file_commands() {
     let fixture = Fixture::new();
@@ -375,6 +424,71 @@ fn source_dependencies_preserve_crate_identity_and_rebuild() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("implementation.rs"));
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn local_graph_and_flux_macro_build_without_cargo_or_rustc() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname='consumer'\nversion='0.1.0'\nedition='2024'\nautobins=false\n[[bin]]\nname='actual-bin'\npath='app/entry.rs'\n[dependencies]\ndirect={path='leaf',package='shared-leaf'}\nmiddle={path='middle'}\nmacros={path='macros'}\n",
+    );
+    // The explicit target wins even though a conventional main file exists.
+    fixture.write("src/main.rs", "invalid source that must not be compiled");
+    fixture.write(
+        "leaf/Cargo.toml",
+        "[package]\nname='shared-leaf'\nversion='0.1.0'\nedition='2024'\n[lib]\nname='actual_leaf'\npath='code/root.rs'\n",
+    );
+    fixture.write(
+        "leaf/code/root.rs",
+        "pub struct Value(pub i32); pub fn value() -> Value { Value(20) }",
+    );
+    fixture.write(
+        "middle/Cargo.toml",
+        "[package]\nname='middle'\nversion='0.1.0'\nedition='2024'\n[dependencies]\ninside={path='../leaf',package='shared-leaf'}\n",
+    );
+    fixture.write(
+        "middle/src/lib.rs",
+        "pub fn value() -> inside::Value { inside::Value(inside::value().0 + 2) }",
+    );
+    fixture.write(
+        "macros/Cargo.toml",
+        "[package]\nname='macros'\nversion='0.1.0'\nedition='2024'\n[lib]\nproc-macro=true\n",
+    );
+    fixture.write(
+        "macros/src/lib.rs",
+        "use proc_macro::TokenStream; #[proc_macro] pub fn identity(input: TokenStream) -> TokenStream { input }",
+    );
+    fixture.write(
+        "app/entry.rs",
+        "fn show(value: direct::Value) { println!(\"{}\", macros::identity!(value.0 + direct::value().0)); } fn main() { show(middle::value()); }",
+    );
+    let manifests = ["", "leaf/", "middle/", "macros/"];
+    let output = fixture.run("run", &["--macro-host-compiler", "flux"]);
+    success(&output);
+    assert_eq!(output.stdout, b"42\n");
+    assert!(fixture.0.join("target/flux/actual-bin").is_file());
+    for prefix in manifests {
+        assert!(
+            !fixture.0.join(format!("{prefix}Cargo.lock")).exists(),
+            "created a lockfile for {prefix:?}"
+        );
+        fixture.write(
+            &format!("{prefix}Cargo.lock"),
+            "# an existing lockfile must remain unchanged\nversion = 4\n",
+        );
+    }
+    let output = fixture.run("run", &["--macro-host-compiler", "flux"]);
+    success(&output);
+    assert_eq!(output.stdout, b"42\n");
+    for prefix in manifests {
+        assert_eq!(
+            std::fs::read_to_string(fixture.0.join(format!("{prefix}Cargo.lock"))).unwrap(),
+            "# an existing lockfile must remain unchanged\nversion = 4\n",
+            "changed the lockfile for {prefix:?}"
+        );
+    }
 }
 
 #[test]
@@ -835,7 +949,7 @@ fn timing_flags_and_planning_failures() {
         assert!(!output.status.success());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("planning (inclusive of metadata)"),
+            stderr.contains("planning (inclusive of manifest loading)"),
             "{stderr}"
         );
         assert!(
@@ -851,20 +965,17 @@ fn timing_flags_and_planning_failures() {
         let ordinary = fixture.run(command, &[]);
         assert!(!String::from_utf8_lossy(&ordinary.stderr).contains("scoped elapsed"));
     }
-    // Valid TOML with an invalid Cargo package name reaches a metadata failure.
+    // Valid TOML with an invalid package name fails during manifest loading.
     fixture.write(
         "Cargo.toml",
         "[package]\nname='invalid!name'\nversion='0.1.0'\nedition='2024'\n",
     );
     let output = fixture.run("build", &["--timings"]);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cargo metadata failed"), "{stderr}");
+    assert!(stderr.contains("invalid package name"), "{stderr}");
+    assert!(stderr.contains("manifest loading"), "{stderr}");
     assert!(
-        stderr.contains("cargo metadata + decode/validate"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains("planning (inclusive of metadata)"),
+        stderr.contains("planning (inclusive of manifest loading)"),
         "{stderr}"
     );
 }
@@ -879,8 +990,8 @@ fn package_timings_cover_compilation_and_exclude_program_execution() {
         assert_eq!(output.stdout, b"probe=42\n");
         let stderr = String::from_utf8_lossy(&output.stderr);
         for scope in [
-            "cargo metadata + decode/validate",
-            "planning (inclusive of metadata)",
+            "manifest loading",
+            "planning (inclusive of manifest loading)",
             "source dependency load/parse",
             "hir (includes module load/parse)",
             "backend (inclusive)",

@@ -1,15 +1,18 @@
-//! A bounded manifest driver. Target crates use Flux; macro hosts bootstrap with rustc.
+//! A bounded Cargo-free manifest driver with explicit macro host compilation.
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use serde::Deserialize;
+#[path = "package_manifest.rs"]
+mod manifest;
+
+use manifest::{Package, Target};
 
 use crate::BuildOptions;
 use crate::build::{self, CompileRequest, SourceInput};
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Command {
-    /// Always rebuild one binary with Flux/Keel (offline metadata only).
+    /// Always rebuild one binary with Flux/Keel from local manifests.
     Build(Options),
     /// Rebuild and run one binary, preserving its exit status.
     Run {
@@ -41,32 +44,6 @@ pub(crate) struct Options {
 enum MacroHostCompiler {
     Rustc,
     Flux,
-}
-
-#[derive(Deserialize)]
-struct Metadata {
-    packages: Vec<Package>,
-    workspace_members: Vec<String>,
-    workspace_root: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct Package {
-    id: String,
-    name: String,
-    manifest_path: PathBuf,
-    edition: String,
-    targets: Vec<Target>,
-    features: serde_json::Map<String, serde_json::Value>,
-}
-
-#[derive(Deserialize)]
-struct Target {
-    name: String,
-    kind: Vec<String>,
-    crate_types: Vec<String>,
-    src_path: PathBuf,
-    edition: String,
 }
 
 struct Plan {
@@ -117,11 +94,11 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
 }
 
 fn plan(options: &Options, timings: &mut build::Timings) -> Result<Plan, String> {
-    // Keep the inclusive planning duration even when validation or metadata fails.
+    // Keep the inclusive planning duration even when validation or manifest loading fails.
     let start = options.timings.then(std::time::Instant::now);
     let result = plan_inner(options, timings);
     if let Some(start) = start {
-        timings.record("planning (inclusive of metadata)", start.elapsed());
+        timings.record("planning (inclusive of manifest loading)", start.elapsed());
     }
     result
 }
@@ -144,14 +121,14 @@ fn plan_inner(options: &Options, timings: &mut build::Timings) -> Result<Plan, S
     let index = loader.visit(&manifest, false, options.bin.as_deref())?;
     let target_name = &loader.target_names[index];
     let main = loader.sources.last().unwrap();
-    // Cargo validates target names. Keep the output inside our namespace too.
+    // Keep the executable inside our output namespace.
     let mut components = Path::new(target_name).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
     {
         return Err("unsupported binary target name".into());
     }
-    // The output name retains Cargo's target spelling, unlike the Rust crate name.
+    // The output name retains the target spelling, unlike the Rust crate name.
     Ok(Plan {
         source: main.file.clone(),
         crate_name: main.name.clone(),
@@ -204,9 +181,13 @@ impl SourceGraph<'_> {
         let root = manifest.parent().unwrap();
         validate_configuration(root)?;
         let table = read_toml(manifest)?;
+        let package = self
+            .timings
+            .time("  manifest loading", || manifest::load(manifest))?;
         if library && is_proc_macro(&table) {
-            return self.visit_proc_macro(manifest, &table);
+            return self.visit_proc_macro(manifest, &table, &package);
         }
+        let target = select_target(&package, library, bin)?;
         let mut dependencies = Vec::new();
         if let Some(deps) = table.get("dependencies") {
             let deps = deps.as_table().ok_or("expected a dependencies table")?;
@@ -254,12 +235,6 @@ impl SourceGraph<'_> {
                 dependencies.push((name, index));
             }
         }
-        let package = self
-            .timings
-            .time("  cargo metadata + decode/validate", || {
-                metadata_package(manifest)
-            })?;
-        let target = select_target(&package, library, bin)?;
         let index = self.sources.len();
         self.sources.push(SourceInput {
             edition: edition(&target.edition)?,
@@ -285,13 +260,13 @@ impl SourceGraph<'_> {
         Ok(directory)
     }
 
-    fn visit_proc_macro(&mut self, manifest: &Path, table: &toml::Table) -> Result<usize, String> {
-        let package = self
-            .timings
-            .time("  cargo metadata + decode/validate", || {
-                metadata_package(manifest)
-            })?;
-        let target = host_target(&package, true)?;
+    fn visit_proc_macro(
+        &mut self,
+        manifest: &Path,
+        table: &toml::Table,
+        package: &Package,
+    ) -> Result<usize, String> {
+        let target = host_target(package, true)?;
         let directory = self.host_directory()?;
         let proc_macros = if matches!(self.macro_host_compiler, MacroHostCompiler::Flux) {
             if table
@@ -423,9 +398,7 @@ impl SourceGraph<'_> {
         let table = read_toml(manifest)?;
         let package = self
             .timings
-            .time("  cargo metadata + decode/validate", || {
-                metadata_package(manifest)
-            })?;
+            .time("  manifest loading", || manifest::load(manifest))?;
         let proc_macro = is_proc_macro(&table);
         let target = host_target(&package, proc_macro)?;
         let dependencies = self.host_dependencies(manifest, &table)?;
@@ -513,49 +486,8 @@ fn host_target(package: &Package, proc_macro: bool) -> Result<&Target, String> {
         return Err("unsupported host target crate types".into());
     }
     edition(&target.edition)?;
+    validate_target_source(target)?;
     Ok(target)
-}
-
-fn metadata_package(manifest: &Path) -> Result<Package, String> {
-    let root = manifest.parent().unwrap();
-    let output = std::process::Command::new("cargo")
-        .current_dir(root)
-        .args([
-            "metadata",
-            "--offline",
-            "--no-deps",
-            "--format-version",
-            "1",
-            "--manifest-path",
-        ])
-        .arg(manifest)
-        .output()
-        .map_err(|e| format!("cannot run cargo metadata: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "cargo metadata failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let metadata: Metadata = serde_json::from_slice(&output.stdout)
-        .map_err(|e| format!("invalid cargo metadata: {e}"))?;
-    if metadata.packages.len() != 1
-        || metadata.workspace_members.len() != 1
-        || metadata.workspace_root.canonicalize().ok().as_deref() != Some(root)
-    {
-        return Err("workspaces are not supported yet; expected one standalone package".into());
-    }
-    let package = metadata.packages.into_iter().next().unwrap();
-    if package.manifest_path.canonicalize().ok().as_deref() != Some(manifest)
-        || metadata.workspace_members[0] != package.id
-    {
-        return Err("expected the requested standalone package".into());
-    }
-    edition(&package.edition)?;
-    if !package.features.is_empty() {
-        return Err("features are not supported yet".into());
-    }
-    Ok(package)
 }
 
 fn select_target<'a>(
@@ -596,13 +528,26 @@ fn select_target<'a>(
         edition(&target.edition)?;
     }
     match candidates.as_slice() {
-        [target] => Ok(*target),
+        [target] => {
+            validate_target_source(target)?;
+            Ok(*target)
+        }
         [] => Err(format!(
             "expected a matching {} target",
             if library { "library" } else { "binary" }
         )),
         _ => Err("multiple binary targets; select one with --bin".into()),
     }
+}
+
+fn validate_target_source(target: &Target) -> Result<(), String> {
+    if !target.src_path.is_file() {
+        return Err(format!(
+            "target source is not a file: {}",
+            target.src_path.display()
+        ));
+    }
+    Ok(())
 }
 
 fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
@@ -742,7 +687,7 @@ fn validate_manifest(path: &Path, library: bool) -> Result<(), String> {
 }
 
 fn validate_configuration(root: &Path) -> Result<(), String> {
-    // Cargo is run from the package root, so these are its config search paths.
+    // Reject configuration we cannot honor, using the package root search paths.
     let mut directories: Vec<_> = root.ancestors().map(|dir| dir.join(".cargo")).collect();
     if let Some(home) = std::env::var_os("CARGO_HOME") {
         let home = PathBuf::from(home);

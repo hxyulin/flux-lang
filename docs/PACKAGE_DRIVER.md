@@ -7,39 +7,40 @@ flux package build --manifest-path /path/to/Cargo.toml [--bin NAME] [-O] [--timi
 flux package run --manifest-path /path/to/Cargo.toml [--bin NAME] [-O] [--timings] -- PROGRAM_ARGS
 ```
 
-This is a manifest driver. It runs real `cargo metadata --offline --no-deps
---format-version 1` from the package directory, selects the actual binary
-name and source path, then compiles its source, file modules and supported
-local path dependencies through Flux and Keel. Metadata is read separately for each package; this
-bounded path-only graph does not use Cargo's general resolved feature graph.
-Ordinary target source always compiles with Flux. Local macro hosts use the
-explicit host compiler described below. The driver does not implement `RUSTC`,
-Cargo's compiler protocol, rustc library metadata, or general Cargo
-compatibility. Cargo must be installed for package metadata.
+This is a manifest driver. Flux reads `Cargo.toml` directly, selects the binary
+name and source path, and compiles its source, file modules and supported local
+path dependencies through Flux and Keel. It does not invoke Cargo or resolve
+registry/git packages. Ordinary target source always compiles with Flux. Local
+macro hosts use the explicit host compiler described below. Use
+`--macro-host-compiler flux` for supported dependency-free macro hosts when
+rustc is also unavailable. This driver does not implement `RUSTC`, Cargo's
+compiler protocol, rustc library metadata, or general Cargo compatibility.
 Flux's existing language and embedded-library limitations still apply.
 
 `--timings` prints compilation scopes to stderr, including package planning,
-each offline metadata invocation with decoding/validation, source loading and
-backend phases. The package elapsed scope stops before program execution.
+manifest loading and validation, source loading and backend phases. The package elapsed scope stops before program execution.
 Nested scopes overlap and must not be added together; see the
 [timing boundaries](ARCHITECTURE.md#compilation-timings).
 
 The supported manifest subset is deliberately narrow:
 
 - One standalone binary package and zero or more standalone local library
-  dependencies, each with explicit edition 2021 or 2024. Edition 2021
+  dependencies, each with explicit edition 2018, 2021 or 2024. Edition 2021
   uses the deliberately restricted [documented subset](EDITION_2021.md).
   Workspace manifests, workspace membership and inherited fields are
-  unsupported, including a single-member workspace.
+  unsupported, including a single-member workspace. Enclosing workspaces are
+  rejected even when their exclusion lists would make a package standalone.
 - Package keys: `name`, `version`, `edition`, `authors`, `description`,
   `license`, `license-file`, `readme`, `repository`, `homepage`,
   `documentation`, `keywords`, `categories`, `publish`, `rust-version`,
-  opaque `metadata`, target discovery booleans and `build = false`. Cargo validates
-  these fields; descriptive fields have no compiler effect.
+  opaque `metadata`, target discovery booleans and `build = false`. Flux
+  validates the supported field types; descriptive fields have no compiler effect.
 - Inferred binary targets and explicit `[[bin]]` tables with only `name`
   and `path`. Select with `--bin` when there is more than one binary.
   `default-run` is unsupported. The selected name, with hyphens changed
-  to underscores, is the compilation's crate name.
+  to underscores, is the compilation's crate name. `autobins = false` disables
+  inferred binaries while keeping explicit targets. Files named `src/bin/NAME.rs`
+  and directories named `src/bin/NAME/main.rs` supply inferred binaries.
 - All discovered root targets must be supported binaries. Each dependency
   must expose exactly one ordinary library target, inferred from `src/lib.rs`
   or configured with `[lib]` containing only `name` and `path`. Unselected
@@ -66,8 +67,8 @@ The supported manifest subset is deliberately narrow:
   `config` and `config.toml` in `CARGO_HOME` (default `$HOME/.cargo`), are
   parsed as TOML and rejected if they contain entries. An explicit
   `CARGO_HOME` must be absolute. Empty/comment-only
-  files are allowed. Cargo is invoked from the package directory, so the
-  caller's separate configuration ancestry does not participate.
+  files are allowed. Configuration checks start at the package directory;
+  the caller's separate configuration ancestry does not participate.
 - Environment options `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
   `RUSTDOCFLAGS`, `CARGO_ENCODED_RUSTDOCFLAGS`, `CARGO_INCREMENTAL`,
   and names beginning `CARGO_BUILD_`, `CARGO_TARGET_`, `CARGO_PROFILE_`
@@ -150,15 +151,16 @@ API is deferred until a second configuration is supported.
 The executable is written to `<package>/target/flux/<binary-name>`, separate
 from Cargo's own artifacts. Every invocation rebuilds, including all
 source modules and dependencies; no freshness or incremental cache is
-claimed. Cargo may create/update the package's lockfile while reading metadata. A failed
-build does not run a previously built executable. A package run inherits
-the invoking working directory and environment, forwards arguments after
+claimed. Flux does not read or change `Cargo.lock`; local path manifests define
+the graph. A failed build does not run a previously built executable. A package
+run inherits the invoking working directory and environment, forwards arguments after
 `--`, and returns the program's exit status (128 plus signal on Unix).
 Existing `flux build FILE` and `flux run FILE` retain their behavior.
 
 Validate with `cargo test --offline -p flux-cli --test package`. The tests
-use real Cargo and rejecting rustc/wrapper scripts to detect compiler
-invocations; arm64 macOS tests also compile and execute through Flux/Keel.
+block Cargo and rustc with rejecting executables on `PATH`; arm64 macOS tests
+also compile and execute a path-library graph with a Flux-built proc macro.
+Separate reference checks may use Cargo to locate cached upstream sources.
 
 For example, a binary can use a local library:
 

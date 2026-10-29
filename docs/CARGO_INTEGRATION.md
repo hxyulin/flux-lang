@@ -2,7 +2,7 @@
 
 Historical research/design, 2026-10-23. For the implemented Cargo-backed source
 driver, including host proc-macro expansion, see [the current CLI contract](../crates/flux-cli/README.md#cargo-backed-source-builds).
-The standalone package driver also supports
+The standalone package driver reads local manifests without Cargo and supports
 [local macro hosts](PACKAGE_DRIVER.md#local-procedural-macro-hosts), built by
 direct rustc calls or by Flux for dependency-free hosts. These implement the
 existing host expansion interface; they do not replace Cargo's host protocol.

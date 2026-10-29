@@ -215,6 +215,8 @@ Flux. Tests exercise all three macro kinds with rustc replaced by a rejecting
 executable, and compare the unchanged published `default_new_macros 0.1.0`
 derive with rustc. The host adapter uses the existing HIR proc-macro interface.
 HIR and type-checker dependency graphs do not gain the host token runtime.
+The package driver reads local manifests without Cargo. A local path graph
+with a Flux-built macro host can therefore build without Cargo or rustc.
 Cargo-built macros and build scripts retain their existing bootstrap path;
 this local mode is not a claim about compiling the full CLI source closure.
 
