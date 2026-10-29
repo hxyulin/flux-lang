@@ -42,6 +42,31 @@ impl Staged {
         }
         success(&flib_support::run(&mut command, "stage-builtins"));
         assert!(staged.suite.is_file());
+        let before = std::fs::metadata(&staged.suite).unwrap();
+        let contents = std::fs::read(&staged.suite).unwrap();
+        let mut repeated = staged.command();
+        repeated.arg("build-builtins");
+        if native {
+            repeated.arg("--native-object");
+        }
+        success(&flib_support::run(&mut repeated, "repeat-stage-builtins"));
+        let after = std::fs::metadata(&staged.suite).unwrap();
+        assert_eq!(
+            after.modified().unwrap(),
+            before.modified().unwrap(),
+            "unchanged staging must preserve the suite mtime"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            assert_eq!(
+                after.ino(),
+                before.ino(),
+                "unchanged staging must preserve the suite inode"
+            );
+        }
+        assert_eq!(std::fs::read(&staged.suite).unwrap(), contents);
+
         staged
     }
 
