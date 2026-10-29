@@ -6,13 +6,14 @@
 use flux_hir::{FunctionId, ImplId, ItemTree, StructId, TraitId};
 use rustc_hash::FxHashMap;
 
-use crate::{IntTy, Mutability, Signatures, Ty, TyKind};
+use crate::{FloatTy, IntTy, Mutability, Signatures, Ty, TyKind};
 
 /// The outermost constructor of a type, when it has one that no other
 /// type it does not unify with shares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Head {
     Int(IntTy),
+    Float(FloatTy),
     Bool,
     Char,
     Str,
@@ -33,6 +34,7 @@ pub(crate) enum Head {
 pub(crate) fn head(ty: Ty) -> Option<Head> {
     Some(match ty.kind() {
         TyKind::Int(int) => Head::Int(int),
+        TyKind::Float(float) => Head::Float(float),
         TyKind::Bool => Head::Bool,
         TyKind::Char => Head::Char,
         TyKind::Str => Head::Str,
