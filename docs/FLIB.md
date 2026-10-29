@@ -173,14 +173,19 @@ graphs need canonical allocation identities rather than recursive byte hashing.
 
 Use hidden `weak_odr` definitions for duplicate generic instances and their
 shims, with identical stable symbols, ABI and bodies in every object. The pinned
-Keel revision `d17902eb` exposes `Function::weak_odr` and emits Mach-O weak
-definitions and ELF weak symbols. Its AArch64 symbol-address selection does not
-recognize `weak_odr` as coalescible and emits direct page relocations; Keel's
-Mach-O linker rejects those for interposable weak symbols. Hidden definitions
-are private externs and coalesce within the executable without interposition.
-Native regressions verify shared generic function addresses, relocations and
-vtable calls with optimization disabled and full optimization on arm64 macOS. Immutable local data can
-use object-local copies; exported shared data needs a tested coalescing rule.
+Keel revision `e4c72445` recognizes weak ODR symbols when selecting AArch64 address
+relocations and resolves each weak copy's unwind records to that object's body.
+
+Hidden definitions are private externs that resolve and coalesce across objects
+within one executable. Fluxlib has no dynamic-export or interposition contract;
+source visibility does not imply a dynamic symbol export. Imported C declarations
+keep their external linkage. Hidden visibility is an image-local linkage policy,
+not a workaround for the older Keel address-relocation bug.
+
+Native regressions verify one shared generic definition and equal function
+addresses, data relocations, vtable calls and optimized/unoptimized output on
+arm64 macOS. Immutable local data can use object-local copies; exported shared
+data needs the tested coalescing rule.
 The executable alone owns the C `main` wrapper and embedded runtime definitions.
 Link each dependency object once, in addition to downstream monomorphizations.
 
