@@ -11,7 +11,7 @@
 
 use flux_hir::ItemTree;
 use flux_ty::traits::Projection;
-use flux_ty::{Signatures, Ty, TyKind};
+use flux_ty::{ClosureOwner, Signatures, Ty, TyKind};
 
 use crate::{
     AggregateKind, BinOp, Body, FileMir, Operand, Place, Rvalue, StatementKind, TerminatorKind,
@@ -67,34 +67,66 @@ pub fn assert_valid(
 /// functions', closures' and constants', each prefixed by what it is
 /// the body of.
 pub fn validate_file(hir: &flux_hir::Hir, sigs: &Signatures, mir: &FileMir) -> Vec<String> {
+    validate_owners(hir, sigs, mir, &|_| true)
+}
+
+/// [`validate_file`] of the bodies of the functions and constants
+/// `keep` accepts, and of their closures.
+pub(crate) fn validate_owners(
+    hir: &flux_hir::Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    keep: &dyn Fn(ClosureOwner) -> bool,
+) -> Vec<String> {
     let items = &hir.items;
-    let env = |f| flux_solve::traits::projections_of(items, sigs, f);
     let mut errors = Vec::new();
-    let mut add = |what: String, found: Vec<String>| {
-        errors.extend(found.into_iter().map(|e| format!("{what}: {e}")));
-    };
     for (id, body) in mir.bodies.iter() {
-        let found = validate(items, sigs, &env(id), body);
-        add(items.function_path(&items.functions[id]), found);
+        let owner = ClosureOwner::Function(id);
+        if keep(owner) {
+            errors.extend(validate_in(items, sigs, owner, false, body));
+        }
     }
     for ((c, _), body) in &mir.closures {
-        let (projections, owner) = match c.owner {
-            flux_ty::ClosureOwner::Function(f) => {
-                (env(f), items.function_path(&items.functions[f]))
-            }
-            flux_ty::ClosureOwner::Const(c) => (
-                flux_solve::traits::owner_projections(items, sigs, items.consts[c].owner),
-                items.const_name(c),
-            ),
-        };
-        let found = validate(items, sigs, &projections, body);
-        add(format!("a closure in {owner}"), found);
+        if keep(c.owner) {
+            errors.extend(validate_in(items, sigs, c.owner, true, body));
+        }
     }
     for (id, body) in mir.consts.iter() {
-        let found = validate(items, sigs, &[], body);
-        add(items.const_name(id), found);
+        let owner = ClosureOwner::Const(id);
+        if keep(owner) {
+            errors.extend(validate_in(items, sigs, owner, false, body));
+        }
     }
     errors
+}
+
+/// The type errors [`validate`] finds in `body`, `owner`'s or, if
+/// `closure`, a closure's in it, prefixed by what it is the body of.
+pub(crate) fn validate_in(
+    items: &ItemTree,
+    sigs: &Signatures,
+    owner: ClosureOwner,
+    closure: bool,
+    body: &Body,
+) -> Vec<String> {
+    let (env, name) = match owner {
+        ClosureOwner::Function(f) => (
+            flux_solve::traits::projections_of(items, sigs, f),
+            items.function_path(&items.functions[f]),
+        ),
+        ClosureOwner::Const(c) if closure => (
+            flux_solve::traits::owner_projections(items, sigs, items.consts[c].owner),
+            items.const_name(c),
+        ),
+        ClosureOwner::Const(c) => (Vec::new(), items.const_name(c)),
+    };
+    let what = if closure {
+        format!("a closure in {name}")
+    } else {
+        name
+    };
+    let found = validate(items, sigs, &env, body);
+    found.into_iter().map(|e| format!("{what}: {e}")).collect()
 }
 
 struct Validator<'a> {

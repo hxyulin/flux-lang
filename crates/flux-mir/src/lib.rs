@@ -46,6 +46,7 @@ pub mod init;
 mod interval;
 pub mod layout;
 mod lens;
+mod library;
 pub mod lint;
 pub mod mono;
 mod pretty;

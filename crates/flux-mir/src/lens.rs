@@ -6,7 +6,7 @@
 
 use flux_arena::ArenaMap;
 use flux_hir::{ConstId, Diagnostic, FunctionId, Hir};
-use flux_ty::{Signatures, TypedFile};
+use flux_ty::{ClosureOwner, LibraryTypes, Signatures, TypedFile};
 
 /// Type-checks `hir`, evaluating the constants array lengths name.
 pub fn check_file(hir: &Hir) -> TypedFile {
@@ -24,6 +24,9 @@ fn eval_lens(
     wanted: &[ConstId],
 ) -> (Vec<(ConstId, Option<u128>)>, Vec<Diagnostic>) {
     let items = &hir.items;
+    // The embedded libraries' MIR is built once per process.
+    let library = crate::library::LibraryMir::of(hir);
+    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
     let mut sigs = sigs.clone();
     let mut done: Vec<(ConstId, Option<u128>)> = Vec::new();
     let mut diagnostics = Vec::new();
@@ -35,13 +38,21 @@ fn eval_lens(
         let mut consts = ArenaMap::new();
         for (id, result) in typed.consts.iter() {
             if result.diagnostics.is_empty() && result.missing_lens.is_empty() {
-                consts.insert(id, crate::build::build_const(hir, &typed, id));
+                let body = match shared(ClosureOwner::Const(id)) {
+                    Some(library) => library.konst(id).body.clone(),
+                    None => crate::build::build_const(hir, &typed, id),
+                };
+                consts.insert(id, body);
             }
         }
         let mut bodies = ArenaMap::new();
         for (id, result) in typed.bodies.iter() {
             if result.diagnostics.is_empty() && result.missing_lens.is_empty() {
-                bodies.insert(id, crate::build::build(hir, &typed, id));
+                let body = match shared(ClosureOwner::Function(id)) {
+                    Some(library) => library.function(id).expect("it has a body").body.clone(),
+                    None => crate::build::build(hir, &typed, id),
+                };
+                bodies.insert(id, body);
             }
         }
         // Code type checking should have ruled out is there for errors
@@ -138,9 +149,15 @@ fn infer_consts(hir: &Hir, sigs: Signatures) -> TypedFile {
             queue.extend(flux_ty::call_targets(items, f));
         }
     };
+    // The embedded libraries' bodies are inferred once per process.
+    let library = LibraryTypes::of(hir);
+    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
     let mut consts = ArenaMap::new();
     for (id, (body, source_map)) in hir.const_bodies() {
-        let result = flux_ty::infer_const(items, &sigs, id, body, source_map);
+        let result = match shared(ClosureOwner::Const(id)) {
+            Some(library) => library.konst(id).clone(),
+            None => flux_ty::infer_const(items, &sigs, id, body, source_map),
+        };
         reached(&result, &mut queue);
         consts.insert(id, result);
     }
@@ -149,10 +166,18 @@ fn infer_consts(hir: &Hir, sigs: Signatures) -> TypedFile {
         if bodies.get(id).is_some() || !items.functions[id].is_const {
             continue;
         }
-        let Some((body, source_map)) = hir.body(id) else {
-            continue;
+        let result = match shared(ClosureOwner::Function(id)) {
+            Some(library) => match library.body(id) {
+                Some(result) => result.clone(),
+                None => continue,
+            },
+            None => {
+                let Some((body, source_map)) = hir.body(id) else {
+                    continue;
+                };
+                flux_ty::infer_body(items, &sigs, id, body, source_map)
+            }
         };
-        let result = flux_ty::infer_body(items, &sigs, id, body, source_map);
         reached(&result, &mut queue);
         bodies.insert(id, result);
     }

@@ -19,6 +19,9 @@ use crate::{
 
 /// Builds every body of a file and checks initialization. The file must
 /// have no diagnostics from lowering or type checking.
+///
+/// The embedded libraries' bodies are built and checked once per
+/// process ([`crate::library`]); a compilation copies those it reaches.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     let mut diagnostics = crate::alignment::check_declarations(&hir.items, &typed.sigs);
     let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
@@ -29,46 +32,46 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
             .collect();
         (found, own)
     };
+    // What this compilation does not build: the embedded libraries'
+    // bodies, built and checked once per process.
+    let library = crate::library::LibraryMir::of(hir);
+    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
     // Every constant, and every function of the program; `core`'s
     // functions only if something calls them.
     let mut queue: Vec<FunctionId> = Vec::new();
     let mut consts = ArenaMap::new();
     let mut unchecked = Vec::new();
     let mut closures = rustc_hash::FxHashMap::default();
-    for (id, _) in hir.const_bodies() {
-        let body = build_const(hir, typed, id);
-        let owner = ClosureOwner::Const(id);
-        let mut found_closures: Vec<_> = typed.consts[id].closures.iter().map(|(e, _)| e).collect();
-        found_closures.sort_by_key(|e| e.into_raw());
-        let mut requirements = crate::borrowck::Requirements::default();
-        for expr in found_closures {
-            let closure = build_closure(hir, typed, owner, expr);
-            let (errors, required) = check(
-                &closure,
-                hir.items.consts[id].loc.file,
-                false,
-                &requirements,
-            );
-            diagnostics.extend(errors);
-            let key = flux_ty::ClosureId { owner, expr };
-            requirements.insert(key, required);
-            let mut callees = closure.callees();
-            callees.extend(closure.object_methods(&hir.items));
+    let mut add_closures = |built: Vec<BuiltClosure>, queue: &mut Vec<FunctionId>| {
+        for closure in built {
+            let mut callees = closure.body.callees();
+            callees.extend(closure.body.object_methods(&hir.items));
             for callee in callees {
                 queue.extend(flux_ty::call_targets(&hir.items, callee));
             }
-            closures.insert((key, typed.consts[id].closures[expr].kind), closure);
-            for (mode, shim) in closure_shims(hir, typed, owner, expr) {
-                closures.insert((key, mode), shim);
+            closures.insert((closure.id, closure.kind), closure.body);
+            for (mode, shim) in closure.shims {
+                closures.insert((closure.id, mode), shim);
             }
         }
-        let found = check(&body, hir.items.consts[id].loc.file, true, &requirements).0;
-        if !found.is_empty() {
+    };
+    for (id, _) in hir.const_bodies() {
+        let built = match shared(ClosureOwner::Const(id)) {
+            Some(library) => library.konst(id).clone(),
+            None => {
+                let mut built = Built::konst(hir, typed, id);
+                built.check(hir, typed, hir.items.consts[id].loc.file, true);
+                built
+            }
+        };
+        add_closures(built.closures, &mut queue);
+        diagnostics.extend(built.closure_errors);
+        if !built.errors.is_empty() {
             unchecked.push(id);
         }
-        diagnostics.extend(found);
-        queue.extend(body.callees());
-        consts.insert(id, body);
+        diagnostics.extend(built.errors);
+        queue.extend(built.body.callees());
+        consts.insert(id, built.body);
     }
     queue.extend(flux_ty::core_roots(&hir.items));
     queue.extend(flux_ty::entry::main_runner(&hir.items, &typed.sigs));
@@ -85,35 +88,21 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         if bodies.get(id).is_some() || hir.body(id).is_none() || typed.bodies.get(id).is_none() {
             continue;
         }
-        let body = build(hir, typed, id);
-        let mut callees = body.callees();
-        callees.extend(body.object_methods(&hir.items));
+        // Checked below, after the patterns, unless it is shared.
+        let built = match shared(ClosureOwner::Function(id)) {
+            Some(library) => library.function(id).expect("it has a body").clone(),
+            None => Built::function(hir, typed, id),
+        };
+        let mut callees = built.body.callees();
+        callees.extend(built.body.object_methods(&hir.items));
         for callee in callees {
             if expanded.insert(callee) {
                 queue.extend(flux_ty::call_targets(&hir.items, callee));
             }
         }
         // Its closures, innermost first, and what they call.
-        let mut found: Vec<ExprId> = typed.bodies[id].closures.iter().map(|(e, _)| e).collect();
-        found.sort_by_key(|e| e.into_raw());
-        for expr in found {
-            let closure = build_closure(hir, typed, ClosureOwner::Function(id), expr);
-            let mut callees = closure.callees();
-            callees.extend(closure.object_methods(&hir.items));
-            for callee in callees {
-                queue.extend(flux_ty::call_targets(&hir.items, callee));
-            }
-            let kind = typed.bodies[id].closures[expr].kind;
-            let key = flux_ty::ClosureId {
-                owner: ClosureOwner::Function(id),
-                expr,
-            };
-            closures.insert((key, kind), closure);
-            for (mode, shim) in closure_shims(hir, typed, ClosureOwner::Function(id), expr) {
-                closures.insert((key, mode), shim);
-            }
-        }
-        bodies.insert(id, body);
+        add_closures(built.closures, &mut queue);
+        bodies.insert(id, built.body);
     }
     // Code that type checking should have ruled out, in a program
     // without errors: a bug in flux, which must not compile to a trap.
@@ -154,7 +143,13 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     diagnostics.extend(found);
     for (id, body) in bodies.iter() {
         let data = &hir.items.functions[id];
-        if !failed.contains(&id) {
+        if let Some(library) = shared(ClosureOwner::Function(id)) {
+            if !failed.contains(&id) {
+                let built = library.function(id).expect("built above");
+                diagnostics.extend(built.errors.iter().cloned());
+                diagnostics.extend(built.closure_errors.iter().cloned());
+            }
+        } else if !failed.contains(&id) {
             // Its closures' own bodies first, innermost first, for what
             // they require of the bodies that make them; shims need no
             // checks.
@@ -241,9 +236,12 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         diagnostics,
         bugs,
     };
-    // Code generation trusts the types of places: check them.
+    // Code generation trusts the types of places: check them. The
+    // libraries' were checked when they were built.
     if cfg!(debug_assertions) {
-        let errors = crate::validate::validate_file(hir, &typed.sigs, &mir);
+        let errors = crate::validate::validate_owners(hir, &typed.sigs, &mir, &|owner| {
+            shared(owner).is_none()
+        });
         assert!(
             errors.is_empty(),
             "ill-typed MIR:\n  {}",
@@ -359,11 +357,16 @@ fn check_clean_patterns(
         return Default::default();
     }
     let clean = |result: Option<&InferenceResult>| result.is_some_and(|r| r.diagnostics.is_empty());
+    let library = crate::library::LibraryMir::of(hir);
+    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
     let mut queue = Vec::new();
     let mut consts = ArenaMap::new();
     for (id, _) in hir.const_bodies() {
         if clean(typed.consts.get(id)) && typed.sigs.consts.get(id) != Some(&Ty::ERROR) {
-            let body = build_const(hir, typed, id);
+            let body = match shared(ClosureOwner::Const(id)) {
+                Some(library) => library.konst(id).body.clone(),
+                None => build_const(hir, typed, id),
+            };
             queue.extend(body.callees());
             consts.insert(id, body);
         }
@@ -375,7 +378,10 @@ fn check_clean_patterns(
         if bodies.get(id).is_some() || hir.body(id).is_none() || !clean(typed.bodies.get(id)) {
             continue;
         }
-        let body = build(hir, typed, id);
+        let body = match shared(ClosureOwner::Function(id)) {
+            Some(library) => library.function(id).expect("it has a body").body.clone(),
+            None => build(hir, typed, id),
+        };
         let mut callees = body.callees();
         callees.extend(body.object_methods(&hir.items));
         for callee in callees {
@@ -541,6 +547,118 @@ fn check_body(
         found.extend(crate::drops::check_const(body));
     }
     (found, required)
+}
+
+/// A body's MIR and its closures', and what checking them found.
+#[derive(Clone)]
+pub(crate) struct Built {
+    pub(crate) body: Body,
+    /// Its closures, innermost first.
+    pub(crate) closures: Vec<BuiltClosure>,
+    /// What checking its closures found, in their order, once checked.
+    pub(crate) closure_errors: Vec<flux_hir::Diagnostic>,
+    /// What checking it found, with what its closures require of it.
+    pub(crate) errors: Vec<flux_hir::Diagnostic>,
+}
+
+/// A closure's body, as the method of its own kind's trait, and the
+/// shims of the other kinds' methods, which call it.
+#[derive(Clone)]
+pub(crate) struct BuiltClosure {
+    pub(crate) id: flux_ty::ClosureId,
+    pub(crate) kind: flux_ty::ClosureKind,
+    pub(crate) body: Body,
+    pub(crate) shims: Vec<(flux_ty::ClosureKind, Body)>,
+}
+
+impl Built {
+    /// Constant `konst`'s value and its closures, unchecked.
+    pub(crate) fn konst(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Built {
+        Built::of(
+            build_const(hir, typed, konst),
+            hir,
+            typed,
+            ClosureOwner::Const(konst),
+        )
+    }
+
+    /// Function `function`'s body and its closures, unchecked.
+    pub(crate) fn function(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Built {
+        let body = build(hir, typed, function);
+        Built::of(body, hir, typed, ClosureOwner::Function(function))
+    }
+
+    fn of(body: Body, hir: &Hir, typed: &TypedFile, owner: ClosureOwner) -> Built {
+        let mut found: Vec<ExprId> = closure_types(typed, owner)
+            .closures
+            .iter()
+            .map(|(e, _)| e)
+            .collect();
+        found.sort_by_key(|e| e.into_raw());
+        let closures = found
+            .into_iter()
+            .map(|expr| BuiltClosure {
+                id: flux_ty::ClosureId { owner, expr },
+                kind: closure_types(typed, owner).closures[expr].kind,
+                body: build_closure(hir, typed, owner, expr),
+                shims: closure_shims(hir, typed, owner, expr),
+            })
+            .collect();
+        Built {
+            body,
+            closures,
+            closure_errors: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    /// Checks its closures, then the body, which is `is_const`'s, with
+    /// what they require of it; their errors are in `file`. Shims need
+    /// no checks.
+    pub(crate) fn check(
+        &mut self,
+        hir: &Hir,
+        typed: &TypedFile,
+        file: flux_hir::FileId,
+        is_const: bool,
+    ) {
+        let in_file = |found: Vec<flux_hir::Diagnostic>| {
+            found
+                .into_iter()
+                .map(|d| flux_hir::Diagnostic { file, ..d })
+                .collect::<Vec<_>>()
+        };
+        let mut requirements = crate::borrowck::Requirements::default();
+        for closure in &self.closures {
+            let (found, required) = check_body(hir, typed, &closure.body, false, &requirements);
+            self.closure_errors.extend(in_file(found));
+            requirements.insert(closure.id, required);
+        }
+        let (found, _) = check_body(hir, typed, &self.body, is_const, &requirements);
+        self.errors = in_file(found);
+    }
+
+    /// Panics, in debug builds, if its bodies, `owner`'s, are ill-typed.
+    pub(crate) fn validate(&self, hir: &Hir, typed: &TypedFile, owner: ClosureOwner) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+        let validate = |closure, body| {
+            crate::validate::validate_in(&hir.items, &typed.sigs, owner, closure, body)
+        };
+        let mut errors = validate(false, &self.body);
+        for closure in &self.closures {
+            errors.extend(validate(true, &closure.body));
+            for (_, shim) in &closure.shims {
+                errors.extend(validate(true, shim));
+            }
+        }
+        assert!(
+            errors.is_empty(),
+            "ill-typed MIR:\n  {}",
+            errors.join("\n  ")
+        );
+    }
 }
 
 /// Evaluates the constants rustc evaluates: enums' discriminants
