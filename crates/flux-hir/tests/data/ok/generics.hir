@@ -46,8 +46,8 @@ fn shadow<T>(x@0: T) -> T {
 
 fn args(p@0: Pair<i32>, w@1: Wrap<u8>) -> Two<i32, u8> {
     let n@2 = id::<i32>(p@0.a);
-    let q@3 = Pair::new[Self<i32>](n@2, 2);
-    let r@4: Pair<i32> = Pair::new(1, 2);
+    let q@3 = <Pair<i32>>::new[Self<i32>](n@2, 2);
+    let r@4: Pair<i32> = <Pair>::new(1, 2);
     let s@5 = Pair::<u8> { a: 1, b: 2 };
     let _t@6: Pair<_> = Pair { a: true, b: false };
     let _u@7 = first::<_, bool>(1u8, true);

@@ -969,3 +969,8 @@ impl<T, const N: usize> TryFrom<Vec<T>> for [T; N] {
 impl From<&str> for Vec<u8> {
     fn from(value: &str) -> Self { value.as_bytes().to_vec() }
 }
+
+impl<T: core::panic::UnwindSafe> core::panic::UnwindSafe for Vec<T> {}
+impl<T: core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Vec<T> {}
+impl<T: core::panic::UnwindSafe> core::panic::UnwindSafe for IntoIter<T> {}
+impl<T: core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for IntoIter<T> {}

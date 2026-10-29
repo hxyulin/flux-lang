@@ -1,0 +1,5 @@
+fn main() {
+    let values = vec![7u64, 11, 23];
+    assert_eq!(values.iter().copied().sum::<u64>(), 41);
+    println!("compiler smoke {}", values[1] + values[2]);
+}

@@ -1,0 +1,27 @@
+use std::cell::Cell;
+use std::panic::{catch_unwind,AssertUnwindSafe};
+__HELPERS__
+struct Value<'a>(&'a Cell<usize>);
+impl Drop for Value<'_>{fn drop(&mut self){self.0.set(self.0.get()+1);}}
+struct Env<'a>(&'a Cell<usize>);
+impl Drop for Env<'_>{fn drop(&mut self){self.0.set(self.0.get()+1);}}
+struct Values<'a>{items:std::vec::IntoIter<Value<'a>>,env:Env<'a>,next_panic:bool,last_panic:bool,calls:usize}
+impl<'a> Iterator for Values<'a>{
+ type Item=Value<'a>;
+ fn next(&mut self)->Option<Self::Item>{self.calls+=1;if self.next_panic&&self.calls==2{panic!("next once");}self.items.next()}
+ fn last(self)->Option<Self::Item>{if self.last_panic{panic!("last once");}self.items.last()}
+}
+fn make<'a>(drops:&'a Cell<usize>,envs:&'a Cell<usize>,next_panic:bool,last_panic:bool)->Values<'a>{Values{items:(0..3).map(|_|Value(drops)).collect::<Vec<_>>().into_iter(),env:Env(envs),next_panic,last_panic,calls:0}}
+fn main(){
+ let drops=Cell::new(0);let envs=Cell::new(0);
+ assert!(catch_unwind(AssertUnwindSafe(||__boxed_last_sized(Box::new(make(&drops,&envs,false,true))))).is_err());
+ assert_eq!((drops.get(),envs.get()),(3,1));
+ let iter:Box<dyn Iterator<Item=Value<'_>>+'_>=Box::new(make(&drops,&envs,true,false));
+ assert!(catch_unwind(AssertUnwindSafe(||__boxed_last_fallback(iter))).is_err());
+ assert_eq!((drops.get(),envs.get()),(6,2));
+ let result=__boxed_last_sized(Box::new(make(&drops,&envs,false,false))).unwrap();assert_eq!((drops.get(),envs.get()),(8,3));drop(result);
+ assert_eq!((drops.get(),envs.get()),(9,3));
+ let iter:Box<dyn Iterator<Item=Value<'_>>+'_>=Box::new(make(&drops,&envs,false,false));
+ let result=__boxed_last_fallback(iter).unwrap();assert_eq!((drops.get(),envs.get()),(11,4));drop(result);
+ assert_eq!((drops.get(),envs.get()),(12,4));println!("boxed helper ownership complete");
+}

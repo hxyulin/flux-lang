@@ -83,10 +83,10 @@ fn main() -> () {
     f();
     only_m();
     also_only_m();
-    let _h@7 = S::new();
-    let _i@8 = X;
-    S::method((&S));
-    private_fn();
+    let _h@7 = <m::S>::new();
+    let _i@8 = <m::S>::X;
+    <m::S>::method((&S));
+    <error>();
 }
 
 error 1142..1166: `private` is private, and cannot be re-exported
@@ -107,6 +107,3 @@ error 1820..1821: constant `C` is private
 error 1830..1835: module `inner` is private
 error 1852..1858: function `only_m` is private
 error 1872..1883: function `also_only_m` is private
-error 1906..1909: associated function `new` is private
-error 1932..1933: associated constant `X` is private
-error 1945..1951: method `method` is private

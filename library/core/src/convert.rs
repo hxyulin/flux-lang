@@ -13,6 +13,15 @@ pub const fn identity<T>(x: T) -> T {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum Infallible {}
 
+impl crate::fmt::Display for Infallible {
+    fn fmt(&self, _: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        match *self {}
+    }
+}
+
+impl crate::error::Error for Infallible {}
+
+
 /// Conversion from a `T`, which cannot fail. `?` converts the error of a
 /// `Result` with it, to the error type of the function it returns from.
 #[lang = "From"]

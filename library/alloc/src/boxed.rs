@@ -100,6 +100,13 @@ impl<T: ?Sized> DerefMut for Box<T> {
     }
 }
 
+impl<T: ?Sized> core::borrow::Borrow<T> for Box<T> {
+    fn borrow(&self) -> &T { &**self }
+}
+impl<T: ?Sized> core::borrow::BorrowMut<T> for Box<T> {
+    fn borrow_mut(&mut self) -> &mut T { &mut **self }
+}
+
 /// The value; the field frees the memory after.
 // SAFETY: this destructor only drops the owned payload. PhantomData<T>
 // retains its destructor's requirements; dangling references without a
@@ -255,6 +262,65 @@ impl<'a, E: core::error::Error + 'a> From<E> for Box<dyn core::error::Error + 'a
     fn from(error: E) -> Self { Box::new(error) }
 }
 
+impl<E: core::error::Error> core::error::Error for Box<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> { (**self).source() }
+}
+
+// The carrier is authenticated by its intrinsic identity and resolved helper
+// metadata. Monomorphization selects an ordinary body; no runtime test occurs.
+#[rustc_intrinsic]
+#[rustc_sized_dispatch(0, __boxed_last_sized, __boxed_last_fallback)]
+fn __sized_dispatch<I: Iterator + ?Sized>(iter: Box<I>) -> Option<I::Item> { loop {} }
+
+fn __boxed_last_sized<I: Iterator>(iter: Box<I>) -> Option<I::Item> { (*iter).last() }
+fn __boxed_last_fallback<I: Iterator + ?Sized>(mut iter: Box<I>) -> Option<I::Item> {
+    let mut last = None;
+    while let Some(value) = iter.next() { last = Some(value); }
+    last
+}
+
+impl<I: Iterator + ?Sized> Iterator for Box<I> {
+    type Item = I::Item;
+    fn next(&mut self) -> Option<I::Item> { (**self).next() }
+    fn size_hint(&self) -> (usize, Option<usize>) { (**self).size_hint() }
+    fn nth(&mut self, n: usize) -> Option<I::Item> { (**self).nth(n) }
+    fn last(self) -> Option<I::Item> { __sized_dispatch(self) }
+}
+impl<I: core::iter::DoubleEndedIterator + ?Sized> core::iter::DoubleEndedIterator for Box<I> {
+    fn next_back(&mut self) -> Option<I::Item> { (**self).next_back() }
+    fn nth_back(&mut self, n: usize) -> Option<I::Item> { (**self).nth_back(n) }
+}
+impl<I: core::iter::ExactSizeIterator + ?Sized> core::iter::ExactSizeIterator for Box<I> {
+    fn len(&self) -> usize { (**self).len() }
+}
+impl<I: core::iter::FusedIterator + ?Sized> core::iter::FusedIterator for Box<I> {}
+
+impl<'a, E: core::error::Error + Send + Sync + 'a> From<E> for Box<dyn core::error::Error + Send + Sync + 'a> {
+    fn from(error: E) -> Self { Box::new(error) }
+}
+
+struct MessageError(crate::string::String);
+impl core::fmt::Display for MessageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Display::fmt(&self.0, f) }
+}
+impl core::fmt::Debug for MessageError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Debug::fmt(&self.0, f) }
+}
+impl core::error::Error for MessageError {}
+
+impl<'a> From<crate::string::String> for Box<dyn core::error::Error + 'a> {
+    fn from(message: crate::string::String) -> Self { Box::new(MessageError(message)) }
+}
+impl<'a> From<&str> for Box<dyn core::error::Error + 'a> {
+    fn from(message: &str) -> Self { Box::new(MessageError(crate::string::String::from(message))) }
+}
+impl<'a> From<crate::string::String> for Box<dyn core::error::Error + Send + Sync + 'a> {
+    fn from(message: crate::string::String) -> Self { Box::new(MessageError(message)) }
+}
+impl<'a> From<&str> for Box<dyn core::error::Error + Send + Sync + 'a> {
+    fn from(message: &str) -> Self { Box::new(MessageError(crate::string::String::from(message))) }
+}
+
 impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Box<T> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         (**self).hash(state);
@@ -270,3 +336,6 @@ impl<T: ?Sized> core::convert::AsMut<T> for Box<T> {
 
 // Moving the owner does not pin or move the separately allocated payload.
 impl<T: ?Sized> core::marker::Unpin for Box<T> {}
+
+impl<T: ?Sized + core::panic::UnwindSafe> core::panic::UnwindSafe for Box<T> {}
+impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Box<T> {}

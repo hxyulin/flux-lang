@@ -20,6 +20,7 @@ struct Builder<'a> {
     inputs: Vec<FnRegion>,
     output: bool,
     enclosing: Option<FnRegion>,
+    elision_only: bool,
     errors: &'a mut Vec<(TextRange, String)>,
 }
 
@@ -50,12 +51,14 @@ pub(crate) fn describe(
         inputs: Vec::new(),
         output: false,
         enclosing: None,
+        elision_only: false,
         errors,
     };
     let mut rows = Vec::new();
     for (written, &ty) in params.iter().zip(signature.params()) {
+        let candidates = cx.elision_regions(written, ty);
         let row = cx.walk(written, ty);
-        for &region in &row {
+        for &region in &candidates {
             if !matches!(region, FnRegion::Type(_)) && !cx.inputs.contains(&region) {
                 cx.inputs.push(region);
             }
@@ -149,6 +152,24 @@ impl Builder<'_> {
         vec![FnRegion::Type(index as u32)]
     }
 
+    fn elision_regions(&self, written: &TypeRef, ty: Ty) -> Vec<FnRegion> {
+        let mut errors = Vec::new();
+        let mut view = Builder {
+            items: self.items,
+            module: self.module,
+            names: self.names.clone(),
+            bound: self.bound,
+            free: self.free.clone(),
+            captures: self.captures.clone(),
+            inputs: self.inputs.clone(),
+            output: self.output,
+            enclosing: self.enclosing,
+            elision_only: true,
+            errors: &mut errors,
+        };
+        view.walk(written, ty)
+    }
+
     fn walk(&mut self, written: &TypeRef, ty: Ty) -> Vec<FnRegion> {
         // Only an immediately enclosing reference supplies the default object
         // lifetime. Containers establish a new defaulting context.
@@ -214,6 +235,10 @@ impl Builder<'_> {
                 }
                 vec![match d.lifetime {
                     Some(l) => self.lifetime(Some(l), l.range),
+                    None if self.elision_only => return Vec::new(),
+                    None if crate::regions::object_has_static_self(self.items, dynamic.trait_) => {
+                        FnRegion::Static
+                    }
                     None => enclosing.unwrap_or(FnRegion::Static),
                 }]
             }

@@ -28,15 +28,19 @@ execution is verified on arm64 macOS; Linux detection remains unverified.
 `num` provides bounded `NonZeroU32` and `NonZeroU64` APIs. Their zero niches
 preserve the corresponding Option layouts. Other NonZero types and APIs are
 not implied.
-`any` provides only `type_name<T: ?Sized>() -> &'static str`. The name is
+`any::type_name<T: ?Sized>() -> &'static str` is
 emitted as a static diagnostic string after type substitution, using Flux's
 diagnostic printer. Paths may be omitted; names are not unique and do not
 promise rustc's spelling. This follows the diagnostic-only
 [Rust API contract](https://doc.rust-lang.org/std/any/fn.type_name.html).
-`Any`, `TypeId`, downcasting and `type_name_of_val` remain absent. The stable
-function is not callable in constants.
+The function is not callable in constants. `TypeId::of` uses opaque structural
+identities shared by constant evaluation and generated code. IDs are local to
+the compiled graph; their bits and order do not match rustc's external ABI.
+`Any` supports checked shared/mutable downcasts, with represented Send/Sync
+object bounds. `Arc<dyn Any + Send + Sync>::downcast` transfers the existing
+allocation and preserves its reference counts. `type_name_of_val` remains absent.
 
-`collections` reexports the bounded BTreeMap implementation and `TryReserveError`
+`collections` reexports alloc's bounded BTreeMap, VecDeque and `TryReserveError`
 from alloc. Vec's `try_reserve` and `try_reserve_exact` return capacity or
 allocation errors without changing existing elements when reservation fails.
 BTreeMap supports balanced removal with slot reuse, ordered keys/values,
@@ -48,7 +52,8 @@ obtains keys from the operating system; clones preserve those keys.
 `std::hash::DefaultHasher` supplies streaming SipHash-1-3. Its algorithm is an
 implementation detail. Custom build hashers remain supported. Vec,
 String and Box remain available at their usual module paths and through the
-standard prelude. Printing macros and alloc's formatting macro also have real std
+standard prelude. VecDeque uses a RawVec-backed ring, including ZST capacity and
+owned-element drop checking. Printing macros and alloc's formatting macro also have real std
 reexports so explicit imports work in no_std libraries that opt into std.
 
 Cow supports borrowed/owned comparisons and owned Vec-to-slice conversion.
@@ -77,8 +82,19 @@ unwind destructors. Ordinary executing code therefore observes false.
 `thread::scope` creates real pthread-backed workers with borrowed closures.
 Scope exit joins outstanding handles and nested workers. Consuming `join`
 returns the worker result, and worker panics abort in Flux. Native comparison
-and host-unwinding tests exercise scope cleanup. Unscoped `thread::spawn`, panic
-hooks, catch_unwind and an unwinding Flux runtime remain absent.
+and host-unwinding tests exercise scope cleanup. `thread::spawn` owns
+`Send + 'static` closures and results; dropping its handle detaches the worker, while
+consuming `join` returns the result. Scoped and unscoped join use the standard
+thread Result type, but worker panics still abort. Panic hooks, catch_unwind
+and an unwinding Flux runtime remain absent.
+
+`sync::mpsc` supplies unbounded channels, bounded channels and zero-capacity
+rendezvous channels using native mutexes and condition variables. Blocking,
+nonblocking and timed receives preserve disconnection and queued-value ownership.
+`process::Command` executes native child processes with arguments, environment
+and working-directory configuration. Main return values use the Termination
+contract, including ExitCode and Result; process exit flushes output and runs
+native exit cleanup without unwinding.
 
 The new FusedIterator marker in core is implemented for Fuse, mutable
 references to fused iterators, slice Iter/IterMut, and Vec IntoIter/Drain.
@@ -132,21 +148,24 @@ paths and the remaining file/directory APIs remain absent. `rc::Rc<T>` supports
 sized and slice ownership, non-atomic cloning, unique mutation and sized
 clone-on-write/extraction, and remains neither Send nor Sync.
 
-`io` provides `Read`, `Write`, `Seek`, `SeekFrom` and forwarding implementations
+`io` provides `Read`, `Write`, `Seek`, `SeekFrom`, `BufRead` and forwarding implementations
 for mutable references. Reads from byte slices and the default `read_exact`,
 `read_to_end` and `read_to_string` helpers handle short reads, interrupted calls,
-EOF and UTF-8 errors. Seeking is supplied by the implementing stream; this does
-not add `File`, `Cursor` or buffered readers. Write supplies partial byte writes,
+EOF and UTF-8 errors. File and Cursor supply seeking; BufReader, Take and Bytes
+adapt readable streams. Write supplies partial byte writes,
 `write_all`, `write_fmt` and flushing, with Vec and mutable byte-slice sinks.
-Boxed writers forward to their underlying implementation. Vectored writes and
-filesystem/stdout writer implementations remain absent. Error kinds retain
+Boxed writers forward to their underlying implementation. Standard input,
+output and error handles have native descriptor access, locks and IsTerminal.
+Output locks coordinate with print/eprint buffering. Vectored writes remain absent.
+Error kinds retain
 platform categories and formatting. Stability gating for the Rust-unstable
 `FilesystemLoop`, `InProgress`, `TooManyOpenFiles`, `InputOutputError` and
 `Uncategorized` variant names is not implemented.
 
-`time` supplies a bounded `Duration` and `Instant` API for elapsed profiling,
-normalized nanoseconds and checked arithmetic. Native timestamps use Apple's
+`time::Duration` reexports the canonical core type, with allocation-free Debug
+formatting, normalized nanoseconds and checked arithmetic. Instant and SystemTime
+supply monotonic and wall-clock timestamps. Native monotonic timestamps use Apple's
 `CLOCK_UPTIME_RAW` or Linux's `CLOCK_MONOTONIC` through `clock_gettime`.
-Wall-clock time, sleeping, duration parsing and the remaining formatting APIs
+Sleeping, duration parsing and the remaining formatting APIs
 are absent. Native execution is tested on arm64 macOS; Linux execution remains
 unverified.

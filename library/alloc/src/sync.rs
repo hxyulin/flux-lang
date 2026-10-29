@@ -68,6 +68,25 @@ fn increment_weak(counter: &AtomicUsize) {
 }
 
 impl<T> Arc<T> {
+    /// Moves out the payload if this is the only strong owner.
+    /// Outstanding weak owners retain the allocation but can no longer upgrade.
+    pub fn try_unwrap(this: Self) -> Result<T, Self> {
+        // SAFETY: this owner retains the initialized header and implicit weak.
+        let strong = unsafe { &(*this.ptr.as_ptr()).strong };
+        if strong.compare_exchange(1, 0, Relaxed, Relaxed).is_err() {
+            return Err(this);
+        }
+        fence(Acquire);
+        let weak = Weak { ptr: Some(this.ptr), data: Some(this.data), owner: PhantomData };
+        let data = this.data.as_ptr();
+        core::mem::forget(this);
+        // SAFETY: the successful CAS excluded every other strong owner and
+        // future upgrades. The implicit weak keeps storage live for this move.
+        let value = unsafe { ptr::read(data) };
+        drop(weak);
+        Ok(value)
+    }
+
     /// Moves a value into a new allocation, including for zero-sized T.
     pub fn new(value: T) -> Arc<T> {
         let (ptr, raw) = allocate(Layout::new::<T>());
@@ -107,6 +126,12 @@ impl<T: ?Sized> Arc<T> {
             data: Some(this.data),
             owner: PhantomData,
         }
+    }
+
+    /// A snapshot of the current number of strong owners.
+    pub fn strong_count(this: &Arc<T>) -> usize {
+        // SAFETY: a strong owner pins its allocation header.
+        unsafe { (*this.ptr.as_ptr()).strong.load(Acquire) }
     }
 
     /// Whether two handles share an allocation.
@@ -449,3 +474,25 @@ impl From<crate::boxed::Box<str>> for Arc<str> {
 // Moving the owner does not pin or move the separately allocated payload.
 impl<T: ?Sized> core::marker::Unpin for Arc<T> {}
 impl<T: ?Sized> core::marker::Unpin for Weak<T> {}
+
+impl Arc<dyn core::any::Any + Send + Sync> {
+    /// Retains the allocation and counts when its payload has the requested type.
+    pub fn downcast<T: core::any::Any + Send + Sync>(self) -> Result<Arc<T>, Self> {
+        if (*self).is::<T>() {
+            let ptr = self.ptr;
+            let data = self.data.as_ptr() as *mut T;
+            core::mem::forget(self);
+            // SAFETY: dynamic identity proves T; forgetting the source transfers
+            // exactly one strong owner and retains the original header/layout.
+            Ok(Arc { ptr, data: unsafe { NonNull::new_unchecked(data) }, owner: PhantomData })
+        } else {
+            Err(self)
+        }
+    }
+}
+
+// Shared ownership follows the payload's unwind contracts, not its raw handle.
+impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::UnwindSafe for Arc<T> {}
+impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Arc<T> {}
+impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::UnwindSafe for Weak<T> {}
+impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Weak<T> {}

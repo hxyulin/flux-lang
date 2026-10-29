@@ -2,6 +2,11 @@
 use crate::alloc_crate::string::String;
 use crate::alloc_crate::vec::Vec;
 
+mod buffered;
+pub use buffered::{BufRead, BufReader, Bytes, Take};
+mod stdio;
+pub use stdio::{stdin, stdout, stderr, Stdin, StdinLock, Stdout, StdoutLock, Stderr, StderrLock, IsTerminal};
+
 /// A writer that accepts and discards all bytes.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Sink;
@@ -12,7 +17,38 @@ impl Write for Sink {
 }
 
 pub type Result<T> = core::result::Result<T, Error>;
-pub struct Error { code: i32, message: Option<&'static str>, custom_kind: Option<ErrorKind> }
+
+/// A borrowed byte buffer for vectored writes, with the Unix iovec layout.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct IoSlice<'a> { bytes: &'a [u8] }
+
+impl<'a> IoSlice<'a> {
+    pub fn new(bytes: &'a [u8]) -> Self { Self { bytes } }
+    pub fn advance(&mut self, count: usize) { self.bytes = &self.bytes[count..]; }
+    pub fn advance_slices(buffers: &mut &mut [Self], mut count: usize) {
+        let mut consumed = 0;
+        for buffer in buffers.iter() {
+            if count < buffer.len() { break; }
+            count -= buffer.len();
+            consumed += 1;
+        }
+        *buffers = &mut core::mem::take(buffers)[consumed..];
+        if buffers.is_empty() {
+            assert!(count == 0, "advancing io slices beyond their length");
+        } else {
+            buffers[0].advance(count);
+        }
+    }
+}
+impl core::ops::Deref for IoSlice<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { self.bytes }
+}
+impl core::fmt::Debug for IoSlice<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Debug::fmt(self.bytes, f) }
+}
+pub struct Error { code: i32, message: Option<&'static str>, custom_kind: Option<ErrorKind>, custom_error: Option<crate::alloc_crate::boxed::Box<dyn core::error::Error + Send + Sync>> }
 #[cfg(target_os = "macos")]
 unsafe extern "C" { fn __error() -> *mut i32; }
 #[cfg(target_os = "linux")]
@@ -26,6 +62,18 @@ unsafe extern "C" {
 }
 
 impl Error {
+    pub fn new<E>(kind: ErrorKind, error: E) -> Self
+        where E: Into<crate::alloc_crate::boxed::Box<dyn core::error::Error + Send + Sync>>
+    {
+        Self { code: 0, message: None, custom_kind: Some(kind), custom_error: Some(error.into()) }
+    }
+    pub fn get_ref(&self) -> Option<&(dyn core::error::Error + Send + Sync + 'static)> {
+        self.custom_error.as_ref().map(|error| &**error)
+    }
+    pub fn get_mut(&mut self) -> Option<&mut (dyn core::error::Error + Send + Sync + 'static)> {
+        self.custom_error.as_mut().map(|error| &mut **error)
+    }
+    pub fn into_inner(self) -> Option<crate::alloc_crate::boxed::Box<dyn core::error::Error + Send + Sync>> { self.custom_error }
     pub fn last_os_error() -> Error {
         // SAFETY: libc returns this thread's live errno slot.
         let code = unsafe {
@@ -34,12 +82,12 @@ impl Error {
             #[cfg(target_os = "linux")]
             { *__errno_location() }
         };
-        Error { code, message: None, custom_kind: None }
+        Error { custom_error: None, code, message: None, custom_kind: None }
     }
-    pub fn from_raw_os_error(code: i32) -> Error { Error { code, message: None, custom_kind: None } }
+    pub fn from_raw_os_error(code: i32) -> Error { Error { custom_error: None, code, message: None, custom_kind: None } }
     pub fn raw_os_error(&self) -> Option<i32> { if self.custom_kind.is_none() { Some(self.code) } else { None } }
-    pub(crate) fn nul_path() -> Error { Error { code: 0, message: Some("file name contained an unexpected NUL byte"), custom_kind: Some(ErrorKind::InvalidInput) } }
-    pub(crate) fn invalid_utf8() -> Error { Error { code: 0, message: Some("stream did not contain valid UTF-8"), custom_kind: Some(ErrorKind::InvalidData) } }
+    pub(crate) fn nul_path() -> Error { Error { custom_error: None, code: 0, message: Some("file name contained an unexpected NUL byte"), custom_kind: Some(ErrorKind::InvalidInput) } }
+    pub(crate) fn invalid_utf8() -> Error { Error { custom_error: None, code: 0, message: Some("stream did not contain valid UTF-8"), custom_kind: Some(ErrorKind::InvalidData) } }
     pub fn kind(&self) -> ErrorKind { self.custom_kind.unwrap_or_else(|| error_kind(self.code)) }
     fn description(&self) -> String {
         let mut buffer = [0u8; 1024];
@@ -52,6 +100,7 @@ impl Error {
 }
 impl core::fmt::Display for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Some(error) = &self.custom_error { return core::fmt::Display::fmt(error, f); }
         match self.message {
             Some(message) => f.write_str(message),
             None => match self.custom_kind {
@@ -63,6 +112,9 @@ impl core::fmt::Display for Error {
 }
 impl core::fmt::Debug for Error {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if let Some(error) = &self.custom_error {
+            return f.debug_struct("Custom").field("kind", &self.kind()).field("error", error).finish();
+        }
         if let Some(message) = self.message {
             core::write!(f, "Error {{ kind: {:?}, message: {:?} }}", self.kind(), message)
         } else if let Some(kind) = self.custom_kind {
@@ -73,7 +125,11 @@ impl core::fmt::Debug for Error {
         }
     }
 }
-impl core::error::Error for Error {}
+impl core::error::Error for Error {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        self.custom_error.as_ref().and_then(|error| error.source())
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn error_kind(code: i32) -> ErrorKind {
@@ -225,7 +281,7 @@ pub enum ErrorKind {
 
 impl From<ErrorKind> for Error {
     fn from(kind: ErrorKind) -> Error {
-        Error { code: 0, message: None, custom_kind: Some(kind) }
+        Error { custom_error: None, code: 0, message: None, custom_kind: Some(kind) }
     }
 }
 
@@ -287,7 +343,7 @@ pub trait Read {
     fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<()> {
         while !buf.is_empty() {
             match self.read(buf) {
-                Ok(0) => return Err(Error { code: 0, message: Some("failed to fill whole buffer"), custom_kind: Some(ErrorKind::UnexpectedEof) }),
+                Ok(0) => return Err(Error { custom_error: None, code: 0, message: Some("failed to fill whole buffer"), custom_kind: Some(ErrorKind::UnexpectedEof) }),
                 Ok(count) => { buf = &mut buf[count..]; }
                 Err(error) => {
                     if error.kind() != ErrorKind::Interrupted { return Err(error); }
@@ -321,6 +377,8 @@ pub trait Read {
     }
 
     fn by_ref(&mut self) -> &mut Self where Self: Sized { self }
+    fn take(self, limit: u64) -> Take<Self> where Self: Sized { Take { inner: self, limit } }
+    fn bytes(self) -> Bytes<Self> where Self: Sized { Bytes { inner: self } }
 }
 
 impl<R: Read + ?Sized> Read for &mut R {
@@ -364,10 +422,18 @@ pub trait Write {
     /// Sends buffered output to its destination.
     fn flush(&mut self) -> Result<()>;
 
+    /// Writes from the first nonempty buffer unless the writer overrides it.
+    fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> Result<usize> {
+        for buffer in buffers {
+            if !buffer.is_empty() { return self.write(buffer); }
+        }
+        self.write(&[])
+    }
+
     fn write_all(&mut self, mut buf: &[u8]) -> Result<()> {
         while !buf.is_empty() {
             match self.write(buf) {
-                Ok(0) => return Err(Error { code: 0, message: Some("failed to write whole buffer"), custom_kind: Some(ErrorKind::WriteZero) }),
+                Ok(0) => return Err(Error { custom_error: None, code: 0, message: Some("failed to write whole buffer"), custom_kind: Some(ErrorKind::WriteZero) }),
                 Ok(count) => { buf = &buf[count..]; }
                 Err(error) => {
                     if error.kind() != ErrorKind::Interrupted { return Err(error); }
@@ -407,18 +473,27 @@ impl<W: Write + ?Sized> core::fmt::Write for WriteAdapter<'_, W> {
 impl<W: Write + ?Sized> Write for &mut W {
     fn write(&mut self, buf: &[u8]) -> Result<usize> { (**self).write(buf) }
     fn flush(&mut self) -> Result<()> { (**self).flush() }
+    fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> Result<usize> { (**self).write_vectored(buffers) }
     fn write_all(&mut self, buf: &[u8]) -> Result<()> { (**self).write_all(buf) }
     fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<()> { (**self).write_fmt(args) }
 }
 impl<W: Write + ?Sized> Write for crate::alloc_crate::boxed::Box<W> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> { (**self).write(buf) }
     fn flush(&mut self) -> Result<()> { (**self).flush() }
+    fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> Result<usize> { (**self).write_vectored(buffers) }
     fn write_all(&mut self, buf: &[u8]) -> Result<()> { (**self).write_all(buf) }
     fn write_fmt(&mut self, args: core::fmt::Arguments<'_>) -> Result<()> { (**self).write_fmt(args) }
 }
 impl Write for Vec<u8> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> { self.extend_from_slice(buf); Ok(buf.len()) }
     fn flush(&mut self) -> Result<()> { Ok(()) }
+    fn write_vectored(&mut self, buffers: &[IoSlice<'_>]) -> Result<usize> {
+        let mut length = 0usize;
+        for buffer in buffers { length = length.checked_add(buffer.len()).expect("vectored write length overflow"); }
+        self.reserve(length);
+        for buffer in buffers { self.extend_from_slice(buffer); }
+        Ok(length)
+    }
     fn write_all(&mut self, buf: &[u8]) -> Result<()> { self.extend_from_slice(buf); Ok(()) }
 }
 impl Write for &mut [u8] {
@@ -481,7 +556,7 @@ impl<T: AsRef<[u8]>> Seek for Cursor<T> {
 }
 
 fn cursor_invalid(message: &'static str) -> Error {
-    Error { code: 0, message: Some(message), custom_kind: Some(ErrorKind::InvalidInput) }
+    Error { custom_error: None, code: 0, message: Some(message), custom_kind: Some(ErrorKind::InvalidInput) }
 }
 
 fn cursor_write_vec(pos: &mut u64, bytes: &mut Vec<u8>, buf: &[u8]) -> Result<usize> {

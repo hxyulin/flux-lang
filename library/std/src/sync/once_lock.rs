@@ -110,3 +110,6 @@ impl<'a> Drop for Reset<'a> {
         }
     }
 }
+
+impl<T: core::panic::UnwindSafe> core::panic::UnwindSafe for OnceLock<T> {}
+impl<T: core::panic::UnwindSafe + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for OnceLock<T> {}

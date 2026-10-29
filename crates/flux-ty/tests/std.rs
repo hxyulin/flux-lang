@@ -32,6 +32,7 @@ use std::sync::Arc as SArc;
 use alloc::sync::Arc as AArc;
 use std::sync::Weak as SWeak;
 use alloc::sync::Weak as AWeak;
+use std::thread::spawn;
 use ::std::mem as sm;
 use core::mem as cm;
 fn fused<I: SI>(i: I) -> I { i }
@@ -129,7 +130,6 @@ fn facade_keeps_library_privacy_and_alloc_opt_in() {
         "use std::intrinsics; fn main() {}",
         "use std::fmt::flags; fn main() {}",
         "use alloc::vec::Vec; fn main() {}",
-        "use std::thread::spawn; fn main() {}",
         "use std::vec::RawVec; fn main() {}",
         "use core::unicode; fn main() {}",
     ] {

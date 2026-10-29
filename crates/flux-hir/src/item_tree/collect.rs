@@ -62,18 +62,22 @@ impl ItemTree {
             block_counts: rustc_hash::FxHashMap::default(),
             fn_ids: rustc_hash::FxHashMap::default(),
             impl_ids: rustc_hash::FxHashMap::default(),
+            adt_ids: rustc_hash::FxHashMap::default(),
             macro_scope: None,
             expansion_depth: 0,
             expanding_types: false,
             macro_paths: Vec::new(),
             collected_imports: rustc_hash::FxHashSet::default(),
             pending_root_macros: Vec::new(),
+            pending_body_macros: Vec::new(),
         };
         collector.collect_crate(root, name, is_core, dependencies);
+        collector.collect_pending_body_macros(from);
         collector.expand_derives();
         collector.make_ctors();
         let macro_paths = std::mem::take(&mut collector.macro_paths);
         crate::def_map::resolve(self, from);
+        self.resolve_sized_dispatch(from);
         // Early predecessor lookup must agree with completed scopes. A local
         // item/import declared later may shadow a dependency's import name.
         for call in macro_paths {
@@ -113,8 +117,19 @@ struct PendingRootMacro {
     diagnostic: Diagnostic,
 }
 
+/// An expression macro may import an export from a module collected later.
+/// Keep its original textual environment rather than rewalking the body.
+struct PendingBodyMacro {
+    ctx: Ctx,
+    node: NodeId,
+    function: Option<FunctionId>,
+    scope: Option<MacroScopeId>,
+    depth: u32,
+}
+
 struct Collector<'a> {
     pending_root_macros: Vec<PendingRootMacro>,
+    pending_body_macros: Vec<PendingBodyMacro>,
     collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
     macro_paths: Vec<MacroPathCheck>,
     db: &'a mut SourceDb,
@@ -132,6 +147,7 @@ struct Collector<'a> {
     /// their anonymous constants are in.
     fn_ids: rustc_hash::FxHashMap<(FileId, NodeId), FunctionId>,
     impl_ids: rustc_hash::FxHashMap<(FileId, NodeId), ImplId>,
+    adt_ids: rustc_hash::FxHashMap<(FileId, NodeId), StructId>,
     /// The `macro_rules!` macros in textual scope where collecting is.
     macro_scope: Option<MacroScopeId>,
     /// How many macro expansions the items being collected are in.
@@ -147,6 +163,7 @@ struct Collector<'a> {
 /// the item's name, for rustc's names of them.
 #[derive(Clone)]
 struct AnonScope {
+    self_adt: Option<StructId>,
     module: ModuleId,
     owner: Option<Owner>,
     generics: Vec<(Symbol, bool)>,
@@ -211,6 +228,7 @@ impl Collector<'_> {
             compilation_dir: self.db.crate_directory(root),
             environment: self.db.crate_env(root),
             macro_use: Vec::new(),
+            recursion_limit: RECURSION_LIMIT as usize,
             cfg: self.db.file(root).parse.tree().cfg_options().cloned(),
             edition: self.db.file(root).edition,
             name,
@@ -275,6 +293,14 @@ impl Collector<'_> {
         let crate_root = self.items.modules[module].parent.is_none();
         let attrs = crate::cfg::Attrs::new(source.attrs());
         if crate_root {
+            if let Some(limit) = attrs.iter().find_map(|attr| {
+                (attr_name(attr) == Some("recursion_limit"))
+                    .then(|| super::attributes::recursion_limit_attr(attr))
+                    .flatten()
+            }) {
+                let own = self.items.modules[module].krate;
+                self.items.crates[own.0 as usize].recursion_limit = limit;
+            }
             let expected = self.items.crates[self.items.modules[module].krate.0 as usize].name;
             for attr in attrs.iter().filter(|a| attr_name(*a) == Some("crate_name")) {
                 if let Some(ast::Expr::Literal(literal)) = attr.meta().and_then(|m| m.expr())
@@ -542,7 +568,11 @@ impl Collector<'_> {
         if export {
             self.items.exported_macros.insert((krate, name), id);
             let krate_data = &self.items.crates[krate.0 as usize];
-            if krate_data.is_core || self.items.modules[krate_data.root].file == FileId::std_root()
+            if !matches!(
+                self.items.macros[id].kind,
+                macros::MacroKind::Builtin(macros::Builtin::Asm)
+            ) && (krate_data.is_core
+                || self.items.modules[krate_data.root].file == FileId::std_root())
             {
                 self.items.macro_prelude.insert(name, id);
             }
@@ -613,7 +643,7 @@ impl Collector<'_> {
         let node = mc.syntax();
         self.record_macro_path(ctx, path, def);
         let def = self.items.macros[def].clone();
-        if self.expansion_depth >= RECURSION_LIMIT {
+        if self.expansion_depth as usize >= self.items.macro_recursion_limit(ctx.module) {
             self.items.diagnostics.push(Diagnostic::new(
                 node.text_range(),
                 format!("recursion limit reached while expanding `{}!`", def.name),
@@ -720,6 +750,53 @@ impl Collector<'_> {
             }
             self.pending_root_macros.extend(unresolved);
         }
+        self.macro_scope = saved_scope;
+        self.expansion_depth = saved_depth;
+    }
+
+    fn collect_pending_body_macros(&mut self, from: super::ItemCounts) {
+        if self.pending_body_macros.is_empty() {
+            return;
+        }
+        let base_map = std::mem::take(&mut self.items.def_map);
+        let saved_scope = self.macro_scope;
+        let saved_depth = self.expansion_depth;
+        while !self.pending_body_macros.is_empty() {
+            // Preview namespaces only: impl registration is performed once by
+            // final resolution. Keep existing errors and consumed macro imports.
+            // Genuine external import metadata loads remain committed.
+            self.items.def_map = base_map.clone();
+            let diagnostics = std::mem::take(&mut self.items.diagnostics);
+            let imports = self.items.macro_imports.clone();
+            crate::def_map::resolve_namespaces(self.items, from);
+            self.items.diagnostics = diagnostics;
+            self.items.macro_imports = imports;
+            let pending = std::mem::take(&mut self.pending_body_macros);
+            let mut progress = false;
+            for call in pending {
+                let key = (call.ctx.file, call.node);
+                if self.items.body_expansions.contains_key(&key) {
+                    continue;
+                }
+                self.macro_scope = call.scope;
+                self.expansion_depth = call.depth;
+                let shared = self.db.shared(call.ctx.file);
+                let _file = TypesFile::enter(call.ctx.file);
+                self.collect_body_node(
+                    call.ctx,
+                    shared.parse.tree().node(call.node),
+                    call.function,
+                );
+                progress |= self.items.body_expansions.contains_key(&key);
+            }
+            // Unknown macros retain their ordinary body-lowering diagnostics.
+            // Retrying without any newly collected expansion cannot reveal more.
+            if !progress {
+                self.pending_body_macros.clear();
+                break;
+            }
+        }
+        self.items.def_map = base_map;
         self.macro_scope = saved_scope;
         self.expansion_depth = saved_depth;
     }
@@ -1232,13 +1309,19 @@ impl Collector<'_> {
             return;
         }
         let outer_scope = self.macro_scope;
-        self.collect_module_inner(ctx, m, path);
+        self.collect_module_inner(ctx, m, path, &mut macro_use);
         if !macro_use {
             self.macro_scope = outer_scope;
         }
     }
 
-    fn collect_module_inner(&mut self, ctx: Ctx, m: ast::Module<'_>, path: Option<PathBuf>) {
+    fn collect_module_inner(
+        &mut self,
+        ctx: Ctx,
+        m: ast::Module<'_>,
+        path: Option<PathBuf>,
+        macro_use: &mut bool,
+    ) {
         let vis = self.visibility(ctx, m.visibility());
         let Some(name) = m.name() else {
             return;
@@ -1363,6 +1446,9 @@ impl Collector<'_> {
             block: None,
         });
         if let Some(list) = m.item_list() {
+            *macro_use |= crate::cfg::Attrs::new(list.attrs()).iter().any(|attr| {
+                attr_name(attr) == Some("macro_use") && super::attributes::bare_attr(attr)
+            });
             check_inner_attrs(list.attrs(), false, false, &mut self.items.diagnostics);
             let items: Vec<NodeId> = list.items().map(|i| i.syntax().id()).collect();
             self.collect_items(
@@ -1373,6 +1459,11 @@ impl Collector<'_> {
                 &items,
             );
         } else if let Some(file) = file {
+            let shared = self.db.shared(file);
+            let source = ast::SourceFile::cast(shared.parse.root()).expect("source file root");
+            *macro_use |= crate::cfg::Attrs::new(source.attrs()).iter().any(|attr| {
+                attr_name(attr) == Some("macro_use") && super::attributes::bare_attr(attr)
+            });
             self.collect_file(module, file);
         }
     }
@@ -1716,7 +1807,7 @@ impl Collector<'_> {
             ));
             return;
         }
-        if self.expansion_depth >= RECURSION_LIMIT {
+        if self.expansion_depth as usize >= self.items.macro_recursion_limit(ctx.module) {
             self.items.diagnostics.push(Diagnostic::new(
                 call.syntax().text_range(),
                 format!("recursion limit reached while expanding `{}!`", def.name),
@@ -1821,6 +1912,7 @@ impl Collector<'_> {
         let mut const_unstable = false;
         let mut precise_live_drops = false;
         let mut intrinsic = false;
+        let mut sized_dispatch = None;
         let mut legacy_const_generic = None;
         let mut track_caller = false;
         let mut do_not_const_check = false;
@@ -1878,6 +1970,16 @@ impl Collector<'_> {
                 && attr_name(attr) == Some("rustc_intrinsic")
             {
                 intrinsic = true;
+            } else if (is_core || self.items.is_std(ctx.module))
+                && attr_name(attr) == Some("rustc_sized_dispatch")
+            {
+                let parsed = super::sized_dispatch::parse(attr);
+                if sized_dispatch.is_some() || parsed.is_none() {
+                    self.items.diagnostics.push(Diagnostic::new(attr.syntax().text_range(),
+                        "expected one selector index and two helper identifiers in sized dispatch metadata"));
+                } else {
+                    sized_dispatch = parsed;
+                }
             } else if is_core && attr_name(attr) == Some("rustc_legacy_const_generics") {
                 // The bounded convention used by our NEON wrappers. Keep the
                 // position explicit rather than recognizing names at call sites.
@@ -2228,6 +2330,16 @@ impl Collector<'_> {
             opaques: opaques.into(),
             macro_scope: self.macro_scope,
         });
+        if let Some(metadata) = sized_dispatch {
+            if intrinsic == Some(crate::Intrinsic::SizedDispatch) {
+                self.items.sized_dispatch_declarations.insert(id, metadata);
+            } else {
+                self.items.diagnostics.push(Diagnostic::new(
+                    f.syntax().text_range(),
+                    "sized dispatch metadata requires the sized dispatch intrinsic",
+                ));
+            }
+        }
         self.fn_ids.insert((ctx.file, f.syntax().id()), id);
         if lang.is_some_and(|l| l.as_str() == "panic") {
             self.items.panic_fn = Some(id);
@@ -2338,7 +2450,7 @@ impl Collector<'_> {
                 self.items.diagnostics.truncate(start);
                 return;
             }
-            if self.expansion_depth >= RECURSION_LIMIT {
+            if self.expansion_depth as usize >= self.items.macro_recursion_limit(ctx.module) {
                 return;
             }
             let Some(path) = node.children().find_map(ast::Path::cast) else {
@@ -2347,6 +2459,13 @@ impl Collector<'_> {
             let Ok(macros::Resolved::Def(id)) =
                 macros::resolve::<()>(self.items, path, &[], self.macro_scope, ctx.module)
             else {
+                self.pending_body_macros.push(PendingBodyMacro {
+                    ctx,
+                    node: node.id(),
+                    function,
+                    scope: self.macro_scope,
+                    depth: self.expansion_depth,
+                });
                 return;
             };
             let def = self.items.macros[id].clone();
@@ -2438,6 +2557,7 @@ impl Collector<'_> {
             return;
         }
         let mut scope = AnonScope {
+            self_adt: None,
             module: ctx.module,
             owner: None,
             generics: Vec::new(),
@@ -2462,6 +2582,12 @@ impl Collector<'_> {
         }
         let outer = scope.clone();
         if is_item_kind(kind) {
+            // Named nested items do not inherit an outer declaration's Self.
+            scope.self_adt = self.adt_ids.get(&(file, node.id())).copied();
+            if scope.self_adt.is_some() {
+                scope.owner = None;
+                scope.generic_self = false;
+            }
             if let Some(list) = node
                 .children()
                 .find(|c| c.kind() == SyntaxKind::GENERIC_PARAM_LIST)
@@ -2472,7 +2598,7 @@ impl Collector<'_> {
                         ast::GenericParam::TypeParam(p) => (p.name(), false),
                         ast::GenericParam::ConstParam(p) => (p.name(), true),
                         ast::GenericParam::LifetimeParam(_) => {
-                            if kind == SyntaxKind::IMPL {
+                            if kind == SyntaxKind::IMPL || scope.self_adt.is_some() {
                                 scope.generic_self = true;
                             }
                             continue;
@@ -2480,7 +2606,9 @@ impl Collector<'_> {
                     };
                     if let Some(name) = name {
                         scope.generics.push((Symbol::intern(name.text()), is_const));
-                        if matches!(kind, SyntaxKind::IMPL | SyntaxKind::TRAIT) {
+                        if matches!(kind, SyntaxKind::IMPL | SyntaxKind::TRAIT)
+                            || scope.self_adt.is_some()
+                        {
                             scope.generic_self = true;
                         }
                     }
@@ -2640,6 +2768,7 @@ impl Collector<'_> {
             extern_symbol: None,
             specialization: false,
             anon: Some(AnonConst {
+                self_adt: scope.self_adt,
                 function: scope.function,
                 item: scope.item,
                 index,
@@ -3048,6 +3177,7 @@ impl Collector<'_> {
         for (derive, range) in derives {
             self.derives.push((ctx, id, derive, range, s.syntax().id()));
         }
+        self.adt_ids.insert((ctx.file, s.syntax().id()), id);
         self.ctors.push((ctx, id, s.syntax().id()));
     }
 
@@ -3171,6 +3301,7 @@ impl Collector<'_> {
         for (derive, range) in derives {
             self.derives.push((ctx, id, derive, range, s.syntax().id()));
         }
+        self.adt_ids.insert((ctx.file, s.syntax().id()), id);
         self.ctors.push((ctx, id, s.syntax().id()));
     }
 
@@ -3346,6 +3477,7 @@ impl Collector<'_> {
         // range and whether it has a value, and the name's range.
         let mut defaults: Vec<(u32, TextRange, bool, TextRange)> = Vec::new();
         for v in enabled_variants {
+            let mut variant_non_exhaustive = false;
             let mut marked = Vec::new();
             let attrs = crate::cfg::Attrs::new(v.attrs());
             self.items.diagnostics.extend(
@@ -3367,6 +3499,9 @@ impl Collector<'_> {
                         .and_then(|m| m.path())
                         .map_or(attr.syntax().text_range(), |p| p.syntax().text_range());
                     marked.push((attr.syntax().text_range(), has_value, name));
+                } else if attr_name(attr) == Some("non_exhaustive") {
+                    variant_non_exhaustive |=
+                        non_exhaustive_attr(attr, &mut self.items.diagnostics);
                 } else {
                     check_attr(attr, &mut self.items.diagnostics);
                 }
@@ -3509,6 +3644,7 @@ impl Collector<'_> {
             let index = variants.len() as u32;
             defaults.extend(marked.into_iter().map(|(a, v, n)| (index, a, v, n)));
             variants.push(Variant {
+                non_exhaustive: variant_non_exhaustive,
                 name: v_name,
                 kind,
                 fields: fields.into(),
@@ -3584,7 +3720,13 @@ impl Collector<'_> {
                     }
                     &[(v, ..)] => {
                         let variant = &variants[v as usize];
-                        if variant.kind == StructKind::Unit {
+                        if variant.non_exhaustive {
+                            self.items.diagnostics.push(Diagnostic::new(
+                                variant.name_range,
+                                "default enum variant cannot be non-exhaustive",
+                            ));
+                            default_ok = false;
+                        } else if variant.kind == StructKind::Unit {
                             self.items.default_variants.insert(id, v);
                         } else {
                             self.items.diagnostics.push(Diagnostic::new(
@@ -3609,6 +3751,7 @@ impl Collector<'_> {
             }
             self.derives.push((ctx, id, derive, range, e.syntax().id()));
         }
+        self.adt_ids.insert((ctx.file, e.syntax().id()), id);
         self.ctors.push((ctx, id, e.syntax().id()));
     }
 

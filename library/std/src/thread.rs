@@ -10,4 +10,7 @@ mod local;
 pub use local::{AccessError, LocalKey};
 
 mod scoped;
-pub use scoped::{scope, Scope, ScopedJoinHandle};
+pub use scoped::{scope, spawn, JoinHandle, Scope, ScopedJoinHandle};
+
+/// A joined thread's result. Worker panics currently abort in Flux.
+pub type Result<T> = core::result::Result<T, crate::boxed::Box<dyn core::any::Any + Send + 'static>>;

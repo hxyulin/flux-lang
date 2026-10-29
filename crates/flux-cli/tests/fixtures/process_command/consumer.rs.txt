@@ -1,0 +1,49 @@
+use std::ffi::{OsStr,OsString};
+use std::os::unix::ffi::{OsStrExt,OsStringExt};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::process::ExitStatusExt;
+use std::io::{Read,Write};
+use std::process::{Command,Stdio};
+fn main(){
+    let mut ordered=std::collections::BTreeMap::new();
+    for bytes in [b"z".as_slice(),b"a",b"\xff",b"b"]{ordered.insert(OsString::from_vec(bytes.to_vec()),bytes.len());}
+    assert_eq!(ordered.get(OsStr::from_bytes(b"\xff")),Some(&1));
+    let order:Vec<_>=ordered.keys().map(|s|s.as_bytes().to_vec()).collect();assert_eq!(order,vec![b"a".to_vec(),b"b".to_vec(),b"z".to_vec(),b"\xff".to_vec()]);
+    let child=std::env::var_os("FLUX_PROCESS_CHILD").unwrap();
+    let root=std::path::PathBuf::from(std::env::var_os("FLUX_PROCESS_ROOT").unwrap());
+    let mut echo=Command::new(&child).arg("echo").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    echo.stdin.take().unwrap().write_all(b"hello\xff\0world").unwrap();
+    let out=echo.wait_with_output().unwrap();assert!(out.status.success());assert_eq!(out.stdout,b"hello\xff\0world");assert_eq!(out.stderr,b"err\xff\n");
+    let out=Command::new(&child).arg("duplex").output().unwrap();assert!(out.status.success());assert_eq!(out.stdout.len(),1024*1024);assert_eq!(out.stderr.len(),1024*1024);assert!(out.stdout.iter().all(|&b|b==b'o'));assert!(out.stderr.iter().all(|&b|b==b'e'));
+    let out=Command::new(&child).arg("echo").output().unwrap();assert!(out.stdout.is_empty());assert_eq!(out.stderr,b"err\xff\n");println!("output {:?}",out);
+    let mut cmd=Command::new(&child);cmd.arg("report").arg(OsString::from_vec(b"raw\xff".to_vec())).current_dir(root.join("work")).env_clear().env("FLUX_PROCESS_PARENT","overwritten").env_remove("FLUX_PROCESS_PARENT").envs([("FLUX_PROCESS_VALUE","value=β")]);
+    let out=cmd.output().unwrap();assert!(out.status.success());print!("{}",String::from_utf8(out.stdout).unwrap());
+    assert_eq!(std::env::var("FLUX_PROCESS_PARENT").unwrap(),"keep");
+    let bin=root.join("bin");
+    let out=Command::new("helper").arg("emit").env("PATH",bin.as_os_str()).output().unwrap();assert_eq!(out.stdout,b"stream\n");
+    let out=Command::new("./helper").arg("emit").current_dir(&bin).output().unwrap();assert_eq!(out.stdout,b"stream\n");
+    let status=Command::new(&child).arg("exit").status().unwrap();assert_eq!(status.code(),Some(7));assert_eq!(status.signal(),None);println!("status {status} {:?}",status);
+    let mut process=Command::new(&child).arg("sleep").spawn().unwrap();assert!(process.id()>0);assert!(process.try_wait().unwrap().is_none());process.kill().unwrap();let status=process.wait().unwrap();assert_eq!(status.signal(),Some(9));assert!(status.code().is_none());assert_eq!(process.wait().unwrap(),status);assert!(process.kill().is_ok());println!("killed {status}");
+    let mut process=Command::new(&child).arg("echo").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();let status=process.wait().unwrap();assert!(status.success());
+    let mut process=Command::new(&child).arg("exit").stdin(Stdio::piped()).spawn().unwrap();let mut input=process.stdin.take().unwrap();let _=process.wait().unwrap();assert_eq!(input.write(b"broken").unwrap_err().kind(),std::io::ErrorKind::BrokenPipe);
+    let status=Command::new(&child).arg("sigpipe").stdout(input).status().unwrap();assert_eq!(status.signal(),Some(13));
+    let out=Command::new(&child).args(["report","array"]).output().unwrap();assert!(out.status.success());
+    let arguments=vec!["report".to_owned(),"vector".to_owned()];let out=Command::new(&child).args(&arguments).output().unwrap();assert!(out.status.success());
+    assert!(Command::new("true").env_clear().status().unwrap().success());
+    std::thread::scope(|scope|{for _ in 0..4{let child=child.clone();scope.spawn(move||{for _ in 0..6{let out=Command::new(&child).arg("emit").output().unwrap();assert!(out.status.success());assert_eq!(out.stdout,b"stream\n");}});}});
+    let mut a=Command::new(&child).arg("emit").stdout(Stdio::piped()).spawn().unwrap();let out=Command::new(&child).arg("echo").stdin(a.stdout.take().unwrap()).output().unwrap();assert_eq!(out.stdout,b"stream\n");assert!(a.wait().unwrap().success());
+    let file=std::fs::File::create(root.join("redirect")).unwrap();let mut writer=Command::new(&child);writer.arg("emit").stdout(file);assert!(writer.status().unwrap().success());assert!(writer.status().unwrap().success());assert_eq!(std::fs::read(root.join("redirect")).unwrap(),b"stream\nstream\n");
+    assert!(Command::new(&child).arg("emit").stdout(Stdio::null()).status().unwrap().success());
+    assert!(Command::new(&child).arg("emit").stdout(Stdio::inherit()).status().unwrap().success());
+    println!("failures {:?} {:?} {:?} {:?}",Command::new(root.join("missing")).spawn().err().unwrap().kind(),Command::new(&child).arg("emit").current_dir(root.join("missing")).spawn().err().unwrap().kind(),Command::new(root.join("denied")).spawn().err().unwrap().kind(),Command::new(OsStr::from_bytes(b"nul\0program")).spawn().err().unwrap().kind());
+    for kind in 0..3 {let mut cmd=Command::new(&child);if kind==0{cmd.arg(OsStr::from_bytes(b"nul\0arg"));}else if kind==1{cmd.env("BAD",OsStr::from_bytes(b"nul\0env"));}else{cmd.current_dir(std::path::Path::new(OsStr::from_bytes(b"nul\0dir")));}assert_eq!(cmd.spawn().err().unwrap().kind(),std::io::ErrorKind::InvalidInput);}
+    let file=std::fs::File::open("/dev/null").unwrap();let before=file.as_raw_fd();drop(file);
+    for _ in 0..40{assert!(Command::new(root.join("missing")).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().is_err());}
+    let file=std::fs::File::open("/dev/null").unwrap();assert_eq!(file.as_raw_fd(),before);
+    for raw in [0,7<<8,9,9|128,0x137f,0x117f,128,0x100137f,-1] {let status=std::process::ExitStatus::from_raw(raw);println!("raw {raw} {:?} {:?} {} {:?} {}",status.code(),status.signal(),status.core_dumped(),status.stopped_signal(),status.continued());assert_eq!(status.into_raw(),raw);}
+    assert_eq!(Command::new(root.join("denied/child")).spawn().unwrap_err().raw_os_error(),Some(20));
+    assert_eq!(Command::new("").spawn().unwrap_err().raw_os_error(),Some(2));
+    match Command::new(root.join("bad-format")).output(){Ok(output)=>println!("format {:?}",output.status.code()),Err(error)=>println!("format error {:?}",error.raw_os_error())}
+    let script=Command::new("./script").current_dir(&root).arg("hello").output().unwrap();assert!(script.status.success());assert_eq!(script.stdout,b"./script|hello\n");
+    println!("process complete");
+}

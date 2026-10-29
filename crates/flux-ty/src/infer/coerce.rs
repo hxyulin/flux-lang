@@ -145,6 +145,20 @@ impl Ctx<'_> {
                 _ => {}
             }
         }
+        // Arc object coercions transfer one owner without touching counts.
+        if let (Some(source), Some(object)) = (
+            crate::arc_pointee(self.items, self.shallow(actual)),
+            crate::arc_pointee(self.items, self.shallow(expected)),
+        ) && let TyKind::Dynamic(d) = object.kind()
+        {
+            if self.unsize_to_dyn(source, object, d, blamed) {
+                self.unsizes.insert(expr, expected);
+            } else {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
         // Moving an array Arc into a slice Arc preserves its shared header
         // and data address; only the data pointer gains length metadata.
         if let (Some(array), Some(slice)) = (
@@ -335,15 +349,8 @@ impl Ctx<'_> {
         if let (TyKind::Ref(from, pointee), TyKind::RawPtr(to, expected_pointee)) =
             (self.shallow(actual).kind(), self.shallow(expected).kind())
         {
-            // Its lifetime bound would become `'static`, which flux
-            // cannot check of a reference's.
-            if self.shallow(pointee).is_dyn() {
-                self.error(
-                    self.range(blamed),
-                    "references to trait objects as raw pointers are not supported yet",
-                );
-                return;
-            }
+            // A same-object pointer retains the object's represented lifetime;
+            // MIR relates that row independently of the reference's borrow.
             if (from == to || from == Mutability::Mut) && self.unify(pointee, expected_pointee) {
                 if from == Mutability::Mut {
                     self.reborrows.insert(expr, to);
@@ -441,6 +448,9 @@ impl Ctx<'_> {
             return true;
         }
         if let TyKind::Dynamic(s) = source.kind() {
+            if !crate::objects::retains_auto_traits(self.sigs, source, target) {
+                return false;
+            }
             let principal = crate::traits::dyn_principal(target, d);
             let found = crate::traits::dyn_bounds(self.sigs, source, s)
                 .into_iter()
@@ -470,6 +480,16 @@ impl Ctx<'_> {
         }
         let principal = crate::traits::dyn_principal(source, d);
         self.register(principal, range, solve::ObligationKind::Bound);
+        for &trait_ref in d.auto_traits {
+            self.register(
+                Predicate {
+                    self_ty: source,
+                    trait_ref,
+                },
+                range,
+                solve::ObligationKind::Bound,
+            );
+        }
         for p in crate::traits::dyn_projections(self.items, self.sigs, target, d) {
             if p.alias.args[0] == target && d.assoc_names.contains(&p.alias.name) {
                 let alias = crate::traits::alias_of(
@@ -558,6 +578,19 @@ impl Ctx<'_> {
         if actual == Ty::NEVER {
             return true;
         }
+        if let (Some(source), Some(target)) = (
+            crate::arc_pointee(self.items, actual),
+            crate::arc_pointee(self.items, expected),
+        ) && let TyKind::Dynamic(object) = target.kind()
+        {
+            return match source.kind() {
+                TyKind::Dynamic(from) => {
+                    crate::objects::supertraits_of(self.items, from.trait_).contains(&object.trait_)
+                        && crate::objects::retains_auto_traits(self.sigs, source, target)
+                }
+                _ => !self.is_unsized(source) && self.may_implement(source, object.trait_),
+            };
+        }
         if let (Some(array), Some(slice)) = (
             crate::arc_pointee(self.items, actual),
             crate::arc_pointee(self.items, expected),
@@ -614,6 +647,11 @@ impl Ctx<'_> {
                 return match pointee.kind() {
                     TyKind::Dynamic(s) => {
                         crate::objects::supertraits_of(self.items, s.trait_).contains(&d.trait_)
+                            && crate::objects::retains_auto_traits(
+                                self.sigs,
+                                pointee,
+                                self.shallow(object),
+                            )
                     }
                     _ => !self.is_unsized(pointee) && self.may_implement(pointee, d.trait_),
                 };

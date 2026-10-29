@@ -53,6 +53,21 @@ pub fn named(x: i32) -> Named { Named { x } }
 pub fn tuple(x: i32) -> Tuple { Tuple(x) }
 pub fn unit() -> Unit { Unit }
 pub fn choice(x: i32) -> Choice { if x == 0 { Choice::A } else if x == 1 { Choice::B(7) } else { Choice::C { x } } }
+pub enum Variant { #[non_exhaustive] Unit, #[non_exhaustive] Tuple(i32), #[non_exhaustive] Record { x: i32 }, Other }
+pub use Variant::Record as RenamedRecord;
+pub type VariantAlias = Variant;
+pub fn variant(x: i32) -> Variant { Variant::Record { x } }
+pub fn variant_unit() -> Variant { Variant::Unit }
+pub fn variant_tuple() -> Variant { Variant::Tuple(23) }
+pub fn local_variants() -> i32 {
+    let unit = Variant::Unit;
+    let tuple = Variant::Tuple(9);
+    let record = Variant::Record { x: 11 };
+    let a = match unit { Variant::Unit => 1, _ => 0 };
+    let b = match tuple { Variant::Tuple(x) => x, _ => 0 };
+    let c = match record { Variant::Record { x } => x, _ => 0 };
+    a + b + c
+}
 "#,
     );
     write(
@@ -67,7 +82,15 @@ fn inspect(x: i32) -> i32 {
     let dep::Unit { .. } = dep::unit();
     a + b + c + match dep::choice(x) { dep::Choice::A => 10, dep::Choice::B(v) => v, dep::Choice::C { x } => x, _ => 99 }
 }
-fn main() { println!("{} {} {}", inspect(0), inspect(1), inspect(2)); }
+fn main() {
+    println!("{} {} {}", inspect(0), inspect(1), inspect(2));
+    let a = match dep::variant(13) { dep::RenamedRecord { x, .. } => x, _ => 0 };
+    let b = match dep::variant(17) { dep::VariantAlias::Record { x, .. } => x, _ => 0 };
+    println!("{} {} {}", a, b, dep::local_variants());
+    let u = match dep::variant_unit() { dep::VariantAlias::Unit { .. } => 1, _ => 0 };
+    let t = match dep::variant_tuple() { dep::VariantAlias::Tuple { 0:x, .. } => x, _ => 0 };
+    println!("{} {}", u, t);
+}
 "#,
     );
     success(

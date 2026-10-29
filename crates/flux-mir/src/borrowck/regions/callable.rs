@@ -1,5 +1,5 @@
 //! Scoped function-pointer binder proofs and per-call instantiation.
-use super::{Category, Cx, FunctionUse, STATIC, Var};
+use super::{Category, Cx, FunctionUse, STATIC, UniversalRelationMode, Var};
 use crate::Place;
 use flux_hir::Diagnostic;
 use flux_syntax::TextRange;
@@ -12,7 +12,38 @@ pub(super) struct PointerCheck {
     pub before: u32,
     pub bound: Vec<Var>,
     pub implied: Vec<(Var, Var)>,
+    input_wf: Vec<(Var, Var)>,
     pub range: TextRange,
+}
+
+fn record_pointer_check(
+    checks: &mut Vec<PointerCheck>,
+    before: Var,
+    mut bound: Vec<Var>,
+    mut input_wf: Vec<(Var, Var)>,
+    mut implied: Vec<(Var, Var)>,
+    range: TextRange,
+) {
+    bound.sort_unstable();
+    bound.dedup();
+    input_wf.sort_unstable();
+    input_wf.dedup();
+    implied.sort_unstable();
+    implied.dedup();
+    if let Some(old) = checks
+        .iter_mut()
+        .find(|old| old.bound == bound && old.input_wf == input_wf && old.range == range)
+    {
+        old.before = old.before.min(before);
+    } else {
+        checks.push(PointerCheck {
+            before,
+            bound,
+            implied,
+            input_wf,
+            range,
+        });
+    }
 }
 
 impl Cx<'_> {
@@ -68,7 +99,11 @@ impl Cx<'_> {
             }
             false
         };
-        let mut invalid = !self.caller_equalities_fit(&[]);
+        let mut invalid = !self.caller_equalities_fit_before(
+            &[],
+            universal,
+            UniversalRelationMode::ClosureRequirements,
+        );
         let mut promote = Vec::new();
         for &placeholder in bound {
             let below = reachable(placeholder, &edges);
@@ -78,7 +113,7 @@ impl Cx<'_> {
             }) {
                 invalid = true;
             }
-            if (1..before).any(|old| below[old as usize] && !allowed(placeholder, old)) {
+            if (0..before).any(|old| below[old as usize] && !allowed(placeholder, old)) {
                 invalid = true;
             }
             let upper: Vec<_> = implied
@@ -263,7 +298,14 @@ impl Cx<'_> {
                     for &var in &bound {
                         self.holes.insert(var);
                     }
-                    self.closure_goal(id, Some(&[]), Some(&closure_inputs), Some(&result), range);
+                    self.closure_goal(
+                        id,
+                        list,
+                        Some(&[]),
+                        Some(&closure_inputs),
+                        Some(&result),
+                        range,
+                    );
                     self.relate_types(
                         closure.ret(),
                         &result,
@@ -328,6 +370,65 @@ impl Cx<'_> {
         self.finish_pointer_proof(before, &bound, &[], universal, known, range);
     }
 
+    /// Rechecking the same rigid domain must not mistake an earlier proof's
+    /// fresh formals for external captures. Keep its original scope boundary.
+    pub(super) fn record_pointer_check(
+        &mut self,
+        before: Var,
+        bound: Vec<Var>,
+        implied: Vec<(Var, Var)>,
+        range: TextRange,
+    ) {
+        self.record_pointer_check_at(before, bound, implied, range, self.constraints.len());
+    }
+
+    pub(super) fn record_pointer_check_at(
+        &mut self,
+        before: Var,
+        bound: Vec<Var>,
+        input_wf: Vec<(Var, Var)>,
+        range: TextRange,
+        caller_constraints: usize,
+    ) {
+        let mut implied = input_wf.clone();
+        // Resolve inferred data uppers using only the caller prefix preceding
+        // this proof. Existing scopes keep their first expanded WF graph.
+        for &(upper, hole) in &input_wf {
+            if !self.universal_of.contains_key(&upper) {
+                let mut pending = vec![upper];
+                let mut seen = FxHashSet::default();
+                while let Some(var) = pending.pop() {
+                    if !seen.insert(var) {
+                        continue;
+                    }
+                    if self.universal_of.contains_key(&var) {
+                        implied.push((var, hole));
+                    }
+                    pending.extend(
+                        self.constraints[..caller_constraints]
+                            .iter()
+                            .filter(|edge| edge.sub == var)
+                            .map(|edge| edge.sup),
+                    );
+                    pending.extend(
+                        self.known_pairs
+                            .iter()
+                            .filter(|&&(_, end)| end == var)
+                            .map(|&(start, _)| start),
+                    );
+                }
+            }
+        }
+        record_pointer_check(
+            &mut self.pointer_checks,
+            before,
+            bound,
+            input_wf,
+            implied,
+            range,
+        );
+    }
+
     /// A pointer's bound regions are fresh for every call. Its free regions
     /// and type captures belong to the pointer value and cannot be generalized.
     pub(super) fn pointer_inputs(
@@ -337,6 +438,29 @@ impl Cx<'_> {
         input_types: &[Ty],
         inputs: &[Vec<Var>],
         range: TextRange,
+    ) -> Option<Vec<Var>> {
+        self.pointer_input_rows(sig, own, input_types, inputs, range, Variance::Covariant)
+    }
+
+    pub(super) fn pointer_equality_inputs(
+        &mut self,
+        sig: flux_ty::FnSigTy,
+        own: &[Var],
+        input_types: &[Ty],
+        inputs: &[Vec<Var>],
+        range: TextRange,
+    ) -> Option<Vec<Var>> {
+        self.pointer_input_rows(sig, own, input_types, inputs, range, Variance::Invariant)
+    }
+
+    fn pointer_input_rows(
+        &mut self,
+        sig: flux_ty::FnSigTy,
+        own: &[Var],
+        input_types: &[Ty],
+        inputs: &[Vec<Var>],
+        range: TextRange,
+        variance: Variance,
     ) -> Option<Vec<Var>> {
         let count = match sig.regions {
             Some(r) => r.bound,
@@ -360,12 +484,7 @@ impl Cx<'_> {
                         && (placeholders.contains(&b) || !self.holes.contains(&b))
                 })
                 .collect();
-            self.pointer_checks.push(PointerCheck {
-                before,
-                bound: placeholders,
-                implied,
-                range,
-            });
+            self.record_pointer_check(before, placeholders, implied, range);
         }
         let bound = self.fresh_list(count);
         let rows = if sig.regions.is_some() {
@@ -384,7 +503,7 @@ impl Cx<'_> {
                 actual,
                 ty,
                 formal,
-                Variance::Covariant,
+                variance,
                 Category::CallArgument,
                 range,
             );
@@ -419,5 +538,151 @@ impl Cx<'_> {
             category,
             range,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn deferred_domains_keep_their_original_scope() {
+        let mut checks = Vec::new();
+        let first = TextRange::new(1, 2);
+        let second = TextRange::new(3, 4);
+        record_pointer_check(
+            &mut checks,
+            10,
+            vec![2, 1, 2],
+            vec![(3, 1)],
+            vec![(3, 1)],
+            first,
+        );
+        record_pointer_check(
+            &mut checks,
+            20,
+            vec![1, 2],
+            vec![(3, 1), (3, 1)],
+            vec![(3, 1), (4, 1)],
+            first,
+        );
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].before, 10);
+        assert_eq!(
+            checks[0].implied,
+            vec![(3, 1)],
+            "later output-derived edges are not input assumptions"
+        );
+        record_pointer_check(
+            &mut checks,
+            9,
+            vec![1, 2],
+            vec![(3, 1)],
+            vec![(3, 1)],
+            first,
+        );
+        assert_eq!(checks[0].before, 9);
+        record_pointer_check(
+            &mut checks,
+            20,
+            vec![1, 2],
+            vec![(3, 1)],
+            vec![(3, 1)],
+            second,
+        );
+        record_pointer_check(
+            &mut checks,
+            20,
+            vec![1, 4],
+            vec![(3, 1)],
+            vec![(3, 1)],
+            first,
+        );
+        record_pointer_check(
+            &mut checks,
+            20,
+            vec![1, 2],
+            vec![(3, 2)],
+            vec![(3, 2)],
+            first,
+        );
+        assert_eq!(checks.len(), 4);
+        assert!(checks[1..].iter().all(|check| check.before == 20));
+    }
+    #[test]
+    fn scoped_input_wf_keeps_inferred_data_nonrigid() {
+        let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main(){}");
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty());
+        let body = crate::Body::empty(None);
+        let requirements = super::super::Requirements::default();
+        for invalid in 0..3 {
+            let mut cx = Cx::new(&body, &hir.items, &typed.sigs, &requirements);
+            cx.new_universal("'static".into());
+            let parent = cx.new_universal("'parent".into());
+            let other = cx.new_universal("'other".into());
+            let data = cx.fresh();
+            let before = cx.vars;
+            let universal = cx.universal.len();
+            let known = cx.known_pairs.len();
+            let input = cx.new_universal("'input".into());
+            cx.close_known();
+            // Input formation gives K:input. A later ordinary use fixes K to
+            // the original caller lifetime; K itself remains inferred.
+            cx.outlives(data, input, Category::CallArgument, TextRange::default());
+            cx.equate(parent, data, Category::CallArgument, TextRange::default());
+            if invalid == 1 {
+                cx.outlives(input, STATIC, Category::CallArgument, TextRange::default());
+            } else if invalid == 2 {
+                cx.outlives(parent, other, Category::CallArgument, TextRange::default());
+            }
+            cx.finish_pointer_proof(
+                before,
+                &[input],
+                &[(data, input)],
+                universal,
+                known,
+                TextRange::default(),
+            );
+            assert_eq!(
+                cx.errors.is_empty(),
+                invalid == 0,
+                "variant {invalid}: {:?}",
+                cx.errors
+            );
+            assert!(!cx.universal_of.contains_key(&data));
+        }
+    }
+    #[test]
+    fn scoped_preflight_shares_closure_export_policy() {
+        use super::super::{Ext, Requirements};
+        let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main(){}");
+        let typed = crate::check_file(&hir);
+        let parent = hir.items.functions.iter().last().unwrap().0;
+        let requirements = Requirements::default();
+        for annotated_refs in [false, true] {
+            let mut body = crate::Body::empty(None);
+            body.upvars = Some(crate::Upvars {
+                kind: flux_ty::ClosureKind::FnMut,
+                names: vec![],
+                by_ref: vec![],
+                mutable: vec![],
+                annotated_refs,
+                fixed_args: vec![1],
+            });
+            let mut cx = Cx::new(&body, &hir.items, &typed.sigs, &requirements);
+            cx.closure_ext = vec![
+                Ext::Static,
+                Ext::SelfRef,
+                Ext::Arg(0),
+                Ext::Arg(1),
+                Ext::Parent(parent, 0),
+            ];
+            assert!(!cx.closure_relation_exportable(1, 0));
+            assert_eq!(cx.closure_relation_exportable(2, 0), !annotated_refs);
+            assert!(cx.closure_relation_exportable(3, 0));
+            assert!(cx.closure_relation_exportable(4, 3));
+            assert!(!cx.closure_relation_exportable(5, 0));
+            assert!(!cx.closure_relation_exportable(4, 5));
+        }
     }
 }

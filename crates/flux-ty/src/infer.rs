@@ -234,10 +234,14 @@ pub fn infer_const(
     let data = &items.consts[konst];
     let ret = sigs.consts[konst];
     // A discriminant's `Self` is its enum, which is not generic.
-    let enum_ty = data.discriminant.map(|(strukt, _)| {
-        let name = items.structs[strukt].name;
-        Ty::adt(strukt, name, &[])
-    });
+    let enum_ty = data
+        .discriminant
+        .map(|(strukt, _)| strukt)
+        .or_else(|| data.anon.and_then(|a| a.self_adt))
+        .map(|strukt| {
+            let name = items.structs[strukt].name;
+            Ty::adt(strukt, name, &[])
+        });
     let owner = Owner {
         function: None,
         closure_owner: crate::ClosureOwner::Const(konst),
@@ -284,7 +288,80 @@ pub fn infer_const(
     ctx.expect(body.root, ret);
     let ty = ctx.infer_expr(body.root);
     ctx.coerce(ty, ret, body.root);
-    ctx.finish()
+    let mut result = ctx.finish();
+    if let Some(strukt) = data.anon.and_then(|a| a.self_adt)
+        && result.diagnostics.is_empty()
+    {
+        check_field_const_dependencies(items, sigs, body, source_map, strukt, &mut result);
+    }
+    result
+}
+
+/// Materialized values and named storage require their types independently of
+/// branch execution. An unused wildcard annotation creates no such storage.
+fn check_field_const_dependencies(
+    items: &ItemTree,
+    sigs: &Signatures,
+    body: &Body,
+    source_map: &BodySourceMap,
+    strukt: StructId,
+    result: &mut InferenceResult,
+) {
+    let mut values: Vec<_> = result
+        .expr_types
+        .iter()
+        .map(|(expr, &ty)| (ty, source_map.exprs.get(expr).copied().unwrap_or_default()))
+        .collect();
+    values.extend(result.binding_types.iter().map(|(_, &ty)| {
+        (
+            ty,
+            source_map.exprs.get(body.root).copied().unwrap_or_default(),
+        )
+    }));
+    for (expr, data) in body.exprs.iter() {
+        if let Expr::Closure { params, .. } = data {
+            values.extend(
+                body.lists[*params]
+                    .iter()
+                    .filter_map(|&p| result.pat_types.get(p).copied())
+                    .map(|ty| (ty, source_map.exprs.get(expr).copied().unwrap_or_default())),
+            );
+        }
+    }
+    // A metadata obligation exists for a null constructor even when it is
+    // merely reified or occurs in an unexecuted branch.
+    for (_, &ty) in result.expr_types.iter() {
+        if let TyKind::FnDef(def) = ty.kind()
+            && crate::const_dependencies::queries_pointer_metadata(items, def.function)
+        {
+            values.extend(def.args.iter().copied().map(|ty| {
+                (
+                    ty,
+                    source_map.exprs.get(body.root).copied().unwrap_or_default(),
+                )
+            }));
+        }
+    }
+    for (expr, instance) in result.calls.iter() {
+        if crate::const_dependencies::queries_pointer_metadata(items, instance.function) {
+            values.extend(
+                instance
+                    .args
+                    .iter()
+                    .copied()
+                    .map(|ty| (ty, source_map.exprs.get(expr).copied().unwrap_or_default())),
+            );
+        }
+    }
+    for (ty, range) in values {
+        let message = match crate::const_dependencies::stores_adt(items, sigs, ty, strukt) {
+            Ok(false) => continue,
+            Ok(true) => "cycle detected when resolving field constant storage or pointer metadata",
+            Err(message) => message,
+        };
+        result.diagnostics.push(Diagnostic::new(range, message));
+        break;
+    }
 }
 
 /// What a body belongs to, as far as inference cares.
@@ -452,6 +529,9 @@ enum TryResidual {
 /// A check that needs the final types.
 #[derive(Debug, Clone, Copy)]
 enum Deferred {
+    InlineAsm {
+        expr: ExprId,
+    },
     FloatLiteral {
         expr: ExprId,
         text: Symbol,
@@ -942,7 +1022,9 @@ impl Ctx<'_> {
                 ok
             }
             (TyKind::Dynamic(x), TyKind::Dynamic(y))
-                if x.trait_ == y.trait_ && x.assoc_names == y.assoc_names =>
+                if x.trait_ == y.trait_
+                    && x.auto_traits == y.auto_traits
+                    && x.assoc_names == y.assoc_names =>
             {
                 let mut ok = true;
                 for (&a, &b) in x
@@ -1119,6 +1201,7 @@ impl Ctx<'_> {
             }
             (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
                 x.trait_ == y.trait_
+                    && x.auto_traits == y.auto_traits
                     && x.assoc_names == y.assoc_names
                     && x.args
                         .iter()
@@ -1302,7 +1385,7 @@ impl Ctx<'_> {
     /// Checks the lifetimes written in type `ty_ref` of the body, which
     /// resolved to `ty`: each must be in scope, and a struct's as many
     /// as it has. Elided ones are inferred by the borrow checker; flux
-    /// enforces explicit `'static` in local annotations in MIR.
+    /// enforces explicit static and represented enclosing-binder annotations in MIR.
     fn check_written_lifetimes(&mut self, ty_ref: TypeRefId, ty: Ty, local: bool, argument: bool) {
         let written = &self.body.types[ty_ref];
         let mut found = Vec::new();
@@ -1311,6 +1394,7 @@ impl Ctx<'_> {
             return;
         }
         let mut names: Vec<Option<Symbol>> = Vec::new();
+        let mut declared = Vec::new();
         let owner = match self.owner_fn {
             Some(f) => self.items.functions[f].owner,
             None => match self.closure_owner {
@@ -1318,12 +1402,47 @@ impl Ctx<'_> {
                 crate::ClosureOwner::Function(_) => None,
             },
         };
-        if let Some(generics) = self.items.owner_generics(owner) {
+        let owner_lifetimes = self
+            .items
+            .owner_generics(owner)
+            .map_or(0, |g| g.lifetimes.len());
+        for generics in self
+            .items
+            .owner_generics(owner)
+            .into_iter()
+            .chain(self.owner_fn.map(|f| &self.items.functions[f].generics))
+        {
             names.extend(generics.lifetimes.iter().map(|l| Some(l.name)));
+            declared.extend(
+                generics
+                    .lifetimes
+                    .iter()
+                    .map(|l| crate::regions::LifetimeName {
+                        name: Some(l.name),
+                        range: l.range,
+                    }),
+            );
         }
-        if let Some(f) = self.owner_fn {
-            let generics = &self.items.functions[f].generics;
-            names.extend(generics.lifetimes.iter().map(|l| Some(l.name)));
+        // An impl self type may add anonymous owner regions after its named
+        // lifetimes. Method lifetimes follow the complete owner prefix, not
+        // just the number of lifetimes written in the impl's generic list.
+        let metadata = self.owner_fn.and_then(|f| self.sigs.regions.fns.get(f));
+        let represented_owner = metadata.is_some_and(|metadata| {
+            let owner = metadata.owner as usize;
+            owner >= owner_lifetimes
+                && metadata.names.get(..owner_lifetimes) == Some(&declared[..owner_lifetimes])
+                && metadata
+                    .names
+                    .get(owner..owner + declared.len() - owner_lifetimes)
+                    == Some(&declared[owner_lifetimes..])
+        });
+        if represented_owner {
+            names = metadata
+                .unwrap()
+                .names
+                .iter()
+                .map(|name| name.name)
+                .collect();
         }
         let mut walker = crate::regions::Walker::new(self.items, self.module, names);
         walker.body = local || argument;
@@ -1338,7 +1457,24 @@ impl Ctx<'_> {
         };
         let regions = walker.regions(written, ty);
         let errors = std::mem::take(&mut walker.errors);
+        // Local named rows already flow through let_regions into MIR's
+        // annotation constraints. Admit them only in their actual enclosing
+        // function binder; closure-local/captured binder cases stay guarded.
+        let represented_local = local
+            && self.closure_locals.is_empty()
+            && represented_owner
+            && metadata.is_some_and(|metadata| {
+                regions.len() == crate::regions::slots(self.items, ty)
+                    && regions.iter().all(|r| match *r {
+                        crate::regions::Region::Erased | crate::regions::Region::Static => true,
+                        crate::regions::Region::Param(index) => {
+                            (index as usize) < metadata.names.len()
+                        }
+                        crate::regions::Region::Late(_) => false,
+                    })
+            });
         let unsupported = errors.is_empty()
+            && !represented_local
             && regions.iter().any(|&r| {
                 r != crate::regions::Region::Erased
                     && !(local && r == crate::regions::Region::Static)
@@ -1831,13 +1967,6 @@ impl Ctx<'_> {
                 self.impl_applies(m, n) && self.impl_applies(x, y)
             }
             (TyKind::Slice(x), TyKind::Slice(y)) => self.impl_applies(x, y),
-            (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-                x.is_unsafe == y.is_unsafe
-                    && x.is_c == y.is_c
-                    && x.inputs_output.len() == y.inputs_output.len()
-                    && (x.inputs_output.iter().zip(y.inputs_output))
-                        .all(|(&a, &b)| self.impl_applies(a, b))
-            }
             _ => pattern == ty,
         }
     }
@@ -1927,6 +2056,10 @@ impl Ctx<'_> {
     fn check_pat_in(&mut self, pat: PatId, expected: Ty, mode: BindingMode, uninit: bool) {
         let (body, items) = (self.body, self.items);
         let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
+        // A pattern constrains the selected value, not an unresolved spelling
+        // of its associated type. The normalizer preserves abstract caller
+        // projections and registers pending obligations for inferred inputs.
+        let expected = self.normalize(expected, range);
         let legacy = self
             .source_map
             .pat_editions
@@ -1934,8 +2067,17 @@ impl Ctx<'_> {
             .copied()
             .unwrap_or_else(|| items.edition(self.module))
             != flux_syntax::Edition::E2024;
-        // As in rustc, a literal of a reference type (`"a"`, `b"a"`)
-        // matches a reference, so does not see through one.
+        // Named string constants have the same reference-pattern behavior as
+        // string literals. Infer the path once before deciding whether to peel.
+        let path_ty = match body.pats[pat] {
+            Pat::Expr(e) if matches!(body.exprs[e], Expr::Path(_)) => {
+                self.const_pats.insert(e);
+                Some(self.infer_expr(e))
+            }
+            _ => None,
+        };
+        let string_constant = path_ty == Some(Ty::new(TyKind::Ref(Mutability::Not, Ty::STR)));
+        // Reference literals (`"a"`, `b"a"`) also match without peeling.
         let reference_literal = |e: ExprId| {
             matches!(
                 body.exprs[e],
@@ -1943,7 +2085,7 @@ impl Ctx<'_> {
             )
         };
         let sees_through = match body.pats[pat] {
-            Pat::Expr(e) => !reference_literal(e),
+            Pat::Expr(e) => !reference_literal(e) && !string_constant,
             Pat::Tuple { .. }
             | Pat::Slice { .. }
             | Pat::TupleStruct { .. }
@@ -2058,19 +2200,18 @@ impl Ctx<'_> {
                 }
                 // A string is compared with `<str as PartialEq>::eq`, a
                 // call like an operator's.
-                if let Expr::Literal(Literal::Str(_)) = body.exprs[*expr]
+                if (matches!(body.exprs[*expr], Expr::Literal(Literal::Str(_))) || string_constant)
                     && let Some((_, eq)) = self.lang_fn(BinaryOp::Cmp(CmpOp::Eq))
                 {
                     self.overloads.insert(*expr, (eq, vec![Ty::STR, Ty::STR]));
                 }
                 if let Expr::Path(_) = body.exprs[*expr] {
-                    self.const_pats.insert(*expr);
                     self.deferred.push(Deferred::ConstPat {
                         expr: *expr,
                         in_range: false,
                     });
                 }
-                let ty = self.infer_expr(*expr);
+                let ty = path_ty.unwrap_or_else(|| self.infer_expr(*expr));
                 // Byte literals are fixed arrays, but Rust also permits them
                 // as exact-length patterns on shared byte slices. This is a
                 // pattern relation, not a value coercion or reference peel.
@@ -2295,6 +2436,10 @@ impl Ctx<'_> {
                     field_types = Ty::list(&vec![Ty::ERROR; field_types.len()]);
                 }
                 let def = items.structs[*strukt].variant(*variant);
+                if !rest && items.externally_non_exhaustive_variant(*strukt, *variant, self.module)
+                {
+                    self.error(range, "`..` required with variant marked as non-exhaustive");
+                }
                 if !rest
                     && !items.structs[*strukt].is_enum()
                     && items.externally_non_exhaustive(*strukt, self.module)
@@ -2435,6 +2580,26 @@ impl Ctx<'_> {
     fn infer_expr_inner(&mut self, id: ExprId) -> Ty {
         let body = self.body;
         match &body.exprs[id] {
+            Expr::InlineAsm(asm) => {
+                if self.unsafe_depth == 0 {
+                    self.error(
+                        self.range(id),
+                        "use of inline assembly is unsafe and requires unsafe block",
+                    );
+                }
+                if self.const_context.is_some() {
+                    self.error(
+                        self.range(id),
+                        "inline assembly is not allowed in constants",
+                    );
+                }
+                for &operand in body.lists[asm.operands].iter() {
+                    self.infer_expr(operand);
+                    self.check_place(id, operand, false);
+                }
+                self.deferred.push(Deferred::InlineAsm { expr: id });
+                Ty::UNIT
+            }
             Expr::Missing => Ty::ERROR,
             Expr::Literal(Literal::Float { suffix, text }) => {
                 self.deferred.push(Deferred::FloatLiteral {
@@ -2973,13 +3138,6 @@ impl Ctx<'_> {
                 if let (TyKind::Ref(m, pointee), TyKind::RawPtr(to_m, target)) =
                     (self.shallow(from).kind(), self.shallow(to).kind())
                 {
-                    if self.shallow(pointee).is_dyn() {
-                        self.error(
-                            self.range(id),
-                            "references to trait objects as raw pointers are not supported yet",
-                        );
-                        return Ty::ERROR;
-                    }
                     let target = self.shallow(target);
                     let elem = match self.shallow(pointee).kind() {
                         TyKind::Array(elem, _) => Some(elem),
@@ -3465,8 +3623,8 @@ impl Ctx<'_> {
                     }
                     Some((AssocItem::Const(c), target, trait_args)) => {
                         let ty = self.instantiate_const(callee, c, target, trait_args.as_deref());
-                        self.not_callable(callee, ty);
-                        None
+                        self.expr_types.insert(callee, ty);
+                        return self.call_inferred_value(id, callee, ty, args);
                     }
                     None => None,
                 }
@@ -3480,18 +3638,7 @@ impl Ctx<'_> {
             Expr::Path(Res::Err) | Expr::Missing => None,
             _ => {
                 let ty = self.infer_expr(callee);
-                let (callable, _) = self.autoderef(ty);
-                match callable.kind() {
-                    TyKind::FnDef(def) => {
-                        return self.call_value(id, callee, def.sig, Some(def.function), args);
-                    }
-                    TyKind::FnPtr(sig) => return self.call_value(id, callee, sig, None, args),
-                    TyKind::Infer(var) if !self.unknown(var).0 => {
-                        self.annotations_needed(callee, var, self.range(callee));
-                    }
-                    _ => return self.infer_value_call(id, callee, ty, args),
-                }
-                None
+                return self.call_inferred_value(id, callee, ty, args);
             }
         };
         let Some((function, target, trait_args)) = found else {
@@ -3689,6 +3836,20 @@ impl Ctx<'_> {
                 ..crate::FnSigTy::new(&sig.params, sig.ret, data.is_unsafe)
             },
         }))
+    }
+
+    fn call_inferred_value(&mut self, id: ExprId, callee: ExprId, ty: Ty, args: &[ExprId]) -> Ty {
+        let (callable, _) = self.autoderef(ty);
+        match callable.kind() {
+            TyKind::FnDef(def) => self.call_value(id, callee, def.sig, Some(def.function), args),
+            TyKind::FnPtr(sig) => self.call_value(id, callee, sig, None, args),
+            TyKind::Infer(var) if !self.unknown(var).0 => {
+                self.annotations_needed(callee, var, self.range(callee));
+                self.infer_args(args);
+                Ty::ERROR
+            }
+            _ => self.infer_value_call(id, callee, ty, args),
+        }
     }
 
     /// A call `id` of `callee`, a value of a function item's type (whose
@@ -4539,6 +4700,12 @@ impl Ctx<'_> {
         let def = items.structs[strukt].variant(variant);
         let union = items.structs[strukt].is_union;
         let range = self.range(id);
+        if items.externally_non_exhaustive_variant(strukt, variant, self.module) {
+            self.error(
+                range,
+                "cannot create non-exhaustive variant using struct expression",
+            );
+        }
         if !items.structs[strukt].is_enum() && items.externally_non_exhaustive(strukt, self.module)
         {
             self.error(
@@ -4735,6 +4902,7 @@ impl Ctx<'_> {
         // The first type the method exists for, if only through blocks
         // whose bounds do not hold.
         let mut unmet = None;
+        let mut private_method = false;
         let items = self.items;
         let traits = items.trait_fns.contains_key(&method);
         let inherent = |ty: Ty| {
@@ -4751,6 +4919,7 @@ impl Ctx<'_> {
                     inherent(base),
                     traits,
                     (method.as_str() == "into_iter").then(|| self.expression_edition(id)),
+                    &mut private_method,
                 ) {
                     Ok(Some((function, trait_args, target, through))) => {
                         let (d, mode) = if through {
@@ -4810,7 +4979,15 @@ impl Ctx<'_> {
         if let TyKind::Array(elem, _) = base.kind() {
             let slice = Ty::new(TyKind::Slice(elem));
             for mode in [Mutability::Not, Mutability::Mut] {
-                match self.probe_method(slice, Some(mode), method, inherent(slice), traits, None) {
+                match self.probe_method(
+                    slice,
+                    Some(mode),
+                    method,
+                    inherent(slice),
+                    traits,
+                    None,
+                    &mut private_method,
+                ) {
                     Ok(Some((function, trait_args, target, _))) => {
                         self.record_overloaded_derefs(id, &steps);
                         return self.check_method(
@@ -4878,6 +5055,10 @@ impl Ctx<'_> {
         }
         // A type made of an error was reported where the error is.
         if receiver_ty.has_error() {
+            return Ty::ERROR;
+        }
+        if private_method {
+            self.error(name_range, format!("method `{method}` is private"));
             return Ty::ERROR;
         }
         if let Some(ty) = unmet {
@@ -4959,6 +5140,10 @@ impl Ctx<'_> {
     /// a bound gives them). The final flag requests a pointee reborrow
     /// when the candidate itself is a reference. `Err` if several (E0034).
     #[allow(clippy::type_complexity)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "method probing shares receiver adjustments and private-candidate diagnostics"
+    )]
     fn probe_method(
         &mut self,
         ty: Ty,
@@ -4967,6 +5152,7 @@ impl Ctx<'_> {
         inherent: &[flux_hir::AssocItem],
         traits: bool,
         into_iter_edition: Option<flux_syntax::Edition>,
+        private_seen: &mut bool,
     ) -> Result<Option<(FunctionId, Option<crate::GenericArgs>, Ty, bool)>, ()> {
         let (items, sigs) = (self.items, self.sigs);
         // A candidate is the actual receiver type, not just impl Self:
@@ -4997,7 +5183,10 @@ impl Ctx<'_> {
                 }
                 _ => None,
             });
-            match self.select(functions, Some(target)) {
+            let (functions, hidden): (Vec<_>, Vec<_>) =
+                functions.partition(|&f| items.is_visible(items.functions[f].loc.vis, self.module));
+            *private_seen |= self.select(hidden.into_iter(), Some(target)).is_ok();
+            match self.select(functions.into_iter(), Some(target)) {
                 Ok(function) => {
                     if inherent_found.is_some() {
                         return Err(());
@@ -5027,6 +5216,10 @@ impl Ctx<'_> {
                     _ => None,
                 })
                 .collect::<Vec<_>>();
+            let (functions, hidden): (Vec<_>, Vec<_>) = functions
+                .into_iter()
+                .partition(|&f| items.is_visible(items.functions[f].loc.vis, self.module));
+            *private_seen |= self.select(hidden.into_iter(), Some(pointee)).is_ok();
             match self.select(functions.into_iter(), Some(pointee)) {
                 Ok(function) => return Ok(Some((function, None, pointee, false))),
                 Err(2..) => return Err(()),
@@ -6023,6 +6216,27 @@ impl Ctx<'_> {
             }
         }
         self.finish_obligations(&mut reported);
+        // An inferred `as _` target can become an object pointer only after
+        // its surrounding call is solved. Retry existing object coercions
+        // before snapshotting the adjustment maps: an upcast needs its real
+        // MIR Unsize, not just permission to cast the unchanged pointer.
+        let deferred = std::mem::take(&mut self.deferred);
+        for check in deferred {
+            if let Deferred::Cast { expr, from, to } = check {
+                let from = self.resolve(from, &mut reported);
+                let to = self.resolve(to, &mut reported);
+                let object_pointer = |ty: Ty| matches!(ty.kind(), TyKind::Ref(_, object) | TyKind::RawPtr(_, object) if object.is_dyn());
+                if object_pointer(from)
+                    && object_pointer(to)
+                    && let Expr::Cast { expr: operand, .. } = self.body.exprs[expr]
+                    && self.can_coerce(from, to, operand)
+                {
+                    self.coerce(from, to, operand);
+                    continue;
+                }
+            }
+            self.deferred.push(check);
+        }
         let opaques = self.hidden_types(&mut reported);
         self.report_unknown_lets(&mut reported);
         // HIR indices retain the maps' index order without an entry snapshot.
@@ -6900,7 +7114,11 @@ impl Ctx<'_> {
                     let ty = self.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
                     let ty = self.resolve(ty, reported);
                     // A range reports its other types itself.
-                    if !in_range && !crate::structural_pattern_type(self.items, self.sigs, ty) {
+                    let string = ty == Ty::new(TyKind::Ref(Mutability::Not, Ty::STR));
+                    if !in_range
+                        && !string
+                        && !crate::structural_pattern_type(self.items, self.sigs, ty)
+                    {
                         self.error(
                             range,
                             format!("constants of type `{ty}` in patterns are not supported yet"),
@@ -6915,6 +7133,47 @@ impl Ctx<'_> {
                             range,
                             "only `char` and numeric types are allowed in range patterns",
                         );
+                    }
+                }
+                Deferred::InlineAsm { expr } => {
+                    let Expr::InlineAsm(asm) = &self.body.exprs[expr] else {
+                        unreachable!()
+                    };
+                    for (&operand, &register) in self.body.lists[asm.operands]
+                        .iter()
+                        .zip(asm.registers.iter())
+                    {
+                        let ty = self.resolve(self.expr_types[operand], reported);
+                        if ty != Ty::ERROR
+                            && !crate::inline_asm::supports(self.items, self.sigs, ty, register)
+                        {
+                            self.error(
+                                self.range(operand),
+                                format!(
+                                    "type `{ty}` cannot be used with this assembly register class"
+                                ),
+                            );
+                        }
+                    }
+                    for piece in &asm.template {
+                        if let flux_hir::AsmTemplatePiece::Operand {
+                            index,
+                            modifier: Some(modifier),
+                        } = *piece
+                        {
+                            let valid = match asm.registers[index as usize] {
+                                flux_hir::AsmRegister::Reg => matches!(modifier, 'w' | 'x'),
+                                flux_hir::AsmRegister::Vreg => {
+                                    matches!(modifier, 'v' | 'b' | 'h' | 's' | 'd' | 'q')
+                                }
+                            };
+                            if !valid {
+                                self.error(
+                                    self.range(expr),
+                                    "invalid assembly template modifier for register class",
+                                );
+                            }
+                        }
                     }
                 }
                 Deferred::FloatLiteral { expr, text } => {
@@ -7077,7 +7336,17 @@ impl Ctx<'_> {
                             } else {
                                 crate::Metadata::Thin
                             };
-                            target == crate::Metadata::Thin || source == target
+                            (target == crate::Metadata::Thin || source == target)
+                                && match (a.kind(), b.kind()) {
+                                    (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
+                                        crate::objects::same_principal(a, b)
+                                            && y.auto_traits
+                                                .iter()
+                                                .all(|marker| x.auto_traits.contains(marker))
+                                    }
+                                    (_, TyKind::Dynamic(_)) => false,
+                                    _ => true,
+                                }
                         }
                         (TyKind::RawPtr(_, pointee), TyKind::Int(_)) => !self.is_unsized(pointee),
                         (TyKind::FnPtr(_), TyKind::Int(_)) => true,

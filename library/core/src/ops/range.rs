@@ -279,6 +279,53 @@ impl<T> RangeBounds<T> for RangeToInclusive<T> {
     }
 }
 
+// References provide borrowed bounds on T, alongside the existing bounds on
+// the reference type itself. These five impls intentionally require Sized T.
+impl<T> RangeBounds<T> for Range<&T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Included(self.start)
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Excluded(self.end)
+    }
+}
+
+impl<T> RangeBounds<T> for RangeFrom<&T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Included(self.start)
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+}
+
+impl<T> RangeBounds<T> for RangeTo<&T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Excluded(self.end)
+    }
+}
+
+impl<T> RangeBounds<T> for RangeInclusive<&T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Included(self.start)
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Included(self.end)
+    }
+}
+
+impl<T> RangeBounds<T> for RangeToInclusive<&T> {
+    fn start_bound(&self) -> Bound<&T> {
+        Unbounded
+    }
+    fn end_bound(&self) -> Bound<&T> {
+        Included(self.end)
+    }
+}
+
 impl<T> RangeBounds<T> for (Bound<T>, Bound<T>) {
     fn start_bound(&self) -> Bound<&T> {
         self.0.as_ref()

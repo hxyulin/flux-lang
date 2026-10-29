@@ -111,7 +111,7 @@ def owns_native_sweep(selected: list[Target], args: argparse.Namespace) -> bool:
 def graph(target: Target) -> bool:
     return target.package == "flux-cli" and (
         "selfhost" in target.name or "readiness" in target.name
-        or target.name in {"keel_float_math", "path_slice_pool"}
+        or target.name in {"keel_float_math", "keel_reduced_suite", "path_slice_pool"}
     )
 
 

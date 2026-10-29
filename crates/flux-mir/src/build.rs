@@ -71,6 +71,7 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
         consts.insert(id, body);
     }
     queue.extend(flux_ty::core_roots(&hir.items));
+    queue.extend(flux_ty::entry::main_runner(&hir.items, &typed.sigs));
     queue.extend(
         hir.bodies
             .iter()
@@ -129,6 +130,10 @@ pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     // Patterns that name constants are checked with their values; rustc
     // does not borrow-check the bodies whose patterns have errors.
     diagnostics.extend(crate::borrowck::check_impl_methods(&hir.items, &typed.sigs));
+    diagnostics.extend(crate::borrowck::check_signature_projection_requirements(
+        &hir.items,
+        &typed.sigs,
+    ));
     diagnostics.extend(crate::borrowck::check_adt_declarations(
         &hir.items,
         &typed.sigs,
@@ -462,12 +467,22 @@ fn check_patterns(
                 _ => return None,
             })
         }
-        let result = pattern(
+        let value = evaluator.eval_instance(c).ok()?;
+        let ty = flux_ty::traits::normalize(
             items,
             &typed.sigs,
-            evaluator.eval_instance(c).ok()?,
+            &[],
             typed.sigs.consts[c.konst].subst(c.args),
         );
+        let result = if ty == Ty::new(TyKind::Ref(flux_ty::Mutability::Not, Ty::STR)) {
+            evaluator
+                .is_string_pattern(&value, items.consts[c.konst].def_range)
+                .ok()
+                .filter(|&valid| valid)
+                .map(|_| flux_ty::PatternConst::Str)
+        } else {
+            pattern(items, &typed.sigs, value, ty)
+        };
         if result.is_none() && !unsupported_patterns.contains(&c.konst) {
             unsupported_patterns.push(c.konst);
         }
@@ -2406,8 +2421,13 @@ impl Builder<'_> {
                 let constant = self.const_of(expr, res)?;
                 let ty = self.own_ty(expr);
                 if !constant.args.is_empty()
-                    || self.needs_drop(ty)
-                    || flux_ty::traits::has_interior_mutability(self.items, &self.typed.sigs, ty)
+                    || ((self.needs_drop(ty)
+                        || flux_ty::traits::has_interior_mutability(
+                            self.items,
+                            &self.typed.sigs,
+                            ty,
+                        ))
+                        && self.promotable(expr).is_none())
                 {
                     return None;
                 }
@@ -2618,8 +2638,14 @@ impl Builder<'_> {
                 return None;
             }
         }
-        if self.needs_drop(ty)
-            || flux_ty::traits::has_interior_mutability(self.items, &self.typed.sigs, ty)
+        // Qualify the active value recursively: another enum variant's
+        // payload does not run a destructor or expose interior mutability.
+        // An explicit destructor or an interior-mutable root still forbids it.
+        if let TyKind::Adt(adt, _) = ty.kind()
+            && (flux_ty::traits::drop_impl(self.items, &self.typed.sigs, adt.strukt).is_some()
+                || ["cell", "ref_cell", "unsafe_cell"]
+                    .iter()
+                    .any(|lang| flux_ty::is_lang_struct(self.items, adt.strukt, lang)))
         {
             return None;
         }
@@ -2843,8 +2869,13 @@ impl Builder<'_> {
                 })?;
                 let ty = types.expr_types.get(expr).copied()?;
                 if !constant.args.is_empty()
-                    || self.needs_drop(ty)
-                    || flux_ty::traits::has_interior_mutability(self.items, &self.typed.sigs, ty)
+                    || ((self.needs_drop(ty)
+                        || flux_ty::traits::has_interior_mutability(
+                            self.items,
+                            &self.typed.sigs,
+                            ty,
+                        ))
+                        && self.promotable_in(body, types, expr, active).is_none())
                 {
                     return None;
                 }
@@ -2986,6 +3017,40 @@ impl Builder<'_> {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
+            Expr::InlineAsm(asm) => {
+                let mut places = Vec::new();
+                let mut inputs = Vec::new();
+                let mut tys = Vec::new();
+                for &operand in body.lists[asm.operands].iter() {
+                    let place = self.lower_place(operand);
+                    let ty = self.place_ty(&place);
+                    let snapshot = self.temp(ty);
+                    self.assign(
+                        &snapshot.into(),
+                        Rvalue::Use(Operand::Copy(place.clone())),
+                        range,
+                    );
+                    places.push(place);
+                    inputs.push(self.read(snapshot.into()));
+                    tys.push(ty);
+                }
+                let result = self.temp(Ty::tuple(&tys));
+                self.assign(
+                    &result.into(),
+                    Rvalue::InlineAsm {
+                        template: asm.template.clone(),
+                        registers: asm.registers.clone(),
+                        options: asm.options,
+                        inputs,
+                    },
+                    range,
+                );
+                for (i, place) in places.iter().enumerate() {
+                    let value = Place::from(result).field(i as u32);
+                    self.assign(place, Rvalue::Use(self.read(value)), range);
+                }
+                self.assign_unit(dest, range);
+            }
             Expr::Path(Res::Const(_) | Res::ConstParam(_)) => {
                 let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
@@ -3401,7 +3466,9 @@ impl Builder<'_> {
                 self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::Call { callee, args } => match body.exprs[*callee] {
-                Expr::Path(Res::Function(_) | Res::Assoc { .. }) => {
+                Expr::Path(Res::Function(_) | Res::Assoc { .. })
+                    if self.types.consts.get(*callee).is_none() =>
+                {
                     let args = self.body.lists[*args]
                         .iter()
                         .map(|&arg| self.lower_operand(arg))

@@ -251,6 +251,8 @@ pub struct OpaqueTy {
 /// gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DynTy {
+    /// Canonically ordered, trusted auto-trait bounds of this object.
+    pub auto_traits: &'static [crate::TraitRef],
     pub trait_: TraitId,
     pub name: Symbol,
     pub args: GenericArgs,
@@ -296,6 +298,28 @@ pub fn symbol_list(names: &[Symbol]) -> &'static [Symbol] {
         return list;
     }
     let list = lists.1.alloc(names);
+    lists.0.insert_unique(hash, (hash, list), |&(h, _)| h);
+    list
+}
+
+/// Intern the canonical extra auto-trait bounds of a dynamic type.
+pub fn object_auto_traits(bounds: &[crate::TraitRef]) -> &'static [crate::TraitRef] {
+    use std::sync::Mutex;
+    type Lists = (
+        HashTable<(u64, &'static [crate::TraitRef])>,
+        StaticSliceArena<crate::TraitRef>,
+    );
+    static LISTS: LazyLock<Mutex<Lists>> =
+        LazyLock::new(|| Mutex::new((HashTable::new(), StaticSliceArena::default())));
+    if bounds.is_empty() {
+        return &[];
+    }
+    let hash = FxBuildHasher.hash_one(bounds);
+    let mut lists = LISTS.lock().unwrap();
+    if let Some(&(_, list)) = lists.0.find(hash, |&(h, list)| h == hash && list == bounds) {
+        return list;
+    }
+    let list = lists.1.alloc(bounds);
     lists.0.insert_unique(hash, (hash, list), |&(h, _)| h);
     list
 }

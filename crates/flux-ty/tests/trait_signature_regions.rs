@@ -173,7 +173,6 @@ fn undeclared_nested_names_and_untracked_projections_are_rejected() {
         "trait Tr<'a> {} trait Sub<'a>: Tr<'a> {} fn main() {}",
         "trait Tr<'a> {} fn f<'a>(_: &'a dyn Tr<'a>) {} fn main() {}",
         "trait Tr<'a> {} trait Sub<'a> where Self: Tr<'a> {} fn main() {}",
-        "trait Tr<'a> {} struct S; impl Tr<'static> for S {} fn f() -> impl Tr<'static> { S } fn main() {}",
     ] {
         oracle(source, true);
         let messages = resolve(source).2;
@@ -182,11 +181,17 @@ fn undeclared_nested_names_and_untracked_projections_are_rejected() {
                 .iter()
                 .any(|m| m.contains("supertraits and associated type bounds")
                     || m.contains("lifetime arguments on trait objects")
-                    || m.contains("opaque trait arguments")
                     || m.contains("qualified trait projections")),
             "{source}: {messages:?}"
         );
     }
+}
+
+#[test]
+fn opaque_trait_arguments_have_separate_region_rows() {
+    let source = "trait Tr<'a> {} struct S; impl Tr<'static> for S {} fn f() -> impl Tr<'static> { S } fn main() {}";
+    oracle(source, true);
+    assert!(resolve(source).2.is_empty());
 }
 
 #[test]

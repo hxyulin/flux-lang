@@ -41,8 +41,9 @@ pub struct TraitProfileError {
 /// caller region obligations, associated declaration checks and all existing
 /// use-site guards (closures, default bodies, inherited regions, abstract
 /// blanket forwarding, named function items and higher-ranked owner items).
-/// Signatures conservatively exclude function pointers, dyn/opaque types and
-/// qualified or unresolved associated projections.
+/// Signatures exclude function pointers, opaque types and qualified or unresolved
+/// associated projections. Non-callable objects retain independent bound slots
+/// only when their principal/associated arguments are closed and region-free.
 /// General region-free traits reached through supertrait edges are checked for
 /// region-free edges, not subjected to this required-method profile.
 pub fn required_method_trait_profile(
@@ -404,7 +405,9 @@ fn method_profile(
     {
         return Err(fail(None, TraitProfileReason::TraitPredicates));
     }
-    if (!projected && !data.types.is_empty()) || !data.consts.is_empty() {
+    if (!projected && !data.types.is_empty())
+        || !scalar_const_contracts(items, diagnostics, sigs, trait_)
+    {
         return Err(fail(None, TraitProfileReason::AssociatedItems));
     }
     if data.is_unsafe {
@@ -639,6 +642,59 @@ fn method_profile(
     Ok(())
 }
 
+/// Scalar const values store no lifetime rows. Admission still reconstructs
+/// the declaration type and checks its owner and complete empty region table;
+/// ordinary const bodies and impl/caller contracts are checked independently.
+fn scalar_const_contracts(
+    items: &ItemTree,
+    diagnostics: &[flux_hir::Diagnostic],
+    sigs: &Signatures,
+    trait_: TraitId,
+) -> bool {
+    let names = crate::generic_names(items, Some(Owner::Trait(trait_)), &Generics::default());
+    let scope = TypeScope {
+        self_ty: Some(Ty::param(0, flux_intern::kw::SelfUpper)),
+        generics: &names,
+        defaults: Some(&sigs.trait_defaults),
+        struct_fields: Some(&sigs.structs),
+        ..TypeScope::default()
+    };
+    items.traits[trait_].consts.iter().all(|&id| {
+        let Some(data) = items.consts.get(id) else {
+            return false;
+        };
+        let Some(&ty) = sigs.consts.get(id) else {
+            return false;
+        };
+        if data.owner != Some(Owner::Trait(trait_))
+            || data.is_static.is_some()
+            || data.anon.is_some()
+            || diagnosed(diagnostics, data.loc.file, data.item_range)
+            || !matches!(
+                ty.kind(),
+                TyKind::Bool | TyKind::Char | TyKind::Int(_) | TyKind::Float(_)
+            )
+            || !sigs
+                .regions
+                .consts
+                .get(id)
+                .is_some_and(|row| row.is_empty())
+        {
+            return false;
+        }
+        let mut errors = Vec::new();
+        crate::resolve_type(
+            items,
+            data.loc.module,
+            &data.ty,
+            scope,
+            data.ty_range,
+            &mut errors,
+        ) == ty
+            && errors.is_empty()
+    })
+}
+
 fn method_slots(
     items: &ItemTree,
     sigs: &Signatures,
@@ -687,7 +743,7 @@ fn has_predicates(g: &Generics) -> bool {
     !g.predicates.is_empty() || !g.outlives.is_empty() || !g.type_outlives.is_empty()
 }
 
-// Intentionally conservative syntax boundary. Fn pointers, dyn/opaque types and
+// Intentionally conservative syntax boundary. Fn pointers, opaque types and
 // qualified projections have independent binder/selection requirements.
 fn written_type(t: &TypeRef, region_free: bool) -> bool {
     match t {
@@ -705,6 +761,17 @@ fn written_type(t: &TypeRef, region_free: bool) -> bool {
         TypeRef::Ref { pointee, .. } => !region_free && written_type(pointee, false),
         TypeRef::Array { elem, .. } | TypeRef::Slice(elem) => written_type(elem, region_free),
         TypeRef::Never => true,
+        TypeRef::Dyn(object) if !region_free => object.bounds.iter().all(|bound| {
+            bound.bound_lifetimes.is_empty()
+                && bound.path.args.iter().flatten().all(|args| {
+                    !args.parenthesized
+                        && args.lifetimes.is_empty()
+                        && args.types.iter().all(|ty| written_type(ty, false))
+                        && args.bindings.iter().all(|binding| {
+                            binding.args.is_none() && written_type(&binding.ty, false)
+                        })
+                })
+        }),
         _ => false,
     }
 }
@@ -731,6 +798,53 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
             ts.iter().try_fold(r.lifetimes as usize, |n, &t| {
                 Some(n + type_slots(items, sigs, t, params)?)
             })
+        }
+        TyKind::Dynamic(object) => {
+            let principal = items.traits.get(object.trait_)?;
+            if object.args.len() != principal.generics.params.len()
+                || crate::objects::supertraits_of(items, object.trait_)
+                    .iter()
+                    .any(|&trait_| {
+                        !items.traits[trait_].generics.lifetimes.is_empty()
+                            || crate::fn_trait_kind(items, trait_).is_some()
+                    })
+                || object.auto_traits.iter().any(|marker| {
+                    items
+                        .traits
+                        .get(marker.trait_)
+                        .is_none_or(|data| marker.name != data.name)
+                        || !crate::traits::is_auto_trait(items, marker.trait_)
+                        || marker.trait_ == object.trait_
+                        || !marker.args.is_empty()
+                })
+                || object
+                    .auto_traits
+                    .windows(2)
+                    .any(|pair| pair[0].trait_ >= pair[1].trait_)
+            {
+                return None;
+            }
+            let associated = crate::objects::dyn_assoc(items, object.trait_);
+            if object.assoc_names.len() != associated.len()
+                || object.assoc_tys.len() != associated.len()
+                || object
+                    .assoc_names
+                    .iter()
+                    .zip(&associated)
+                    .any(|(&actual, &(_, expected))| actual != expected)
+            {
+                return None;
+            }
+            object
+                .args
+                .iter()
+                .chain(object.assoc_tys)
+                .try_fold(1, |count, &arg| {
+                    if arg.has_aliases() || arg.has_opaques() || arg.has_infer() || arg.is_dyn() {
+                        return None;
+                    }
+                    Some(count + type_slots(items, sigs, arg, params)?)
+                })
         }
         TyKind::Param(p) if (p.index as usize) < params => Some(0),
         TyKind::Int(_)
@@ -1332,7 +1446,7 @@ mod tests {
             .unwrap();
         let method = declaration.functions[0];
         assert!(generic_method_profile(&hir.items, &[], &sigs, owner).is_ok());
-        for corruption in 0..10 {
+        for corruption in 0..13 {
             let mut bad = sigs.clone();
             let mut row = bad.regions.fns[method].clone();
             match corruption {
@@ -1351,6 +1465,9 @@ mod tests {
                     owner_row.families = Box::default();
                     bad.regions.traits.insert(owner, owner_row);
                 }
+                9 => row.selected_inputs = Box::default(),
+                10 => *row.selected_inputs.last_mut().unwrap() = Box::default(),
+                11 => row.selected_inputs.last_mut().unwrap()[0].lifetimes[0] = Region::Static,
                 _ => {
                     let mut signature = bad.fns[method].clone();
                     signature.ret = Ty::BOOL;

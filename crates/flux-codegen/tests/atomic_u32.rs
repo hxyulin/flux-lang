@@ -1,3 +1,5 @@
+#[path = "support/atomic.rs"]
+mod atomic_support;
 use keel_ir::{InstData, Ordering, Type};
 
 fn front_end(text: &str) -> (flux_hir::Hir, flux_ty::TypedFile, flux_mir::FileMir) {
@@ -22,11 +24,11 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
         keel_opt::optimize_with_tier(&mut module, tier).unwrap();
         keel_ir::verify_module(&module).unwrap();
         let mut operations = Vec::new();
-        for function in &module.functions {
+        for function in atomic_support::named_functions(&module, "AtomicU32") {
             for (_, inst) in function.layout_insts() {
                 match function.inst_data(inst) {
                     InstData::AtomicLoad { ty, ordering, .. } => {
-                        assert_eq!(*ty, Type::I32);
+                        assert_eq!(*ty, Type::I32, "{}", function.name);
                         operations.push(("load", *ordering));
                     }
                     InstData::AtomicStore {
@@ -77,6 +79,11 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
             }
         }
         let asm = keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+        let probe_asm = atomic_support::function_assembly(
+            &module,
+            &atomic_support::named_functions(&module, "AtomicU32"),
+            &asm,
+        );
         for instruction in [
             "ldr\tw",
             "str\tw",
@@ -87,7 +94,7 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
             "ldaddl\tw",
             "ldaddal\tw",
         ] {
-            assert!(asm.contains(instruction), "missing {instruction}");
+            assert!(probe_asm.contains(instruction), "missing {instruction}");
         }
         for instruction in [
             "ldar\tx",
@@ -98,7 +105,7 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
             "ldaddal\tx",
         ] {
             assert!(
-                !asm.contains(instruction),
+                !probe_asm.contains(instruction),
                 "widened atomic instruction {instruction}"
             );
         }
@@ -446,7 +453,13 @@ fn bridge_names_without_intrinsic_identity_remain_ordinary_calls() {
                 fn main() { let mut n = 7u32; println!(\"{} {}\", __atomic_u32_add_relaxed(&mut n, 11), __atomic_usize_load_relaxed(&n)); }";
     let (hir, typed, mir) = front_end(text);
     let module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
-    for f in &module.functions {
+    let mut probes = atomic_support::named_functions(&module, "__atomic_u32_add_relaxed");
+    probes.extend(atomic_support::named_functions(
+        &module,
+        "__atomic_usize_load_relaxed",
+    ));
+    for f in probes {
+        atomic_support::assert_called(&module, f);
         for (_, inst) in f.layout_insts() {
             assert!(!matches!(
                 f.inst_data(inst),

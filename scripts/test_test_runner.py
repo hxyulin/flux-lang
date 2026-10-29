@@ -72,6 +72,13 @@ class Planning(unittest.TestCase):
         self.assertTrue(next(t for t in self.targets if t.name == "mir_selfhost").exclusive)
         self.assertFalse(next(t for t in self.targets if t.name == "native_fixtures").exclusive)
 
+    def test_reduced_keel_suite_is_an_exclusive_source_graph(self):
+        target = runner.Target("flux-cli", "keel_reduced_suite", "test",
+                               "/flux-cli/tests/keel_reduced_suite.rs")
+        self.assertTrue(runner.in_group(target, "graphs"))
+        self.assertTrue(target.exclusive)
+        self.assertFalse(runner.in_group(target, "codegen"))
+
     def smoke_targets(self):
         keys = {key for component in runner.FAST_COMPONENTS.values() for key in component}
         result = [runner.Target(package, name, "test", f"/{package}/tests/{name}.rs", package)

@@ -129,6 +129,15 @@ fn signature_membership_provenance_matches_rustc() {
     );
 }
 
+#[test]
+fn normalized_membership_candidates_preserve_rhs_proofs() {
+    check_cases(
+        include_str!("fixtures/proof_equalities/membership_candidates.json"),
+        "membership-candidates",
+        12,
+    );
+}
+
 fn check_cases(source: &str, group: &str, count: usize) {
     let cases: Vec<Case> = serde_json::from_str(source).unwrap();
     assert_eq!(cases.len(), count);

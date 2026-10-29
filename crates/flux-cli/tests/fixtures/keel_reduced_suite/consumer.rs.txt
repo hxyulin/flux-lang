@@ -1,0 +1,142 @@
+use keel_ir::Target;
+use object::{Object, ObjectSection};
+__SELECTED_TEST_MODULES__
+
+fn emit(name: &str, source: &str, sdk: &std::path::Path, out: &std::path::Path) {
+    let original = keel_ir::parse(source).unwrap();
+    keel_ir::verify_module(&original).unwrap();
+    for (tier_name, tier) in [("none", keel_opt::OptimizationTier::None), ("full", keel_opt::OptimizationTier::Full)] {
+        let mut module = original.clone();
+        keel_opt::optimize_with_tier(&mut module, tier).unwrap();
+        keel_ir::verify_module(&module).unwrap();
+        let program = keel_codegen::compile_program(&module, Target::Aarch64AppleDarwin).unwrap();
+        let macho = keel_asm::assemble_program_object(&program, Default::default()).unwrap();
+        let file = object::File::parse(macho.as_slice()).unwrap();
+        assert_eq!(file.architecture(), object::Architecture::Aarch64);
+        let bytes = file.section_by_name("__text").unwrap().size();
+        assert!(bytes > 0);
+        let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), sdk).unwrap();
+        let executable = keel_link::link(&[keel_link::Input { name: "suite.o", bytes: &macho }], keel_link::Options { dylibs: vec![system], ..Default::default() }).unwrap();
+        let image = object::File::parse(executable.bytes.as_slice()).unwrap();
+        assert_eq!(image.kind(), object::ObjectKind::Executable);
+        let path = out.join(format!("{name}-{tier_name}"));
+        keel_link::write_signed(&executable, &path).unwrap();
+        let program = keel_codegen::compile_program(&module, Target::X86_64LinuxGnu).unwrap();
+        let elf = keel_asm::x86::assemble_program_object(&program).unwrap();
+        let file = object::File::parse(elf.as_slice()).unwrap();
+        assert_eq!(file.architecture(), object::Architecture::X86_64);
+        assert!(file.section_by_name(".text").unwrap().size() > 0);
+        println!("native {name}-{tier_name} arm={bytes} x86={}", file.section_by_name(".text").unwrap().size());
+    }
+}
+
+fn main() {
+    __RUN_SELECTED_TESTS__
+    println!("upstream selected=__UPSTREAM_TEST_COUNT__");
+    let sdk = std::path::PathBuf::from(std::env::var("SDKROOT").unwrap());
+    let out = std::path::PathBuf::from(std::env::var("KEEL_SUITE_OUT").unwrap());
+    emit("loop", r#"
+func @main() -> i32 {
+entry:
+ v0 = iconst.i64 0
+ v1 = iconst.i64 1
+ v2 = iconst.i64 10
+ jump header(v0,v0)
+header(v3:i64,v4:i64):
+ v5 = icmp.slt v3,v2
+ brif v5,body,exit
+body:
+ v6 = iadd v4,v3
+ v7 = iadd v3,v1
+ jump header(v7,v6)
+exit:
+ v8 = iconst.i64 45
+ v9 = icmp.eq v4,v8
+ v10 = iconst.i32 0
+ v11 = iconst.i32 1
+ v12 = select v9,v10,v11
+ return v12
+}
+"#, &sdk, &out);
+    emit("calls", r#"
+func @main() -> i32 {
+entry:
+ v0 = iconst.i64 21
+ v1 = call @twice(v0)
+ v2 = call @twice(v1)
+ v3 = iconst.i64 84
+ v4 = icmp.eq v2,v3
+ v5 = iconst.i32 0
+ v6 = iconst.i32 1
+ v7 = select v4,v5,v6
+ return v7
+}
+func @twice(i64) -> i64 {
+entry(v0:i64):
+ v1 = iadd v0,v0
+ return v1
+}
+"#, &sdk, &out);
+    emit("memory", r#"
+func @main() -> i32 {
+ ss0 = stack_slot 16, align 8
+entry:
+ v0 = stack_addr ss0
+ v1 = iconst.i64 8
+ v2 = ptradd v0,v1
+ v3 = iconst.i64 17
+ v4 = iconst.i64 25
+ store v3,v0
+ store v4,v2
+ v5 = load.i64 v0
+ v6 = load.i64 v2
+ v7 = iadd v5,v6
+ v8 = iconst.i64 42
+ v9 = icmp.eq v7,v8
+ v10 = iconst.i32 0
+ v11 = iconst.i32 1
+ v12 = select v9,v10,v11
+ return v12
+}
+"#, &sdk, &out);
+    emit("division", r#"
+func @main() -> i32 {
+entry:
+ v0 = iconst.i64 -100
+ v1 = iconst.i64 7
+ v2 = call @divide(v0,v1)
+ v3 = iconst.i64 -16
+ v4 = icmp.eq v2,v3
+ v5 = iconst.i32 0
+ v6 = iconst.i32 1
+ v7 = select v4,v5,v6
+ return v7
+}
+func @divide(i64,i64) -> i64 {
+entry(v0:i64,v1:i64):
+ v2 = sdiv v0,v1
+ v3 = srem v0,v1
+ v4 = iadd v2,v3
+ return v4
+}
+"#, &sdk, &out);
+    emit("indirect", r#"
+func @main() -> i32 {
+entry:
+ v0 = symbol_addr @twice
+ v1 = iconst.i64 21
+ v2 = call_indirect v0(v1) : (i64) -> i64
+ v3 = iconst.i64 42
+ v4 = icmp.eq v2,v3
+ v5 = iconst.i32 0
+ v6 = iconst.i32 1
+ v7 = select v4,v5,v6
+ return v7
+}
+func @twice(i64) -> i64 {
+entry(v0:i64):
+ v1 = iadd v0,v0
+ return v1
+}
+"#, &sdk, &out);
+}

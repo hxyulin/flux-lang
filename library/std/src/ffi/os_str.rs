@@ -45,3 +45,31 @@ impl Deref for OsString {
 }
 impl OsString { pub fn as_os_str(&self) -> &OsStr { OsStr::from_unix_bytes(&self.bytes) } }
 impl From<&OsStr> for OsString { fn from(value: &OsStr) -> Self { value.to_os_string() } }
+
+impl Default for &OsStr { fn default() -> Self { OsStr::new("") } }
+impl From<&String> for OsString { fn from(value: &String) -> Self { Self::from(value.as_str()) } }
+impl Clone for crate::alloc_crate::boxed::Box<OsStr> {
+    fn clone(&self) -> Self { self.to_os_string().into_boxed_os_str() }
+}
+
+macro_rules! os_str_eq {
+    ($left:ty, $right:ty) => {
+        impl PartialEq<$right> for $left {
+            fn eq(&self, other: &$right) -> bool {
+                let left: &OsStr = self.as_ref();
+                let right: &OsStr = other.as_ref();
+                left.as_encoded_bytes() == right.as_encoded_bytes()
+            }
+        }
+    };
+}
+os_str_eq!(OsStr, str);
+os_str_eq!(str, OsStr);
+os_str_eq!(OsString, str);
+os_str_eq!(str, OsString);
+os_str_eq!(OsString, &str);
+os_str_eq!(&str, OsString);
+os_str_eq!(OsString, OsStr);
+os_str_eq!(OsStr, OsString);
+os_str_eq!(OsString, &OsStr);
+os_str_eq!(&OsStr, OsString);

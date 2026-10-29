@@ -592,7 +592,7 @@ pub fn projections_of(
 /// Equalities belonging to caller proofs, rather than associated-type
 /// declarations. Preserve their provenance before substitution: a declaration
 /// Self can itself be an alias at a use site.
-pub(crate) fn caller_projections_of(
+pub fn caller_projections_of(
     items: &ItemTree,
     sigs: &Signatures,
     function: FunctionId,
@@ -859,7 +859,7 @@ impl SignatureImplProof<'_> {
 
     fn holds(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> bool {
         if in_env(self.sigs, self.memberships, goal)
-            || is_builtin_copy(self.items, goal.trait_ref.trait_, goal.self_ty)
+            || is_builtin_trait(self.items, goal.trait_ref.trait_, goal.self_ty)
             || (self.items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
                 && !crate::maybe_unsized(
                     self.items,
@@ -1207,7 +1207,12 @@ fn declared_alias_bound(sigs: &Signatures, goal: Predicate) -> Option<Predicate>
 /// What trait object `ty`, `d`, implements: its trait, with its
 /// supertraits.
 pub fn dyn_bounds(sigs: &Signatures, ty: Ty, d: crate::DynTy) -> Vec<Predicate> {
-    elaborate(sigs, &[dyn_principal(ty, d)])
+    let mut bounds = elaborate(sigs, &[dyn_principal(ty, d)]);
+    bounds.extend(d.auto_traits.iter().map(|&trait_ref| Predicate {
+        self_ty: ty,
+        trait_ref,
+    }));
+    bounds
 }
 
 /// `ty: Tr<A>` for trait object `ty`, `d`, `dyn Tr<A>`.
@@ -1468,6 +1473,18 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         (TyKind::Error, _) | (_, TyKind::Error) => true,
         (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) => {
             a == b && xs.iter().zip(ys).all(|(&x, &y)| match_ty(x, y, binds))
+        }
+        (TyKind::Dynamic(a), TyKind::Dynamic(b)) => {
+            a.trait_ == b.trait_
+                && a.auto_traits == b.auto_traits
+                && a.assoc_names == b.assoc_names
+                && a.args.len() == b.args.len()
+                && a.assoc_tys.len() == b.assoc_tys.len()
+                && a.args
+                    .iter()
+                    .chain(a.assoc_tys)
+                    .zip(b.args.iter().chain(b.assoc_tys))
+                    .all(|(&a, &b)| match_ty(a, b, binds))
         }
         (TyKind::Closure(a, xs), TyKind::Closure(b, ys)) => {
             a == b && xs.iter().zip(ys).all(|(&x, &y)| match_ty(x, y, binds))
@@ -2120,7 +2137,7 @@ fn holds_at(
     if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
         return !sigs.is_unsized(goal.self_ty);
     }
-    if is_builtin_copy(items, goal.trait_ref.trait_, goal.self_ty) {
+    if is_builtin_trait(items, goal.trait_ref.trait_, goal.self_ty) {
         return true;
     }
     if let Some(found) = fn_goal(items, goal.trait_ref.trait_, goal.self_ty) {
@@ -2189,17 +2206,20 @@ fn holds_at(
 }
 
 /// Built-in auto traits, identified by core's lang items, never by name.
-pub(crate) fn is_auto_trait(items: &ItemTree, t: TraitId) -> bool {
-    items.traits[t]
-        .lang
-        .is_some_and(|l| matches!(l.as_str(), "send" | "sync" | "unpin"))
+pub fn is_auto_trait(items: &ItemTree, t: TraitId) -> bool {
+    items.traits[t].lang.is_some_and(|l| {
+        matches!(
+            l.as_str(),
+            "send" | "sync" | "unpin" | "unwind_safe" | "ref_unwind_safe"
+        )
+    })
 }
 
 /// Structural auto-trait obligations. Explicit impls replace structural
 /// propagation for the entire ADT, including instantiations whose impl
 /// bounds fail. Unknown parameters and raw pointers have no candidate.
 /// Exact cycles are coinductive; growing instantiations retain depth limits.
-pub(crate) fn auto_trait_requirements(
+pub fn auto_trait_requirements(
     items: &ItemTree,
     sigs: &Signatures,
     goal: Predicate,
@@ -2209,6 +2229,12 @@ pub(crate) fn auto_trait_requirements(
         return None;
     }
     let mut trait_ref = goal.trait_ref;
+    let unwind_safe = items.traits[t]
+        .lang
+        .is_some_and(|l| l.as_str() == "unwind_safe");
+    let ref_unwind_safe = items.traits[t]
+        .lang
+        .is_some_and(|l| l.as_str() == "ref_unwind_safe");
     let types = match goal.self_ty.kind() {
         TyKind::Int(_)
         | TyKind::Float(_)
@@ -2224,8 +2250,22 @@ pub(crate) fn auto_trait_requirements(
         {
             Vec::new()
         }
+        TyKind::Dynamic(object) if object.auto_traits.iter().any(|bound| bound.trait_ == t) => {
+            Vec::new()
+        }
         TyKind::Tuple(types) => types.to_vec(),
         TyKind::Array(ty, _) | TyKind::Slice(ty) => vec![ty],
+        TyKind::Ref(Mutability::Mut, _) if unwind_safe => return None,
+        TyKind::Ref(_, ty) | TyKind::RawPtr(_, ty) if unwind_safe => {
+            let shared = *items.lang_traits.get(&Symbol::intern("ref_unwind_safe"))?;
+            trait_ref = TraitRef {
+                trait_: shared,
+                name: items.traits[shared].name,
+                args: Ty::list(&[]),
+            };
+            vec![ty]
+        }
+        TyKind::Ref(_, ty) | TyKind::RawPtr(_, ty) if ref_unwind_safe => vec![ty],
         TyKind::Ref(m, ty) => {
             // &T: Send requires T: Sync; &mut T: Send requires T: Send.
             // Both reference kinds are Sync exactly when T is Sync.
@@ -2257,6 +2297,14 @@ pub(crate) fn auto_trait_requirements(
             if (crate::is_lang_struct(items, adt.strukt, "cell")
                 || crate::is_lang_struct(items, adt.strukt, "unsafe_cell"))
                 && items.traits[t].lang.is_some_and(|l| l.as_str() == "sync")
+            {
+                return None;
+            }
+            // Cell stores T directly in this facade, but has UnsafeCell's
+            // shared-mutation contract just like Rust's representation.
+            if (crate::is_lang_struct(items, adt.strukt, "unsafe_cell")
+                || crate::is_lang_struct(items, adt.strukt, "cell"))
+                && ref_unwind_safe
             {
                 return None;
             }
@@ -2311,6 +2359,15 @@ pub fn is_builtin_copy(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
         }
         _ => false,
     }
+}
+
+/// Built-in trait implementations with no user impl body to select.
+pub fn is_builtin_trait(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
+    is_builtin_copy(items, t, ty)
+        || (matches!(ty.kind(), TyKind::FnPtr(_))
+            && items.traits[t]
+                .lang
+                .is_some_and(|lang| lang.as_str() == "Debug"))
 }
 
 /// Whether values of `ty` are copied rather than moved, given `env`, the
@@ -2469,6 +2526,14 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
     let Some(Owner::Trait(t)) = data.owner else {
         return instance;
     };
+    // An object's principal and supertrait methods dispatch through its
+    // vtable, even when a blanket impl also matches the erased object type.
+    if instance.args.first().is_some_and(|ty| {
+        matches!(ty.kind(), TyKind::Dynamic(d)
+        if crate::objects::supertraits_of(items, d.trait_).contains(&t))
+    }) {
+        return instance;
+    }
     let count = 1 + items.traits[t].generics.len();
     let (header, own) = instance.args.split_at(count.min(instance.args.len()));
     let goal = Predicate {
@@ -3427,6 +3492,62 @@ fn check_method(
     }
 }
 
+/// Normalize a family selected by one local structural impl header. Generic
+/// families with abstract inputs, competing headers, or upstream declarations
+/// remain opaque; projection inversion never binds an intersection variable.
+fn coherence_header_ty(items: &ItemTree, sigs: &Signatures, own: flux_hir::CrateId, ty: Ty) -> Ty {
+    fn walk(
+        items: &ItemTree,
+        sigs: &Signatures,
+        own: flux_hir::CrateId,
+        ty: Ty,
+        active: &mut Vec<Ty>,
+    ) -> Ty {
+        if !ty.has_aliases() || active.len() >= 64 || active.contains(&ty) {
+            return ty;
+        }
+        active.push(ty);
+        let nested = ty.map_children(|child| walk(items, sigs, own, child, active));
+        let normalized = if !nested.has_params() && !nested.has_infer() && !nested.has_opaques() {
+            normalize(items, sigs, &[], nested)
+        } else if let TyKind::Alias(alias) = nested.kind()
+            && !is_rigid(alias.args[0])
+        {
+            // A known constructor can choose one family declaration even with
+            // rigid generic arguments. Competing headers remain possible under
+            // specialization; their bounds are not negative evidence here.
+            let goal = alias_predicate(alias);
+            let goal_header: Vec<Ty> = std::iter::once(goal.self_ty)
+                .chain(goal.trait_ref.args.iter().copied())
+                .collect();
+            let mut candidates = sigs
+                .impl_index
+                .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
+                .filter(|&imp| {
+                    let header: Vec<Ty> = std::iter::once(sigs.impls[imp])
+                        .chain(sigs.impl_traits[imp].args.iter().copied())
+                        .collect();
+                    unify_headers(&header, &goal_header).is_some()
+                });
+            let unique = candidates.next().filter(|_| candidates.next().is_none());
+            if let Some((imp, args)) = select_impl(items, sigs, goal)
+                && Some(imp) == unique
+                && items.modules[items.impls[imp].module].krate == own
+                && let Some(rhs) = instantiate_impl_type(sigs, imp, alias, &args)
+            {
+                walk(items, sigs, own, rhs, active)
+            } else {
+                nested
+            }
+        } else {
+            nested
+        };
+        active.pop();
+        normalized
+    }
+    walk(items, sigs, own, ty, &mut Vec::new())
+}
+
 /// Whether `general`'s bounds rule out the types of `specific`, as
 /// rustc's coherence does for a blanket `impl<T: Copy> Tr for T` and an
 /// `impl Tr for S` with an `S` that is not `Copy`: when `general`'s
@@ -3445,7 +3566,7 @@ fn excluded_by_bounds(
     };
     let goal = trait_ref.with_self(self_ty);
     let Some(args) = match_impl_sized(items, sigs, general, goal, false) else {
-        return intersection_excluded_by_local_bound(items, sigs, general, specific);
+        return false;
     };
     // A parameter not bounded `?Sized` is not an unsized type, as
     // rustc's implicit `Sized` bounds say: `impl<T: Clone> ToOwned for
@@ -3463,7 +3584,7 @@ fn excluded_by_bounds(
 /// Intersected headers retain implicit Sized requirements. A local bound also
 /// cannot hold for an orphan-closed constructor without an existing proof:
 /// downstream crates cannot add that impl (`&[T]`, for example).
-fn intersection_excluded_by_local_bound(
+fn intersection_excluded_by_bounds(
     items: &ItemTree,
     sigs: &Signatures,
     a: ImplId,
@@ -3489,7 +3610,7 @@ fn intersection_excluded_by_local_bound(
             _ => true,
         }
     }
-    let own = items.modules[items.impls[a].module].krate;
+    let own = items.modules[items.impls[b].module].krate;
     let bounds_of = |id: ImplId| {
         let mut bounds = sigs
             .impl_predicates
@@ -3522,6 +3643,7 @@ fn intersection_excluded_by_local_bound(
     let header = |id| {
         std::iter::once(sigs.impls[id])
             .chain(sigs.impl_traits[id].args.iter().copied())
+            .map(|ty| coherence_header_ty(items, sigs, own, ty))
             .collect::<Vec<_>>()
     };
     let Some((_, bounds)) =
@@ -3544,8 +3666,9 @@ fn intersection_excluded_by_local_bound(
             }
             _ => false,
         };
-        local(predicate)
+        let absent_local = local(predicate)
             && closed(items, predicate.self_ty)
+            && predicate.trait_ref.args.iter().copied().all(|ty| closed(items, ty))
             && !open_object_bound
             // Objects and builtin traits can satisfy bounds without an impl
             // block. Absence from the index alone is not a negative proof.
@@ -3554,8 +3677,135 @@ fn intersection_excluded_by_local_bound(
                 .impl_index
                 .impls_for(items, predicate.trait_ref.trait_, predicate.self_ty)
                 .next()
-                .is_none()
+                .is_none();
+        absent_local || coherence_goal_impossible(items, sigs, own, *predicate, &mut Vec::new())
     })
+}
+
+/// A negative proof for an orphan-knowable intersection goal. Generic inputs
+/// permit only a proof that no candidate header can match. Concrete inputs can
+/// follow impossible prerequisites through blanket adapters. Missing upstream
+/// impls, unresolved projections and recursive bounds remain unknown.
+fn coherence_goal_impossible(
+    items: &ItemTree,
+    sigs: &Signatures,
+    own: flux_hir::CrateId,
+    goal: Predicate,
+    active: &mut Vec<Predicate>,
+) -> bool {
+    fn represented(ty: Ty) -> bool {
+        !has_error(ty) && !ty.has_aliases() && !ty.has_opaques()
+    }
+    fn closed_input(items: &ItemTree, ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::Ref(_, inner) => closed_input(items, inner),
+            TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "owned_box") => {
+                crate::box_pointee(ty).is_some_and(|inner| closed_input(items, inner))
+            }
+            TyKind::Param(_)
+            | TyKind::Alias(_)
+            | TyKind::Infer(_)
+            | TyKind::Error
+            | TyKind::Opaque(_) => false,
+            _ => true,
+        }
+    }
+    fn local_input(items: &ItemTree, own: flux_hir::CrateId, ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::Ref(_, inner) => local_input(items, own, inner),
+            TyKind::Adt(adt, _)
+                if items.modules[items.structs[adt.strukt].loc.module].krate == own =>
+            {
+                true
+            }
+            TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "owned_box") => {
+                crate::box_pointee(ty).is_some_and(|inner| local_input(items, own, inner))
+            }
+            TyKind::Dynamic(d) => items.modules[items.traits[d.trait_].loc.module].krate == own,
+            _ => false,
+        }
+    }
+    if active.len() >= 32 {
+        return false;
+    }
+    let goal = normalize_predicate(items, sigs, goal);
+    if !represented(goal.self_ty)
+        || !goal.trait_ref.args.iter().copied().all(represented)
+        || active.contains(&goal)
+        || holds(items, sigs, &[], goal)
+    {
+        return false;
+    }
+    let local_trait = items.modules[items.traits[goal.trait_ref.trait_].loc.module].krate == own;
+    let has_local_input = std::iter::once(goal.self_ty)
+        .chain(goal.trait_ref.args.iter().copied())
+        .any(|ty| local_input(items, own, ty));
+    if !local_trait && !has_local_input {
+        return false;
+    }
+    if std::iter::once(goal.self_ty)
+        .chain(goal.trait_ref.args.iter().copied())
+        .any(|ty| ty.has_params() || ty.has_infer())
+    {
+        // A nominal constructor containing rigid parameters cannot become a
+        // downstream-owned type. Fundamental wrappers and bare parameters can.
+        // Only prove absence: any possibly matching candidate stays unknown,
+        // regardless of bounds that might fail for a particular substitution.
+        if !std::iter::once(goal.self_ty)
+            .chain(goal.trait_ref.args.iter().copied())
+            .all(|ty| closed_input(items, ty))
+            || items.traits[goal.trait_ref.trait_].lang.is_some()
+            || matches!(goal.self_ty.kind(), TyKind::Dynamic(object)
+                if crate::objects::supertraits_of(items, object.trait_)
+                    .contains(&goal.trait_ref.trait_))
+        {
+            return false;
+        }
+        let goal_header: Vec<Ty> = std::iter::once(goal.self_ty)
+            .chain(goal.trait_ref.args.iter().copied())
+            .collect();
+        return sigs
+            .impl_index
+            .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
+            .all(|imp| {
+                let header: Vec<Ty> = std::iter::once(sigs.impls[imp])
+                    .chain(sigs.impl_traits[imp].args.iter().copied())
+                    .map(|ty| coherence_header_ty(items, sigs, own, ty))
+                    .collect();
+                unify_headers(&header, &goal_header).is_none()
+            });
+    }
+    // Builtin structural candidates need their own prerequisites too. A failed
+    // positive proof by itself never means that there is no builtin candidate.
+    if let Some(requirements) = auto_trait_requirements(items, sigs, goal) {
+        active.push(goal);
+        let impossible = requirements
+            .into_iter()
+            .any(|p| coherence_goal_impossible(items, sigs, own, p, active));
+        active.pop();
+        if !impossible {
+            return false;
+        }
+    }
+    active.push(goal);
+    let impossible = sigs
+        .impl_index
+        .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
+        .all(|imp| {
+            let Some(args) = match_impl(items, sigs, imp, goal) else {
+                // An unresolved projected header might match after its own
+                // constraints are solved. That is not a known disjoint candidate.
+                return !sigs.impls[imp].has_aliases()
+                    && !sigs.impl_traits[imp].args.iter().any(|ty| ty.has_aliases());
+            };
+            sigs.impl_predicates
+                .get(imp)
+                .into_iter()
+                .flatten()
+                .any(|p| coherence_goal_impossible(items, sigs, own, p.subst(&args), active))
+        });
+    active.pop();
+    impossible
 }
 
 /// `self`, `&self` or `&mut self`, for a `self` parameter of type `ty`.
@@ -4884,6 +5134,11 @@ fn unify_headers_with_predicates(
         };
         match (a.1.kind(), b.1.kind()) {
             (TyKind::Error, _) | (_, TyKind::Error) => true,
+            // Residual variables in an intersected header are unconstrained.
+            (TyKind::Infer(_), _) | (_, TyKind::Infer(_)) => true,
+            // A projection can evaluate to either side. Do not bind an
+            // unrelated generic variable by assuming its output is injective.
+            (TyKind::Alias(_), _) | (_, TyKind::Alias(_)) => true,
             (TyKind::Param(p), TyKind::Param(q)) if a.0 == b.0 && p.index == q.index => true,
             (TyKind::Param(p), _) => {
                 let var = (a.0, p.index);
@@ -4906,6 +5161,7 @@ fn unify_headers_with_predicates(
             (TyKind::Slice(x), TyKind::Slice(y)) => unify(bound, (a.0, x), (b.0, y), depth + 1),
             (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
                 x.trait_ == y.trait_
+                    && x.auto_traits == y.auto_traits
                     && x.assoc_names == y.assoc_names
                     && all(x.args, y.args)
                     && all(x.assoc_tys, y.assoc_tys)
@@ -4997,6 +5253,7 @@ fn check_overlap(
             else {
                 continue;
             };
+            let own = items.modules[items.impls[later].module].krate;
             // A type that did not resolve, or names an associated type
             // whose trait does not hold, was reported already.
             if b == Ty::ERROR || broken_header(items, sigs, later) {
@@ -5004,6 +5261,7 @@ fn check_overlap(
             }
             let b_header: Vec<Ty> = std::iter::once(b)
                 .chain(b_ref.args.iter().copied())
+                .map(|ty| coherence_header_ty(items, sigs, own, ty))
                 .collect();
             let earlier = sigs.impl_index.earlier(items, sigs, t, i).find(|&a| {
                 let (Some(&a_ty), Some(a_ref)) = (sigs.impls.get(a), sigs.impl_traits.get(a))
@@ -5012,12 +5270,14 @@ fn check_overlap(
                 };
                 let a_header: Vec<Ty> = std::iter::once(a_ty)
                     .chain(a_ref.args.iter().copied())
+                    .map(|ty| coherence_header_ty(items, sigs, own, ty))
                     .collect();
                 a_ty != Ty::ERROR
                     && !broken_header(items, sigs, a)
                     && unify_headers(&a_header, &b_header).is_some()
                     && !excluded_by_bounds(items, sigs, a, later)
                     && !excluded_by_bounds(items, sigs, later, a)
+                    && !intersection_excluded_by_bounds(items, sigs, a, later)
             });
             let Some(earlier) = earlier else {
                 continue;
@@ -5025,6 +5285,7 @@ fn check_overlap(
             // What both are for, as rustc names it: `From<_>` for `W<_>`.
             let a_header: Vec<Ty> = std::iter::once(sigs.impls[earlier])
                 .chain(sigs.impl_traits[earlier].args.iter().copied())
+                .map(|ty| coherence_header_ty(items, sigs, own, ty))
                 .collect();
             let header = unify_headers(&a_header, &b_header).unwrap_or(b_header);
             let trait_ref = TraitRef {

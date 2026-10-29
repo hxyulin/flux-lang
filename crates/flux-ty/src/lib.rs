@@ -16,7 +16,11 @@
 //! checking: calls to `unsafe` functions need an `unsafe` block, and
 //! assignments need a `mut` binding.
 
+pub mod const_dependencies;
+pub mod entry;
+pub mod inline_asm;
 mod signature;
+pub mod sized_dispatch;
 pub use signature::{signatures, signatures_checked};
 
 mod resolve;
@@ -43,6 +47,7 @@ mod pats;
 pub mod regions;
 pub mod traits;
 mod ty;
+pub mod type_identity;
 
 use std::fmt::Write;
 use std::ops::Index;
@@ -135,6 +140,9 @@ impl FnSig {
 /// generic parameters.
 #[derive(Debug, Clone, Default)]
 pub struct Signatures {
+    /// Shared by constant evaluation and monomorphization of this graph.
+    pub type_ids: type_identity::TypeIds,
+    pub sized_dispatch: rustc_hash::FxHashMap<FunctionId, flux_hir::SizedDispatch>,
     pub unions: rustc_hash::FxHashSet<StructId>,
     pub fns: LayeredArenaMap<Function, FnSig>,
     /// The types of each struct's fields, and of each enum's, every
@@ -199,6 +207,8 @@ pub struct Signatures {
 /// and, for itself, one more parameter after them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OpaqueSig {
+    /// Written bound index for each directly resolved predicate.
+    pub bound_origins: Box<[u32]>,
     pub predicates: Box<[Predicate]>,
     pub projections: Box<[Projection]>,
 }
@@ -230,6 +240,8 @@ impl Signatures {
     /// The lookup indexes are rebuilt for the extended item tree.
     fn fork_for_extension(&self) -> Self {
         Self {
+            type_ids: self.type_ids.clone(),
+            sized_dispatch: self.sized_dispatch.clone(),
             unions: self.unions.clone(),
             fns: self.fns.clone(),
             structs: self.structs.clone(),
@@ -644,6 +656,7 @@ fn duplicate_assoc_items(
         .iter()
         .filter(|(_, imp)| match imp.target {
             Some(ImplTarget::Struct(s)) => !items.structs[s].generics.is_empty(),
+            Some(ImplTarget::Object(_)) => true,
             _ => false,
         })
         .collect();
@@ -765,10 +778,12 @@ fn opaque_sigs(
         let this = Ty::param(count, decl.name);
         let mut predicates = Vec::new();
         let mut projections = Vec::new();
-        for b in decl.bounds.iter() {
+        let mut bound_origins = Vec::new();
+        for (origin, b) in decl.bounds.iter().enumerate() {
             if let Some((trait_ref, bindings)) =
                 traits::resolve_bound(items, module, b, this, scope, errors)
             {
+                bound_origins.push(origin as u32);
                 predicates.push(Predicate {
                     self_ty: this,
                     trait_ref,
@@ -808,6 +823,7 @@ fn opaque_sigs(
             }
         }
         out.push(OpaqueSig {
+            bound_origins: bound_origins.into(),
             predicates: predicates.into(),
             projections: projections.into(),
         });
@@ -1097,7 +1113,7 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
     let krate = items.main_crate();
     let root = items.module_of(krate);
     let data = &items.crates[krate.0 as usize];
-    if data.no_std && !data.externs.contains(&sym::std) {
+    if data.no_std && !items.std_available(root) {
         return Some(Diagnostic {
             file: items.modules[root].file,
             range: TextRange::empty(0),
@@ -1132,7 +1148,23 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
         "`main` function is not allowed to be `unsafe`".to_owned()
     } else if !sig.params.is_empty() {
         "`main` function cannot take parameters".to_owned()
-    } else if ![Ty::UNIT, Ty::NEVER, Ty::ERROR].contains(&sig.ret) {
+    } else if ![Ty::UNIT, Ty::NEVER, Ty::ERROR].contains(&sig.ret)
+        && !entry::termination_trait(items).is_some_and(|trait_| {
+            traits::holds(
+                items,
+                sigs,
+                &[],
+                traits::Predicate {
+                    self_ty: sig.ret,
+                    trait_ref: traits::TraitRef {
+                        trait_,
+                        name: items.traits[trait_].name,
+                        args: Ty::list(&[]),
+                    },
+                },
+            )
+        })
+    {
         format!("`main` has invalid return type `{}`", sig.ret)
     } else {
         return None;
@@ -1343,6 +1375,11 @@ pub fn deref_fn(items: &ItemTree, mutability: Mutability) -> Option<FunctionId> 
 /// trait's method, its definition in each `impl` block of the trait.
 pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
     let mut out = vec![function];
+    // Both ordinary definitions must be type/MIR checked before mono chooses
+    // one concrete instance. Metadata contains already-resolved trusted IDs.
+    if let Some(dispatch) = items.sized_dispatch.get(&function) {
+        out.extend([dispatch.sized, dispatch.fallback]);
+    }
     if let Some(Owner::Trait(t)) = items.functions[function].owner {
         let name = items.functions[function].name;
         let impls = items.trait_impls.get(&t).into_iter().flatten();
@@ -1394,7 +1431,7 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         let traits: Vec<flux_hir::TraitId> = result
             .unsizes
             .iter()
-            .filter_map(|(_, &ty)| objects::unsize_trait(ty))
+            .filter_map(|(_, &ty)| objects::unsize_trait(items, ty))
             .collect();
         let drop = (!traits.is_empty())
             .then(|| objects::drop_in_place(items))
@@ -1436,6 +1473,7 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
     // functions code generation calls, then the program's bodies, then
     // the `core` bodies they reach.
     queue.extend(core_roots(items));
+    queue.extend(entry::main_runner(items, &sigs));
     queue.extend(
         hir.bodies
             .iter()
@@ -1539,11 +1577,14 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
     }
 }
 
-/// A structural constant's scalar leaves and aggregate fields, in order.
-/// Pattern checking consumes values rather than assuming a constant is a
-/// wildcard; a newtype constant covers only its actual field values.
+/// An evaluated constant used by pattern checking. Structural aggregates
+/// retain their field values; shared strings remain refutable without their
+/// contents because finite string patterns cannot exhaust the domain.
 #[derive(Debug, Clone)]
 pub enum PatternConst {
+    /// An evaluated shared string. Its contents are compared in MIR; a finite
+    /// set of strings cannot exhaust the string domain.
+    Str,
     Scalar(i128),
     Aggregate(Vec<PatternConst>),
     Variant {

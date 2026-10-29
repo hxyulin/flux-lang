@@ -1,0 +1,58 @@
+use std::ffi::{OsStr, OsString};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::Path;
+fn bytes(value: Option<&OsStr>) -> Option<&[u8]> { value.map(OsStrExt::as_bytes) }
+fn path(value: &[u8]) {
+    let path = Path::new(OsStr::from_bytes(value));
+    print!("{:?} {:?} {:?} ", value, bytes(path.file_stem()), bytes(path.extension()));
+    assert!(path.components()==path.components());
+    assert_eq!(path.components().cmp(path.components()),std::cmp::Ordering::Equal);
+    let mut it = path.components();
+    print!("{:?} ", it.as_path().as_os_str().as_bytes());
+    while let Some(first) = it.next() {
+        print!("{:?}:{:?}/",first,it.as_path().as_os_str().as_bytes());
+        if let Some(last) = it.next_back() { print!("{:?}:{:?}/",last,it.as_path().as_os_str().as_bytes()); }
+    }
+    assert!(it.next().is_none()); assert!(it.next_back().is_none());
+    print!(" ");
+    for ancestor in path.ancestors() { print!("{:?}/",ancestor.as_os_str().as_bytes()); }
+    println!();
+}
+fn main() {
+    let chunks = ["", "/", ".", "..", "a", ".a", "a.", "a..b", "β"];
+    for a in chunks { for b in chunks { for c in chunks { path(format!("{a}/{b}/{c}").as_bytes()); } } }
+    for name in [b"".as_slice(),b".",b"..",b".env",b".env.ext",b"foo.",b"\xff/a.\xfe",b"./a//./b/",b"/../a/.."] { path(name); }
+    for name in ["FLUX_ENV_PRESENT", "FLUX_ENV_EMPTY", "FLUX_ENV_MISSING", "FLUX_ENV_RAW"] {
+        println!("env {name} {:?}", std::env::var_os(name).map(OsString::into_vec));
+    }
+    assert!(std::env::var_os(OsStr::from_bytes(b"nul\0name")).is_none());
+    println!("var {:?} {:?} {:?}",std::env::var("FLUX_ENV_PRESENT"),std::env::var("FLUX_ENV_RAW"),std::env::var("FLUX_ENV_MISSING"));
+    let raw_name=OsStr::from_bytes(b"FLUX_ENV_\xff_KEY");
+    println!("raw key {:?}",std::env::var_os(raw_name).map(OsString::into_vec));
+    assert_eq!(std::env::var_os(raw_name.to_os_string()),std::env::var_os(raw_name));
+    unsafe extern "C" { fn setenv(key:*const i8,value:*const i8,overwrite:i32)->i32; fn unsetenv(key:*const i8)->i32; }
+    unsafe { assert_eq!(setenv(c"FLUX_ENV_SNAPSHOT".as_ptr(),c"before".as_ptr(),1),0); }
+    let mut snapshot=std::env::vars_os();
+    unsafe { assert_eq!(setenv(c"FLUX_ENV_SNAPSHOT".as_ptr(),c"after".as_ptr(),1),0); }
+    assert_eq!(snapshot.find(|(key,_)|key.as_bytes()==b"FLUX_ENV_SNAPSHOT").unwrap().1,OsString::from("before"));
+    assert_eq!(std::env::var_os("FLUX_ENV_SNAPSHOT"),Some(OsString::from("after")));
+    unsafe { assert_eq!(unsetenv(c"FLUX_ENV_SNAPSHOT".as_ptr()),0); }
+    let mut env:Vec<_>=std::env::vars_os().filter(|(key,_)|key.as_bytes().starts_with(b"FLUX_ENV_")).map(|(key,value)|(key.into_vec(),value.into_vec())).collect();
+    env.sort();println!("vars {:?}",env);
+    println!("temp {:?}",std::env::temp_dir().as_os_str().as_bytes());
+    let mut args=std::env::args_os();
+    assert!(args.next().is_some());
+    let first=args.next().unwrap(); let cloned=first.clone();
+    let last=args.next_back().unwrap();
+    println!("args {:?} {:?} {:?} {}",first.as_bytes(),cloned.into_vec(),last.into_vec(),args.len());
+    let rest:Vec<_>=args.map(OsString::into_vec).collect();println!("remaining {:?}",rest);
+    let again:Vec<_>=std::env::args_os().skip(1).map(OsString::into_vec).collect();println!("again {:?}",again);
+    let root=std::env::var_os("FLUX_ENV_FIXTURE").unwrap();
+    let root=Path::new(&root);
+    for name in ["file", "dir", "missing", "file/child", "link", "broken", "loop"] {
+        let p=root.join(name);
+        println!("exists {name} {} {:?}",p.exists(),p.try_exists().map_err(|e|e.kind()));
+    }
+    let nul=Path::new(OsStr::from_bytes(b"bad\0path"));
+    println!("nul {} {:?}",nul.exists(),nul.try_exists().map_err(|e|e.kind()));
+}

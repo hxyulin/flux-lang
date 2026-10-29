@@ -79,6 +79,8 @@ pub enum Expr {
     /// Malformed or unsupported; already reported.
     Missing,
     Literal(Literal),
+    /// An opaque, always-returning target assembly operation.
+    InlineAsm(InlineAsm),
     /// A name, resolved.
     Path(Res),
     /// `()` or `(a, b)`.
@@ -204,6 +206,37 @@ pub enum Expr {
         fields: SliceId<(Symbol, ExprId)>,
         spread: Option<ExprId>,
     },
+}
+
+/// Register classes currently represented by inline assembly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AsmRegister {
+    Reg,
+    Vreg,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsmTemplatePiece {
+    Text(Symbol),
+    Operand { index: u32, modifier: Option<char> },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AsmOptions {
+    pub nomem: bool,
+    pub readonly: bool,
+    pub preserves_flags: bool,
+    pub nostack: bool,
+    pub pure: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineAsm {
+    pub template: Box<[AsmTemplatePiece]>,
+    pub registers: Box<[AsmRegister]>,
+    /// Every operand is an inout place, evaluated once in source order.
+    pub operands: SliceId<ExprId>,
+    pub options: AsmOptions,
 }
 
 /// `pat if guard => body`

@@ -1,5 +1,26 @@
 //! IEEE binary floating-point primitives.
 use crate::cmp::Ordering;
+
+impl f32 {
+    pub const RADIX: u32 = 2;
+    pub const MANTISSA_DIGITS: u32 = 24;
+    pub const DIGITS: u32 = 6;
+    pub const MIN_EXP: i32 = -125;
+    pub const MAX_EXP: i32 = 128;
+    pub const MIN_10_EXP: i32 = -37;
+    pub const MAX_10_EXP: i32 = 38;
+}
+
+impl f64 {
+    pub const RADIX: u32 = 2;
+    pub const MANTISSA_DIGITS: u32 = 53;
+    pub const DIGITS: u32 = 15;
+    pub const MIN_EXP: i32 = -1021;
+    pub const MAX_EXP: i32 = 1024;
+    pub const MIN_10_EXP: i32 = -307;
+    pub const MAX_10_EXP: i32 = 308;
+}
+
 macro_rules! float_impl {
     ($t:ty, $u:ty, $sign:expr, $exp:expr, $frac:expr, $max:expr, $minpos:expr, $epsilon:expr) => {
         impl $t {

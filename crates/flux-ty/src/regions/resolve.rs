@@ -1047,7 +1047,9 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         };
         walker.add_projection_bounds(&imp.generics);
         walker.elided = Elided::Fresh;
+        walker.selections = Some(Vec::new());
         let self_regions = walker.regions(&imp.self_ty, self_ty);
+        let mut header_selections = vec![walker.selections.take().unwrap().into_boxed_slice()];
         let trait_ref = sigs.impl_traits.get(id).copied();
         let mut trait_args: Vec<Box<[Region]>> = Vec::new();
         let mut trait_lifetimes: Box<[Region]> = Box::default();
@@ -1060,12 +1062,14 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             walker.trait_lifetimes(&bound.path, trait_ref.trait_, true, &mut lifetimes);
             trait_lifetimes = lifetimes.into();
             for (i, &arg) in trait_ref.args.iter().enumerate() {
+                walker.selections = Some(Vec::new());
                 let regions = match written
                     .filter(|w| !w.parenthesized)
                     .and_then(|w| w.types.get(i))
                 {
                     Some(t) => walker.regions(t, arg),
                     None if arg == self_ty && trait_default_self(items, trait_ref.trait_, i) => {
+                        walker.selections = Some(header_selections[0].to_vec());
                         self_regions.clone()
                     }
                     None => {
@@ -1080,6 +1084,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
                     }
                 };
                 trait_args.push(regions);
+                header_selections.push(walker.selections.take().unwrap().into_boxed_slice());
             }
         }
         let fresh = std::mem::take(&mut walker.fresh);
@@ -1233,6 +1238,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
                 names: all_names.into(),
                 self_ty: self_regions,
                 trait_args: trait_args.into(),
+                header_selections: header_selections.into(),
                 trait_lifetimes,
                 types,
                 type_selections: type_selections.into(),
@@ -1393,14 +1399,29 @@ pub(super) fn safe_method_contract(
     walker.add_projection_bounds(&declaration.generics);
     walker.add_projection_bounds(&function.generics);
     walker.elided = Elided::Fresh;
+    let mut elision_params = Vec::new();
+    let capture_selections = signature
+        .params
+        .iter()
+        .chain([&signature.ret])
+        .any(|ty| ty.has_aliases());
+    let mut selected_inputs = Vec::new();
     let params: Box<[Box<[Region]>]> = function
         .params
         .iter()
         .zip(signature.params.iter())
-        .map(|(written, &ty)| walker.regions(&written.ty, ty))
+        .map(|(written, &ty)| {
+            elision_params.push(walker.elision_regions(&written.ty, ty));
+            walker.selections = capture_selections.then(Vec::new);
+            let row = walker.regions(&written.ty, ty);
+            if let Some(selections) = walker.selections.take() {
+                selected_inputs.push(selections.into_boxed_slice());
+            }
+            row
+        })
         .collect();
     let mut distinct = Vec::new();
-    for row in &params {
+    for row in &elision_params {
         let mut own = Vec::new();
         for &region in row {
             if !own.contains(&region) {
@@ -1420,7 +1441,11 @@ pub(super) fn safe_method_contract(
     } else {
         Elided::Missing(None)
     };
+    walker.selections = capture_selections.then(Vec::new);
     let ret = walker.regions(&function.ret, signature.ret);
+    if let Some(selections) = walker.selections.take() {
+        selected_inputs.push(selections.into_boxed_slice());
+    }
     let mut all_names = owner_names;
     all_names.extend(function.generics.lifetimes.iter().map(|l| LifetimeName {
         name: Some(l.name),
@@ -1492,6 +1517,7 @@ pub(super) fn safe_method_contract(
         names: all_names.into(),
         params,
         ret,
+        selected_inputs: selected_inputs.into(),
         outlives: outlives.into(),
         has_bounds: !function.generics.outlives.is_empty()
             || !function.generics.type_outlives.is_empty(),
@@ -1572,7 +1598,15 @@ fn functions(
         let mut names: Vec<Option<Symbol>> = owner_names.iter().map(|n| n.name).collect();
         names.extend(function.generics.lifetimes.iter().map(|l| Some(l.name)));
         let generics = crate::generic_names(items, function.owner, &function.generics);
-        let self_ty = crate::self_ty(sigs, function.owner);
+        let self_ty = crate::self_ty(sigs, function.owner).or_else(|| {
+            function.ctor.map(|(strukt, _)| {
+                Ty::adt(
+                    strukt,
+                    items.structs[strukt].name,
+                    &crate::params_of(&function.generics, 0),
+                )
+            })
+        });
         let mut walker = Walker::new(items, function.loc.module, names);
         walker.self_regions = self_regions.as_deref();
         walker.self_types = &self_types;
@@ -1605,11 +1639,29 @@ fn functions(
         }
         walker.elided = Elided::Fresh;
         let (sig_params, mut sig_ret) = (sigs.fns[id].params.clone(), sigs.fns[id].ret);
+        let mut elision_params = Vec::new();
+        let selected_method = matches!(function.owner, Some(flux_hir::Owner::Impl(imp))
+            if sigs.impl_traits.get(imp).is_some());
+        let capture_selections = selected_method
+            || sig_params
+                .iter()
+                .chain([&sig_ret])
+                .any(|ty| ty.has_aliases());
+        let mut selected_inputs = Vec::new();
+        walker.qualified_legacy_selections = selected_method;
         let params: Box<[Box<[Region]>]> = function
             .params
             .iter()
             .zip(sig_params.iter())
-            .map(|(p, &ty)| walker.regions(&p.ty, ty))
+            .map(|(p, &ty)| {
+                elision_params.push(walker.elision_regions(&p.ty, ty));
+                walker.selections = capture_selections.then(Vec::new);
+                let row = walker.regions(&p.ty, ty);
+                if let Some(selections) = walker.selections.take() {
+                    selected_inputs.push(selections.into_boxed_slice());
+                }
+                row
+            })
             .collect();
         // Elision in the return type.
         let first_fresh = walker.names.len() as u32;
@@ -1618,12 +1670,15 @@ fn functions(
                 function.params.first().map(|p| &p.ty),
                 Some(TypeRef::Ref { .. })
             );
-        let inputs: Vec<Region> = params.iter().flat_map(|p| p.iter().copied()).collect();
+        let inputs: Vec<Region> = elision_params
+            .iter()
+            .flat_map(|p| p.iter().copied())
+            .collect();
         // Each parameter's lifetimes, each once, as rustc counts them:
         // `&'a S<'a>`, and `&dyn Tr`, whose lifetime bound is its
         // reference's, have one; `x: &'a i32, y: &'a i32` two.
         let mut distinct: Vec<Region> = Vec::new();
-        for p in params.iter() {
+        for p in elision_params.iter() {
             let mut own: Vec<Region> = Vec::new();
             for &r in p.iter() {
                 if !own.contains(&r) {
@@ -1663,7 +1718,11 @@ fn functions(
             }
             walker.opaque_captures = opaques.iter().map(|o| o.captures.clone()).collect();
         }
+        walker.selections = capture_selections.then(Vec::new);
         let ret = walker.regions(&function.ret, sig_ret);
+        if let Some(selections) = walker.selections.take() {
+            selected_inputs.push(selections.into_boxed_slice());
+        }
         walker.opaque_captures.clear();
         let fresh = std::mem::take(&mut walker.fresh);
         let mut all_names = owner_names;
@@ -1726,6 +1785,7 @@ fn functions(
             sigs.fn_projections.get(id).map_or(&[][..], |p| p),
             &mut list,
             &mut walker,
+            None,
         );
         check_bound_wf(
             items,
@@ -1744,6 +1804,7 @@ fn functions(
             owner: owner_count,
             params,
             ret,
+            selected_inputs: selected_inputs.into(),
             outlives: outlives.into(),
             has_bounds: !function.generics.outlives.is_empty()
                 || !function.generics.type_outlives.is_empty(),
@@ -1793,7 +1854,14 @@ pub(super) fn callback_binder(
     {
         return CallbackBinder::Unclassified;
     }
-    let mut bound = regions.has_bounds;
+    if regions.has_bounds
+        != (!function.generics.outlives.is_empty() || !function.generics.type_outlives.is_empty())
+    {
+        return CallbackBinder::Unclassified;
+    }
+    // A type-only `T: 'static` condition must still be proved on reification,
+    // but it does not make the independent input loans early-bound.
+    let mut early = vec![false; regions.names.len()];
     let own = |r: Region| match r {
         Region::Param(i) if (i as usize) < regions.names.len() => Some(i >= regions.owner),
         Region::Param(_) => None,
@@ -1840,7 +1908,9 @@ pub(super) fn callback_binder(
         let Some(is_own) = own(r) else {
             return CallbackBinder::Unclassified;
         };
-        bound |= is_own;
+        if is_own && let Region::Param(i) = r {
+            early[i as usize] = true;
+        }
     }
     let mut written = Vec::new();
     for p in &function.generics.predicates {
@@ -1853,6 +1923,15 @@ pub(super) fn callback_binder(
         let mut local = written.split_off(start);
         local.retain(|l| !p.bound.bound_lifetimes.contains(&l.name));
         written.extend(local);
+    }
+    for predicate in &function.generics.outlives {
+        written.extend([predicate.longer, predicate.shorter]);
+    }
+    for predicate in &function.generics.type_outlives {
+        written.push(predicate.lifetime);
+        if !callback_type_lifetimes(&predicate.ty, &mut written) {
+            return CallbackBinder::Unclassified;
+        }
     }
     for lifetime in written {
         if lifetime.is_static() || lifetime.is_anonymous() {
@@ -1868,16 +1947,74 @@ pub(super) fn callback_binder(
         else {
             return CallbackBinder::Unclassified;
         };
-        bound |= i >= regions.owner as usize;
+        early[i] |= i >= regions.owner as usize;
+    }
+    // A predicate may fix one lifetime without fixing the signature's other
+    // loans: `R: Read<'de>` does not bind an independent slice input `'s`.
+    // Keep the conservative boundary whenever an early slot actually occurs
+    // in the signature. Predicate-only slots remain callee obligations.
+    let mut bound = regions
+        .params
+        .iter()
+        .flatten()
+        .chain(regions.ret.iter())
+        .any(|r| matches!(*r, Region::Param(i) if early.get(i as usize).copied().unwrap_or(true)));
+    if early.iter().any(|&slot| slot) {
+        let mut signature = Vec::new();
+        if !function
+            .params
+            .iter()
+            .all(|p| callback_type_lifetimes(&p.ty, &mut signature))
+            || !callback_type_lifetimes(&function.ret, &mut signature)
+        {
+            return CallbackBinder::Unclassified;
+        }
+        // Do not infer independence from a missing row when an alias, nested
+        // pointer or object syntactically carries the early lifetime.
+        bound |= signature.iter().any(|lifetime| {
+            regions
+                .names
+                .iter()
+                .rposition(|name| name.name == Some(lifetime.name))
+                .is_some_and(|i| early[i])
+        });
     }
     if bound {
         CallbackBinder::SignatureBound
     } else {
+        if !regions.has_bounds {
+            return CallbackBinder::Independent;
+        }
+        // Independent input binders do not erase type-only conditions such as
+        // `T: 'static`. Reconstruct those conditions before certifying a table
+        // that reification will later use to prove the function's obligations.
+        let names: Vec<_> = regions.names.iter().map(|name| name.name).collect();
+        let type_names = crate::generic_names(items, function.owner, &function.generics);
+        let mut required = Vec::new();
+        let mut errors = Vec::new();
+        bounds_outlives(
+            items,
+            sigs,
+            function.loc.module,
+            &function.generics,
+            &names,
+            &type_names,
+            &mut required,
+            &mut errors,
+        );
+        if !errors.is_empty()
+            || required.iter().any(|condition| match *condition {
+                Outlives::Region(a, b) if a == b => false,
+                _ => !regions.outlives.contains(condition),
+            })
+        {
+            return CallbackBinder::Unclassified;
+        }
         CallbackBinder::Independent
     }
 }
 
-fn callback_path_lifetimes(path: &Path, out: &mut Vec<LifetimeRef>) -> bool {
+pub(super) fn callback_path_lifetimes(path: &Path, out: &mut Vec<LifetimeRef>) -> bool {
     if let Some(q) = &path.qself
         && (!callback_type_lifetimes(&q.ty, out)
             || q.trait_
@@ -1904,7 +2041,7 @@ fn callback_path_lifetimes(path: &Path, out: &mut Vec<LifetimeRef>) -> bool {
     true
 }
 
-fn callback_type_lifetimes(ty: &TypeRef, out: &mut Vec<LifetimeRef>) -> bool {
+pub(super) fn callback_type_lifetimes(ty: &TypeRef, out: &mut Vec<LifetimeRef>) -> bool {
     match ty {
         TypeRef::Ref {
             lifetime, pointee, ..
@@ -1958,6 +2095,116 @@ fn trait_default_self(items: &ItemTree, trait_: flux_hir::TraitId, index: usize)
         Some((TypeRef::Path(path), _)) if path.as_name() == Some(kw::SelfUpper))
 }
 
+/// Original trait header predicates and equalities in its owner namespace.
+/// No selected implementation requirements are included in these assumptions.
+pub fn trait_bound_regions(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::TraitId,
+) -> Option<(Tables, Box<[TraitRefRegions]>, Tables)> {
+    let data = &items.traits[id];
+    let names: Vec<_> = sigs
+        .regions
+        .traits
+        .get(id)?
+        .names
+        .iter()
+        .map(|n| n.name)
+        .collect();
+    let generics = crate::generic_names(
+        items,
+        Some(flux_hir::Owner::Trait(id)),
+        &Generics::default(),
+    );
+    let signature = sigs.traits.get(id)?;
+    let own_predicates = sigs.trait_predicates.get(id).map_or(&[][..], |p| p);
+    // Associated-family declaration equalities have their own binders. Only
+    // header bindings can be mapped from this header's original syntax.
+    let projections = &signature.header_projections;
+    let mut errors = Vec::new();
+    let self_ty = Ty::param(0, kw::SelfUpper);
+    let mut written: Vec<_> = data
+        .supertraits
+        .iter()
+        .cloned()
+        .map(|bound| flux_hir::WherePredicate {
+            ty: TypeRef::Path(Path::single(kw::SelfUpper)),
+            ty_range: bound.range,
+            bound,
+        })
+        .collect();
+    let mut predicates: Vec<_> = signature
+        .supertraits
+        .iter()
+        .take(written.len())
+        .map(|tr| tr.with_self(self_ty))
+        .collect();
+    let mut next_super = written.len();
+    let mut next_own = 0;
+    let mut own_indices = Vec::new();
+    let mut bounds = vec![crate::traits::trait_self_predicate(items, id)];
+    bounds.extend_from_slice(own_predicates);
+    let scope = TypeScope {
+        self_ty: Some(self_ty),
+        generics: &generics,
+        bounds: &bounds,
+        defaults: Some(&sigs.trait_defaults),
+        struct_fields: Some(&sigs.structs),
+        ..TypeScope::default()
+    };
+    for predicate in &data.generics.predicates {
+        let ty = crate::resolve_type(
+            items,
+            data.loc.module,
+            &predicate.ty,
+            scope,
+            predicate.ty_range,
+            &mut errors,
+        );
+        let resolved = if ty == self_ty {
+            let resolved = signature.supertraits.get(next_super)?.with_self(self_ty);
+            next_super += 1;
+            resolved
+        } else {
+            let resolved = *own_predicates.get(next_own)?;
+            next_own += 1;
+            own_indices.push(predicates.len());
+            resolved
+        };
+        predicates.push(resolved);
+        written.push(predicate.clone());
+    }
+    if next_super != signature.supertraits.len() || next_own != own_predicates.len() {
+        return None;
+    }
+    let schema = Generics {
+        predicates: written.into(),
+        ..Generics::default()
+    };
+    let rows = bound_regions(
+        items,
+        data.loc.module,
+        &schema,
+        &names,
+        &generics,
+        &predicates,
+        projections,
+        &mut errors,
+    );
+    if !errors.is_empty()
+        || rows.0.len() != predicates.len()
+        || rows.1.len() != predicates.len()
+        || rows.2.len() != projections.len()
+    {
+        return None;
+    }
+    Some((
+        own_indices.iter().map(|&i| rows.0[i].clone()).collect(),
+        own_indices.iter().map(|&i| rows.1[i].clone()).collect(),
+        rows.2,
+    ))
+}
+
 /// The slots of the types `generics`' bounds are on, as `predicates`
 /// lists them, and of what they say associated types are, as
 /// `projections` does (those that resolved, in order), with the
@@ -1987,6 +2234,7 @@ fn bound_regions(
         projections,
         errors,
         &mut walker,
+        None,
     )
 }
 
@@ -2000,8 +2248,9 @@ fn bound_regions_with_walker(
     projections: &[crate::traits::Projection],
     errors: &mut Vec<(TextRange, String)>,
     walker: &mut Walker<'_>,
+    output_elision: Option<Elided>,
 ) -> (Tables, Box<[TraitRefRegions]>, Tables) {
-    walker.elided = Elided::NotAllowed;
+    walker.elided = output_elision.unwrap_or(Elided::NotAllowed);
     let written = &generics.predicates;
     let selfs: Tables = if predicates.len() == written.len() {
         written
@@ -2374,41 +2623,51 @@ fn opaque_regions(
             .map(|&l| walker.named(l))
             .filter(|&r| r != Region::Erased)
             .collect();
-        for bound in &decl.bounds {
-            let (trait_, _) = walker.items.resolve_trait(walker.module, bound);
-            if trait_.is_some_and(|id| !walker.items.traits[id].generics.lifetimes.is_empty())
-                || bound
-                    .path
-                    .args
-                    .iter()
-                    .flatten()
-                    .any(|a| !a.lifetimes.is_empty())
-            {
-                walker.errors.push((
-                    bound.range,
-                    "lifetimes in opaque trait arguments are not supported yet".to_owned(),
-                ));
+        let mut bounds = Vec::new();
+        if let Some(sig) = sigs.get(i) {
+            if sig.bound_origins.len() != sig.predicates.len() {
+                walker
+                    .errors
+                    .push((decl.range, "invalid opaque bound metadata".into()));
             }
-            // Opaque metadata records associated outputs and Fn binders, not
-            // region rows for arbitrary trait type arguments. Full predicate
-            // tables in functions/impls do not make this context represented.
-            for args in bound
-                .path
-                .args
-                .iter()
-                .flatten()
-                .filter(|a| !a.parenthesized)
-            {
-                let mut named = Vec::new();
-                for ty in &args.types {
-                    lifetimes_in(ty, &mut named);
-                }
-                if let Some(lifetime) = named.iter().find(|l| !l.is_anonymous()) {
-                    walker.errors.push((
-                        lifetime.range,
-                        "lifetimes in the generic arguments of bounds are not supported yet"
-                            .to_owned(),
-                    ));
+            for (&origin, &predicate) in sig.bound_origins.iter().zip(&sig.predicates) {
+                let Some(bound) = decl.bounds.get(origin as usize) else {
+                    walker
+                        .errors
+                        .push((decl.range, "invalid opaque bound origin".into()));
+                    continue;
+                };
+                // Reuse the ordinary bound walker with the exact written
+                // occurrence. The synthetic subject is the hidden Self
+                // parameter, whose own row comes from the opaque value.
+                let generics = Generics {
+                    predicates: vec![flux_hir::WherePredicate {
+                        ty: TypeRef::Infer,
+                        ty_range: bound.range,
+                        bound: bound.clone(),
+                    }]
+                    .into(),
+                    ..Generics::default()
+                };
+                let saved_elided = walker.elided.clone();
+                let mut errors = Vec::new();
+                let (_, rows, _) = bound_regions_with_walker(
+                    walker.items,
+                    &generics,
+                    &[predicate],
+                    &[],
+                    &mut errors,
+                    walker,
+                    Some(saved_elided.clone()),
+                );
+                walker.elided = saved_elided;
+                walker.errors.extend(errors);
+                if let Some(regions) = rows.into_vec().pop() {
+                    bounds.push(OpaqueBoundRegions {
+                        origin,
+                        predicate,
+                        regions,
+                    });
                 }
             }
         }
@@ -2453,36 +2712,9 @@ fn opaque_regions(
             None => {
                 let mut mentioned = outlives.to_vec();
                 mentioned.extend(projections.iter().flatten().copied());
-                if let Some(sig) = sigs.get(i) {
-                    for (bound, predicate) in decl.bounds.iter().zip(sig.predicates.iter()) {
-                        let last = bound.path.segments.len().saturating_sub(1);
-                        let Some(args) = bound.path.args(last) else {
-                            continue;
-                        };
-                        // Fn inputs introduce their own universal regions;
-                        // explicit outer lifetimes still belong to the opaque.
-                        let outer = if args.parenthesized {
-                            Some(std::mem::replace(
-                                &mut walker.elided,
-                                Elided::Is(Region::Erased),
-                            ))
-                        } else {
-                            None
-                        };
-                        let late_names = enter_fn_binder(
-                            walker,
-                            args,
-                            predicate.trait_ref.args.first().copied(),
-                        );
-                        for (written, &ty) in args.types.iter().zip(predicate.trait_ref.args.iter())
-                        {
-                            mentioned.extend(walker.regions(written, ty).iter().copied());
-                        }
-                        walker.late_names = late_names;
-                        if let Some(outer) = outer {
-                            walker.elided = outer;
-                        }
-                    }
+                for bound in &bounds {
+                    mentioned.extend(bound.regions.lifetimes.iter().copied());
+                    mentioned.extend(bound.regions.args.iter().flatten().copied());
                 }
                 // Older editions capture lifetimes occurring in these bounds,
                 // not unrelated inputs or the method receiver. Type and const
@@ -2517,6 +2749,7 @@ fn opaque_regions(
             }
         };
         out.push(OpaqueRegions {
+            bounds: bounds.into(),
             captures,
             outlives,
             projections: projections.into(),
@@ -2857,7 +3090,12 @@ impl VarianceWalk<'_> {
                 }
             }
             // `dyn Tr + 'a` is covariant in `'a`.
-            TyKind::Dynamic(_) => self.slot(ambient),
+            TyKind::Dynamic(object) => {
+                self.slot(ambient);
+                for ty in object_region_types(self.items, object) {
+                    self.go(ty, ambient.xform(Variance::Invariant));
+                }
+            }
             _ => {}
         }
     }
@@ -2949,6 +3187,29 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
             break;
         }
     }
+    // Static formation requirements are explicit declaration obligations.
+    // Ordinary reference outlives inference must not silently turn an invalid
+    // `struct S<'a> { value: Box<dyn StaticTrait + 'a> }` into a bounded ADT.
+    for (k, (id, data)) in items.structs.iter().skip(from).enumerate() {
+        let metadata = &sigs.regions.structs[id];
+        for ((field, &ty), row) in crate::all_fields(data)
+            .zip(sigs.structs[id].iter())
+            .zip(metadata.fields.iter())
+        {
+            let mut required = Vec::new();
+            implied_outlives_with_static(items, sigs, ty, row, Some(Region::Static), &mut required);
+            if required.into_iter().any(|bound| {
+                matches!(bound, Outlives::Region(_, Region::Static))
+                    && !outlives_known(bound, &explicit[k])
+            }) {
+                errors.push((
+                    data.loc.file,
+                    field.range,
+                    "lifetime bound not satisfied".to_owned(),
+                ));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3022,6 +3283,28 @@ mod static_bound_tests {
 #[cfg(test)]
 mod callback_metadata_tests {
     use super::*;
+
+    #[test]
+    fn independent_callback_retains_static_type_obligations() {
+        let source = "fn get<T:'static>(x:&T)->&T{x}fn main(){}";
+        let (_, _, hir) = flux_hir::lower_text("static-metadata.rs", source);
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let id = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "get" && f.owner.is_none())
+            .unwrap()
+            .0;
+        let mut row = sigs.regions.fns[id].clone();
+        assert_eq!(row.callback_binder, CallbackBinder::Independent);
+        row.outlives = Box::default();
+        assert_eq!(
+            callback_binder(&hir.items, &sigs, id, &row),
+            CallbackBinder::Unclassified
+        );
+    }
 
     #[test]
     fn incomplete_predicate_classification_fails_closed() {

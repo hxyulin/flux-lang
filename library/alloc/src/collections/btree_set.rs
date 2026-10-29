@@ -31,6 +31,10 @@ impl<T> Default for BTreeSet<T> {
 impl<T: Clone> Clone for BTreeSet<T> {
     fn clone(&self) -> Self { Self { map: self.map.clone() } }
 }
+impl<T: PartialEq> PartialEq for BTreeSet<T> {
+    fn eq(&self, other: &Self) -> bool { self.map == other.map }
+}
+impl<T: Eq> Eq for BTreeSet<T> {}
 impl<T: core::fmt::Debug> core::fmt::Debug for BTreeSet<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_set().entries(self.iter()).finish()
@@ -55,7 +59,13 @@ pub struct Iter<'a, T> { inner: btree_map::Iter<'a, T, ()> }
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<&'a T> { self.inner.next().map(|(key, _)| key) }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
 }
+impl<'a, T> core::iter::DoubleEndedIterator for Iter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next_back().map(|(key, _)| key) }
+}
+impl<T> Clone for Iter<'_, T> { fn clone(&self) -> Self { Self { inner: self.inner.clone() } } }
+impl<T> core::iter::ExactSizeIterator for Iter<'_, T> {}
 impl<T> core::iter::FusedIterator for Iter<'_, T> {}
 impl<'a, T> IntoIterator for &'a BTreeSet<T> {
     type Item = &'a T;

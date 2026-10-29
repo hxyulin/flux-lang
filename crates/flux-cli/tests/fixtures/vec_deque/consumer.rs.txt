@@ -1,0 +1,40 @@
+extern crate alloc;
+use alloc::collections::VecDeque;
+use std::cell::Cell;
+use std::rc::Rc;
+struct Item { id:usize, drops:Rc<Cell<usize>> }
+impl Drop for Item{fn drop(&mut self){self.drops.set(self.drops.get()+1);}}
+#[repr(align(128))]
+struct Aligned(u64);
+static ZST_DROPS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
+struct Zst;
+impl Drop for Zst{fn drop(&mut self){ZST_DROPS.fetch_add(1,std::sync::atomic::Ordering::SeqCst);}}
+fn same_identity(queue:std::collections::VecDeque<u32>)->alloc::collections::VecDeque<u32>{queue}
+fn main(){
+    assert_eq!(VecDeque::<()>::new().capacity(),usize::MAX);
+    assert_eq!(VecDeque::<Zst>::with_capacity(100).capacity(),usize::MAX);
+    let mut queue=VecDeque::with_capacity(5);
+    for i in 0..5{queue.push_back(i);}
+    for i in 0..3{assert_eq!(queue.pop_front(),Some(i));}
+    queue.extend([5,6,7]);
+    let (a,b)=queue.as_slices();assert_eq!(a,[3,4]);assert_eq!(b,[5,6,7]);
+    queue.reserve(40);assert!(queue.capacity()>=45);assert_eq!(queue.iter().copied().collect::<Vec<_>>(),vec![3,4,5,6,7]);
+    queue.push_front(2);queue.push_back(8);assert_eq!(queue.pop_front(),Some(2));assert_eq!(queue.pop_back(),Some(8));
+    *queue.front_mut().unwrap()+=10;*queue.back_mut().unwrap()+=20;queue[1]+=30;
+    let (a,b)=queue.as_mut_slices();for value in a.iter_mut().chain(b.iter_mut()){*value+=1;}
+    let mut it=queue.iter_mut();let first=it.next().unwrap();let last=it.next_back().unwrap();*first+=100;*last+=200;
+    println!("deque {:?}",queue);
+    let cloned=queue.clone();assert_eq!(queue.iter().rev().copied().collect::<Vec<_>>(),cloned.iter().rev().copied().collect::<Vec<_>>());
+    let mut into=cloned.into_iter();assert_eq!(into.len(),5);assert_eq!(into.next(),Some(114));assert_eq!(into.next_back(),Some(228));assert_eq!(into.len(),3);assert_eq!(into.collect::<Vec<_>>(),vec![35,6,7]);
+    let drops=Rc::new(Cell::new(0));
+    {let mut q=VecDeque::with_capacity(3);for id in 0..12{q.push_back(Item{id,drops:drops.clone()});if id%3==2{drop(q.pop_front());}}assert_eq!(q.front().unwrap().id,4);drop(q.pop_back());let mut it=q.into_iter();drop(it.next());drop(it.next_back());}
+    assert_eq!(drops.get(),12);
+    let mut q=VecDeque::new();for _ in 0..37{q.push_front(Zst);}for _ in 0..11{drop(q.pop_back());}drop(q);assert_eq!(ZST_DROPS.load(std::sync::atomic::Ordering::SeqCst),37);
+    let mut aligned=VecDeque::with_capacity(3);for i in 0..3{aligned.push_back(Aligned(i));}drop(aligned.pop_front());aligned.push_back(Aligned(3));for i in 4..20{aligned.push_front(Aligned(i));}for value in &aligned{assert_eq!((value as *const Aligned as usize)%128,0);}assert_eq!(aligned.back().unwrap().0,3);
+    let q:VecDeque<_>=[1u32,2,3].into();assert_eq!(same_identity(q).into_iter().sum::<u32>(),6);
+    // Cross enough wrap/grow states while comparing logical queue order.
+    let mut q=VecDeque::new();let mut reference=Vec::new();let mut state=17u64;
+    for step in 0..2000{state=state.wrapping_mul(6364136223846793005).wrapping_add(1);match state%4{0=>{q.push_back(step);reference.push(step);},1=>{q.push_front(step);reference.insert(0,step);},2=>{assert_eq!(q.pop_front(),if reference.is_empty(){None}else{Some(reference.remove(0))});},_=>{assert_eq!(q.pop_back(),reference.pop());}}assert_eq!(q.len(),reference.len());assert!(q.iter().copied().eq(reference.iter().copied()));}
+    q.clear();assert!(q.is_empty());assert!(q.front().is_none());assert!(q.back().is_none());assert!(q.pop_back().is_none());assert!(q.pop_front().is_none());
+    println!("drops {} zst {} random {}",drops.get(),ZST_DROPS.load(std::sync::atomic::Ordering::SeqCst),state);
+}

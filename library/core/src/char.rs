@@ -7,6 +7,10 @@ use crate::convert::From;
 use crate::iter::Step;
 use crate::option::Option::{self, None, Some};
 
+/// The highest Unicode scalar value. Prefer the associated constant `char::MAX`.
+#[deprecated(note = "use the char::MAX associated constant instead")]
+pub const MAX: char = '\u{10ffff}';
+
 pub const UNICODE_VERSION: (u8, u8, u8) = crate::char_properties::UNICODE_VERSION;
 pub const REPLACEMENT_CHARACTER: char = '\u{fffd}';
 

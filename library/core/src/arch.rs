@@ -1,6 +1,322 @@
-//! A bounded AArch64 NEON foundation. NEON is baseline on this target.
+//! A bounded AArch64 NEON foundation and target assembly.
+
+/// Inline target assembly, checked and lowered by the compiler.
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! asm {
+    ($($t:tt)*) => {};
+}
+pub use crate::asm;
 
 pub mod aarch64 {
+
+    /// 16 i8 lanes with the native NEON size and alignment.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct int8x16_t(pub(crate) [i8; 16]);
+
+    /// 8 i16 lanes with the native NEON size and alignment.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct int16x8_t(pub(crate) [i16; 8]);
+
+    /// 2 i32 lanes with the native NEON size and alignment.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct int32x2_t(pub(crate) [i32; 2]);
+
+    /// 4 i32 lanes with the native NEON size and alignment.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct int32x4_t(pub(crate) [i32; 4]);
+
+    /// 4 u16 lanes with the native NEON size and alignment.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct uint16x4_t(pub(crate) [u16; 4]);
+
+    /// 2 u32 lanes with the native NEON size and alignment.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct uint32x2_t(pub(crate) [u32; 2]);
+
+    /// Adds halfword lanes modulo 2^16.
+    #[target_feature(enable = "neon")]
+    pub fn vaddq_u16(a: uint16x8_t, b: uint16x8_t) -> uint16x8_t {
+        let mut result = [0u16; 8];
+        let mut i = 0;
+        while i < 8 {
+            result[i] = a.0[i].wrapping_add(b.0[i]);
+            i += 1;
+        }
+        uint16x8_t(result)
+    }
+
+    /// Compares signed byte lanes with zero, returning all-bit masks.
+    #[target_feature(enable = "neon")]
+    pub fn vcgtzq_s8(a: int8x16_t) -> uint8x16_t {
+        let mut result = [0u8; 16];
+        let mut i = 0;
+        while i < 16 {
+            result[i] = if a.0[i] > 0 { 255 } else { 0 };
+            i += 1;
+        }
+        uint8x16_t(result)
+    }
+
+    /// Concatenates the low and high pairs of signed words.
+    #[target_feature(enable = "neon")]
+    pub fn vcombine_s32(low: int32x2_t, high: int32x2_t) -> int32x4_t {
+        int32x4_t([low.0[0], low.0[1], high.0[0], high.0[1]])
+    }
+
+    /// Constructs one doubleword lane from its bits.
+    #[target_feature(enable = "neon")]
+    pub fn vcreate_u64(value: u64) -> uint64x1_t {
+        uint64x1_t([value])
+    }
+
+    /// Duplicates a signed word into two lanes.
+    #[target_feature(enable = "neon")]
+    pub fn vdup_n_s32(value: i32) -> int32x2_t {
+        int32x2_t([value; 2])
+    }
+
+    /// Duplicates a signed byte into sixteen lanes.
+    #[target_feature(enable = "neon")]
+    pub fn vdupq_n_s8(value: i8) -> int8x16_t {
+        int8x16_t([value; 16])
+    }
+
+    /// Extracts the lower eight byte lanes.
+    #[target_feature(enable = "neon")]
+    pub fn vget_low_u8(a: uint8x16_t) -> uint8x8_t {
+        uint8x8_t([
+            a.0[0], a.0[1], a.0[2], a.0[3], a.0[4], a.0[5], a.0[6], a.0[7],
+        ])
+    }
+
+    /// Multiplies lanes by a scalar and adds modulo the lane width.
+    #[target_feature(enable = "neon")]
+    pub fn vmla_n_s32(a: int32x2_t, b: int32x2_t, value: i32) -> int32x2_t {
+        let mut result = [0i32; 2];
+        let mut i = 0;
+        while i < 2 {
+            result[i] = a.0[i].wrapping_add(b.0[i].wrapping_mul(value));
+            i += 1;
+        }
+        int32x2_t(result)
+    }
+
+    /// Multiplies lanes by a scalar and adds modulo the lane width.
+    #[target_feature(enable = "neon")]
+    pub fn vmlaq_n_s16(a: int16x8_t, b: int16x8_t, value: i16) -> int16x8_t {
+        let mut result = [0i16; 8];
+        let mut i = 0;
+        while i < 8 {
+            result[i] = a.0[i].wrapping_add(b.0[i].wrapping_mul(value));
+            i += 1;
+        }
+        int16x8_t(result)
+    }
+
+    /// Multiplies lanes by a scalar and adds modulo the lane width.
+    #[target_feature(enable = "neon")]
+    pub fn vmlaq_n_s32(a: int32x4_t, b: int32x4_t, value: i32) -> int32x4_t {
+        let mut result = [0i32; 4];
+        let mut i = 0;
+        while i < 4 {
+            result[i] = a.0[i].wrapping_add(b.0[i].wrapping_mul(value));
+            i += 1;
+        }
+        int32x4_t(result)
+    }
+
+    /// Returns the saturated high half of signed doubled products.
+    #[target_feature(enable = "neon")]
+    pub fn vqdmulh_n_s32(a: int32x2_t, value: i32) -> int32x2_t {
+        let mut result = [0i32; 2];
+        let mut i = 0;
+        while i < 2 {
+            result[i] = if a.0[i] == i32::MIN && value == i32::MIN {
+                i32::MAX
+            } else {
+                ((a.0[i] as i64 * value as i64) >> 31) as i32
+            };
+            i += 1;
+        }
+        int32x2_t(result)
+    }
+
+    /// Returns the saturated high half of signed doubled products.
+    #[target_feature(enable = "neon")]
+    pub fn vqdmulhq_n_s16(a: int16x8_t, value: i16) -> int16x8_t {
+        let mut result = [0i16; 8];
+        let mut i = 0;
+        while i < 8 {
+            result[i] = if a.0[i] == i16::MIN && value == i16::MIN {
+                i16::MAX
+            } else {
+                ((a.0[i] as i32 * value as i32) >> 15) as i16
+            };
+            i += 1;
+        }
+        int16x8_t(result)
+    }
+
+    /// Returns the saturated high half of signed doubled products.
+    #[target_feature(enable = "neon")]
+    pub fn vqdmulhq_n_s32(a: int32x4_t, value: i32) -> int32x4_t {
+        let mut result = [0i32; 4];
+        let mut i = 0;
+        while i < 4 {
+            result[i] = if a.0[i] == i32::MIN && value == i32::MIN {
+                i32::MAX
+            } else {
+                ((a.0[i] as i64 * value as i64) >> 31) as i32
+            };
+            i += 1;
+        }
+        int32x4_t(result)
+    }
+
+    /// Looks up byte indices, returning zero for indices outside the table.
+    #[target_feature(enable = "neon")]
+    pub fn vqtbl1q_u8(table: uint8x16_t, indices: uint8x16_t) -> uint8x16_t {
+        let mut result = [0u8; 16];
+        let mut i = 0;
+        while i < 16 {
+            let index = indices.0[i] as usize;
+            result[i] = if index < 16 { table.0[index] } else { 0 };
+            i += 1;
+        }
+        uint8x16_t(result)
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpret_s32_u32(a: uint32x2_t) -> int32x2_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpret_s32_u64(a: uint64x1_t) -> int32x2_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpret_u16_s32(a: int32x2_t) -> uint16x4_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpret_u32_s32(a: int32x2_t) -> uint32x2_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_s16_s32(a: int32x4_t) -> int16x8_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_s32_u32(a: uint32x4_t) -> int32x4_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_s8_u8(a: uint8x16_t) -> int8x16_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_u16_s8(a: int8x16_t) -> uint16x8_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_u8_s16(a: int16x8_t) -> uint8x16_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Reinterprets lane bits without changing them.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_u8_u64(a: uint64x2_t) -> uint8x16_t {
+        // SAFETY: source and destination have equal size and all bit patterns are valid.
+        unsafe { crate::mem::transmute(a) }
+    }
+
+    /// Replaces lane N; the immediate must be 0 or 1.
+    #[rustc_legacy_const_generics(2)]
+    #[target_feature(enable = "neon")]
+    pub fn vsetq_lane_u64<const N: i32>(value: u64, a: uint64x2_t) -> uint64x2_t {
+        let mut result = a.0;
+        result[N as usize] = value;
+        uint64x2_t(result)
+    }
+
+    /// Widens halfwords and shifts left; N must be in 0..=16.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshll_n_u16<const N: i32>(a: uint16x4_t) -> uint32x4_t {
+        uint32x4_t([
+            (a.0[0] as u32) << N,
+            (a.0[1] as u32) << N,
+            (a.0[2] as u32) << N,
+            (a.0[3] as u32) << N,
+        ])
+    }
+
+    /// Shifts word lanes right; N must be in 1..=32.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshr_n_u32<const N: i32>(a: uint32x2_t) -> uint32x2_t {
+        if N == 32 {
+            uint32x2_t([0, 0])
+        } else {
+            uint32x2_t([a.0[0] >> N, a.0[1] >> N])
+        }
+    }
+
+    /// Stores sixteen bytes without an alignment requirement.
+    ///
+    /// # Safety
+    /// `ptr` must address sixteen writable bytes.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn vst1q_u8(ptr: *mut u8, a: uint8x16_t) {
+        let mut i = 0;
+        while i < 16 {
+            // SAFETY: each byte lies in the caller-provided writable region.
+            unsafe {
+                crate::ptr::write(ptr.add(i), a.0[i]);
+            }
+            i += 1;
+        }
+    }
+
     /// Accumulates one byte with the reflected IEEE CRC-32 polynomial.
     ///
     /// This scalar implementation preserves the instruction's uncomplemented

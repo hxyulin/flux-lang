@@ -296,6 +296,20 @@ fn main() {{ let a = unsafe {{ vreinterpretq_u16_u8(vdupq_n_u8(0)) }}; let _ = u
 #[test]
 #[cfg(target_arch = "aarch64")]
 fn neon_memchr_next_lowering_preserves_store_width_and_unsigned_max() {
+    fn function_body<'a>(asm: &'a str, name: &str) -> &'a str {
+        let label = format!("\n_{name}:\n");
+        assert_eq!(
+            asm.matches(&label).count(),
+            1,
+            "missing or duplicate {name}"
+        );
+        let (_, body) = asm.split_once(&label).unwrap();
+        let end = format!("\nL{name}_end:\n");
+        let (body, _) = body.split_once(&end).expect("function end label");
+        assert!(!body.trim().is_empty(), "empty assembly for {name}");
+        body
+    }
+
     for shift in 1..=8 {
         let text = "
 use core::arch::aarch64::*;
@@ -382,6 +396,8 @@ fn main() {
         }
         assert_eq!(pair_loads, [Type::Vector(VectorType::I8x16); 2]);
         assert_eq!(pair_stores, [Type::Vector(VectorType::I8x16)]);
+        let narrow_name = narrow.name.clone();
+        let pair_name = pair.name.clone();
         for tier in [
             keel_opt::OptimizationTier::None,
             keel_opt::OptimizationTier::Full,
@@ -390,26 +406,42 @@ fn main() {
             keel_ir::verify_module(&module).unwrap();
             let asm =
                 keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
-            for instruction in ["shrn\tv", "umaxp\tv", "ldr\tq", "str\td"] {
-                assert!(asm.contains(instruction), "missing {instruction}:\n{asm}");
-            }
-            for instruction in ["ldrh\tw", "strb\tw", "cmhi\tv", "bsl\tv", "mrs\t", "msr\t"] {
+            // Runtime formatting and panic helpers can legitimately contain
+            // narrow scalar accesses. Check the two NEON wrappers themselves.
+            let narrow_asm = function_body(&asm, &narrow_name);
+            let pair_asm = function_body(&asm, &pair_name);
+            for (body, operation, store) in [
+                (narrow_asm, "shrn\tv", "str\td"),
+                (pair_asm, "umaxp\tv", "str\tq"),
+            ] {
+                let load = body.find("ldr\tq").expect("vector load");
+                let operation = body.find(operation).expect("packed NEON operation");
+                let store = body
+                    .find(store)
+                    .expect("vector store of the required width");
                 assert!(
-                    !asm.contains(instruction),
-                    "unexpected {instruction}:\n{asm}"
+                    load < operation && operation < store,
+                    "expected load, operation, then store:\n{body}"
                 );
+                for instruction in ["ldrh\tw", "strb\tw", "cmhi\tv", "bsl\tv", "mrs\t", "msr\t"] {
+                    assert!(
+                        !body.contains(instruction),
+                        "unexpected {instruction}:\n{body}"
+                    );
+                }
             }
             assert!(
-                asm.lines().any(|line| line.contains("shrn\tv")
+                narrow_asm.lines().any(|line| line.contains("shrn\tv")
                     && line.contains(".8b")
                     && line.contains(".8h")
                     && line.ends_with(&format!("#{shift}"))),
-                "{asm}"
+                "{narrow_asm}"
             );
             assert!(
-                asm.lines()
+                pair_asm
+                    .lines()
                     .any(|line| line.contains("umaxp\tv") && line.matches(".16b").count() == 3),
-                "{asm}"
+                "{pair_asm}"
             );
         }
     }

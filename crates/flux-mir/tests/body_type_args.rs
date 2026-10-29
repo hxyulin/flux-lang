@@ -30,6 +30,11 @@ fn check(source: &str) -> (Vec<String>, Vec<String>) {
 fn body_type_arguments_match_rustc() {
     let cases = [
         (
+            "named_annotation",
+            "fn f<'a>(x: &'a i32) { let _: &'a i32 = x; }",
+            true,
+        ),
+        (
             "named",
             "fn f<'a>(x: &'a i32) -> &'a i32 { id::<&'a i32>(x) }",
             true,
@@ -220,10 +225,6 @@ fn body_type_arguments_match_rustc() {
 #[test]
 fn body_lifetime_boundaries_remain_closed() {
     for (body, diagnostic) in [
-        (
-            "fn f<'a>(x: &'a i32) { let _: &'a i32 = x; }",
-            "named lifetimes in types in bodies",
-        ),
         (
             "fn f<'a>(x: &'a i32) { let _ = id::<&'a i32>; }",
             "lifetimes in function item values",

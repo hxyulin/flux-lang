@@ -71,6 +71,8 @@ impl crate::fmt::Display for TryFromIntError {
     }
 }
 
+impl crate::error::Error for TryFromIntError {}
+
 /// Why converting or parsing an integer failed.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum IntErrorKind {

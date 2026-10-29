@@ -11,7 +11,7 @@ pub use core::{
     any, array, ascii, cell, char, clone, cmp, convert, default, error, hint, iter, marker,
     mem, num, ops, option, panic, ptr, result,
 };
-pub use core::{dbg, eprint, eprintln, print, println};
+pub use core::{dbg, eprint, eprintln, print, println, stringify, write};
 pub use core::{slice, str, u8, u32, f32, f64, primitive};
 
 mod float;
@@ -32,6 +32,8 @@ pub mod io;
 pub mod hash;
 
 pub mod sync {
+    #[cfg(target_os = "macos")]
+    pub mod mpsc;
     mod once_lock;
     mod lazy_lock;
     mod mutex;

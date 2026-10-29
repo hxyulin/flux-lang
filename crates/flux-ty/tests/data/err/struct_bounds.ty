@@ -93,7 +93,7 @@ error 2142..2153: the trait bound `u8: Tr` is not satisfied
 error 2180..2188: the trait bound `u8: Tr` is not satisfied
 error 2203..2209: the trait bound `u16: Tr` is not satisfied
 error 2219..2225: the trait bound `u16: Tr` is not satisfied
-error 2247..2254: the trait bound `u8: Tr` is not satisfied
+error 2247..2248: the trait bound `u8: Tr` is not satisfied
 error 2256..2259: the associated function or constant `new` exists for struct `W<u8>`, but its trait bounds were not satisfied
 error 2277..2283: the trait bound `u16: Tr` is not satisfied
 error 2286..2289: the associated function or constant `new` exists for struct `W<u16>`, but its trait bounds were not satisfied

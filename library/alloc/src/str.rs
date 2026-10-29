@@ -2,7 +2,12 @@
 
 use crate::string::String;
 
+mod lowercase;
+
 impl str {
+    /// Returns Unicode default lowercase, including contextual final sigma.
+    pub fn to_lowercase(&self) -> String { lowercase::convert(self) }
+
     /// Copies the string, converting ASCII uppercase bytes to lowercase.
     pub fn to_ascii_lowercase(&self) -> String {
         let mut bytes = self.as_bytes().to_vec();

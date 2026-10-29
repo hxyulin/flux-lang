@@ -21,10 +21,10 @@ use crate::{Ty, TyKind, TypeScope};
 
 /// The trait object behind a reference, raw pointer or owning Box target.
 /// Its default methods must be collected even when no direct call names them.
-pub fn unsize_trait(target: Ty) -> Option<TraitId> {
+pub fn unsize_trait(items: &ItemTree, target: Ty) -> Option<TraitId> {
     let pointee = match target.kind() {
         TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) => pointee,
-        _ => crate::box_pointee(target)?,
+        _ => crate::box_pointee(target).or_else(|| crate::arc_pointee(items, target))?,
     };
     match pointee.kind() {
         TyKind::Dynamic(object) => Some(object.trait_),
@@ -270,29 +270,59 @@ pub(crate) fn resolve_dyn(
         errors.push((at, message));
         Ty::ERROR
     };
-    let first = &d.bounds[0];
-    let (t, error) = items.resolve_trait(module, first);
-    if let Some(error) = error {
-        errors.push(error);
-    }
-    let Some(t) = t else {
-        return Ty::ERROR;
-    };
-    if let Some(extra) = d.bounds.get(1) {
-        let (_, error) = items.resolve_trait(module, extra);
+    let mut resolved = Vec::new();
+    for bound in &d.bounds {
+        let (trait_, error) = items.resolve_trait(module, bound);
         if let Some(error) = error {
             errors.push(error);
-            return Ty::ERROR;
         }
-        let at = extra
-            .path
-            .range(extra.path.segments.len().saturating_sub(1), extra.range);
-        return fail(
-            errors,
-            at,
-            "only auto traits can be used as additional traits in a trait object".into(),
-        );
+        let Some(trait_) = trait_ else {
+            return Ty::ERROR;
+        };
+        resolved.push((bound, trait_));
     }
+    // The principal can be written after marker bounds. Pure auto-trait
+    // objects choose a canonical principal independent of source ordering.
+    let (first, t) = resolved
+        .iter()
+        .copied()
+        .find(|&(_, t)| !crate::traits::is_auto_trait(items, t))
+        .or_else(|| resolved.iter().copied().min_by_key(|&(_, t)| t))
+        .expect("nonempty dyn bounds");
+    let mut auto_traits = Vec::new();
+    for &(extra, marker) in &resolved {
+        if std::ptr::eq(first, extra) || marker == t && crate::traits::is_auto_trait(items, marker)
+        {
+            continue;
+        }
+        if !crate::traits::is_auto_trait(items, marker) {
+            return fail(
+                errors,
+                extra.range,
+                "only auto traits can be used as additional traits in a trait object".into(),
+            );
+        }
+        if extra
+            .path
+            .args(extra.path.segments.len().saturating_sub(1))
+            .is_some()
+        {
+            return fail(
+                errors,
+                extra.range,
+                "auto traits do not take generic arguments".into(),
+            );
+        }
+        let bound = crate::TraitRef {
+            trait_: marker,
+            name: items.traits[marker].name,
+            args: Ty::list(&[]),
+        };
+        if !auto_traits.contains(&bound) {
+            auto_traits.push(bound);
+        }
+    }
+    auto_traits.sort_by_key(|bound| bound.trait_);
     let path = &first.path;
     let last = path.segments.len().saturating_sub(1);
     let name_range = path.range(last, first.range);
@@ -410,12 +440,28 @@ pub(crate) fn resolve_dyn(
                     matches!(r, crate::regions::Region::Param(_)) && !regions[..i].contains(r)
                 })
         });
+    // Non-callable object arguments have explicit occurrence rows. Nested
+    // objects, pointers with binders, and projected/opaque arguments need
+    // independent schemas and retain their existing boundary.
+    fn represented_argument(ty: Ty) -> bool {
+        !matches!(
+            ty.kind(),
+            TyKind::Dynamic(_) | TyKind::FnPtr(_) | TyKind::Alias(_) | TyKind::Opaque(_)
+        ) && ty.children().all(represented_argument)
+    }
+    let represented = crate::fn_trait_kind(items, t).is_none()
+        && trait_ref
+            .args
+            .iter()
+            .chain(&tys)
+            .all(|&ty| represented_argument(ty));
     if trait_ref
         .args
         .iter()
         .chain(&tys)
         .any(|&ty| crate::regions::slots(items, ty) > 0 || mentions_object(ty))
         && !callable_inputs
+        && !represented
     {
         return fail(
             errors,
@@ -424,6 +470,7 @@ pub(crate) fn resolve_dyn(
         );
     }
     Ty::new(TyKind::Dynamic(DynTy {
+        auto_traits: crate::ty::object_auto_traits(&auto_traits),
         trait_: t,
         name: data.name,
         args: trait_ref.args,
@@ -435,4 +482,26 @@ pub(crate) fn resolve_dyn(
 /// Whether `ty` contains a trait object.
 fn mentions_object(ty: Ty) -> bool {
     ty.is_dyn() || ty.children().any(mentions_object)
+}
+
+/// Object metadata can be reused when only auto-trait bounds are erased.
+pub fn same_principal(a: Ty, b: Ty) -> bool {
+    matches!((a.kind(), b.kind()), (TyKind::Dynamic(x), TyKind::Dynamic(y))
+        if x.trait_ == y.trait_ && x.args == y.args && x.assoc_names == y.assoc_names && x.assoc_tys == y.assoc_tys)
+}
+
+/// Explicit and inherited marker bounds survive an object upcast.
+pub fn retains_auto_traits(sigs: &crate::Signatures, source: Ty, target: Ty) -> bool {
+    let (TyKind::Dynamic(from), TyKind::Dynamic(to)) = (source.kind(), target.kind()) else {
+        return false;
+    };
+    let bounds = crate::traits::dyn_bounds(sigs, source, from);
+    to.auto_traits
+        .iter()
+        .all(|marker| bounds.iter().any(|bound| bound.trait_ref == *marker))
+}
+
+/// Marker-only objects have no method slots beyond the common vtable header.
+pub fn is_auto_object(items: &ItemTree, ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Dynamic(object) if crate::traits::is_auto_trait(items, object.trait_))
 }

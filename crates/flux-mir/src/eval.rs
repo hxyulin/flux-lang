@@ -1687,6 +1687,7 @@ impl<'a> Evaluator<'a> {
                     | flux_hir::Intrinsic::AlignOf
                     | flux_hir::Intrinsic::NeedsDrop
                     | flux_hir::Intrinsic::DiscriminantIsSigned
+                    | flux_hir::Intrinsic::TypeId
             )
         )
     }
@@ -1708,7 +1709,16 @@ impl<'a> Evaluator<'a> {
             .first()
             .copied()
             .unwrap_or(Ty::ERROR);
-        let value = if name.as_str() == "discriminant_is_signed" {
+        if !matches!(name.as_str(), "discriminant_is_signed" | "type_id") {
+            self.check_field_layout_dependency(ty, range)?;
+        }
+        let value = if name.as_str() == "type_id" {
+            Value::Int {
+                bits: flux_ty::type_identity::of(self.items, self.sigs, ty)
+                    .map_err(|message| error(range, message.into()))?,
+                ty: IntTy::U128,
+            }
+        } else if name.as_str() == "discriminant_is_signed" {
             Value::Bool(
                 self.sigs
                     .discriminant_ty(flux_ty::traits::normalize(self.items, self.sigs, &[], ty))
@@ -1738,9 +1748,30 @@ impl<'a> Evaluator<'a> {
         target.ok_or_else(|| error(range, "entering unreachable code".to_owned()))
     }
 
-    /// The layout of `ty`, with the discriminants of the enums it holds
-    /// evaluated.
+    /// Check queries against ADT fields whose array lengths are being evaluated.
+    fn check_field_layout_dependency(&self, ty: Ty, range: TextRange) -> Result<(), EvalError> {
+        for instance in &self.in_progress {
+            if let Some(owner) = self.items.consts[instance.konst]
+                .anon
+                .and_then(|a| a.self_adt)
+            {
+                match flux_ty::const_dependencies::stores_adt(self.items, self.sigs, ty, owner) {
+                    Ok(false) => {}
+                    Ok(true) => return Err(error(
+                        range,
+                        "cycle detected when evaluating an ADT field constant's layout dependency"
+                            .into(),
+                    )),
+                    Err(message) => return Err(error(range, message.into())),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The layout of `ty`, with the discriminants of the enums it holds evaluated.
     fn layout_of(&mut self, ty: Ty, range: TextRange) -> Result<crate::layout::Layout, EvalError> {
+        self.check_field_layout_dependency(ty, range)?;
         let mut enums = Vec::new();
         let mut stack = vec![ty];
         let mut seen = FxHashSet::default();
@@ -2311,6 +2342,11 @@ impl<'a> Evaluator<'a> {
     ) -> Result<Value, EvalError> {
         let instance = flux_ty::traits::resolve_instance(self.items, self.sigs, instance);
         let func: FunctionId = instance.function;
+        if flux_ty::const_dependencies::queries_pointer_metadata(self.items, func)
+            && let Some(&ty) = instance.args.first()
+        {
+            self.check_field_layout_dependency(ty, range)?;
+        }
         let Some(callee) = self.functions.get(func) else {
             return Err(error(
                 range,
@@ -2429,6 +2465,25 @@ impl<'a> Evaluator<'a> {
             return self.panic_string(value, range);
         }
         Ok(None)
+    }
+
+    /// Validate the actual bytes behind an evaluated shared string pattern.
+    /// Pointer views retain their allocation, offset and length checks.
+    pub(crate) fn is_string_pattern(
+        &mut self,
+        value: &Value,
+        range: TextRange,
+    ) -> Result<bool, EvalError> {
+        let ty = Ty::new(TyKind::Ref(flux_ty::Mutability::Not, Ty::STR));
+        let bytes = match value {
+            Value::PointerView {
+                pointer,
+                source,
+                target,
+            } => self.pointer_value(pointer, *source, *target, range)?,
+            _ => self.pointer_value(value, ty, ty, range)?,
+        };
+        Ok(str_value(&Value::Ref(Arc::new(bytes))).is_some())
     }
 
     /// Formatting a panic reads live transient references just as ordinary
@@ -2635,6 +2690,10 @@ impl<'a> Evaluator<'a> {
         wrapping: bool,
     ) -> Result<Value, EvalError> {
         match rvalue {
+            Rvalue::InlineAsm { .. } => Err(error(
+                range,
+                "inline assembly is not allowed in constants".into(),
+            )),
             Rvalue::Use(_) => unreachable!("plain operands bypass this frame"),
             Rvalue::Aggregate(kind, ops) => {
                 if let AggregateKind::Variant(strukt, _) = *kind {
@@ -2697,6 +2756,17 @@ impl<'a> Evaluator<'a> {
                         });
                     }
                     match pointer {
+                        Some(pointer @ Value::LocalRef { .. }) => {
+                            // A slice's length belongs to its pointer metadata,
+                            // not to the mutable elements. The allocation shape
+                            // is fixed for this borrow; checking its frame token
+                            // does not require reading its copied contents.
+                            Some(self.allocation_type(
+                                pointer,
+                                body.locals[place.local].ty.subst(generics),
+                                range,
+                            )?)
+                        }
                         Some(Value::Static(id)) => Some(self.sigs.consts[*id]),
                         Some(Value::StaticPart { id, path }) => {
                             static_path_type(self.sigs, self.sigs.consts[*id], path)

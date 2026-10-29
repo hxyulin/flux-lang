@@ -126,10 +126,16 @@ fn malformed_trait_owner_metadata_fails_closed() {
                 }
             }
             let mir = flux_mir::build_file(&hir, &typed);
+            // A callback needs the complete function signature before its
+            // trait-owner rows can be checked. Deleting that signature fails
+            // at the earlier callback metadata boundary.
+            let expected = if callback && corruption == 6 {
+                "function item callback region metadata is not supported yet"
+            } else {
+                "trait method owner region metadata is not supported yet"
+            };
             assert!(
-                mir.diagnostics.iter().any(|d| {
-                    d.message == "trait method owner region metadata is not supported yet"
-                }),
+                mir.diagnostics.iter().any(|d| d.message == expected),
                 "corruption {corruption}: {:?}",
                 mir.diagnostics
             );

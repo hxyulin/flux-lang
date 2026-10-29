@@ -613,6 +613,7 @@ impl Cx<'_> {
 
     fn constant(&self, value: &crate::PatternConst, ty: Ty) -> DPat {
         match value {
+            crate::PatternConst::Str => DPat::Ctor(Ctor::Single, vec![DPat::Or(Vec::new())]),
             crate::PatternConst::Scalar(value) => match ty.kind() {
                 TyKind::Bool => DPat::Ctor(Ctor::Bool(*value != 0), Vec::new()),
                 TyKind::Int(_) | TyKind::Char => {

@@ -8,7 +8,7 @@ use crate::alloc_crate::string::String;
 use crate::alloc_crate::vec::Vec;
 
 /// Owned Unix operating-system bytes.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OsString { pub(crate) bytes: Vec<u8> }
 impl OsString {
     /// Transfers the owned bytes into a boxed OS string view.

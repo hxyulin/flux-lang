@@ -131,3 +131,13 @@ impl PartialEq<Cow<'_, str>> for &str {
 impl<'a, T: Clone> From<Vec<T>> for Cow<'a, [T]> {
     fn from(value: Vec<T>) -> Self { Cow::Owned(value) }
 }
+
+impl<'a> From<&'a str> for Cow<'a, str> {
+    fn from(value: &'a str) -> Self { Cow::Borrowed(value) }
+}
+impl<'a> From<&'a String> for Cow<'a, str> {
+    fn from(value: &'a String) -> Self { Cow::Borrowed(value.as_str()) }
+}
+impl From<String> for Cow<'_, str> {
+    fn from(value: String) -> Self { Cow::Owned(value) }
+}

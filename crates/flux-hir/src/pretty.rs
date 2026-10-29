@@ -511,6 +511,16 @@ impl Printer<'_> {
                 self.generic_args(id);
             }
             Expr::Path(Res::Err) => self.out.push_str("<error>"),
+            Expr::InlineAsm(asm) => {
+                self.out.push_str("asm!(");
+                for (i, &expr) in self.body.lists[asm.operands].iter().enumerate() {
+                    if i != 0 {
+                        self.out.push_str(", ");
+                    }
+                    self.expr(expr);
+                }
+                self.out.push(')');
+            }
             Expr::Tuple(fields) => {
                 self.out.push('(');
                 self.exprs(&self.body.lists[*fields]);

@@ -1,0 +1,19 @@
+use std::io::{Read,Write};
+use std::os::unix::ffi::OsStrExt;
+fn main(){
+    let mode=std::env::args().nth(1).unwrap();
+    match mode.as_str(){
+        "echo"=>{let mut bytes=Vec::new();std::io::stdin().read_to_end(&mut bytes).unwrap();std::io::stdout().write_all(&bytes).unwrap();std::io::stderr().write_all(b"err\xff\n").unwrap();},
+        "duplex"=>{let a=vec![b'e';1024*1024];std::io::stderr().write_all(&a).unwrap();let b=vec![b'o';1024*1024];std::io::stdout().write_all(&b).unwrap();},
+        "report"=>{println!("cwd {:?}",std::env::current_dir().unwrap().as_os_str().as_bytes());for arg in std::env::args_os().skip(2){println!("arg {:?}",arg.as_bytes());}for key in ["FLUX_PROCESS_VALUE","FLUX_PROCESS_PARENT"]{println!("env {key} {:?}",std::env::var_os(key).map(|s|s.as_bytes().to_vec()));}},
+        "emit"=>{print!("stream\n");},
+        "exit"=>std::process::exit(7),
+        "sigpipe"=>{
+            unsafe extern "C" {fn signal(signal:i32,handler:Option<unsafe extern "C" fn(i32)>)->Option<unsafe extern "C" fn(i32)>;}
+            unsafe {signal(13,None);}
+            let _=std::io::stdout().write_all(b"pipe");std::process::exit(42);
+        },
+        "sleep"=>std::thread::sleep(std::time::Duration::from_secs(10)),
+        _=>panic!("unknown mode"),
+    }
+}

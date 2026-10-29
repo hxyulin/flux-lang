@@ -5,6 +5,7 @@
 mod attributes;
 mod collect;
 mod generics;
+mod sized_dispatch;
 pub(crate) use attributes::{attr_name, check_attr, check_attrs};
 use attributes::{
     check_inert_attrs, check_inner_attrs, enum_repr, non_exhaustive_attr, repr_attr, struct_repr,
@@ -12,6 +13,7 @@ use attributes::{
 };
 pub(crate) use generics::lower_type;
 use generics::{collect_generics, collect_generics_with_drop};
+pub use sized_dispatch::SizedDispatch;
 
 use std::path::{Path as FsPath, PathBuf};
 
@@ -62,6 +64,8 @@ pub struct ItemTree {
     /// Free functions, functions in `extern` blocks, and the associated
     /// functions of `impl` blocks.
     pub functions: LayeredArena<Function>,
+    pub sized_dispatch: rustc_hash::FxHashMap<FunctionId, SizedDispatch>,
+    sized_dispatch_declarations: rustc_hash::FxHashMap<FunctionId, sized_dispatch::Declaration>,
     pub structs: LayeredArena<Struct>,
     pub traits: LayeredArena<Trait>,
     pub impls: LayeredArena<Impl>,
@@ -168,6 +172,8 @@ pub struct CrateData {
     pub macro_use: Vec<(Symbol, MacroId)>,
     pub cfg: Option<Arc<flux_syntax::CfgOptions>>,
     pub edition: flux_syntax::Edition,
+    /// Maximum macro expansion depth selected by the invocation crate.
+    pub recursion_limit: usize,
     pub name: Symbol,
     pub root: ModuleId,
     /// flux's own `core` or `alloc`, which may define methods on
@@ -335,6 +341,8 @@ pub struct Const {
 /// in an `impl` block without any, which is then its owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnonConst {
+    /// The non-generic ADT whose declaration contains this field constant.
+    pub self_adt: Option<StructId>,
     /// The function whose signature or body it is in, whose locals it
     /// cannot use (E0435).
     pub function: Option<FunctionId>,
@@ -549,6 +557,8 @@ pub struct Struct {
 /// A variant of an enum: `A`, `B(i32)` or `C { x: i32 }`.
 #[derive(Debug, Clone)]
 pub struct Variant {
+    /// Fields may be added outside this crate's view of the variant.
+    pub non_exhaustive: bool,
     pub name: Symbol,
     pub kind: StructKind,
     pub fields: Box<[Field]>,
@@ -1486,6 +1496,10 @@ impl ItemTree {
         }
     }
 
+    pub(crate) fn macro_recursion_limit(&self, module: ModuleId) -> usize {
+        self.crates[self.modules[module].krate.0 as usize].recursion_limit
+    }
+
     pub fn module_of(&self, krate: CrateId) -> ModuleId {
         self.crates[krate.0 as usize].root
     }
@@ -1499,6 +1513,21 @@ impl ItemTree {
     pub fn externally_non_exhaustive(&self, strukt: StructId, from: ModuleId) -> bool {
         let def = &self.structs[strukt];
         def.non_exhaustive && self.modules[def.loc.module].krate != self.modules[from].krate
+    }
+
+    /// Whether a variant's fields are open in another crate.
+    pub fn externally_non_exhaustive_variant(
+        &self,
+        strukt: StructId,
+        variant: u32,
+        from: ModuleId,
+    ) -> bool {
+        let def = &self.structs[strukt];
+        def.variants
+            .as_ref()
+            .and_then(|v| v.get(variant as usize))
+            .is_some_and(|v| v.non_exhaustive)
+            && self.modules[def.loc.module].krate != self.modules[from].krate
     }
 
     pub fn is_core(&self, module: ModuleId) -> bool {

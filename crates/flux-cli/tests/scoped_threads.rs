@@ -164,6 +164,7 @@ fn scope_cleanup_joins_on_host_unwind() {
     let source = format!(
         r#"
 extern crate alloc as alloc_crate;
+type Result<T> = std::thread::Result<T>;
 mod sync {{ pub use std::sync::Mutex; }}
 #[path={module:?}]mod scoped;
 use std::sync::atomic::{{AtomicBool,Ordering}};

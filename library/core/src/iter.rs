@@ -998,6 +998,13 @@ pub struct Map<I, F> {
     f: F,
 }
 
+// Formatting observes iterator state, never invokes or formats its callback.
+impl<I: crate::fmt::Debug, F> crate::fmt::Debug for Map<I, F> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("Map").field("iter", &self.iter).finish()
+    }
+}
+
 impl<B, I: Iterator, F: FnMut(I::Item) -> B> Iterator for Map<I, F> {
     type Item = B;
     const __TRUSTED_LEN: bool = I::__TRUSTED_LEN;
@@ -1852,7 +1859,7 @@ impl<'a, T: Copy, I: DoubleEndedIterator<Item = &'a T>> DoubleEndedIterator for 
 impl<'a, T: Copy, I: ExactSizeIterator<Item = &'a T>> ExactSizeIterator for Copied<I> {}
 
 /// [`Iterator::cloned`]'s.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Cloned<I> {
     it: I,
 }
@@ -2339,6 +2346,27 @@ where
     iter: Fuse<I>,
     frontiter: Option<<I::Item as IntoIterator>::IntoIter>,
     backiter: Option<<I::Item as IntoIterator>::IntoIter>,
+}
+
+// Borrowed formatting view preserves the standard nested state without
+// changing the adapter's storage or imposing Debug on its item callback.
+struct FlattenDebug<'a, I, U> {
+    iter: &'a Fuse<I>,
+    frontiter: &'a Option<U>,
+    backiter: &'a Option<U>,
+}
+impl<I: crate::fmt::Debug, U: crate::fmt::Debug> crate::fmt::Debug for FlattenDebug<'_, I, U> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("FlattenCompat").field("iter", self.iter)
+            .field("frontiter", self.frontiter).field("backiter", self.backiter).finish()
+    }
+}
+impl<I: Iterator + crate::fmt::Debug> crate::fmt::Debug for Flatten<I>
+where I::Item: IntoIterator, <I::Item as IntoIterator>::IntoIter: crate::fmt::Debug {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        let inner = FlattenDebug { iter: &self.iter, frontiter: &self.frontiter, backiter: &self.backiter };
+        f.debug_struct("Flatten").field("inner", &inner).finish()
+    }
 }
 
 impl<I: Iterator + Clone> Clone for Flatten<I>

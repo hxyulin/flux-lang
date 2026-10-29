@@ -553,6 +553,14 @@ pub enum StatementKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rvalue {
     Use(Operand),
+    /// Opaque always-returning assembly. One tied output per input, returned
+    /// as a tuple. Even unused results must retain this side effect.
+    InlineAsm {
+        template: Box<[flux_hir::AsmTemplatePiece]>,
+        registers: Box<[flux_hir::AsmRegister]>,
+        options: flux_hir::AsmOptions,
+        inputs: Vec<Operand>,
+    },
     BinaryOp(BinOp, Operand, Operand),
     UnaryOp(UnOp, Operand),
     /// An integer-to-integer or `bool`-to-integer cast: truncates, or
@@ -1032,7 +1040,7 @@ impl Body {
         for data in self.blocks.values() {
             for statement in &data.statements {
                 if let StatementKind::Assign(_, Rvalue::Unsize(_, to)) = &statement.kind
-                    && let Some(trait_) = flux_ty::objects::unsize_trait(*to)
+                    && let Some(trait_) = flux_ty::objects::unsize_trait(items, *to)
                     && !traits.contains(&trait_)
                 {
                     traits.push(trait_);
@@ -1088,7 +1096,7 @@ impl Rvalue {
             | Self::Unsize(op, _) => ([Some(op), None, None], &[]),
             Self::BinaryOp(_, l, r) => ([Some(l), Some(r), None], &[]),
             Self::Subslice { slice, start, end } => ([Some(slice), Some(start), Some(end)], &[]),
-            Self::Aggregate(_, ops) => ([None; 3], ops),
+            Self::Aggregate(_, ops) | Self::InlineAsm { inputs: ops, .. } => ([None; 3], ops),
             Self::Ref { .. }
             | Self::Discriminant(_)
             | Self::DiscriminantForDrop(_)

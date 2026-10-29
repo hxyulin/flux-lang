@@ -171,6 +171,12 @@ impl<T, E> Result<T, E> {
         }
     }
 
+    /// Observes an error by reference, returning the original result unchanged.
+    pub fn inspect_err<F: FnOnce(&E)>(self, f: F) -> Self {
+        if let Err(error) = &self { f(error); }
+        self
+    }
+
     /// Whether it is `Err` and `f` is `true` for the error.
     pub fn is_err_and<F: FnOnce(E) -> bool>(self, f: F) -> bool {
         match self {
@@ -310,5 +316,18 @@ impl<T: crate::cmp::Ord, E: crate::cmp::Ord> crate::cmp::Ord for Result<T, E> {
                 Err(b) => crate::cmp::Ord::cmp(a, b),
             },
         }
+    }
+}
+
+impl<T: crate::marker::Copy, E> Result<&T, E> {
+    /// Copies a successful borrowed value, preserving an owned error.
+    pub fn copied(self) -> Result<T, E> {
+        match self { Ok(value) => Ok(*value), Err(error) => Err(error) }
+    }
+}
+impl<T: crate::marker::Copy, E> Result<&mut T, E> {
+    /// Copies a successful exclusively borrowed value.
+    pub fn copied(self) -> Result<T, E> {
+        match self { Ok(value) => Ok(*value), Err(error) => Err(error) }
     }
 }

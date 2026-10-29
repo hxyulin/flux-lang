@@ -21,6 +21,7 @@ macro_rules! intrinsics {
 }
 
 intrinsics! {
+    SizedDispatch => "__sized_dispatch",
     NeonVld1U8 => "__neon_vld1_u8",
     NeonVst1U8 => "__neon_vst1_u8",
     NeonVdupNU8 => "__neon_vdup_n_u8",
@@ -65,6 +66,7 @@ intrinsics! {
     ReadVolatile => "read_volatile",
     WriteVolatile => "write_volatile",
     TypeName => "type_name",
+    TypeId => "type_id",
     AtomicUsizeLoadRelaxed => "__atomic_usize_load_relaxed",
     AtomicUsizeLoadAcquire => "__atomic_usize_load_acquire",
     AtomicUsizeLoadSeqcst => "__atomic_usize_load_seqcst",

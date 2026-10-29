@@ -13,10 +13,23 @@ impl Cx<'_> {
         let TyKind::Alias(alias) = goal.predicate.self_ty.kind() else {
             return None;
         };
+        let row = goal.vars.first()?;
+        self.proven_family_output(alias, row, env, depth)
+            .map(|(_, bounds)| bounds)
+    }
+
+    /// Return a declaration's output guarantees only after proving this exact
+    /// projection occurrence's owner and family prerequisites.
+    fn proven_family_output(
+        &mut self,
+        alias: AliasTy,
+        row: &[Var],
+        env: &[ImplRegionGoal],
+        depth: u32,
+    ) -> Option<(Vec<Var>, Vec<ImplRegionGoal>)> {
         if !flux_ty::regions::has_projection_inputs(alias) {
             return None;
         }
-        let row = goal.vars.first()?;
         let owner = row.get(..alias.owner_lifetimes as usize)?;
         let mut next = owner.len();
         let mut inputs = Vec::new();
@@ -94,7 +107,55 @@ impl Cx<'_> {
                 return None;
             }
         }
-        self.declared_output_traits(alias, row, &lifetimes, &types, depth)
+        let bounds = self.declared_output_traits(alias, row, &lifetimes, &types, depth)?;
+        Some((lifetimes, bounds))
+    }
+
+    /// A declaration proof can use an output lifetime bound from this exact
+    /// family occurrence. Captured owner inputs are not the output's fields,
+    /// and an erased alias cannot supply a global type-outlives fact.
+    fn family_output_outlives(
+        &mut self,
+        value: Ty,
+        row: &[Var],
+        target: Var,
+        env: &[ImplRegionGoal],
+    ) -> bool {
+        let TyKind::Alias(alias) = value.kind() else {
+            return false;
+        };
+        let Some((lifetimes, _)) = self.proven_family_output(alias, row, env, 0) else {
+            return false;
+        };
+        let Some(contract) = self
+            .sigs
+            .regions
+            .traits
+            .get(alias.trait_)
+            .and_then(|t| t.families.iter().find(|(name, _)| *name == alias.name))
+            .map(|(_, contract)| contract)
+        else {
+            return false;
+        };
+        contract.output_outlives.iter().any(|bound| {
+            let source = match *bound {
+                Region::Static => STATIC,
+                Region::Param(index) => match lifetimes.get(index as usize) {
+                    Some(&region) => region,
+                    None => return false,
+                },
+                Region::Erased | Region::Late(_) => return false,
+            };
+            source == STATIC
+                || source == target
+                || match (
+                    self.universal_of.get(&source),
+                    self.universal_of.get(&target),
+                ) {
+                    (Some(&source), Some(&target)) => self.known(source, target),
+                    _ => false,
+                }
+        })
     }
 
     /// Instantiate declaration bounds with the exact captured projection inputs.
@@ -258,6 +319,45 @@ impl Cx<'_> {
         Some(())
     }
 
+    /// An ordinary associated equality has no family-local arguments, but
+    /// trait lifetime parameters still belong to the original bound occurrence.
+    pub(super) fn ordinary_projection_output(
+        &mut self,
+        alias: AliasTy,
+        owner: &[Var],
+        inputs: &[Vec<Var>],
+    ) -> Option<Vec<Var>> {
+        if alias.owner_lifetimes as usize != owner.len()
+            || alias.family_lifetimes != 0
+            || !alias.family_args.is_empty()
+        {
+            return None;
+        }
+        if let TyKind::Opaque(opaque) = alias.args[0].kind()
+            && self
+                .sigs
+                .opaques
+                .get(opaque.function)
+                .and_then(|sigs| sigs.get(opaque.index as usize))
+                .is_some_and(|sig| {
+                    sig.projections.iter().any(|projection| {
+                        projection
+                            .subst(&flux_ty::traits::opaque_args(opaque))
+                            .alias
+                            == alias
+                    })
+                })
+        {
+            return self.opaque_equality_output(opaque, alias, owner, inputs);
+        }
+        if owner.is_empty() {
+            self.normalize_regions(alias, inputs, 0)
+        } else {
+            self.family_prerequisites(alias, owner, inputs, &[], &[])?;
+            self.family_output(alias, owner, inputs, &[], &[], 0)
+        }
+    }
+
     /// The selected RHS is expressed in selected header parameters followed
     /// by family parameters, never the trait's erased membership arguments.
     #[allow(clippy::too_many_arguments)]
@@ -323,6 +423,7 @@ impl Cx<'_> {
             owner,
             self.call_range,
             depth,
+            None,
         )?;
         let impl_regions = self.sigs.regions.impls.get(imp)?;
         let template = impl_regions
@@ -597,6 +698,9 @@ pub(super) fn impl_family_values_match(
                 }
                 for &bound in &decl.output_outlives {
                     let target = map_decl(bound)?;
+                    if cx.family_output_outlives(value, &row, target, &env) {
+                        continue;
+                    }
                     for &v in &row {
                         cx.outlives(v, target, Category::Boring, definition.item_range);
                     }

@@ -2,6 +2,14 @@
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod support;
 extern crate alloc as alloc_crate;
+pub use core::{fmt, ops, str};
+
+#[path = "../../../library/core/src/time.rs"]
+#[allow(
+    dead_code,
+    reason = "the host oracle checks production duration arithmetic"
+)]
+mod duration_implementation;
 
 #[test]
 fn monotonic_time_matches_rustc() {
@@ -11,10 +19,6 @@ fn monotonic_time_matches_rustc() {
 // Compile the actual implementation with the host as an independent oracle.
 #[path = "../../../library/std/src/time.rs"]
 #[allow(
-    clippy::manual_is_multiple_of,
-    reason = "the facade formatter keeps decimal rounding arithmetic explicit"
-)]
-#[allow(
     dead_code,
     reason = "host checks exercise duration arithmetic; native fixture exercises clock methods"
 )]
@@ -22,7 +26,7 @@ mod implementation;
 
 #[test]
 fn duration_arithmetic_matches_std() {
-    use implementation::Duration;
+    use duration_implementation::Duration;
     use std::time::Duration as Std;
 
     let values = [

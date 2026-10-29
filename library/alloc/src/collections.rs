@@ -1,4 +1,6 @@
 //! Ordered collections backed by the shared balanced tree.
+pub mod vec_deque;
+pub use vec_deque::VecDeque;
 pub mod binary_heap;
 pub mod linked_list;
 pub use binary_heap::BinaryHeap;

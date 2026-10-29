@@ -1,5 +1,7 @@
 //! Unix descriptor ownership and filesystem permission extensions.
 pub mod unix {
+    #[cfg(target_os = "macos")]
+    pub mod process { pub use crate::process::command::ExitStatusExt; }
     pub mod ffi {
         mod private {
             pub trait Sealed {}

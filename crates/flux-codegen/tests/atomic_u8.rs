@@ -1,3 +1,5 @@
+#[path = "support/atomic.rs"]
+mod atomic_support;
 use keel_ir::{InstData, Ordering, Type};
 #[test]
 fn byte_cas_keeps_native_byte_access_and_ordering() {
@@ -30,7 +32,7 @@ fn byte_cas_keeps_native_byte_access_and_ordering() {
         keel_opt::optimize_with_tier(&mut module, tier).unwrap();
         keel_ir::verify_module(&module).unwrap();
         let mut orders = Vec::new();
-        for function in &module.functions {
+        for function in atomic_support::named_functions(&module, "AtomicU8") {
             for (_, inst) in function.layout_insts() {
                 if let InstData::AtomicCas { ordering, args } = function.inst_data(inst) {
                     assert_eq!(function.value_type(args[1]), Type::I8);
@@ -50,6 +52,11 @@ fn byte_cas_keeps_native_byte_access_and_ordering() {
         }
         let assembly =
             keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+        let assembly = atomic_support::function_assembly(
+            &module,
+            &atomic_support::named_functions(&module, "AtomicU8"),
+            &assembly,
+        );
         for instruction in ["casb", "casab", "caslb", "casalb"] {
             assert!(
                 assembly.contains(instruction),
@@ -87,11 +94,11 @@ fn byte_atomic_ir_and_instruction_width_survive_optimization() {
         keel_opt::optimize_with_tier(&mut module, tier).unwrap();
         keel_ir::verify_module(&module).unwrap();
         let mut ops = Vec::new();
-        for function in &module.functions {
+        for function in atomic_support::named_functions(&module, "AtomicU8") {
             for (_, inst) in function.layout_insts() {
                 match function.inst_data(inst) {
                     InstData::AtomicLoad { ty, ordering, .. } => {
-                        assert_eq!(*ty, Type::I8);
+                        assert_eq!(*ty, Type::I8, "{}", function.name);
                         ops.push(("load", *ordering));
                     }
                     InstData::AtomicStore {
@@ -116,6 +123,11 @@ fn byte_atomic_ir_and_instruction_width_survive_optimization() {
         }
         let assembly =
             keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+        let assembly = atomic_support::function_assembly(
+            &module,
+            &atomic_support::named_functions(&module, "AtomicU8"),
+            &assembly,
+        );
         for instruction in ["ldrb\tw", "ldarb\tw", "strb\tw", "stlrb\tw"] {
             assert!(
                 assembly.contains(instruction),
@@ -150,19 +162,34 @@ fn halfword_atomic_instructions_are_not_widened() {
         let mut module = original.clone();
         keel_opt::optimize_with_tier(&mut module, tier).unwrap();
         keel_ir::verify_module(&module).unwrap();
-        for function in &module.functions {
+        let mut loads = 0;
+        let mut stores = 0;
+        for function in atomic_support::named_functions(&module, "AtomicU16") {
             for (_, inst) in function.layout_insts() {
                 match function.inst_data(inst) {
-                    InstData::AtomicLoad { ty, .. } => assert_eq!(*ty, Type::I16),
+                    InstData::AtomicLoad { ty, .. } => {
+                        assert_eq!(*ty, Type::I16, "{}", function.name);
+                        loads += 1;
+                    }
                     InstData::AtomicStore { value, .. } => {
-                        assert_eq!(function.value_type(*value), Type::I16)
+                        assert_eq!(function.value_type(*value), Type::I16);
+                        stores += 1;
                     }
                     _ => {}
                 }
             }
         }
+        assert!(
+            loads > 0 && stores > 0,
+            "no halfword atomic load/store coverage"
+        );
         let assembly =
             keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+        let assembly = atomic_support::function_assembly(
+            &module,
+            &atomic_support::named_functions(&module, "AtomicU16"),
+            &assembly,
+        );
         for op in ["ldrh\tw", "ldarh\tw", "strh\tw", "stlrh\tw"] {
             assert!(assembly.contains(op), "missing {op}");
         }

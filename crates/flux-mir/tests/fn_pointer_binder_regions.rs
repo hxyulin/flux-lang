@@ -63,7 +63,7 @@ fn pointer_coercion_paths_match_rustc() {
             "unrelated_outlives",
             "fn get<'a,T:'static>(_: &'a T){} fn main(){let _:fn(&i32)=get;}",
             true,
-            Some(BOUNDARY),
+            None,
         ),
         (
             "unclassified",

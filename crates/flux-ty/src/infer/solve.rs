@@ -121,6 +121,10 @@ impl<'a> Ctx<'a> {
             return std::borrow::Cow::Borrowed(sig);
         }
         let sig = sig.subst(args);
+        // Substitution can introduce projections through a caller or opaque
+        // bound even when the declaration contains only plain parameters.
+        let has_aliases =
+            has_aliases || sig.ret.has_aliases() || sig.params.iter().any(|ty| ty.has_aliases());
         if !has_aliases {
             return std::borrow::Cow::Owned(sig);
         }
@@ -451,7 +455,12 @@ impl Ctx<'_> {
                 Some(ty) => {
                     progress = true;
                     let ty = self.normalize(ty, p.range);
-                    if !self.unify(p.var, ty) {
+                    // A previous selection may have bound this variable to a
+                    // projection before its inputs became concrete. Compare
+                    // both outputs in the same current normalization context.
+                    let expected = self.known(p.var);
+                    let expected = self.normalize(expected, p.range);
+                    if !self.unify(expected, ty) {
                         let iterator_item = self.items.traits[alias.trait_]
                             .lang
                             .is_some_and(|l| l.as_str() == "iterator")
@@ -1180,7 +1189,7 @@ impl Ctx<'_> {
                 Selection::Met(Vec::new())
             };
         }
-        if crate::traits::is_builtin_copy(self.items, t, self_ty) {
+        if crate::traits::is_builtin_trait(self.items, t, self_ty) {
             return Selection::Met(Vec::new());
         }
         // Other traits than the `Fn` family, `Copy` and `Clone` hold of
@@ -1225,10 +1234,33 @@ impl Ctx<'_> {
                 env.push(p);
             }
         }
-        let bounds: Vec<Predicate> = env
+        let mut bounds: Vec<Predicate> = env
             .into_iter()
             .filter(|&p| self.probe(|cx| cx.unify_predicates(p, pred)))
             .collect();
+        if bounds.len() > 1 {
+            let caller = self.caller_projections.clone();
+            let mut keys = FxHashSet::default();
+            bounds.retain(|p| {
+                // Equal caller-proven input keys describe one membership,
+                // even when written as P<u8> and P<U::X>. Keep the raw
+                // candidate for the independent source/RHS proof below.
+                // Inference variables cannot establish this equivalence.
+                let key = Predicate {
+                    self_ty: self.caller_proof_key(&caller, p.self_ty),
+                    trait_ref: TraitRef {
+                        args: crate::ty::map_list(p.trait_ref.args, |ty| {
+                            self.caller_proof_key(&caller, ty)
+                        }),
+                        ..p.trait_ref
+                    },
+                };
+                let stable = std::iter::once(key.self_ty)
+                    .chain(key.trait_ref.args.iter().copied())
+                    .all(|ty| !ty.has_infer() && !ty.has_error() && !ty.has_opaques());
+                !stable || keys.insert(key)
+            });
+        }
         match bounds.as_slice() {
             [bound] => {
                 let compatible = match const_output {
@@ -1298,6 +1330,13 @@ impl Ctx<'_> {
         }
         let mut ok = self.unify(a.self_ty, b.self_ty);
         for (&x, &y) in a.trait_ref.args.iter().zip(b.trait_ref.args) {
+            // Opaque caller bounds can introduce output projections before
+            // their inputs are fixed. Preserve their deferred obligations,
+            // rather than comparing the raw projection with a concrete goal.
+            let x = self.known(x);
+            let x = self.normalize(x, TextRange::default());
+            let y = self.known(y);
+            let y = self.normalize(y, TextRange::default());
             ok &= self.unify(x, y);
         }
         ok
@@ -1483,7 +1522,7 @@ impl Ctx<'_> {
         if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
             return !self.is_unsized(ty);
         }
-        if crate::traits::is_builtin_copy(self.items, t, ty) {
+        if crate::traits::is_builtin_trait(self.items, t, ty) {
             return true;
         }
         if let Some(found) = crate::traits::fn_goal(self.items, t, ty) {
@@ -1525,9 +1564,16 @@ impl Ctx<'_> {
             args.is_none_or(|a| {
                 a.len() == p.trait_ref.args.len()
                     && self.probe(|cx| {
-                        a.iter()
-                            .zip(p.trait_ref.args)
-                            .all(|(&x, &y)| cx.unify(x, y))
+                        cx.unify_predicates(
+                            Predicate {
+                                self_ty: ty,
+                                trait_ref: TraitRef {
+                                    args: Ty::list(a),
+                                    ..p.trait_ref
+                                },
+                            },
+                            *p,
+                        )
                     })
             })
         });
@@ -1569,11 +1615,16 @@ impl Ctx<'_> {
                     return false;
                 }
                 if let Some(args) = args {
-                    let header = trait_ref.subst(&vars);
-                    for (&x, &y) in header.args.iter().zip(args) {
-                        if !cx.unify(x, y) {
-                            return false;
-                        }
+                    let header = trait_ref.subst(&vars).with_self(self_ty.subst(&vars));
+                    let expected = Predicate {
+                        self_ty: ty,
+                        trait_ref: TraitRef {
+                            args: Ty::list(args),
+                            ..trait_ref
+                        },
+                    };
+                    if !cx.unify_predicates(header, expected) {
+                        return false;
                     }
                 }
                 if !check_bounds {
@@ -1685,11 +1736,25 @@ impl Ctx<'_> {
             for p in self.param_env.clone().into_iter().chain(alias_bounds) {
                 if (p.self_ty == ty || p.self_ty == known)
                     && let Some(f) = wanted(p.trait_ref.trait_)
-                    && !found.iter().any(|(g, _)| *g == f)
                 {
-                    found.push((f, Some(p.trait_ref)));
+                    if let Some((_, chosen)) = found.iter_mut().find(|(g, _)| *g == f) {
+                        // One method may have several caller-provided trait
+                        // argument lists. Keep its identity, but let ordinary
+                        // call constraints choose the actual bound afterward.
+                        if chosen.is_some_and(|old| old != p.trait_ref) {
+                            *chosen = None;
+                        }
+                    } else {
+                        found.push((f, Some(p.trait_ref)));
+                    }
                 }
             }
+        }
+        // Associated paths on a declared type parameter use its caller
+        // bounds before inferred impl candidates. Receiver methods apply this
+        // priority later, after comparing their actual autoref modes.
+        if !methods && matches!(ty.kind(), TyKind::Param(_)) && !found.is_empty() {
+            return found;
         }
         // Static associated lookup can choose an unambiguous trait before
         // Self is known. Its obligation remains pending while arguments or
@@ -1767,24 +1832,71 @@ impl Ctx<'_> {
             return Some((item, self_ty, trait_args));
         }
         let self_ty = self.shallow(self_ty?);
+        let mut private_candidates = Vec::new();
+        let mut private_const = false;
         // `<S>::f`: the type's own items come before its traits'.
         if let Some(target) = crate::impl_target(self.items, self_ty) {
-            let candidates = self.items.assoc_functions(target, name);
-            if !candidates.is_empty() {
-                return match self.select(candidates.into_iter(), Some(self_ty)) {
-                    Ok(function) => Some((AssocItem::Function(function), Some(self_ty), None)),
-                    Err(0) => {
-                        let message = self.not_found(Some(self_ty), name);
-                        self.error(segment, message);
-                        None
+            let candidates: Vec<_> = self
+                .items
+                .assoc_functions(target, name)
+                .into_iter()
+                .filter(|&f| {
+                    if self
+                        .items
+                        .is_visible(self.items.functions[f].loc.vis, self.module)
+                    {
+                        true
+                    } else {
+                        private_candidates.push(f);
+                        false
                     }
+                })
+                .collect();
+            if !candidates.is_empty() {
+                match self.select(candidates.into_iter(), Some(self_ty)) {
+                    Ok(function) => {
+                        return Some((AssocItem::Function(function), Some(self_ty), None));
+                    }
+                    Err(0) => {}
                     Err(_) => {
                         self.error(segment, "multiple applicable items in scope");
-                        None
+                        return None;
                     }
-                };
+                }
             }
-            if let Some(AssocItem::Const(c)) = self.items.assoc_item(target, name) {
+            let constants: Vec<_> = self
+                .items
+                .assoc
+                .get(&(target, name))
+                .into_iter()
+                .flatten()
+                .filter_map(|item| match item {
+                    AssocItem::Const(c) => Some(*c),
+                    _ => None,
+                })
+                .collect();
+            let mut selected_const = None;
+            for c in constants {
+                let applies = self.items.consts[c]
+                    .owner
+                    .and_then(flux_hir::Owner::as_impl)
+                    .is_some_and(|owner| self.impl_applies(self.sigs.impls[owner], self_ty));
+                if !applies {
+                    continue;
+                }
+                if self
+                    .items
+                    .is_visible(self.items.consts[c].loc.vis, self.module)
+                {
+                    if selected_const.replace(c).is_some() {
+                        self.error(segment, "multiple applicable items in scope");
+                        return None;
+                    }
+                } else {
+                    private_const = true;
+                }
+            }
+            if let Some(c) = selected_const {
                 return Some((AssocItem::Const(c), Some(self_ty), None));
             }
         }
@@ -1792,6 +1904,17 @@ impl Ctx<'_> {
         match found.as_slice() {
             [(item, trait_ref)] => Some((*item, Some(self_ty), trait_ref.map(|t| t.args.to_vec()))),
             [] => {
+                if self
+                    .select(private_candidates.into_iter(), Some(self_ty))
+                    .is_ok()
+                {
+                    self.error(segment, format!("associated function `{name}` is private"));
+                    return None;
+                }
+                if private_const {
+                    self.error(segment, format!("associated constant `{name}` is private"));
+                    return None;
+                }
                 let items = self.items;
                 let in_some_trait = items.trait_fns.contains_key(&name);
                 if self.exists_unmet(self_ty, name, false) {
@@ -2302,5 +2425,95 @@ pub(super) mod tests {
         let count = WORK.with(|work| work.replace(None).unwrap());
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         println!("diamond: {count} goal evaluations");
+    }
+    #[test]
+    fn failed_predicate_probe_rolls_back_deferred_projection() {
+        use super::Ctx;
+        use crate::{IntTy, Predicate, TraitRef, Ty};
+        use flux_intern::Symbol;
+        use flux_syntax::TextRange;
+        let source =
+            "trait Family{type Out;}impl Family for i32{type Out=u16;}trait Pair<A,B>{}fn main(){}";
+        let (_, _, hir) = flux_hir::lower_text("predicate_probe.rs", source);
+        assert!(hir.diagnostics.is_empty());
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (function, (body, source_map)) = hir
+            .bodies
+            .iter()
+            .find(|(id, _)| hir.items.functions[*id].name.as_str() == "main")
+            .unwrap();
+        let owner = super::super::Owner {
+            function: Some(function),
+            closure_owner: crate::ClosureOwner::Function(function),
+            module: hir.items.functions[function].loc.module,
+            self_ty: None,
+            generics: Vec::new(),
+            consts: Vec::new(),
+            is_unsafe: false,
+            const_context: None,
+            ret: Ty::UNIT,
+            param_env: Vec::new(),
+            unsized_params: Vec::new(),
+            env_projections: Vec::new(),
+            caller_projections: Vec::new(),
+            self_trait: None,
+        };
+        let mut cx = Ctx::new(&hir.items, &sigs, owner, body, source_map);
+        let trait_ref = |name: &str| {
+            let (id, data) = hir
+                .items
+                .traits
+                .iter()
+                .find(|(_, t)| t.name.as_str() == name)
+                .unwrap();
+            TraitRef {
+                trait_: id,
+                name: data.name,
+                args: &[],
+            }
+        };
+        let input = cx.new_var(false, TextRange::default());
+        let alias = crate::traits::alias_of(
+            &hir.items,
+            trait_ref("Family"),
+            input,
+            Symbol::intern("Out"),
+        );
+        let actual = Predicate {
+            self_ty: Ty::UNIT,
+            trait_ref: TraitRef {
+                args: Ty::list(&[Ty::alias(alias), Ty::BOOL]),
+                ..trait_ref("Pair")
+            },
+        };
+        let incompatible = Predicate {
+            self_ty: Ty::UNIT,
+            trait_ref: TraitRef {
+                args: Ty::list(&[Ty::int(IntTy::U8), Ty::int(IntTy::U16)]),
+                ..trait_ref("Pair")
+            },
+        };
+        let vars = cx.vars.len();
+        let projections = cx.projections.len();
+        assert!(!cx.probe(|cx| cx.unify_predicates(actual, incompatible)));
+        assert_eq!(cx.vars.len(), vars);
+        assert_eq!(cx.projections.len(), projections);
+        assert_eq!(cx.shallow(input), input);
+        let expected = Predicate {
+            trait_ref: TraitRef {
+                args: Ty::list(&[Ty::int(IntTy::U8), Ty::BOOL]),
+                ..incompatible.trait_ref
+            },
+            ..incompatible
+        };
+        assert!(cx.unify_predicates(actual, expected));
+        assert!(!cx.projections.is_empty());
+        assert!(cx.unify(input, Ty::int(IntTy::I32)));
+        cx.select_obligations();
+        assert!(
+            !cx.diagnostics.is_empty(),
+            "an incompatible committed output must still fail"
+        );
     }
 }

@@ -147,7 +147,7 @@ fn named_trait_type_arguments_match_rustc() {
 }
 
 #[test]
-fn opaque_trait_arguments_without_region_tables_reject_explicitly() {
+fn opaque_trait_arguments_preserve_separate_region_tables() {
     let source =
         "trait Read<T>{}impl<T>Read<T>for(){}fn opaque<'a>()->impl Read<&'a str>{()}fn main(){}";
     let root =
@@ -170,15 +170,9 @@ fn opaque_trait_arguments_without_region_tables_reject_explicitly() {
     let (_, _, hir) = flux_hir::lower_text(&path, source);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let typed = flux_mir::check_file(&hir);
-    assert!(
-        typed
-            .diagnostics
-            .iter()
-            .any(|d| d.message
-                == "lifetimes in the generic arguments of bounds are not supported yet"),
-        "{:?}",
-        typed.diagnostics
-    );
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
     std::fs::remove_dir_all(root).unwrap();
 }
 

@@ -115,9 +115,11 @@ pub(super) fn projection(
         return None;
     }
     let template = crate::traits::impl_type(sigs, imp, alias.name)?;
-    // Nested selected projections need their own occurrence mapping. Do not
-    // manufacture an output row by comparing their erased normalized types.
-    if template.has_aliases() {
+    // Unresolved child projections keep their original identity and slots.
+    // A further selection that changes this RHS shape needs its own occurrence
+    // mapping; never infer that row from a recursively normalized output.
+    let output = template.subst(&args);
+    if output != crate::traits::normalize(items, sigs, &[], Ty::alias(alias)) {
         return None;
     }
     let own = &metadata
@@ -152,7 +154,6 @@ pub(super) fn projection(
     };
     let mut result = Vec::new();
     instantiate(items, template, own, &mut map, &types, &mut result);
-    let output = template.subst(&args);
     (complete && result.len() == slots(items, output)).then_some(result)
 }
 

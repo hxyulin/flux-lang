@@ -31,6 +31,25 @@ use crate::{
 /// found in the one before, may be.
 const RECURSION_LIMIT: u32 = 128;
 
+/// Public immediate wrappers remain ordinary functions, including when reified.
+/// Check each collected specialization rather than relying on a direct call edge.
+fn neon_immediate_error(items: &ItemTree, instance: Instance) -> Option<&'static str> {
+    let function = &items.functions[instance.function];
+    if !items.is_core(function.loc.module)
+        || items.modules[function.loc.module].name.as_str() != "aarch64"
+    {
+        return None;
+    }
+    let (lower, upper, message) = match function.name.as_str() {
+        "vsetq_lane_u64" => (0, 2, "lane index out of range"),
+        "vshll_n_u16" => (0, 17, "shift amount out of range: expected 0..=16"),
+        "vshr_n_u32" => (1, 33, "shift amount out of range: expected 1..=32"),
+        _ => return None,
+    };
+    (!matches!(instance.args.first().map(|ty|ty.kind()),Some(TyKind::Value(v)) if (lower..upper).contains(&v.bits())))
+        .then_some(message)
+}
+
 /// Every instance of a function with a body that the program needs, in
 /// the order they were found; or an error if a generic function needs
 /// instances of itself without end. A call of a trait's method is of
@@ -69,6 +88,19 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         };
         depths.insert(instance, 0);
         instances.push(instance);
+        let ret = flux_ty::traits::reveal(sigs, sigs[function].ret);
+        if ret != Ty::UNIT
+            && ret != Ty::NEVER
+            && let Some(runner) = flux_ty::entry::main_runner(items, sigs)
+        {
+            reified.insert(instance);
+            let instance = Instance {
+                function: runner,
+                args: Ty::list(&[ret]),
+            };
+            depths.insert(instance, 0);
+            instances.push(instance);
+        }
         // What the entry point calls after `main`.
         if let Some(&flush) = items.lang_fns.get(&Symbol::intern("flush_stdout"))
             && mir.bodies.get(flush).is_some()
@@ -92,7 +124,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
         value_functions(value, &mir.const_values, items, sigs, &mut found);
         for instance in found {
             reified.insert(instance);
-            if (mir.instance_body(items, instance).is_some() || is_clone_shim(items, instance))
+            if (mir.instance_body(items, instance).is_some() || is_builtin_shim(items, instance))
                 && !depths.contains_key(&instance)
             {
                 depths.insert(instance, 0);
@@ -106,12 +138,18 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
         next += 1;
+        if let Some(message) = neon_immediate_error(items, caller) {
+            let function = &items.functions[caller.function];
+            let mut error = Diagnostic::new(function.def_range, message);
+            error.file = function.loc.file;
+            return Err(error);
+        }
         let depth = depths[&caller];
         let shim;
         let (body, caller_args) = match mir.instance_body(&hir.items, caller) {
             Some(found) => found,
             None => {
-                shim = clone_shim(&hir.items, sigs, caller).expect("instances have bodies");
+                shim = builtin_shim(&hir.items, sigs, caller).expect("instances have bodies");
                 (&shim, caller.args)
             }
         };
@@ -153,7 +191,8 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     );
                     let to = flux_ty::traits::instance_ty(&hir.items, sigs, *to, caller_args);
                     let mut vtables = Vec::new();
-                    if let (Some(concrete), Some(object)) = (pointee(from), pointee(to))
+                    if let (Some(concrete), Some(object)) =
+                        (pointee(items, from), pointee(items, to))
                         && object.is_dyn()
                         && !concrete.is_dyn()
                     {
@@ -169,7 +208,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                                     reified.insert(instance);
                                     let has_body =
                                         mir.instance_body(&hir.items, instance).is_some()
-                                            || is_clone_shim(&hir.items, instance);
+                                            || is_builtin_shim(&hir.items, instance);
                                     if has_body && !depths.contains_key(&instance) {
                                         depths.insert(instance, depth + 1);
                                         instances.push(instance);
@@ -249,7 +288,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                 for instance in found {
                     reified.insert(instance);
                     let has_body = mir.instance_body(items, instance).is_some()
-                        || is_clone_shim(items, instance);
+                        || is_builtin_shim(items, instance);
                     if has_body && !depths.contains_key(&instance) {
                         if depth + 1 > RECURSION_LIMIT {
                             let mut d = Diagnostic::new(
@@ -269,6 +308,21 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
             }
             let single;
             let callees: Cow<'_, [Instance]> = match &data.terminator.kind {
+                TerminatorKind::Call {
+                    func, generic_args, ..
+                } if items.functions[*func].intrinsic
+                    == Some(flux_hir::Intrinsic::SizedDispatch) =>
+                {
+                    let args = instance_args(items, sigs, generic_args, caller_args);
+                    let function =
+                        flux_ty::sized_dispatch::select(sigs, *func, args).map_err(|message| {
+                            let mut error = Diagnostic::new(data.terminator.range, message);
+                            error.file = items.functions[caller.function].loc.file;
+                            error
+                        })?;
+                    single = Instance { function, args };
+                    Cow::Borrowed(std::slice::from_ref(&single))
+                }
                 // What dropping in place drops.
                 TerminatorKind::Call {
                     func, generic_args, ..
@@ -460,7 +514,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
                     continue;
                 }
                 if mir.instance_body(&hir.items, callee).is_none()
-                    && !is_clone_shim(&hir.items, callee)
+                    && !is_builtin_shim(&hir.items, callee)
                 {
                     continue;
                 }
@@ -605,10 +659,10 @@ fn value_functions<'a>(
 }
 
 /// What a pointer type points to.
-fn pointee(ty: Ty) -> Option<Ty> {
+fn pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     match ty.kind() {
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => Some(t),
-        _ => flux_ty::box_pointee(ty),
+        _ => flux_ty::box_pointee(ty).or_else(|| flux_ty::arc_pointee(items, ty)),
     }
 }
 
@@ -664,8 +718,7 @@ fn mentions_opaques(body: &Body) -> bool {
 }
 
 /// The MIR of `instance`: its function's with its generic arguments
-/// substituted and its drops expanded, or the compiler's own for
-/// `Clone::clone` of an array.
+/// substituted and its drops expanded, or a compiler-supplied callable method.
 pub fn body_of<'b>(
     hir: &Hir,
     sigs: &Signatures,
@@ -674,7 +727,9 @@ pub fn body_of<'b>(
 ) -> Cow<'b, Body> {
     match mir.instance_body(&hir.items, instance) {
         Some((body, args)) => instance_body(hir, sigs, &mir.discriminants, body, args),
-        None => Cow::Owned(clone_shim(&hir.items, sigs, instance).expect("instances have bodies")),
+        None => {
+            Cow::Owned(builtin_shim(&hir.items, sigs, instance).expect("instances have bodies"))
+        }
     }
 }
 
@@ -684,11 +739,10 @@ fn lang_method(items: &ItemTree, lang: &str, name: &str) -> Option<FunctionId> {
     items.traits[t].function(items, flux_intern::Symbol::intern(name))
 }
 
-/// Whether `instance` is `Clone::clone` or `PartialEq::eq` for an array,
-/// which the compiler implements, as rustc's `core` does with const
-/// generics.
-fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
-    if is_fn_shim(items, instance) {
+/// Whether a callable's copy, call or address-formatting method has a
+/// compiler-supplied body instead of an ordinary library impl.
+fn is_builtin_shim(items: &ItemTree, instance: Instance) -> bool {
+    if is_fn_shim(items, instance) || is_pointer_debug_shim(items, instance) {
         return true;
     }
     // Functions and pointers clone by copying, as do `Copy` closures.
@@ -705,12 +759,15 @@ fn is_clone_shim(items: &ItemTree, instance: Instance) -> bool {
 /// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
 /// `T::clone` of each element in turn; or `PartialEq::eq`, which
 /// compares each element in turn, until one differs.
-fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option<Body> {
-    if !is_clone_shim(items, instance) {
+fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option<Body> {
+    if !is_builtin_shim(items, instance) {
         return None;
     }
     if is_fn_shim(items, instance) {
         return Some(fn_shim(items, sigs, instance));
+    }
+    if is_pointer_debug_shim(items, instance) {
+        return Some(pointer_debug_shim(items, sigs, instance));
     }
     let array = instance.args[0];
     let (elem, len) = match array.kind() {
@@ -825,6 +882,100 @@ fn clone_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option
         bugs: Vec::new(),
         fn_spans: Default::default(),
     })
+}
+
+/// Pointer formatting observes only the address, never its signature values.
+fn is_pointer_debug_shim(items: &ItemTree, instance: Instance) -> bool {
+    matches!(
+        instance.args.first().map(|ty| ty.kind()),
+        Some(TyKind::FnPtr(_))
+    ) && Some(instance.function) == lang_method(items, "Debug", "fmt")
+}
+
+fn pointer_debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
+    let signature = flux_ty::traits::instance_sig(items, sigs, instance.function, instance.args);
+    let helper = items
+        .functions
+        .iter()
+        .find_map(|(id, f)| {
+            (items.is_core(f.loc.module)
+                && items.modules[f.loc.module].name.as_str() == "fmt"
+                && f.owner.is_none()
+                && f.name.as_str() == "pointer_fmt_inner")
+                .then_some(id)
+        })
+        .expect("core pointer formatter");
+    let mut locals = flux_arena::Arena::new();
+    let ret = locals.alloc(LocalDecl {
+        ty: signature.ret,
+        kind: LocalKind::Return,
+    });
+    let this = locals.alloc(LocalDecl {
+        ty: signature.params[0],
+        kind: LocalKind::Param,
+    });
+    let formatter = locals.alloc(LocalDecl {
+        ty: signature.params[1],
+        kind: LocalKind::Param,
+    });
+    let address = locals.alloc(LocalDecl {
+        ty: Ty::int(flux_ty::IntTy::Usize),
+        kind: LocalKind::Temp,
+    });
+    let range = flux_syntax::TextRange::default();
+    let mut blocks = flux_arena::Arena::new();
+    blocks.alloc(BasicBlockData {
+        statements: vec![Statement {
+            kind: StatementKind::Assign(
+                address.into(),
+                Rvalue::Cast(
+                    Operand::Copy(Place::from(this).deref()),
+                    Ty::int(flux_ty::IntTy::Usize),
+                ),
+            ),
+            range,
+        }],
+        terminator: Terminator {
+            kind: TerminatorKind::Call {
+                func: helper,
+                generic_args: &[],
+                args: vec![
+                    Operand::Copy(address.into()),
+                    Operand::Move(formatter.into()),
+                ],
+                dest: ret.into(),
+                target: Some(BasicBlock::from_raw(1)),
+            },
+            range,
+        },
+    });
+    blocks.alloc(BasicBlockData {
+        statements: Vec::new(),
+        terminator: Terminator {
+            kind: TerminatorKind::Return,
+            range,
+        },
+    });
+    Body {
+        locals,
+        blocks,
+        param_count: 2,
+        call_regions: Default::default(),
+        region_annotations: Vec::new(),
+        region_relations: Vec::new(),
+        c_strings: Vec::new(),
+        in_core: true,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
+        owner: None,
+        constant_owner: None,
+        promoted: Vec::new(),
+        bugs: Vec::new(),
+        fn_spans: Default::default(),
+    }
 }
 
 /// `PartialEq::eq` for arrays of `T` and `U`, with `instance`'s
@@ -997,6 +1148,20 @@ pub fn expand_intrinsics(
         let Some(intrinsic) = data.intrinsic else {
             continue;
         };
+        if intrinsic == flux_hir::Intrinsic::SizedDispatch {
+            // Collection rejects unresolved selectors. Keeping an unexpanded
+            // inspection body intact avoids inventing an arbitrary branch.
+            if let Ok(function) = flux_ty::sized_dispatch::select(sigs, func, generic_args) {
+                body.blocks[block].terminator.kind = TerminatorKind::Call {
+                    func: function,
+                    generic_args,
+                    args,
+                    dest,
+                    target,
+                };
+            }
+            continue;
+        }
         let goto = match target {
             Some(target) => TerminatorKind::Goto(target),
             None => TerminatorKind::Unreachable,
@@ -1178,6 +1343,17 @@ pub fn expand_intrinsics(
                     ty: flux_ty::IntTy::Usize,
                 };
                 (dest, Rvalue::Use(Operand::Const(constant)))
+            }
+            ("type_id", []) => {
+                let bits = flux_ty::type_identity::of(items, sigs, arg_ty)
+                    .expect("monomorphized type identity");
+                (
+                    dest,
+                    Rvalue::Use(Operand::Const(Constant::Int {
+                        bits,
+                        ty: flux_ty::IntTy::U128,
+                    })),
+                )
             }
             ("type_name", []) => {
                 // A static string, independent of values or borrows of T.
@@ -1903,6 +2079,7 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
                     operand(l);
                     operand(r);
                 }
+                Rvalue::InlineAsm { inputs, .. } => inputs.iter_mut().for_each(operand),
                 Rvalue::Aggregate(kind, ops) => {
                     if let crate::AggregateKind::Array(elem) = kind {
                         *elem = subst(*elem);

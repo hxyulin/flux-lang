@@ -1754,6 +1754,14 @@ pub struct Chars<'a> {
     back: usize,
 }
 
+impl crate::fmt::Debug for Chars<'_> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.write_str("Chars(")?;
+        f.debug_list().entries(self.clone()).finish()?;
+        f.write_str(")")
+    }
+}
+
 impl<'a> Iterator for Chars<'a> {
     type Item = char;
 
@@ -1806,6 +1814,12 @@ impl<'a> DoubleEndedIterator for Chars<'a> {
 /// [`str::char_indices`] gives.
 pub struct CharIndices<'a> {
     chars: Chars<'a>,
+}
+
+impl crate::fmt::Debug for CharIndices<'_> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("CharIndices").field("front_offset", &self.chars.front).field("iter", &self.chars).finish()
+    }
 }
 
 impl<'a> Iterator for CharIndices<'a> {

@@ -1,0 +1,17 @@
+fn main() {
+    for (source,expected) in [
+        ("", ""), ("ASCII\0MiXeD", "ascii\0mixed"), ("İ", "i\u{307}"),
+        ("Σ", "σ"), ("ΟΣ", "ος"), ("ΟΣΑ", "οσα"), ("ΟΣ.Α", "οσ.α"),
+        ("AΣ\u{301}", "aς\u{301}"), ("AΣ\u{301}A", "aσ\u{301}a"),
+        ("AΣʰ", "aςʰ"), ("ʰΣ", "ʰσ"), ("AʰΣ", "aʰς"),
+        ("Σ\0ΟΣ", "σ\0ος"), ("İΣ", "i\u{307}ς"), ("Σİ", "σi\u{307}"),
+        ("ᾈKẞ𐐀", "ᾀkß𐐨"), ("ΣΣΣ", "σσς"), ("京Σ", "京σ"),
+    ] { assert_eq!(source.to_lowercase(),expected); }
+    let mut source=String::from("İΣ");
+    let mut lower=source.to_lowercase();source.push('A');lower.push('!');
+    assert_eq!(source,"İΣA");assert_eq!(lower,"i\u{307}ς!");
+    let mut unchanged=String::from("already lower");let copy=unchanged.to_lowercase();unchanged.clear();assert_eq!(copy,"already lower");
+    let input=include_str!("unicode-cases.txt");
+    print!("{}",input.to_lowercase());
+    println!("unicode lowercase ownership {} {}",source,lower);
+}

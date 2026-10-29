@@ -38,8 +38,9 @@ pub use proc_macro::{
 mod source;
 
 pub use body::{
-    Binding, BindingId, Body, BodyLists, BodySourceMap, Expr, ExprId, Literal, LoopSource,
-    MatchArm, Pat, PatId, PathGenerics, Res, SegmentArgs, Stmt, TypeRefId,
+    AsmOptions, AsmRegister, AsmTemplatePiece, Binding, BindingId, Body, BodyLists, BodySourceMap,
+    Expr, ExprId, InlineAsm, Literal, LoopSource, MatchArm, Pat, PatId, PathGenerics, Res,
+    SegmentArgs, Stmt, TypeRefId,
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
@@ -47,9 +48,9 @@ pub use item_tree::{
     Derive, Discriminant, DynRef, Field, Function, FunctionId, GenericArgs, GenericParam, Generics,
     Impl, ImplId, ImplTarget, ImplTraitRef, ImplType, ItemCounts, ItemLoc, ItemTree, LifetimeParam,
     LifetimeRef, MISPLACED_BINDING, Module, ModuleId, OutlivesPredicate, Owner, Param, ParamKind,
-    Path, PathAnchor, QSelf, Struct, StructId, StructKind, Trait, TraitId, TraitType, TypeAlias,
-    TypeAliasId, TypeOutlives, TypeRef, UseCapture, Variant, VariantData, Visibility,
-    WherePredicate, array_target, is_primitive, raw_ptr_target, slice_target,
+    Path, PathAnchor, QSelf, SizedDispatch, Struct, StructId, StructKind, Trait, TraitId,
+    TraitType, TypeAlias, TypeAliasId, TypeOutlives, TypeRef, UseCapture, Variant, VariantData,
+    Visibility, WherePredicate, array_target, is_primitive, raw_ptr_target, slice_target,
 };
 pub use library::Core;
 pub use lower::{LoweredBody, lower_body, lower_const};

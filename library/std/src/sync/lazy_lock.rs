@@ -49,3 +49,6 @@ impl<T: Default> Default for LazyLock<T> {
         LazyLock::new(T::default)
     }
 }
+
+impl<T: core::panic::UnwindSafe, F: core::panic::UnwindSafe> core::panic::UnwindSafe for LazyLock<T, F> {}
+impl<T: core::panic::UnwindSafe + core::panic::RefUnwindSafe, F: core::panic::UnwindSafe> core::panic::RefUnwindSafe for LazyLock<T, F> {}

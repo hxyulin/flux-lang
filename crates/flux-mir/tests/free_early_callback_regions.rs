@@ -152,8 +152,8 @@ fn free_early_callback_binders_match_rustc() {
         }
         cases.push((name.into(), source.into(), true, false));
     }
-    // CallbackBinder retains the conservative explicit-outlives boundary,
-    // not an early/late classifier. Both of these inputs are late in Rust.
+    // Predicate-only lifetimes and type-only conditions leave these signature
+    // loans late-bound. Their callee obligations must still be proved.
     for (name, source) in [
         (
             "unrelated_lifetime",
@@ -167,7 +167,7 @@ fn free_early_callback_binders_match_rustc() {
         if !case_filter::selected(name) {
             continue;
         }
-        cases.push((name.into(), source.into(), true, true));
+        cases.push((name.into(), source.into(), true, false));
     }
     // A fixed Param slot must not hide a second, independently bound input.
     cases.push(("mixed_bad".into(), "fn get<'a:'a>(_:i32,x:&'a i32)->i32{*x} fn need<T,F:Fn(T,&i32)->i32>(_:T,_:F){} fn main(){need(0,get);}".into(), false, true));

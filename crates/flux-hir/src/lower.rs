@@ -26,7 +26,7 @@ use crate::literal::{
     parse_float, parse_int, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char,
     unescape_str,
 };
-use crate::macros::{self, CallSite, MacroDef, MacroScopeId, RECURSION_LIMIT};
+use crate::macros::{self, CallSite, MacroDef, MacroScopeId};
 use crate::{
     Bound, ConstId, Derive, Diagnostic, FileId, FunctionId, ImplTarget, ItemTree, ModuleId, Owner,
     Path, StructId, StructKind, TypeRef,
@@ -91,6 +91,10 @@ pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId
     if let Some(anon) = data.anon {
         // An array length or the like, whose node is the expression.
         ctx.anon_in = anon.function;
+        if let Some(strukt) = anon.self_adt {
+            ctx.in_impl = true;
+            ctx.self_target = Some(ImplTarget::Struct(strukt));
+        }
         let root = ctx.lower_opt(ast::Expr::cast(node), node);
         return ctx.finish(Vec::new(), root);
     }
@@ -2010,7 +2014,7 @@ impl<'a> Ctx<'a> {
                 return None;
             }
         };
-        if self.expansion_depth >= RECURSION_LIMIT {
+        if self.expansion_depth as usize >= self.items.macro_recursion_limit(self.module) {
             self.error(
                 node.text_range(),
                 format!("recursion limit reached while expanding `{}!`", def.name),
@@ -2115,6 +2119,29 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn is_inline_asm(&self, call: ast::MacroExpr<'_>) -> bool {
+        let Some(path) = call.syntax().children().find_map(ast::Path::cast) else {
+            return false;
+        };
+        match macros::resolve(
+            self.items,
+            path,
+            &self.local_macros,
+            self.macro_scope,
+            self.module,
+        ) {
+            Ok(macros::Resolved::Def(id)) => matches!(
+                self.items.macros[id].kind,
+                crate::MacroKind::Builtin(crate::Builtin::Asm)
+            ),
+            Ok(macros::Resolved::Local(local)) => matches!(
+                local.def.kind,
+                crate::MacroKind::Builtin(crate::Builtin::Asm)
+            ),
+            Err(_) => false,
+        }
+    }
+
     /// A macro call in expression position.
     fn lower_macro_expr(&mut self, m: ast::MacroExpr<'_>, range: TextRange) -> ExprId {
         if macros::is_macro_rules(m.syntax()) {
@@ -2124,6 +2151,17 @@ impl<'a> Ctx<'a> {
             );
             return self.alloc_expr(Expr::Missing, range);
         }
+        let asm = if self.is_inline_asm(m) {
+            match macros::inline_asm::parse_call(m.syntax()) {
+                Ok(asm) => Some(asm),
+                Err((at, message)) => {
+                    self.error(at, message);
+                    return self.alloc_expr(Expr::Missing, range);
+                }
+            }
+        } else {
+            None
+        };
         let Some((parse, file)) = self.expand(m.syntax(), Fragment::Expr) else {
             return self.alloc_expr(Expr::Missing, range);
         };
@@ -2132,7 +2170,24 @@ impl<'a> Ctx<'a> {
         self.expansion_depth += 1;
         crate::item_tree::body_expansion(1);
         let outer_file = std::mem::replace(&mut self.expansion_file, file);
-        let id = self.lower_opt(expr, root);
+        let id = if let Some(asm) = asm {
+            if let Some(ast::Expr::TupleExpr(tuple)) = expr {
+                let operands = self.lower_expr_list(tuple.fields());
+                self.alloc_expr(
+                    Expr::InlineAsm(crate::InlineAsm {
+                        template: asm.template,
+                        registers: asm.registers,
+                        options: asm.options,
+                        operands,
+                    }),
+                    range,
+                )
+            } else {
+                self.alloc_expr(Expr::Missing, range)
+            }
+        } else {
+            self.lower_opt(expr, root)
+        };
         self.expansion_file = outer_file;
         self.expansion_depth -= 1;
         crate::item_tree::body_expansion(-1);
@@ -2153,6 +2208,17 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let range = m.syntax().text_range();
+        if self.is_inline_asm(m) {
+            let id = self.lower_macro_expr(m, range);
+            if is_tail && !semicolon {
+                return Some(id);
+            }
+            self.stmt_scratch.push(Stmt::Expr {
+                expr: id,
+                has_semicolon: true,
+            });
+            return None;
+        }
         let Some((parse, file)) = self.expand(m.syntax(), Fragment::Stmts) else {
             let id = self.alloc_expr(Expr::Missing, range);
             if is_tail && !semicolon {
@@ -4256,6 +4322,30 @@ impl<'a> Ctx<'a> {
             }
             _ => self.items.resolve(self.module, path, Ns::Values),
         };
+        // Modules may coexist with primitive types. A bare primitive prefix
+        // can still name its associated items when module lookup finds none;
+        // qualified paths and renamed module bindings remain module-only.
+        let resolved = if path.anchor == PathAnchor::Plain
+            && path.segments.len() == 2
+            && crate::is_primitive(path.segments[0])
+            && matches!(
+                resolved,
+                Err(ResolveError::NotFound { .. } | ResolveError::Failed { .. })
+            )
+            && matches!(
+                self.items.lookup(self.module, path.segments[0], Ns::Types),
+                Some(Resolved::Def(Def::Module(_)))
+            ) {
+            self.items.resolve_assoc(
+                self.module,
+                ImplTarget::Primitive(path.segments[0]),
+                path,
+                1,
+                Ns::Values,
+            )
+        } else {
+            resolved
+        };
         match self.reported(resolved, path, range) {
             Ok(Resolved::TypeRelative(index)) => self.type_relative(path, index, range),
             Ok(Resolved::TraitItem(t, _)) => Res::Assoc {
@@ -4648,6 +4738,18 @@ impl<'a> Ctx<'a> {
                 let Some((strukt, variant, path)) = target else {
                     return self.alloc_pat(Pat::Missing, range);
                 };
+                if self
+                    .items
+                    .externally_non_exhaustive_variant(strukt, variant, self.module)
+                {
+                    self.error(
+                        range,
+                        format!(
+                            "variant `{}` is private",
+                            self.items.structs[strukt].variant(variant).name
+                        ),
+                    );
+                }
                 let v = self.items.structs[strukt].variant(variant);
                 if v.kind != StructKind::Tuple {
                     let message = match v.kind {
@@ -4691,6 +4793,19 @@ impl<'a> Ctx<'a> {
                     Some((strukt, variant, path))
                         if self.items.structs[strukt].variant(variant).kind == StructKind::Unit =>
                     {
+                        if self.items.externally_non_exhaustive_variant(
+                            strukt,
+                            variant,
+                            self.module,
+                        ) {
+                            self.error(
+                                range,
+                                format!(
+                                    "variant `{}` is private",
+                                    self.items.structs[strukt].variant(variant).name
+                                ),
+                            );
+                        }
                         let id = self.alloc_pat(Pat::Unit(strukt, variant), range);
                         self.pat_generics(id, &path, path_pat.path(), range);
                         return id;

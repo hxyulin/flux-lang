@@ -157,12 +157,16 @@ fn attribute_forms_and_placement() {
         "#[non_exhaustive] fn f() {}",
         "struct S { #[non_exhaustive] x: i32 }",
         "#[non_exhaustive] union U { x: i32 }",
+    ] {
+        let found = errors(item, "fn main() {}");
+        assert!(!found.is_empty(), "accepted {item}");
+    }
+    for item in [
         "enum E { #[non_exhaustive] A }",
         "enum E { #[non_exhaustive] A(i32) }",
         "enum E { #[non_exhaustive] A { x: i32 } }",
     ] {
-        let found = errors(item, "fn main() {}");
-        assert!(!found.is_empty(), "accepted {item}");
+        assert!(errors(item, "fn main() {}").is_empty(), "rejected {item}");
     }
     assert!(
         errors(
@@ -188,4 +192,131 @@ fn non_exhaustive_does_not_widen_private_constructors() {
         let found = errors(&dep, "fn main() { dep::test(); }");
         assert!(found.iter().any(|e| e.contains("private")), "{found:?}");
     }
+}
+
+#[test]
+fn variant_contracts_match_rustc() {
+    let root = std::env::temp_dir().join(format!("flux-open-variants-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let dep = r#"
+pub enum E { #[non_exhaustive] Unit, #[non_exhaustive] Tuple(u8), #[non_exhaustive] Record{v:u8}, Other }
+pub enum Closed { #[non_exhaustive] R{x:bool}, Other }
+pub use E::{Unit as RenamedUnit, Tuple as RenamedTuple, Record as RenamedRecord};
+pub type Alias = E;
+pub fn make()->E { E::Record{v:7} }
+pub fn closed()->Closed { Closed::Other }
+pub fn local()->u8 { match E::Tuple(7) { E::Tuple(x)=>x,E::Unit=>0,E::Record{v}=>v,E::Other=>0 } }
+"#;
+    fs::write(root.join("dep.rs"), dep).unwrap();
+    let output = Command::new("rustc")
+        .current_dir(&root)
+        .args(["--edition=2024", "--crate-type=rlib", "dep.rs"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for (name, source) in [
+        ("unit_type_import", "use dep::E::Unit as _;fn main(){}"),
+        ("tuple_type_import", "use dep::E::Tuple as _;fn main(){}"),
+        (
+            "unit_record_pattern",
+            "fn main(){match dep::make(){dep::E::Unit{..}=>{},_=>{}}}",
+        ),
+        (
+            "tuple_record_pattern",
+            "fn main(){match dep::make(){dep::E::Tuple{0:x,..}=>{let _=x;},_=>{}}}",
+        ),
+        (
+            "tuple_record_exact",
+            "fn main(){match dep::make(){dep::E::Tuple{0:x}=>{let _=x;},_=>{}}}",
+        ),
+        (
+            "unit_record_exact",
+            "fn main(){match dep::make(){dep::E::Unit{}=>{},_=>{}}}",
+        ),
+        (
+            "record_rest",
+            "fn main(){match dep::make(){dep::E::Record{v,..}=>assert_eq!(v,7),_=>{}}}",
+        ),
+        (
+            "record_alias",
+            "fn main(){match dep::make(){dep::Alias::Record{v,..}=>assert_eq!(v,7),_=>{}}}",
+        ),
+        (
+            "record_reexport",
+            "fn main(){match dep::make(){dep::RenamedRecord{v,..}=>assert_eq!(v,7),_=>{}}}",
+        ),
+        (
+            "closed_exhaustive",
+            "fn main(){match dep::closed(){dep::Closed::R{x:true,..}=>{},dep::Closed::R{x:false,..}=>{},dep::Closed::Other=>{}}}",
+        ),
+        ("unit_value", "fn main(){let _=dep::E::Unit;}"),
+        (
+            "unit_pattern",
+            "fn main(){match dep::make(){dep::E::Unit=>{},_=>{}}}",
+        ),
+        ("tuple_value", "fn main(){let _=dep::E::Tuple(1);}"),
+        (
+            "tuple_pattern",
+            "fn main(){match dep::make(){dep::E::Tuple(..)=>{},_=>{}}}",
+        ),
+        ("tuple_alias", "fn main(){let _=dep::Alias::Tuple(1);}"),
+        ("tuple_reexport", "fn main(){let _=dep::RenamedTuple(1);}"),
+        ("unit_reexport", "fn main(){let _=dep::RenamedUnit;}"),
+        ("record_value", "fn main(){let _=dep::E::Record{v:1};}"),
+        (
+            "record_alias_value",
+            "fn main(){let _=dep::Alias::Record{v:1};}",
+        ),
+        (
+            "record_reexport_value",
+            "fn main(){let _=dep::RenamedRecord{v:1};}",
+        ),
+        (
+            "record_exact",
+            "fn main(){match dep::make(){dep::E::Record{v}=>{let _=v;},_=>{}}}",
+        ),
+        (
+            "record_alias_exact",
+            "fn main(){match dep::make(){dep::Alias::Record{v}=>{let _=v;},_=>{}}}",
+        ),
+        ("glob_unit", "use dep::E::*;fn main(){let _=Unit;}"),
+        (
+            "glob_record",
+            "use dep::E::*;fn main(){match dep::make(){Record{v,..}=>{let _=v;},_=>{}}}",
+        ),
+    ] {
+        fs::write(root.join("main.rs"), source).unwrap();
+        let reference = Command::new("rustc")
+            .current_dir(&root)
+            .args([
+                "--edition=2024",
+                "--extern",
+                "dep=libdep.rlib",
+                "main.rs",
+                "-o",
+                "program",
+            ])
+            .output()
+            .unwrap();
+        let diagnostics = errors(dep, source);
+        assert_eq!(
+            diagnostics.is_empty(),
+            reference.status.success(),
+            "{name}: rustc={} Flux={diagnostics:?}",
+            String::from_utf8_lossy(&reference.stderr)
+        );
+    }
+    for source in [
+        "#[derive(Default)]enum E{#[default]#[non_exhaustive]Unit}fn main(){}",
+        "enum E{#[non_exhaustive(bad)]V}fn main(){}",
+        "enum E{#[non_exhaustive=1]V}fn main(){}",
+    ] {
+        let diagnostics = errors("", source);
+        assert!(!diagnostics.is_empty(), "accepted {source}");
+    }
+    fs::remove_dir_all(root).unwrap();
 }

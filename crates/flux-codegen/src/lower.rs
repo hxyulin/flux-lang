@@ -301,7 +301,7 @@ pub fn lower_module(
             function: id,
             args: &[],
         };
-        let sig = &typed.sigs[id];
+        let sig = &flux_ty::traits::instance_sig(items, &typed.sigs, id, &[]);
         let main_sig = ctx_signature(
             &typed.sigs,
             &ctx.layouts,
@@ -320,7 +320,29 @@ pub fn lower_module(
                 let flush_sig = ctx_signature(&typed.sigs, &ctx.layouts, &typed.sigs[f], false);
                 (instance_symbol(hir, &symbols, instance), flush_sig)
             });
-        let entry = entry_point(&symbols[&id], &main_sig, sig.ret == Ty::NEVER, flush);
+        let runner = if sig.ret != Ty::UNIT && sig.ret != Ty::NEVER {
+            flux_ty::entry::main_runner(items, &typed.sigs).map(|function| {
+                let instance = Instance {
+                    function,
+                    args: Ty::list(&[flux_ty::traits::reveal(&typed.sigs, sig.ret)]),
+                };
+                let signature =
+                    flux_ty::traits::instance_sig(items, &typed.sigs, function, instance.args);
+                (
+                    instance_symbol(hir, &symbols, instance),
+                    ctx_signature(&typed.sigs, &ctx.layouts, &signature, false),
+                )
+            })
+        } else {
+            None
+        };
+        let entry = entry_point(
+            &symbols[&id],
+            &main_sig,
+            sig.ret == Ty::NEVER,
+            flush,
+            runner,
+        );
         module.functions.push(entry);
     }
     module.sync_function_attrs();
@@ -343,6 +365,7 @@ fn instance_symbol(
         let imp = &items.impls[owner];
         match imp.target {
             Some(ImplTarget::Struct(s)) => !items.structs[s].generics.is_empty(),
+            Some(ImplTarget::Object(_)) => true,
             _ => imp.trait_ref.is_some(),
         }
     });
@@ -416,6 +439,25 @@ fn instance_symbol(
                 feed(if sig.is_c { b"C" } else { b"R" });
                 feed(if sig.is_unsafe { b"uF(" } else { b"F(" });
                 sig.inputs_output.iter().for_each(|&t| encode(t, feed));
+                if let Some(recipe) = sig.regions {
+                    feed(b"regions");
+                    feed(&recipe.bound.to_le_bytes());
+                    feed(&recipe.free.to_le_bytes());
+                    for row in recipe.inputs_output {
+                        feed(&(row.len() as u32).to_le_bytes());
+                        for region in *row {
+                            let (tag, index) = match *region {
+                                flux_ty::FnRegion::Static => (0, 0),
+                                flux_ty::FnRegion::Bound(i) => (1, i),
+                                flux_ty::FnRegion::Free(i) => (2, i),
+                                flux_ty::FnRegion::Type(i) => (3, i),
+                            };
+                            feed(&[tag]);
+                            feed(&index.to_le_bytes());
+                        }
+                    }
+                    recipe.types.iter().for_each(|&t| encode(t, feed));
+                }
                 feed(b")");
             }
             TyKind::FnDef(def) => {
@@ -432,6 +474,10 @@ fn instance_symbol(
             TyKind::Dynamic(d) => {
                 feed(b"dyn");
                 feed(&(d.trait_.index() as u32).to_le_bytes());
+                feed(&(d.auto_traits.len() as u32).to_le_bytes());
+                for marker in d.auto_traits {
+                    feed(&(marker.trait_.index() as u32).to_le_bytes());
+                }
                 d.args
                     .iter()
                     .chain(d.assoc_tys)
@@ -687,6 +733,7 @@ fn entry_point(
     main_sig: &Signature,
     never: bool,
     flush: Option<(String, Signature)>,
+    runner: Option<(String, Signature)>,
 ) -> Function {
     let mut function = Function::new(
         "main",
@@ -698,7 +745,15 @@ fn entry_point(
     b.append_block_param(entry, Type::I32);
     b.append_block_param(entry, Type::Ptr);
     let callee = b.import_function(rust_main, main_sig.clone());
-    b.ins().call(callee, &[]);
+    let status = if let Some((name, sig)) = runner {
+        let address = b.ins().symbol_addr(keel_ir::Symbol::Func(callee));
+        let runner = b.import_function(&name, sig);
+        let call = b.ins().call(runner, &[address]);
+        Some(b.function().inst_results(call)[0])
+    } else {
+        b.ins().call(callee, &[]);
+        None
+    };
     if let Some((flush, flush_sig)) = flush.filter(|_| !never) {
         let flush = b.import_function(&flush, flush_sig);
         b.ins().call(flush, &[]);
@@ -706,8 +761,8 @@ fn entry_point(
     if never {
         b.ins().trap();
     } else {
-        let zero = b.ins().iconst(Type::I32, 0);
-        b.ins().return_(&[zero]);
+        let code = status.unwrap_or_else(|| b.ins().iconst(Type::I32, 0));
+        b.ins().return_(&[code]);
     }
     b.seal_all_blocks();
     b.finalize();
@@ -2560,6 +2615,12 @@ impl Lower<'_, '_, '_> {
     /// The leaves of an rvalue of type `ty`.
     fn rvalue(&mut self, rvalue: &Rvalue, ty: Ty) -> Values {
         match rvalue {
+            Rvalue::InlineAsm {
+                template,
+                registers,
+                options,
+                inputs,
+            } => self.inline_asm(template, registers, *options, inputs, ty),
             Rvalue::Use(operand) => self.operand(operand),
             Rvalue::Aggregate(AggregateKind::Variant(strukt, index), operands) => {
                 let bits = self.ctx.discriminant(*strukt, *index);
@@ -2619,30 +2680,42 @@ impl Lower<'_, '_, '_> {
                 if flux_ty::arc_pointee(&self.ctx.hir.items, *to).is_some() =>
             {
                 let from = self.body.operand_ty(operand, self.sigs);
-                let array = flux_ty::arc_pointee(&self.ctx.hir.items, from)
-                    .expect("Arc unsizing has an Arc source");
-                let TyKind::Array(_, len) = array.kind() else {
-                    unreachable!("Arc unsizing is array to slice");
-                };
-                // The alloc contract is header, data, PhantomData. Preserve
-                // both addresses and ownership; append metadata, with no
-                // count change or allocation. The source data pointer is thin.
-                let fields = self.sigs.fields(from).expect("trusted Arc fields");
-                assert_eq!(fields.len(), 3, "trusted Arc representation");
-                let TyKind::Adt(data, args) = fields[1].kind() else {
-                    unreachable!("trusted Arc data pointer");
-                };
-                assert!(
-                    flux_ty::is_lang_struct(&self.ctx.hir.items, data.strukt, "non_null")
-                        && args == [array]
-                );
+                let source = flux_ty::arc_pointee(&self.ctx.hir.items, from).expect("Arc source");
+                let target = flux_ty::arc_pointee(&self.ctx.hir.items, *to).expect("Arc target");
+                // Header and data addresses survive the ownership transfer.
                 let values = self.operand(operand);
-                assert_eq!(values.len(), 2, "trusted sized Arc leaves");
-                smallvec![
-                    values[0],
-                    values[1],
-                    self.int_const(u128::from(array_len(len)), IntTy::Usize)
-                ]
+                let metadata = match (source.kind(), target.kind()) {
+                    (TyKind::Array(_, len), TyKind::Slice(_)) => {
+                        self.int_const(u128::from(array_len(len)), IntTy::Usize)
+                    }
+                    (_, TyKind::Dynamic(_)) if source.is_dyn() => {
+                        if flux_ty::objects::same_principal(source, target)
+                            || flux_ty::objects::is_auto_object(&self.ctx.hir.items, target)
+                        {
+                            return values;
+                        }
+                        let index = flux_mir::vtable::super_index(
+                            &self.ctx.hir.items,
+                            self.sigs,
+                            source,
+                            target,
+                        )
+                        .expect("object supertrait");
+                        let address = self.offset(values[2], 8 * index as u64);
+                        self.b.ins().load_with_flags(
+                            Type::Ptr,
+                            address,
+                            address_flags(&self.address_align, address, Type::Ptr),
+                        )
+                    }
+                    (_, TyKind::Dynamic(_)) => {
+                        let name = self.ctx.vtable(target, source);
+                        let data = self.b.import_data(&name);
+                        self.b.ins().symbol_addr(keel_ir::Symbol::Data(data))
+                    }
+                    _ => unreachable!("represented Arc unsizing"),
+                };
+                smallvec![values[0], values[1], metadata]
             }
             Rvalue::Unsize(operand, to) if is_dyn_ptr(*to) || is_dyn_box(*to) => {
                 let from = self.body.operand_ty(operand, self.sigs);
@@ -2652,7 +2725,11 @@ impl Lower<'_, '_, '_> {
                 let leaves = self.operand(operand);
                 // Weakening a raw pointer's mutability retains the same
                 // object and vtable; it is not a supertrait upcast.
-                if pointee_of == object {
+                if pointee_of == object
+                    || flux_ty::objects::same_principal(pointee_of, object)
+                    || pointee_of.is_dyn()
+                        && flux_ty::objects::is_auto_object(&self.ctx.hir.items, object)
+                {
                     return leaves;
                 }
                 if pointee_of.is_dyn() {
@@ -2717,9 +2794,141 @@ impl Lower<'_, '_, '_> {
         }
     }
 
+    fn inline_asm(
+        &mut self,
+        template: &[flux_hir::AsmTemplatePiece],
+        registers: &[flux_hir::AsmRegister],
+        options: flux_hir::AsmOptions,
+        inputs: &[Operand],
+        result_ty: Ty,
+    ) -> Values {
+        use flux_hir::{AsmRegister, AsmTemplatePiece};
+        let mut arguments = Vec::new();
+        let mut types = Vec::new();
+        let mut transports = Vec::new();
+        let mut constraints = Vec::new();
+        for (operand, register) in inputs.iter().zip(registers) {
+            let ty = self.body.operand_ty(operand, self.sigs);
+            let mut value = self.operand(operand)[0];
+            let original = self.b.function().value_type(value);
+            let mut widened = None;
+            let vector = flux_ty::inline_asm::is_vector(&self.ctx.hir.items, ty);
+            if vector {
+                // Rust SIMD wrappers use aggregate storage. Pack only at the
+                // assembly boundary, preserving every byte of the register.
+                let packed = Type::Vector(match self.ctx.layouts.of(ty).size {
+                    8 => keel_ir::VectorType::I8x8,
+                    16 => keel_ir::VectorType::I8x16,
+                    _ => unreachable!("validated AArch64 vector width"),
+                });
+                value = self.b.ins().load_with_flags(
+                    packed,
+                    value,
+                    address_flags(&self.address_align, value, packed),
+                );
+            } else if *register == AsmRegister::Reg && ty.as_float().is_some() {
+                let int = if ty.as_float() == Some(flux_ty::FloatTy::F32) {
+                    Type::I32
+                } else {
+                    Type::I64
+                };
+                value = self.b.ins().convert(ConvertOp::Bitcast, int, value);
+            } else if *register == AsmRegister::Vreg
+                && let Some(int) = ty.as_int()
+            {
+                let float = if int.bits() <= 32 {
+                    Type::F32
+                } else {
+                    Type::F64
+                };
+                if int.bits() < 32 {
+                    widened = Some(Type::I32);
+                    value = self.b.ins().convert(ConvertOp::Uext, Type::I32, value);
+                }
+                value = self.b.ins().convert(ConvertOp::Bitcast, float, value);
+            }
+            types.push(self.b.function().value_type(value));
+            arguments.push(value);
+            transports.push((original, widened, vector.then_some(ty)));
+            constraints.push(if *register == AsmRegister::Reg {
+                "=r".to_owned()
+            } else {
+                "=w".to_owned()
+            });
+        }
+        constraints.extend((0..inputs.len()).map(|i| i.to_string()));
+        if !options.nomem {
+            constraints.push("~{memory}".to_owned());
+        }
+        if !options.preserves_flags {
+            constraints.push("~{cc}".to_owned());
+        }
+        let mut text = String::new();
+        for piece in template {
+            match piece {
+                AsmTemplatePiece::Text(literal) => {
+                    text.push_str(&literal.as_str().replace('%', "%%"))
+                }
+                AsmTemplatePiece::Operand { index, modifier } => {
+                    use std::fmt::Write;
+                    let modifier = modifier.unwrap_or(match registers[*index as usize] {
+                        AsmRegister::Reg => 'x',
+                        AsmRegister::Vreg => 'v',
+                    });
+                    write!(text, "%{modifier}[{index}]").unwrap();
+                }
+            }
+        }
+        let asm = keel_ir::InlineAsm::new(&text, &constraints.join(","), &types)
+            .expect("checked assembly operands");
+        let instruction = self.b.ins().inline_asm(asm, &arguments);
+        let results = self.b.function().inst_results(instruction).to_vec();
+        // Any vector makes the whole result tuple memory-resident. Build one
+        // tuple allocation, rather than returning separate vector addresses
+        // that could be mistaken for the address of that entire tuple.
+        let address = is_memory(self.sigs, result_ty).then(|| self.new_slot(result_ty));
+        let layout = self.ctx.layouts.of(result_ty);
+        let fields = self.sigs.fields(result_ty).unwrap_or_default();
+        let mut values = Values::new();
+        for (index, (mut value, (original, widened, vector))) in
+            results.into_iter().zip(transports).enumerate()
+        {
+            let actual = self.b.function().value_type(value);
+            if vector.is_none() {
+                value = if let Some(wide) = widened {
+                    value = self.b.ins().convert(ConvertOp::Bitcast, wide, value);
+                    self.b.ins().convert(ConvertOp::Trunc, original, value)
+                } else if original != actual {
+                    self.b.ins().convert(ConvertOp::Bitcast, original, value)
+                } else {
+                    value
+                };
+            }
+            if let Some(address) = address {
+                let field = self.offset(address, layout.field_offset(0, index as u32));
+                if vector.is_some() {
+                    self.b.ins().store_with_flags(
+                        value,
+                        field,
+                        address_flags(&self.address_align, field, actual),
+                    );
+                } else {
+                    self.store(field, fields[index], &[value]);
+                }
+            } else {
+                values.push(value);
+            }
+        }
+        if let Some(address) = address {
+            values.push(address);
+        }
+        values
+    }
+
     fn scalar_rvalue(&mut self, rvalue: &Rvalue) -> Option<Value> {
         match rvalue {
             Rvalue::Use(_)
+            | Rvalue::InlineAsm { .. }
             | Rvalue::Aggregate(..)
             | Rvalue::Ref { .. }
             | Rvalue::Discriminant(_)

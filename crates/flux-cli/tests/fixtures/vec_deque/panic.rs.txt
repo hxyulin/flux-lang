@@ -1,0 +1,27 @@
+use std::cell::Cell;
+use std::panic::{AssertUnwindSafe,catch_unwind};
+use std::rc::Rc;
+mod raw_vec {
+    use std::mem::MaybeUninit;
+    pub struct RawVec<T>{data:Vec<MaybeUninit<T>>}
+    pub fn min_non_zero_cap(size:usize)->usize{if size==1{8}else if size<=1024{4}else{1}}
+    impl<T> RawVec<T>{
+        pub const fn new()->Self{Self{data:Vec::new()}}
+        pub fn with_capacity(capacity:usize)->Self{Self{data:Vec::with_capacity(capacity)}}
+        pub fn capacity(&self)->usize{self.data.capacity()}
+        pub fn ptr(&self)->*mut T{self.data.as_ptr() as *mut T}
+    }
+}
+#[path="__SOURCE__"]mod target;
+use target::VecDeque;
+struct Owner{key:usize,drops:Rc<Cell<usize>>,clones:Rc<Cell<usize>>,panic_clone:usize,panic_drop:bool}
+impl Clone for Owner{fn clone(&self)->Self{let n=self.clones.get();if n==self.panic_clone{panic!("clone failure");}self.clones.set(n+1);Self{key:self.key,drops:self.drops.clone(),clones:self.clones.clone(),panic_clone:self.panic_clone,panic_drop:false}}}
+impl Drop for Owner{fn drop(&mut self){self.drops.set(self.drops.get()+1);if self.panic_drop{panic!("drop failure");}}}
+fn owner(key:usize,drops:&Rc<Cell<usize>>,clones:&Rc<Cell<usize>>,panic_clone:usize,panic_drop:bool)->Owner{Owner{key,drops:drops.clone(),clones:clones.clone(),panic_clone,panic_drop}}
+fn main(){
+    let drops=Rc::new(Cell::new(0));let clones=Rc::new(Cell::new(0));let mut q=VecDeque::with_capacity(4);for i in 0..4{q.push_back(owner(i,&drops,&clones,2,false));}drop(q.pop_front());q.push_back(owner(4,&drops,&clones,2,false));assert!(catch_unwind(AssertUnwindSafe(||q.clone())).is_err());assert_eq!(drops.get(),3);assert_eq!(clones.get(),2);assert_eq!(q.iter().map(|o|o.key).collect::<Vec<_>>(),vec![1,2,3,4]);drop(q);assert_eq!(drops.get(),7);
+    let drops=Rc::new(Cell::new(0));let clones=Rc::new(Cell::new(0));let mut q=VecDeque::with_capacity(3);for i in 0..5{q.push_back(owner(i,&drops,&clones,99,i==1));}assert!(catch_unwind(AssertUnwindSafe(||q.clear())).is_err());assert_eq!(drops.get(),5);assert!(q.is_empty());q.push_back(owner(5,&drops,&clones,99,false));drop(q);assert_eq!(drops.get(),6);
+    let drops=Rc::new(Cell::new(0));let clones=Rc::new(Cell::new(0));let mut q=VecDeque::with_capacity(3);for i in 0..5{q.push_back(owner(i,&drops,&clones,99,i==2));}assert!(catch_unwind(AssertUnwindSafe(||drop(q))).is_err());assert_eq!(drops.get(),5);
+    let drops=Rc::new(Cell::new(0));let clones=Rc::new(Cell::new(0));let mut q=VecDeque::new();assert!(catch_unwind(AssertUnwindSafe(||q.extend((0..8).map(|i|{if i==4{panic!("iterator failure");}owner(i,&drops,&clones,99,false)})))).is_err());assert_eq!(q.len(),4);assert!(catch_unwind(AssertUnwindSafe(||q.reserve(usize::MAX))).is_err());assert_eq!(q.len(),4);drop(q);assert_eq!(drops.get(),4);
+    println!("panic invariants complete");
+}

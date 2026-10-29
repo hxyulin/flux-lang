@@ -1,0 +1,26 @@
+[
+  {
+    "module": "ssa",
+    "path": "crates/keel-frontend/tests/ssa.rs",
+    "functions": ["sig", "while_loop", "if_else_merges_both_variables", "nested_loops_sealed_early", "nested_loops_sealed_at_end", "nested_loops", "use_before_definition_reads_zero", "duplicate_destinations_preserve_explicit_arguments", "raw_destination_rewrite_before_sealing", "join_reached_again_around_a_loop_gets_its_parameter", "trivial_join_around_a_loop_reads_the_entry_value", "trivial_acyclic_join_spends_no_value", "diamonds", "reused_context_builds_the_same_ir"],
+    "tests": ["while_loop", "if_else_merges_both_variables", "nested_loops_sealed_early", "nested_loops_sealed_at_end", "use_before_definition_reads_zero", "duplicate_destinations_preserve_explicit_arguments", "raw_destination_rewrite_before_sealing", "join_reached_again_around_a_loop_gets_its_parameter", "trivial_join_around_a_loop_reads_the_entry_value", "trivial_acyclic_join_spends_no_value", "reused_context_builds_the_same_ir"]
+  },
+  {
+    "module": "rewrite",
+    "path": "crates/keel-ir/tests/rewrite_verifier.rs",
+    "functions": ["module", "rewrite", "same_arity_rewrites_cannot_leave_stale_result_types", "rewrites_cannot_silently_change_result_arity", "invalid_instruction_handles_are_errors_instead_of_panics"],
+    "tests": ["same_arity_rewrites_cannot_leave_stale_result_types", "rewrites_cannot_silently_change_result_arity", "invalid_instruction_handles_are_errors_instead_of_panics"]
+  },
+  {
+    "module": "dce",
+    "path": "crates/keel-opt/tests/dce.rs",
+    "functions": ["unused_traps_calls_loads_and_stores_are_preserved", "only_unused_ordinary_nontrapping_reads_can_die"],
+    "tests": ["unused_traps_calls_loads_and_stores_are_preserved", "only_unused_ordinary_nontrapping_reads_can_die"]
+  },
+  {
+    "module": "call_abi",
+    "path": "crates/keel-ir/tests/call_operand_abi.rs",
+    "functions": ["clone_remap_and_text_keep_layout_and_named_prefix", "invalid_operand_contracts_reject", "aggregate_home_is_explicit_and_survives_clone_and_roundtrip"],
+    "tests": ["clone_remap_and_text_keep_layout_and_named_prefix", "invalid_operand_contracts_reject", "aggregate_home_is_explicit_and_survives_clone_and_roundtrip"]
+  }
+]

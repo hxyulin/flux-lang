@@ -22,6 +22,20 @@ where
 {
     (P::<u8>::get(&x), P::<u16>::get(&x))
 }
+fn duplicates<T, U>(value: T) -> u8
+where
+    U: R<X = u8>,
+    T: P<u8, A = u8> + P<U::X, A = u8>,
+{
+    P::<u8>::get(&value)
+}
+fn tautological_reverse<T, U>(value: T) -> u8
+where
+    U: R<X = u8>,
+    T: P<U::X, A = <T as P<U::X>>::A> + P<u8, A = u8>,
+{
+    P::<u8>::get(&value)
+}
 struct Value(u8);
 impl P<u8> for Value {
     type A = u8;
@@ -54,5 +68,8 @@ fn main() {
     assert_eq!(a, 73);
     assert_eq!(b, 17);
     assert_eq!(c, 273);
-    println!("normalized proofs {} {} {}", a, b, c);
+    let d = duplicates::<Value, Arg>(Value(83));
+    let e = tautological_reverse::<Value, Arg>(Value(84));
+    assert_eq!((d, e), (83, 84));
+    println!("normalized proofs {} {} {} {} {}", a, b, c, d, e);
 }

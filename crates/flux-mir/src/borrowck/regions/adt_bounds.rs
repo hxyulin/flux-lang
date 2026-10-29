@@ -58,7 +58,7 @@ fn instance_has_contract(
             predicates.iter().any(|p| {
                 let self_ty = p.self_ty.subst(args);
                 items.traits[p.trait_ref.trait_].lang != Some(flux_intern::sym::sized)
-                    && !flux_ty::traits::is_builtin_copy(items, p.trait_ref.trait_, self_ty)
+                    && !flux_ty::traits::is_builtin_trait(items, p.trait_ref.trait_, self_ty)
                     && (flux_ty::regions::slots(items, self_ty) != 0
                         || p.trait_ref.args.iter().any(|&ty| slots(ty) != 0))
             })
@@ -249,6 +249,14 @@ impl Cx<'_> {
                 ));
                 continue;
             }
+            if !self.callable_outputs_complete(
+                &self.items.structs[use_.strukt].generics,
+                &predicates,
+                &projections,
+                range,
+            ) {
+                continue;
+            }
             let previous = std::mem::replace(
                 &mut self.call_projections,
                 projections
@@ -270,10 +278,29 @@ impl Cx<'_> {
                 );
             }
             self.call_projections = previous;
-            for (projection, table) in projections.into_iter().zip(metadata.projections.iter()) {
+            let bounds: Vec<_> = predicates
+                .iter()
+                .copied()
+                .zip(metadata.bound_selfs.iter())
+                .zip(metadata.bound_traits.iter())
+                .map(|((predicate, own), rows)| (predicate, &**own, rows.clone()))
+                .collect();
+            for (index, (&projection, table)) in projections
+                .iter()
+                .zip(metadata.projections.iter())
+                .enumerate()
+            {
+                let input = self.declared_projection_input(
+                    &self.items.structs[use_.strukt].generics,
+                    &projections,
+                    index,
+                    &bounds,
+                    range,
+                );
                 self.prove_projection(
                     projection,
                     table,
+                    input.as_ref(),
                     &use_.lifetimes,
                     &use_.args,
                     &use_.types,
@@ -311,13 +338,16 @@ impl Cx<'_> {
                 return None;
             }
             for (index, &predicate) in predicates.iter().enumerate() {
-                let goal = self.impl_region_goal(
+                let goal = self.impl_region_goal_with_inputs(
                     predicate,
                     &metadata.bound_selfs[index],
                     &metadata.bound_traits[index],
                     &use_.lifetimes,
                     &use_.args,
                     &use_.types,
+                    None,
+                    false,
+                    Some(env),
                 )?;
                 if !self.impl_prove_super(&goal, env, 0) {
                     return Some(false);
@@ -331,15 +361,42 @@ impl Cx<'_> {
             if metadata.projections.len() != projections.len() {
                 return None;
             }
+            if !self.callable_outputs_complete(
+                &self.items.structs[use_.strukt].generics,
+                predicates,
+                projections,
+                TextRange::default(),
+            ) {
+                return Some(false);
+            }
             // Trait-lifetime projection equalities need their own selection
             // input rows. Retain an explicit boundary rather than erasing them.
-            for (projection, table) in projections.iter().zip(metadata.projections.iter()) {
+            let bounds: Vec<_> = predicates
+                .iter()
+                .copied()
+                .zip(metadata.bound_selfs.iter())
+                .zip(metadata.bound_traits.iter())
+                .map(|((predicate, own), rows)| (predicate, &**own, rows.clone()))
+                .collect();
+            for (index, (projection, table)) in projections
+                .iter()
+                .zip(metadata.projections.iter())
+                .enumerate()
+            {
                 if flux_ty::regions::has_projection_inputs(projection.alias) {
                     return None;
                 }
+                let input = self.declared_projection_input(
+                    &self.items.structs[use_.strukt].generics,
+                    projections,
+                    index,
+                    &bounds,
+                    TextRange::default(),
+                );
                 self.prove_projection(
                     *projection,
                     table,
+                    input.as_ref(),
                     &use_.lifetimes,
                     &use_.args,
                     &use_.types,

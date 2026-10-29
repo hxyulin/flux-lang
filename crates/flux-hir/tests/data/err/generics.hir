@@ -21,7 +21,7 @@ fn S::shadows_impl<T>(x@0: T) -> () {}
 fn S::other() -> () {}
 
 fn S::self_args() -> () {
-    let _ = S::other();
+    let _ = <Self<i32>>::other();
 }
 
 fn on_local() -> () {

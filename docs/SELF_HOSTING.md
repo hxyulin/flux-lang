@@ -1,8 +1,10 @@
 # Compiling Flux with Flux
 
-Flux compiles and executes several unchanged compiler crates and dependencies
-through explicit source graphs. These comparisons do not yet build the whole
-compiler or establish a bootstrap. Package-manager work is deferred.
+Flux can build a stage-1 Flux CLI from the complete compiler source graph using
+a local Keel vector-assembly patch. The resulting compiler runs CLI checks and
+compiles and executes a smoke program in both optimization modes. It has not yet
+rebuilt the complete compiler graph. Cargo and rustc still supply host build
+scripts and procedural macros.
 
 ## Executable source graphs
 
@@ -28,6 +30,8 @@ these source graphs.
 | `keel_asm_ir_readiness` | Complete pinned Keel assembly-IR source with original smallvec sources, structured assembly consumers and byte guards. |
 | `keel_asm_readiness` | Complete unchanged pinned assembler and its thirteen-package source graph, including object writing/reading and both hashbrown versions. |
 | `keel_backend_readiness`, with `FLUX_BACKEND_ONLY=full` | Complete pinned backend/linker source graph; emits AArch64 and x86 objects and links an AArch64 executable. Explicit ignored audit, with native off/on comparisons and byte guards. |
+| `keel_reduced_suite` | Flux-compiled pinned backend runs 19 selected upstream tests and emits ten executable semantic cases per compiler mode. Explicit ignored audit with byte guards. |
+| `flux_compiler_readiness` | Complete CLI library, binary and 70-package target source graph. Local patched Keel mode builds a working stage-1 compiler off/on; a complete stage-2 rebuild remains untested. |
 | `keel_ir_readiness` | Complete pinned Keel IR source, layouts, empty-module parsing and verification. |
 | `keel_float_math` | Unchanged pinned Keel floating-point constant folder with the complete Keel IR dependency. |
 | `bumpalo_readiness` | Original bumpalo 3.20.3 with the resolved `collections` and `default` features, including collection ownership and zero-sized drops. |
@@ -49,6 +53,7 @@ cargo test -p flux-cli --test keel_asm_ir_readiness
 cargo test -p flux-cli --test keel_asm_readiness
 cargo test -p flux-cli --test keel_ir_readiness
 FLUX_BACKEND_ONLY=full cargo test -p flux-cli --test keel_backend_readiness -- --ignored --nocapture
+cargo test -p flux-cli --test keel_reduced_suite -- --ignored --nocapture
 cargo test -p flux-cli --test keel_float_math
 cargo test -p flux-cli --test bumpalo_readiness
 cargo test -p flux-cli --test equivalent_readiness
@@ -391,6 +396,17 @@ rustc: AArch64 text size 28, x86 text size 17, and an AArch64 executable linked
 through the real Keel linker and SDK libSystem stub. This proves the exercised
 backend consumer, not a complete Flux compiler bootstrap.
 
+The reduced upstream suite in `out/keel-reduced-suite/49440` passed 19 selected
+SSA-builder, rewrite-verifier, DCE and call-ABI test bodies. The test bodies are
+copied unchanged from pinned upstream sources, with only test registration
+removed. Each of the rustc reference and both Flux-built backend modes also
+generated ten AArch64 programs covering loops, calls, memory and arithmetic.
+All 30 programs executed successfully. X86 objects were inspected, not executed.
+All frontend reports were zero and all five byte guards were clean. The latest
+run completed in 203.21 seconds. The
+[selection report](../crates/flux-cli/tests/fixtures/keel_reduced_suite/README.md)
+records the source adaptations and coverage; this is not the entire Keel suite.
+
 C call boundaries now marshal fieldless enums with explicit C/integer
 representations through their physical integer tags, and core nullable function
 pointers through one pointer. Rust's internal discriminant/payload leaves stay
@@ -448,10 +464,10 @@ The `adt_trait_regions`, `safe_trait_defaults`, `trait_type_arguments` and
 `static_signature_wf` native consumers match rustc off/on.
 
 Current bounded language implementations still reject unsupported shapes.
-The latest function-pointer review also found two unresolved correctness issues:
-object lifetime defaults cross intervening container types incorrectly, and
-implied input bounds permit some output-lifetime conversions that rustc rejects.
-These findings remain open despite the existing focused oracle coverage.
+The earlier function-pointer findings about object defaults across containers
+and implied-bound output conversions have regression tests. Fresh comparisons
+of the original examples agree with rustc; this does not establish support for
+all function-pointer lifetime forms.
 A separate existing formation-check gap accepts a discarded static-bounded
 aggregate such as `struct U<T: 'static>(T); let _ = U(&local);`. Rust rejects it.
 The explicitly ignored `discarded_static_aggregate_requires_wf` test in
@@ -466,8 +482,9 @@ exercised HashTable graph, not every Rust trait object.
 
 Virtual-source inclusion and include calls first resolved after body-item
 collection remain explicitly rejected. Const memory interpretation is typed and
-bounded; it is not a general byte-memory evaluator. Scoped Rust thread creation is supplied separately from TLS. Unscoped thread
-creation and unwinding remain outside the runtime subset.
+bounded; it is not a general byte-memory evaluator. Scoped and unscoped Rust
+thread creation use pthreads. Worker panics abort; unwinding remains outside the
+runtime subset.
 
 `flux build` compiles one root and its modules with embedded core, alloc and
 bounded std. The separate restricted [package driver](PACKAGE_DRIVER.md) accepts
@@ -484,8 +501,40 @@ source closure includes Keel and its required build outputs.
 
 ## Bootstrap criterion
 
-The remaining sequence is to compile and execute the complete backend and
-flux-codegen source graphs, then build the compiler executable from source. A Flux-built Flux must
-compile and run the regression suite and build the compiler again with
-equivalent behavior. Component comparisons establish intermediate evidence;
-none is a claim that this final criterion has been met.
+The complete MIR crate graph in `out/mir-selfhost/41292` passed in 250.14
+seconds. All four frontend reports were empty, both native modes matched rustc,
+and both byte guards were clean. This covers the MIR consumer and its dependency
+graph.
+
+The guarded type-checker graph in `out/ty-selfhost/53293` passed in 77.74
+seconds. Syntax, HIR, type and MIR reports were empty; native output and exit
+status matched rustc with optimization disabled and enabled. Both byte guards
+were clean. This verifies the type-checker consumer, not the complete CLI.
+
+The complete compiler audit in `out/flux-compiler-readiness/61310` reached zero
+syntax, HIR, type and MIR diagnostics, then stopped at zmij's SIMD inline assembly.
+The pinned Keel verifier rejected vector operands in SIMD registers, and its
+AArch64 template printer rejected the `v` register modifier.
+
+The local-patch run in `out/flux-compiler-readiness/665` passed in 379.15 seconds.
+The [maintained audit](../crates/flux-cli/tests/fixtures/flux_compiler/README.md)
+loaded the CLI library and binary as separate source roots across 70 target
+package identities. Syntax, HIR, type, MIR and both lowering reports were empty.
+Both resulting Flux executables matched rustc's CLI help and version output,
+compiled the smoke program, and executed it with matching stdout, stderr and
+status. The source, parent and pre-codegen byte guards were clean. A further
+vector-assembly regression passed all four combinations of stage-1 compiler and
+generated-program optimization, including mixed scalar/vector outputs.
+
+This run used a temporary Keel checkout based on `f37f0bd`, with two backend
+changes: accept vector operands for SIMD assembly constraints and print AArch64
+`vN` template operands. Flux packs its memory-backed vector wrappers at the
+assembly boundary and stores mixed scalar/vector outputs in one complete result
+tuple at the physical field offsets. Cargo's ignored local path patches select that checkout;
+the permanent manifest pin has not changed. The audit records the checkout,
+backend diff and actual input bytes. This is evidence for the recorded local
+backend, not the unmodified pinned backend.
+
+The next bootstrap step is to run regressions through the stage-1 compiler and
+use it to rebuild the complete compiler graph. Stage-1 CLI and smoke success do
+not establish stage-2 equivalence or eliminate the rustc/Cargo host tooling.

@@ -20,6 +20,7 @@
 //! by name alone.
 
 pub(crate) mod builtin;
+pub(crate) mod inline_asm;
 pub(crate) mod mbe;
 pub(crate) mod tt;
 
@@ -311,7 +312,15 @@ pub(crate) fn resolve<'a, L>(
         .iter()
         .position(|c| c.is_core)
         .map(|i| CrateId(i as u32));
-    let exported = |k: CrateId| items.exported_macros.get(&(k, name)).copied();
+    let exported = |k: CrateId| {
+        items
+            .exported_macros
+            .get(&(k, name))
+            .copied()
+            .filter(|&id| {
+                k == krate || !matches!(items.macros[id].kind, MacroKind::Builtin(Builtin::Asm))
+            })
+    };
     // A macro by path, through the def map: what modules export or import.
     let by_path = || {
         let lowered = crate::item_tree::lower_path(path, &mut Vec::new())?;
@@ -549,7 +558,7 @@ fn expand_at_depth(
     depth: u32,
 ) -> Option<Expansion> {
     let call_range = call_range(call);
-    if depth >= RECURSION_LIMIT {
+    if depth as usize >= site.items.crates[site.krate.0 as usize].recursion_limit {
         diagnostics.push(Diagnostic::new(
             call_range,
             "recursion limit reached during eager macro expansion",
@@ -941,7 +950,7 @@ fn eager_arguments(
             tokens_of(expanded, &mut tokens);
             // A declarative macro can itself produce a macro invocation.
             if expanded.kind() == SyntaxKind::MACRO_EXPR {
-                if depth >= RECURSION_LIMIT {
+                if depth as usize >= site.items.crates[site.krate.0 as usize].recursion_limit {
                     diagnostics.push(Diagnostic::new(
                         node.text_range(),
                         "recursion limit reached during eager macro expansion",

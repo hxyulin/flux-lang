@@ -42,7 +42,10 @@ pub enum Entry {
 }
 
 fn slots(items: &ItemTree, sigs: &Signatures, object: Ty, d: DynTy) -> Vec<Slot> {
-    let bounds = flux_ty::traits::dyn_bounds(sigs, object, d);
+    let bounds: Vec<_> = flux_ty::traits::dyn_bounds(sigs, object, d)
+        .into_iter()
+        .filter(|p| !flux_ty::traits::is_auto_trait(items, p.trait_ref.trait_))
+        .collect();
     let mut out: Vec<Slot> = bounds.iter().skip(1).map(|&p| Slot::Super(p)).collect();
     for &p in &bounds {
         for &f in &items.traits[p.trait_ref.trait_].functions {
@@ -76,6 +79,7 @@ pub fn super_object(items: &ItemTree, sigs: &Signatures, object: Ty, d: DynTy, p
         }
     }
     Ty::new(TyKind::Dynamic(DynTy {
+        auto_traits: d.auto_traits,
         trait_: p.trait_ref.trait_,
         name: p.trait_ref.name,
         args: p.trait_ref.args,

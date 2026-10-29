@@ -1480,7 +1480,7 @@ fn assoc_type_base(
                                 || ty.children().any(|t| has_regions(items, t))
                         }
                         if has_regions(items, ty)
-                            && (scope.in_fn_pointer || type_has_pointer_binder(items, ty))
+                            && (scope.in_fn_pointer || type_has_pointer_binder(ty))
                         {
                             errors.push((at, "inherited associated type regions in function pointers are not supported yet".into()));
                             return Ty::ERROR;
@@ -1649,16 +1649,11 @@ fn written_has_pointer_binder(
     }
 }
 
-fn type_has_pointer_binder(items: &ItemTree, ty: Ty) -> bool {
-    match ty.kind() {
-        TyKind::FnPtr(_) => true,
-        TyKind::Adt(adt, _)
-            if declaration_has_pointer_binder(items, Def::Struct(adt.strukt), &mut Vec::new()) =>
-        {
-            true
-        }
-        _ => ty.children().any(|t| type_has_pointer_binder(items, t)),
-    }
+fn type_has_pointer_binder(ty: Ty) -> bool {
+    // Nominal fields are checked in their declaration context. A pointer in
+    // an ADT's fields is not a binder surrounding this occurrence of Self::Out;
+    // only the resolved value type and its generic arguments can be one.
+    matches!(ty.kind(), TyKind::FnPtr(_)) || ty.children().any(type_has_pointer_binder)
 }
 
 /// Struct `strukt`, named by `path`, with the generic arguments written

@@ -2,6 +2,35 @@
 
 use crate::fmt::{self, Display, Formatter};
 
+/// Types whose owned values may cross an unwinding boundary.
+#[lang = "unwind_safe"]
+pub trait UnwindSafe {}
+
+/// Types whose shared references may cross an unwinding boundary.
+#[lang = "ref_unwind_safe"]
+pub trait RefUnwindSafe {}
+
+/// An explicit assertion that a value may cross an unwinding boundary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AssertUnwindSafe<T>(pub T);
+
+impl<T> UnwindSafe for AssertUnwindSafe<T> {}
+impl<T> RefUnwindSafe for AssertUnwindSafe<T> {}
+
+impl<T> crate::ops::Deref for AssertUnwindSafe<T> {
+    type Target = T;
+    fn deref(&self) -> &T { &self.0 }
+}
+
+impl<T> crate::ops::DerefMut for AssertUnwindSafe<T> {
+    fn deref_mut(&mut self) -> &mut T { &mut self.0 }
+}
+
+impl<R, F: crate::ops::FnOnce() -> R> crate::ops::FnOnce<()> for AssertUnwindSafe<F> {
+    type Output = R;
+    fn call_once(self, _: ()) -> R { (self.0)() }
+}
+
 /// A place in the source: a file, a line and a column, each counted
 /// from one, as `#[track_caller]` functions get their caller's.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

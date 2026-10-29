@@ -1,7 +1,7 @@
 //! Procedural attribute replacement and custom-derive item collection.
 use super::{
-    AstNode, Collector, Ctx, Diagnostic, MacroId, NodeId, RECURSION_LIMIT, SourceDb, Symbol,
-    SyntaxKind, TextRange, ast, attr_name, is_item_kind, item_enabled, macros,
+    AstNode, Collector, Ctx, Diagnostic, MacroId, NodeId, SourceDb, Symbol, SyntaxKind, TextRange,
+    ast, attr_name, is_item_kind, item_enabled, macros,
 };
 use flux_syntax::T;
 
@@ -158,7 +158,7 @@ impl Collector<'_> {
                 return true;
             }
         }
-        if self.expansion_depth >= RECURSION_LIMIT {
+        if self.expansion_depth as usize >= self.items.macro_recursion_limit(ctx.module) {
             self.items.diagnostics.push(Diagnostic::new(
                 syntax.text_range(),
                 "recursion limit reached during procedural macro expansion",

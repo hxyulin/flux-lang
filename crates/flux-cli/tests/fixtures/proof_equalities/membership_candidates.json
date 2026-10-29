@@ -1,0 +1,62 @@
+[
+  {
+    "name": "normalized_direct",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<u8,A=u8>+P<U::X,A=u8>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_reverse",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<U::X,A=u8>+P<u8,A=u8>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_tautology",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<u8,A=u8>+P<U::X,A=<T as P<U::X>>::A>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_tautology_reverse",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<U::X,A=<T as P<U::X>>::A>+P<u8,A=u8>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_generic_rhs",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<u8,A=u8>+P<U::X,A=U::X>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "normalized_const",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<u8,A=u8>+P<U::X,A=u8>{<T as P<u8>>::V}fn main(){}",
+    "accepts": true
+  },
+  {
+    "name": "conflicting_rhs",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<u8,A=u8>+P<U::X,A=u16>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "conflicting_rhs_reverse",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<U::X,A=u16>+P<u8,A=u8>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "wrong_const_output",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u8>,T:P<u8,A=u16>+P<U::X,A=u16>{<T as P<u8>>::V}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "missing_owner",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where T:P<u8,A=u8>+P<U::X,A=u8>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "wrong_trait_argument",
+    "source": "trait R{type X;}trait P<X>{type A;fn get(&self)->Self::A;const V:Self::A;}fn f<T,U>(x:T)->u8 where U:R<X=u16>,T:P<U::X,A=u8>{P::<u8>::get(&x)}fn main(){}",
+    "accepts": false
+  },
+  {
+    "name": "unfixed_trait_argument",
+    "source": "trait P<X>{fn get(&self)->u8;}fn f<T:P<u8>+P<u16>>(x:T)->u8{P::get(&x)}fn main(){}",
+    "accepts": false
+  }
+]

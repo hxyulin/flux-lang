@@ -130,3 +130,6 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
         self.lock.state.store(0, Release);
     }
 }
+
+impl<T: ?Sized> core::panic::UnwindSafe for RwLock<T> {}
+impl<T: ?Sized> core::panic::RefUnwindSafe for RwLock<T> {}

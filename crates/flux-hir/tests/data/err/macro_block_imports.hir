@@ -6,7 +6,7 @@ fn outer() -> () {}
 
 fn main() -> () {
     {
-        secret();
+        <error>();
     };
     {
         public();

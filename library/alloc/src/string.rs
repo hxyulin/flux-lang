@@ -11,6 +11,15 @@ pub struct String {
     vec: Vec<u8>,
 }
 
+impl From<crate::boxed::Box<str>> for String {
+    fn from(value: crate::boxed::Box<str>) -> Self {
+        let bytes = crate::boxed::Box::into_raw(value) as *mut [u8];
+        // SAFETY: str and [u8] share allocation layout and length metadata.
+        // Ownership transfers once, and the bytes remain valid UTF-8.
+        unsafe { Self::from_utf8_unchecked(crate::boxed::Box::from_raw(bytes).into_vec()) }
+    }
+}
+
 impl core::convert::AsRef<str> for String {
     fn as_ref(&self) -> &str { self }
 }

@@ -337,7 +337,8 @@ fn evaluate(
                 ty: to,
             })
         }
-        Rvalue::Aggregate(..)
+        Rvalue::InlineAsm { .. }
+        | Rvalue::Aggregate(..)
         | Rvalue::Ref { .. }
         | Rvalue::Discriminant(_)
         | Rvalue::DiscriminantForDrop(_)

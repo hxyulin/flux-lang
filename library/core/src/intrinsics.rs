@@ -452,3 +452,9 @@ pub(crate) unsafe fn __atomic_u8_cas_acqrel<T>(p: *mut T, expected: T, new: T) -
 pub(crate) unsafe fn __atomic_u8_cas_seqcst<T>(p: *mut T, expected: T, new: T) -> T {
     loop {}
 }
+
+/// Opaque identity of a fully substituted static type.
+#[rustc_intrinsic]
+pub(crate) const fn type_id<T: ?Sized + 'static>() -> u128 {
+    loop {}
+}

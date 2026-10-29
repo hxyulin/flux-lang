@@ -659,7 +659,17 @@ pub(super) fn extend_signatures(
             traits::associated_self_bounds(&sigs, self_trait, self_ty(&sigs, function.owner));
         let self_inherited_types = traits::associated_self_types(items, &sigs, &self_supertraits);
         let scope = TypeScope {
-            self_ty: self_ty(&sigs, function.owner),
+            // Tuple constructors reuse their fields' written types. `Self`
+            // in those types still names the declaring ADT, not a free function.
+            self_ty: self_ty(&sigs, function.owner).or_else(|| {
+                function.ctor.map(|(strukt, _)| {
+                    Ty::adt(
+                        strukt,
+                        items.structs[strukt].name,
+                        &params_of(&function.generics, 0),
+                    )
+                })
+            }),
             self_supertraits: &self_supertraits,
             self_inherited_types: &self_inherited_types,
             generics: &generics,
@@ -936,6 +946,7 @@ pub(super) fn extend_signatures(
     }
     diagnostics.extend(reported);
     regions::check_trait_admission(items, &sigs, from, &mut diagnostics);
+    crate::sized_dispatch::validate(items, &mut sigs, &mut diagnostics);
     (sigs, diagnostics)
 }
 

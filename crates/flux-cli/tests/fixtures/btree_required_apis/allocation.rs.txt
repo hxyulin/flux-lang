@@ -1,0 +1,52 @@
+// Keep the actual map implementation unchanged. This allocation-only Vec
+// adapter injects safe method unwinds; GlobalAlloc itself must not unwind.
+mod vec {
+    use std::cell::Cell;
+    thread_local! { static REMAINING: Cell<Option<usize>> = const { Cell::new(None) }; }
+    pub fn fail_after(n: usize) { REMAINING.with(|v| v.set(Some(n))); }
+    pub fn clear_failure() { REMAINING.with(|v| v.set(None)); }
+    fn allocate() {
+        REMAINING.with(|v| if let Some(n)=v.get() {
+            if n==0 { v.set(None); panic!("allocation once"); }
+            v.set(Some(n-1));
+        });
+    }
+    pub use std::vec::IntoIter;
+    pub struct Vec<T>(std::vec::Vec<T>);
+    impl<T> Vec<T> {
+        pub const fn new() -> Self { Self(std::vec::Vec::new()) }
+        pub fn push(&mut self, value:T) { allocate(); self.0.push(value); }
+        pub fn pop(&mut self) -> Option<T> { self.0.pop() }
+    }
+    impl<T> std::ops::Deref for Vec<T> { type Target=std::vec::Vec<T>; fn deref(&self)->&Self::Target{&self.0} }
+    impl<T> std::ops::DerefMut for Vec<T> { fn deref_mut(&mut self)->&mut Self::Target{&mut self.0} }
+    impl<T> IntoIterator for Vec<T> { type Item=T;type IntoIter=IntoIter<T>;fn into_iter(self)->Self::IntoIter{self.0.into_iter()} }
+    impl<T> FromIterator<T> for Vec<T> { fn from_iter<I:IntoIterator<Item=T>>(values:I)->Self{let mut v=Self::new();for value in values{v.push(value);}v} }
+    impl<T:Clone> Clone for Vec<T>{fn clone(&self)->Self{Self(self.0.clone())}}
+}
+#[path="__SOURCE__"]mod actual;
+use actual::BTreeMap;
+use std::cell::Cell;
+use std::panic::{catch_unwind,AssertUnwindSafe};
+struct Value<'a>(&'a Cell<usize>,u32);
+impl Drop for Value<'_>{fn drop(&mut self){self.0.set(self.0.get()+1);}}
+fn main(){
+ for quota in 0..100{
+  let drops=Cell::new(0);let mut map=BTreeMap::new();for key in 0..31{map.insert(key,Value(&drops,key));}
+  vec::fail_after(quota);
+  let _=catch_unwind(AssertUnwindSafe(||{if quota%2==0{drop(map.iter_mut());}else{drop(map.values_mut());}}));
+  vec::clear_failure();assert_eq!(drops.get(),0);assert_eq!(map.len(),31);
+  for key in 0..31{assert_eq!(map.get(&key).unwrap().1,key);}
+  map.get_mut(&0).unwrap().1=99;assert_eq!(map.get(&0).unwrap().1,99);
+  drop(map);assert_eq!(drops.get(),31);
+ }
+ for quota in 0..50{
+  let drops=Cell::new(0);let mut left=BTreeMap::new();let mut right=BTreeMap::new();
+  for key in 0..10{left.insert(key,Value(&drops,key));}for key in 5..15{right.insert(key,Value(&drops,key+100));}
+  vec::fail_after(quota);let _=catch_unwind(AssertUnwindSafe(||left.append(&mut right)));vec::clear_failure();
+  assert!(right.is_empty());assert!(left.keys().copied().collect::<std::vec::Vec<_>>().windows(2).all(|w|w[0]<w[1]));
+  for key in 0..10{assert!(left.contains_key(&key));}
+  drop(left);drop(right);assert_eq!(drops.get(),20);
+ }
+ println!("btree allocation ownership complete");
+}

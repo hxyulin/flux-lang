@@ -72,6 +72,27 @@ impl Path {
         }
         last.map(|(start, end)| OsStr::from_unix_bytes(&bytes[start..end]))
     }
+    /// Returns the filename before its final extension, preserving Unix bytes.
+    pub fn file_stem(&self) -> Option<&OsStr> {
+        self.file_name().map(|name| split_file_name(name).0)
+    }
+    /// Returns the final extension, excluding its dot. Leading dots do not split.
+    pub fn extension(&self) -> Option<&OsStr> {
+        self.file_name().and_then(|name| split_file_name(name).1)
+    }
+    pub fn components(&self) -> Components<'_> {
+        Components { path: self, front: 0, back: self.as_os_str().len() }
+    }
+    pub fn ancestors(&self) -> Ancestors<'_> { Ancestors { next: Some(self) } }
+    /// Returns false for any metadata lookup error.
+    pub fn exists(&self) -> bool { crate::fs::metadata(self).is_ok() }
+    /// Distinguishes missing paths from other metadata lookup failures.
+    pub fn try_exists(&self) -> crate::io::Result<bool> {
+        match crate::fs::metadata(self) {
+            Ok(_) => Ok(true),
+            Err(error) => if error.kind() == crate::io::ErrorKind::NotFound { Ok(false) } else { Err(error) },
+        }
+    }
     pub fn with_file_name<S: AsRef<OsStr>>(&self, file_name: S) -> PathBuf {
         let mut result = match self.file_name() {
             Some(_) => self.parent().unwrap().to_path_buf(),
@@ -194,6 +215,13 @@ impl AsRef<OsStr> for Path { fn as_ref(&self) -> &OsStr { self.as_os_str() } }
 impl AsRef<OsStr> for PathBuf { fn as_ref(&self) -> &OsStr { self.inner.as_os_str() } }
 impl From<&Path> for PathBuf { fn from(value: &Path) -> Self { value.to_path_buf() } }
 impl From<&PathBuf> for PathBuf { fn from(value: &PathBuf) -> Self { value.clone() } }
+impl Clone for crate::alloc_crate::boxed::Box<Path> {
+    fn clone(&self) -> Self { self.to_path_buf().into_boxed_path() }
+}
+impl PartialEq<Path> for PathBuf { fn eq(&self, other: &Path) -> bool { self.as_path() == other } }
+impl PartialEq<PathBuf> for Path { fn eq(&self, other: &PathBuf) -> bool { self == other.as_path() } }
+impl PartialEq<&Path> for PathBuf { fn eq(&self, other: &&Path) -> bool { self.as_path() == *other } }
+impl PartialEq<PathBuf> for &Path { fn eq(&self, other: &PathBuf) -> bool { *self == other.as_path() } }
 impl From<&str> for PathBuf { fn from(value: &str) -> Self { Self { inner: OsString::from(value) } } }
 impl From<String> for PathBuf { fn from(value: String) -> Self { Self { inner: OsString::from(value) } } }
 impl From<OsString> for PathBuf { fn from(value: OsString) -> Self { Self { inner: value } } }
@@ -263,3 +291,109 @@ impl core::fmt::Display for StripPrefixError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.write_str("prefix not found") }
 }
 impl core::error::Error for StripPrefixError {}
+
+fn split_file_name(name: &OsStr) -> (&OsStr, Option<&OsStr>) {
+    let bytes = name.as_encoded_bytes();
+    match bytes.iter().rposition(|&byte| byte == b'.') {
+        Some(dot) if dot != 0 => (OsStr::from_unix_bytes(&bytes[..dot]), Some(OsStr::from_unix_bytes(&bytes[dot + 1..]))),
+        _ => (name, None),
+    }
+}
+
+/// A Windows prefix cannot occur in Unix paths; this view keeps the public
+/// component type usable in platform-independent pattern matches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PrefixComponent<'a> { raw: &'a OsStr }
+impl<'a> PrefixComponent<'a> { pub fn as_os_str(&self) -> &'a OsStr { self.raw } }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Component<'a> {
+    Prefix(PrefixComponent<'a>),
+    RootDir,
+    CurDir,
+    ParentDir,
+    Normal(&'a OsStr),
+}
+impl<'a> Component<'a> {
+    pub fn as_os_str(&self) -> &'a OsStr {
+        match self {
+            Component::Prefix(prefix) => prefix.as_os_str(),
+            Component::RootDir => OsStr::new("/"),
+            Component::CurDir => OsStr::new("."),
+            Component::ParentDir => OsStr::new(".."),
+            Component::Normal(value) => value,
+        }
+    }
+}
+impl AsRef<OsStr> for Component<'_> { fn as_ref(&self) -> &OsStr { self.as_os_str() } }
+impl AsRef<Path> for Component<'_> { fn as_ref(&self) -> &Path { Path::new(self.as_os_str()) } }
+
+/// A borrowed double-ended iterator over normalized Unix path components.
+#[derive(Clone)]
+pub struct Components<'a> { path: &'a Path, front: usize, back: usize }
+impl<'a> Components<'a> {
+    pub fn as_path(&self) -> &'a Path {
+        let bytes = self.path.as_os_str().as_encoded_bytes();
+        let mut position = self.front;
+        let mut start = self.back;
+        let mut end = self.back;
+        let mut first = true;
+        while let Some((_, left, right)) = component(&bytes[..self.back], &mut position) {
+            if first { start = left; first = false; }
+            end = right;
+        }
+        Path::new(OsStr::from_unix_bytes(&bytes[start..end]))
+    }
+    fn value(&self, kind: u8, start: usize, end: usize) -> Component<'a> {
+        match kind {
+            0 => Component::RootDir,
+            1 => Component::CurDir,
+            2 => Component::ParentDir,
+            _ => Component::Normal(OsStr::from_unix_bytes(&self.path.as_os_str().as_encoded_bytes()[start..end])),
+        }
+    }
+}
+impl<'a> Iterator for Components<'a> {
+    type Item = Component<'a>;
+    fn next(&mut self) -> Option<Component<'a>> {
+        let bytes = self.path.as_os_str().as_encoded_bytes();
+        let (kind, start, end) = component(&bytes[..self.back], &mut self.front)?;
+        Some(self.value(kind, start, end))
+    }
+}
+impl<'a> DoubleEndedIterator for Components<'a> {
+    fn next_back(&mut self) -> Option<Component<'a>> {
+        let bytes = self.path.as_os_str().as_encoded_bytes();
+        let mut position = self.front;
+        let mut last = None;
+        while let Some(value) = component(&bytes[..self.back], &mut position) { last = Some(value); }
+        let (kind, start, end) = last?;
+        self.back = start;
+        Some(self.value(kind, start, end))
+    }
+}
+impl core::iter::FusedIterator for Components<'_> {}
+impl AsRef<Path> for Components<'_> { fn as_ref(&self) -> &Path { self.as_path() } }
+impl AsRef<OsStr> for Components<'_> { fn as_ref(&self) -> &OsStr { self.as_path().as_os_str() } }
+impl core::fmt::Debug for Components<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let components: crate::alloc_crate::vec::Vec<_> = self.clone().collect();
+        f.debug_tuple("Components").field(&components).finish()
+    }
+}
+impl PartialEq for Components<'_> { fn eq(&self, other: &Self) -> bool { self.clone().eq(other.clone()) } }
+impl Eq for Components<'_> {}
+impl PartialOrd for Components<'_> { fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) } }
+impl Ord for Components<'_> { fn cmp(&self, other: &Self) -> Ordering { self.clone().cmp(other.clone()) } }
+
+#[derive(Clone, Debug)]
+pub struct Ancestors<'a> { next: Option<&'a Path> }
+impl<'a> Iterator for Ancestors<'a> {
+    type Item = &'a Path;
+    fn next(&mut self) -> Option<&'a Path> {
+        let next = self.next?;
+        self.next = next.parent();
+        Some(next)
+    }
+}
+impl core::iter::FusedIterator for Ancestors<'_> {}

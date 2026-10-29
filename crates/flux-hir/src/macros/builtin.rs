@@ -18,6 +18,7 @@ use super::tt::{Tok, pretty};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Builtin {
     Derive,
+    Asm,
     Assert,
     Panic,
     Unreachable,
@@ -45,6 +46,7 @@ impl Builtin {
     pub(crate) fn from_name(name: &str) -> Builtin {
         match name {
             "derive" => Builtin::Derive,
+            "asm" => Builtin::Asm,
             "assert" => Builtin::Assert,
             "panic" => Builtin::Panic,
             "unreachable" => Builtin::Unreachable,
@@ -226,6 +228,15 @@ fn split_exprs<'a>(cx: &BuiltinCx<'_>, toks: &'a [Tok], named: bool) -> Result<A
 pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, Error> {
     let mut out = Vec::new();
     match builtin {
+        Builtin::Asm => {
+            let asm = super::inline_asm::parse(cx.toks, cx.call)?;
+            cx.quote("(", &mut out);
+            for expr in asm.expressions {
+                out.extend(expr);
+                cx.quote(",", &mut out);
+            }
+            cx.quote(")", &mut out);
+        }
         Builtin::Assert => assert(cx, &mut out)?,
         Builtin::Panic => panic(cx, "", &mut out)?,
         Builtin::Unreachable => panic(cx, "internal error: entered unreachable code", &mut out)?,

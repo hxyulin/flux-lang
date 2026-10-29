@@ -164,6 +164,30 @@ impl Validator<'_> {
             }
             Rvalue::UnaryOp(_, op) => self.check(ty, self.operand_ty(op), what),
             Rvalue::Cast(_, to) => self.check(ty, self.norm(*to), what),
+            Rvalue::InlineAsm {
+                inputs, registers, ..
+            } => {
+                assert_eq!(inputs.len(), registers.len(), "{}", what());
+                for (input, register) in inputs.iter().zip(registers) {
+                    assert!(
+                        flux_ty::inline_asm::supports(
+                            self.items,
+                            self.sigs,
+                            self.operand_ty(input),
+                            *register
+                        ),
+                        "{}",
+                        what()
+                    );
+                }
+                let tuple = Ty::tuple(
+                    &inputs
+                        .iter()
+                        .map(|op| self.operand_ty(op))
+                        .collect::<Vec<_>>(),
+                );
+                self.check(ty, tuple, what);
+            }
             Rvalue::Aggregate(AggregateKind::Tuple, ops) => {
                 let elements: Vec<Ty> = ops.iter().map(|op| self.operand_ty(op)).collect();
                 self.check(ty, Ty::tuple(&elements), what);
@@ -268,10 +292,8 @@ impl Validator<'_> {
                     _ => flux_ty::box_pointee(from)
                         .zip(flux_ty::box_pointee(to))
                         .or_else(|| {
-                            let a = flux_ty::arc_pointee(self.items, from)?;
-                            let b = flux_ty::arc_pointee(self.items, to)?;
-                            matches!((a.kind(), b.kind()), (TyKind::Array(..), TyKind::Slice(_)))
-                                .then_some((a, b))
+                            flux_ty::arc_pointee(self.items, from)
+                                .zip(flux_ty::arc_pointee(self.items, to))
                         }),
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| {
@@ -284,6 +306,7 @@ impl Validator<'_> {
                         (TyKind::Dynamic(x), TyKind::Dynamic(y)) => {
                             flux_ty::objects::supertraits_of(self.items, x.trait_)
                                 .contains(&y.trait_)
+                                && flux_ty::objects::retains_auto_traits(self.sigs, a, b)
                         }
                         // A sized value, whose trait the type checker proved.
                         (_, TyKind::Dynamic(_)) => !self.sigs.is_unsized(a),

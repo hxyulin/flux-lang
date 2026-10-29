@@ -110,7 +110,7 @@ fn excluded_declaration_shapes_have_reasons() {
             Reason::DeclarationDiagnostics,
         ),
         ("trait T<'a> {fn f(x:fn(&i32));}", Reason::SignatureType),
-        ("trait T<'a> {fn f(x:&dyn Copy);}", Reason::SignatureType),
+        ("trait T<'a> {fn f(x:&dyn Fn());}", Reason::SignatureType),
         ("trait T<'a> {fn f(x:_);}", Reason::SignatureType),
         (
             "trait T<'a> {fn f()-><Self as Iterator>::Item;}",

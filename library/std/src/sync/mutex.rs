@@ -121,3 +121,6 @@ impl<T: ?Sized> Drop for MutexGuard<'_, T> {
         self.lock.locked.store(0, Release);
     }
 }
+
+impl<T: ?Sized> core::panic::UnwindSafe for Mutex<T> {}
+impl<T: ?Sized> core::panic::RefUnwindSafe for Mutex<T> {}

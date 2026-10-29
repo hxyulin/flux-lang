@@ -234,7 +234,7 @@ error 4735..4747: this function takes 0 arguments but 2 arguments were supplied
 error 4767..4772: this function takes 1 argument but 2 arguments were supplied
 error 4876..4880: no method named `nope` found for reference `&Self` in the current scope
 error 5184..5187: the method `get` exists for struct `W<NotTr>`, but its trait bounds were not satisfied
-error 5210..5215: the trait bound `NotTr: Tr` is not satisfied
+error 5206..5209: the associated function or constant `new` exists for struct `W<NotTr>`, but its trait bounds were not satisfied
 error 5242..5245: the associated function or constant `new` exists for struct `W<NotTr>`, but its trait bounds were not satisfied
 error 5260..5267: the trait bound `NotTr: Tr` is not satisfied
 error 5281..5286: the trait bound `NotTr: Tr` is not satisfied

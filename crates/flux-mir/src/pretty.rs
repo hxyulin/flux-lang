@@ -218,6 +218,19 @@ fn body_text(
 
 fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
     match rvalue {
+        Rvalue::InlineAsm {
+            template,
+            registers,
+            options,
+            inputs,
+        } => format!(
+            "asm({template:?}, {registers:?}, {options:?}; {})",
+            inputs
+                .iter()
+                .map(|op| operand(hir, op))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Rvalue::Use(op) => operand(hir, op),
         Rvalue::BinaryOp(op, l, r) => {
             let op = match op {

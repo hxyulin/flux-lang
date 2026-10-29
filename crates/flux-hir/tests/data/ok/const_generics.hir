@@ -71,13 +71,13 @@ fn width<A>(_a@0: &A) -> usize where A: Width {
 fn main() -> () {
     let a@0 = sum([1, 2, 3]);
     let b@1 = twice::<2>([10, 20]);
-    let mut s@2 = Stack::new[Self<i32, 4>](0);
+    let mut s@2 = <Stack<i32, 4>>::new[Self<i32, 4>](0);
     s@2.push(5);
-    let t@3: Stack<u8, LIMIT> = Stack::new(1);
+    let t@3: Stack<u8, LIMIT> = <Stack>::new(1);
     let c@4 = (offset::<{const}>(1) + offset::<7>(1));
     let d@5 = flag::<true, 'a'>();
     let z@6 = zeros::<5>();
-    let w@7 = (width((&z@6)) + CAPACITY);
+    let w@7 = (width((&z@6)) + <Stack<u8, 2>>::CAPACITY[Self<u8, 2>]);
     let p@8 = <P as Pick>::pick[Self<0>]((&P));
 }
 

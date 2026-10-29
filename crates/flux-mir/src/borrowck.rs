@@ -38,6 +38,7 @@ use crate::{
 };
 
 pub(crate) use regions::check_adt_declarations;
+pub(crate) use regions::check_signature_projection_requirements;
 pub use regions::{ClosureRequirements, Ext, Requirements};
 
 /// The diagnostics for `body`'s conflicting borrows and its writes and
@@ -599,7 +600,8 @@ impl Checker<'_> {
                     } => self.access(place, Access::Borrow(Mutability::Not), live, range),
                     Rvalue::Len { .. } => {}
                     _ => {
-                        self.in_aggregate = matches!(rvalue, Rvalue::Aggregate(..));
+                        self.in_aggregate =
+                            matches!(rvalue, Rvalue::Aggregate(..) | Rvalue::InlineAsm { .. });
                         for operand in rvalue.operands() {
                             self.operand(operand, live, range);
                         }

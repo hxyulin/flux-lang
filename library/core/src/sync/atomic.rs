@@ -543,3 +543,22 @@ impl crate::convert::From<bool> for AtomicBool { fn from(value:bool)->Self { Sel
 impl crate::fmt::Debug for AtomicBool {
     fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result { crate::fmt::Debug::fmt(&self.load(Relaxed),f) }
 }
+
+impl crate::panic::RefUnwindSafe for AtomicUsize {}
+impl crate::panic::RefUnwindSafe for AtomicU64 {}
+impl crate::panic::RefUnwindSafe for AtomicU32 {}
+impl crate::panic::RefUnwindSafe for AtomicU16 {}
+impl crate::panic::RefUnwindSafe for AtomicU8 {}
+impl crate::panic::RefUnwindSafe for AtomicBool {}
+impl<T> crate::panic::RefUnwindSafe for AtomicPtr<T> {}
+
+impl crate::fmt::Debug for AtomicUsize {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Debug::fmt(&self.load(Relaxed), f)
+    }
+}
+impl crate::fmt::Debug for AtomicU32 {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Debug::fmt(&self.load(Relaxed), f)
+    }
+}

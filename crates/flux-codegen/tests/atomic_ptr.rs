@@ -1,3 +1,5 @@
+#[path = "support/atomic.rs"]
+mod atomic_support;
 use keel_ir::{InstData, Ordering, Type};
 
 fn front_end(text: &str) -> (flux_hir::Hir, flux_ty::TypedFile, flux_mir::FileMir) {
@@ -23,8 +25,10 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
         keel_ir::verify_module(&module).unwrap();
         // The load/store methods themselves carry pointers throughout. A null
         // constructor and unrelated formatting may materialize pointer constants.
-        for f in &module.functions {
+        let mut pointer_bridges = 0;
+        for f in atomic_support::named_functions(&module, "AtomicPtr") {
             if f.name.contains("AtomicPtr4load") || f.name.contains("AtomicPtr5store") {
+                pointer_bridges += 1;
                 for (_, inst) in f.layout_insts() {
                     match f.inst_data(inst) {
                         InstData::Convert {
@@ -52,12 +56,13 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
                 }
             }
         }
+        assert!(pointer_bridges > 0, "no pointer atomic bridge coverage");
         let mut operations = Vec::new();
-        for function in &module.functions {
+        for function in atomic_support::named_functions(&module, "AtomicPtr") {
             for (_, inst) in function.layout_insts() {
                 match function.inst_data(inst) {
                     InstData::AtomicLoad { ty, ordering, .. } => {
-                        assert_eq!(*ty, Type::Ptr);
+                        assert_eq!(*ty, Type::Ptr, "{}", function.name);
                         operations.push(("load", *ordering));
                     }
                     InstData::AtomicStore {
@@ -85,12 +90,17 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
             }
         }
         let asm = keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+        let probe_asm = atomic_support::function_assembly(
+            &module,
+            &atomic_support::named_functions(&module, "AtomicPtr"),
+            &asm,
+        );
         for instruction in ["ldr\tx", "str\tx", "ldar\tx", "stlr\tx"] {
-            assert!(asm.contains(instruction), "missing {instruction}");
+            assert!(probe_asm.contains(instruction), "missing {instruction}");
         }
         for instruction in ["ldar\tw", "stlr\tw"] {
             assert!(
-                !asm.contains(instruction),
+                !probe_asm.contains(instruction),
                 "narrowed pointer atomic {instruction}"
             );
         }
@@ -222,7 +232,8 @@ fn bridge_names_without_intrinsic_identity_remain_ordinary_calls() {
     let text = "fn __atomic_ptr_load_relaxed<T>(_: *const T) -> u32 { 19 } fn main() { println!(\"{}\", __atomic_ptr_load_relaxed(&7u32)); }";
     let (hir, typed, mir) = front_end(text);
     let module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
-    for f in &module.functions {
+    for f in atomic_support::named_functions(&module, "__atomic_ptr_load_relaxed") {
+        atomic_support::assert_called(&module, f);
         for (_, inst) in f.layout_insts() {
             assert!(!matches!(
                 f.inst_data(inst),

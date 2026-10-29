@@ -216,6 +216,29 @@ impl ItemTree {
                 && self.structs[id].name.as_str() == "c_void")
     }
 
+    fn variant_resolution(
+        &self,
+        from: ModuleId,
+        strukt: StructId,
+        variant: u32,
+        segment: usize,
+        ns: Ns,
+    ) -> Result<Resolved, ResolveError> {
+        let resolved = Resolved::Def(Def::Variant(strukt, variant));
+        let def = self.structs[strukt].variant(variant);
+        if ns == Ns::Values
+            && def.kind != StructKind::Record
+            && self.externally_non_exhaustive_variant(strukt, variant, from)
+        {
+            return Err(ResolveError::Private {
+                segment,
+                message: format!("variant `{}` is private", def.name),
+                resolved,
+            });
+        }
+        Ok(resolved)
+    }
+
     /// Resolves `path`, written in `from`, in namespace `ns`.
     pub fn resolve(&self, from: ModuleId, path: &Path, ns: Ns) -> Result<Resolved, ResolveError> {
         let mut private = None;
@@ -232,7 +255,16 @@ impl ItemTree {
                 message,
                 resolved,
             }),
-            None => Ok(resolved),
+            None => match resolved {
+                Resolved::Def(Def::Variant(strukt, variant)) => self.variant_resolution(
+                    from,
+                    strukt,
+                    variant,
+                    path.segments.len().saturating_sub(1),
+                    ns,
+                ),
+                _ => Ok(resolved),
+            },
         }
     }
 
@@ -341,7 +373,7 @@ impl ItemTree {
                         return self.resolve_trait_item(t, path, 1, ns);
                     }
                     Some(Resolved::Def(Def::TypeAlias(a))) => {
-                        return self.resolve_alias_item(a, path, 1, ns);
+                        return self.resolve_alias_item(from, a, path, 1, ns);
                     }
                     Some(Resolved::SelfType) => return Ok(Resolved::SelfType),
                     _ => {
@@ -390,7 +422,9 @@ impl ItemTree {
             if ns_here == Ns::Macros
                 && target.is_core
                 && target.name == sym::core
-                && crate::macros::CORE_STD_MACROS.contains(&name.as_str())
+                && (crate::macros::CORE_STD_MACROS.contains(&name.as_str())
+                    || (module == target.root
+                        && matches!(binding.def,Def::Macro(id) if matches!(self.macros[id].kind,crate::MacroKind::Builtin(crate::Builtin::Asm)))))
                 && !source.is_core
                 && self.modules[source.root].file != crate::FileId::std_root()
             {
@@ -414,7 +448,9 @@ impl ItemTree {
                     return self.resolve_assoc(from, ImplTarget::Struct(strukt), path, i + 1, ns);
                 }
                 Def::Trait(t) if !last => return self.resolve_trait_item(t, path, i + 1, ns),
-                Def::TypeAlias(a) if !last => return self.resolve_alias_item(a, path, i + 1, ns),
+                Def::TypeAlias(a) if !last => {
+                    return self.resolve_alias_item(from, a, path, i + 1, ns);
+                }
                 def if last => return Ok(Resolved::Def(def)),
                 _ => {
                     let message = format!("expected module, found `{name}`");
@@ -484,7 +520,7 @@ impl ItemTree {
                     module: None,
                 });
             }
-            return Ok(Resolved::Def(Def::Variant(strukt, variant)));
+            return self.variant_resolution(from, strukt, variant, index, ns);
         }
         // `S::Out` needs `<S as Tr>::Out`.
         if ns != Ns::Values {
@@ -493,32 +529,26 @@ impl ItemTree {
                 message: "ambiguous associated type".into(),
             });
         }
+        // Specialized inherent blocks are selected for the instantiated Self,
+        // including visibility and trait fallback, during type checking.
+        if matches!(target, ImplTarget::Struct(s) if !self.structs[s].generics.is_empty()) {
+            return Ok(Resolved::TypeRelative(index));
+        }
         let Some(item) = self.assoc_item(target, name) else {
             // Perhaps a trait's, which type checking finds.
             return Ok(Resolved::TypeRelative(index));
         };
-        let (vis, what, resolved) = match item {
+        let (vis, resolved) = match item {
             AssocItem::Function(f) => {
                 let data = &self.functions[f];
-                let what = if data.has_self {
-                    "method"
-                } else {
-                    "associated function"
-                };
-                (data.loc.vis, what, Resolved::Assoc(f))
+                (data.loc.vis, Resolved::Assoc(f))
             }
-            AssocItem::Const(c) => (
-                self.consts[c].loc.vis,
-                "associated constant",
-                Resolved::AssocConst(c),
-            ),
+            AssocItem::Const(c) => (self.consts[c].loc.vis, Resolved::AssocConst(c)),
         };
         if !self.is_visible(vis, from) {
-            return Err(ResolveError::Private {
-                segment: index,
-                message: format!("{what} `{name}` is private"),
-                resolved,
-            });
+            // A private inherent item does not hide an accessible trait item.
+            // Type checking resolves that choice for the actual Self.
+            return Ok(Resolved::TypeRelative(index));
         }
         Ok(resolved)
     }
@@ -528,6 +558,7 @@ impl ItemTree {
     /// finds on the type it names (`TypeRelative`), with its arguments.
     fn resolve_alias_item(
         &self,
+        from: ModuleId,
         alias: TypeAliasId,
         path: &Path,
         index: usize,
@@ -559,7 +590,7 @@ impl ItemTree {
                     module: None,
                 });
             }
-            return Ok(Resolved::Def(Def::Variant(strukt, variant)));
+            return self.variant_resolution(from, strukt, variant, index, ns);
         }
         if ns != Ns::Values {
             return Err(ResolveError::Failed {
@@ -864,10 +895,9 @@ impl ItemTree {
     }
 }
 
-/// Builds the scopes of the modules from `from` on and resolves the
-/// imports and `impl` blocks from there; those before are resolved
-/// already, in crates that cannot see the new one.
-pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
+/// Resolves the item/import namespaces independently of impl registration.
+/// Body macros may need this view before all generated block items exist.
+pub(crate) fn resolve_namespaces(items: &mut ItemTree, from: ItemCounts) {
     items
         .def_map
         .scopes
@@ -878,6 +908,12 @@ pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
     items.def_map.prelude_2018 = find_prelude(items, sym::core, "rust_2018");
     items.def_map.std_prelude_2018 = find_prelude(items, sym::alloc, "rust_2018");
     resolve_imports(items, from.uses as usize);
+}
+
+/// Builds namespaces and impl tables for the new crate. Earlier crates
+/// are already resolved and cannot see these new items.
+pub(crate) fn resolve(items: &mut ItemTree, from: ItemCounts) {
+    resolve_namespaces(items, from);
     resolve_impls(items, from.impls as usize);
     // An import into both namespaces reports its problems once. Large
     // crates have hundreds of thousands of diagnostics: compare their
@@ -1041,24 +1077,28 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
         }
     }
 
-    let mut pending: Vec<usize> = (from..items.uses.len())
+    let mut pending: Vec<(usize, u8)> = (from..items.uses.len())
         .filter(|&i| items.uses[i].kind != UseKind::Glob)
+        .map(|i| (i, 0b111))
         .collect();
     let globs: Vec<usize> = (from..items.uses.len())
         .filter(|&i| items.uses[i].kind == UseKind::Glob)
         .collect();
+    let mut private_imports = FxHashMap::default();
     loop {
         let mut progress = false;
         let mut still = Vec::new();
-        for &i in &pending {
+        for &(i, mut remaining) in &pending {
             let u = &items.uses[i];
             let module_only = matches!(
                 u.kind,
                 UseKind::Module(_) | UseKind::Anonymous { module_only: true }
             );
             let mut found = Vec::new();
-            let mut private = None;
-            for ns in [Ns::Types, Ns::Values, Ns::Macros] {
+            for (bit, ns) in [Ns::Types, Ns::Values, Ns::Macros].into_iter().enumerate() {
+                if remaining & (1 << bit) == 0 {
+                    continue;
+                }
                 let def = match items.resolve(u.module, &u.path, ns) {
                     Ok(Resolved::Def(def)) => def,
                     Err(ResolveError::Private {
@@ -1073,8 +1113,8 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                         {
                             continue;
                         }
-                        private.get_or_insert((segment, message));
-                        def
+                        private_imports.entry(i).or_insert((segment, message));
+                        continue;
                     }
                     _ => continue,
                 };
@@ -1087,19 +1127,21 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 let anonymous_self = matches!(u.kind, UseKind::Anonymous { module_only: true });
                 if !module_only || module_like || (anonymous_self && ns == Ns::Types) {
                     found.push((ns, def));
+                    remaining &= !(1 << bit);
                 }
             }
             if found.is_empty() {
-                still.push(i);
+                still.push((i, remaining));
                 continue;
             }
             progress = true;
-            if let Some((segment, message)) = private {
-                let range = u.path.range(segment, u.range);
-                error(items, u.file, range, message);
-            }
             for (ns, def) in found {
                 bind_import(items, i, ns, def);
+            }
+            // Finding a module does not finish an import's value or macro
+            // namespace: a later reexport may provide either binding.
+            if remaining != 0 {
+                still.push((i, remaining));
             }
         }
         pending = still;
@@ -1110,8 +1152,16 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
             break;
         }
     }
-    for i in pending {
-        report_unresolved(items, i);
+    for (i, remaining) in pending {
+        if remaining != 0b111 {
+            continue;
+        }
+        if let Some((segment, message)) = private_imports.remove(&i) {
+            let u = &items.uses[i];
+            error(items, u.file, u.path.range(segment, u.range), message);
+        } else {
+            report_unresolved(items, i);
+        }
         let u = &items.uses[i];
         if let UseKind::Named(name) | UseKind::Module(name) = u.kind {
             items.def_map.failed_imports.insert((u.module, name));
@@ -1141,6 +1191,14 @@ fn error(items: &mut ItemTree, file: FileId, range: TextRange, message: impl Int
 
 /// Reexports keep the public type and the crate-private value constructor separate.
 fn non_exhaustive_ctor_vis(items: &ItemTree, ns: Ns, def: Def, vis: Visibility) -> Visibility {
+    if ns == Ns::Values
+        && let Def::Variant(s, v) = def
+        && items.structs[s].variants.as_ref().is_some_and(|variants| {
+            variants[v as usize].non_exhaustive && variants[v as usize].kind != StructKind::Record
+        })
+    {
+        return Visibility::Crate(items.modules[items.structs[s].loc.module].krate);
+    }
     if ns == Ns::Values
         && let Def::Struct(s) = def
         && items.structs[s].non_exhaustive
@@ -1489,7 +1547,7 @@ fn enum_variants(items: &ItemTree, e: StructId, ns: Ns) -> Vec<(Symbol, Binding)
         .map(|(i, v)| {
             let binding = Binding {
                 def: Def::Variant(e, i as u32),
-                vis: data.loc.vis,
+                vis: non_exhaustive_ctor_vis(items, ns, Def::Variant(e, i as u32), data.loc.vis),
                 kind: BindingKind::Item,
                 file: data.loc.file,
                 range: v.name_range,
@@ -1723,6 +1781,11 @@ fn resolve_impls(items: &mut ItemTree, from: usize) {
             // rustc reports the later definition when both are in one
             // block, and the earlier one otherwise.
             let (_, first_owner, _, first_file, first_range) = item_info(items, first);
+            // Object targets share lookup buckets but can differ by markers.
+            // Type checking compares their complete resolved dynamic types.
+            if first_owner != owner && matches!(target, ImplTarget::Object(_)) {
+                continue;
+            }
             // Blocks for different instances of a generic struct may
             // define the same name; type checking sees which overlap.
             if first_owner != owner

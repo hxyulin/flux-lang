@@ -8,6 +8,7 @@
 use crate::vec::Vec;
 use core::borrow::Borrow;
 use core::cmp::Ordering;
+use core::hash::{Hash, Hasher};
 
 const NONE: usize = usize::MAX;
 
@@ -80,9 +81,11 @@ impl<K, V> BTreeMap<K, V> {
         let mut iter = Iter {
             map: self,
             stack: Vec::new(),
+            back_stack: Vec::new(),
             remaining: self.len,
         };
         iter.descend(self.root);
+        iter.descend_back(self.root);
         iter
     }
 
@@ -114,6 +117,13 @@ impl<K, V> BTreeMap<K, V> {
         } else {
             Some(&self.nodes[index].entry.as_ref().unwrap().1)
         }
+    }
+
+    pub fn get_key_value<Q: ?Sized>(&self, key: &Q) -> Option<(&K, &V)>
+    where K: Borrow<Q> + Ord, Q: Ord {
+        let index = self.find(key);
+        if index == NONE { None }
+        else { self.nodes[index].entry.as_ref().map(|(key, value)| (key, value)) }
     }
 
     pub fn get_mut<Q: ?Sized>(&mut self, key: &Q) -> Option<&mut V>
@@ -190,6 +200,11 @@ impl<K, V> BTreeMap<K, V> {
 }
 
 impl<K: Ord, V> BTreeMap<K, V> {
+    /// Moves the source entries, replacing equal values but retaining our keys.
+    pub fn append(&mut self, other: &mut Self) {
+        for (key, value) in core::mem::take(other) { self.insert(key, value); }
+    }
+
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let (root, old, _) = self.insert_at(self.root, key, value);
         self.root = root;
@@ -241,10 +256,17 @@ impl<K: Ord, V> BTreeMap<K, V> {
 pub struct Iter<'a, K, V> {
     map: &'a BTreeMap<K, V>,
     stack: Vec<usize>,
+    back_stack: Vec<usize>,
     remaining: usize,
 }
 
 impl<K, V> Iter<'_, K, V> {
+    fn descend_back(&mut self, mut index: usize) {
+        while index != NONE {
+            self.back_stack.push(index);
+            index = self.map.nodes[index].right;
+        }
+    }
     fn descend(&mut self, mut index: usize) {
         while index != NONE {
             self.stack.push(index);
@@ -256,6 +278,7 @@ impl<K, V> Iter<'_, K, V> {
 impl<'a, K, V> Iterator for Iter<'a, K, V> {
     type Item = (&'a K, &'a V);
     fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 { return None; }
         let index = self.stack.pop()?;
         let node = &self.map.nodes[index];
         self.remaining -= 1;
@@ -264,6 +287,17 @@ impl<'a, K, V> Iterator for Iter<'a, K, V> {
         Some((&entry.0, &entry.1))
     }
     fn size_hint(&self) -> (usize, Option<usize>) { (self.remaining, Some(self.remaining)) }
+}
+
+impl<'a, K, V> core::iter::DoubleEndedIterator for Iter<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 { return None; }
+        let index = self.back_stack.pop()?;
+        let node = &self.map.nodes[index];
+        self.remaining -= 1;
+        self.descend_back(node.left);
+        node.entry.as_ref().map(|(key, value)| (key, value))
+    }
 }
 
 /// Unvisited entries remain owned by the vector and are dropped with it.
@@ -345,45 +379,68 @@ impl<K, V> core::iter::ExactSizeIterator for IntoValues<K, V> {}
 impl<K, V> core::iter::FusedIterator for IntoValues<K, V> {}
 
 impl<K, V> BTreeMap<K, V> {
-    /// Mutable values in key order. Each node index is visited once; taking
-    /// its reference from the slot prevents either iterator end yielding it twice.
-    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+    fn iteration_order(&self) -> Vec<usize> {
         let mut order = Vec::new();
         let mut stack = Vec::new();
         let mut at = self.root;
         while at != NONE || !stack.is_empty() {
-            while at != NONE {
-                stack.push(at);
-                at = self.nodes[at].left;
-            }
+            while at != NONE { stack.push(at); at = self.nodes[at].left; }
             at = stack.pop().unwrap();
             order.push(at);
             at = self.nodes[at].right;
         }
-        let values = self.nodes.iter_mut().map(|node| node.entry.as_mut().map(|(_, value)| value)).collect();
-        ValuesMut { order: order.into_iter(), values, keys: core::marker::PhantomData }
+        order
+    }
+
+    /// Every occupied slot is borrowed exclusively once. Taking its tuple
+    /// prevents either iterator end from yielding the same value twice.
+    pub fn iter_mut(&mut self) -> IterMut<'_, K, V> {
+        let order = self.iteration_order().into_iter();
+        let entries = self.nodes.iter_mut().map(|node| {
+            node.entry.as_mut().map(|(key, value)| (&*key, value))
+        }).collect();
+        IterMut { order, entries, keys: core::marker::PhantomData }
+    }
+    pub fn values_mut(&mut self) -> ValuesMut<'_, K, V> {
+        ValuesMut { inner: self.iter_mut() }
     }
 }
 
-pub struct ValuesMut<'a, K, V> {
+pub struct IterMut<'a, K, V> {
     order: crate::vec::IntoIter<usize>,
-    values: Vec<Option<&'a mut V>>,
+    entries: Vec<Option<(&'a K, &'a mut V)>>,
     keys: core::marker::PhantomData<&'a mut K>,
 }
-impl<'a, K, V> core::iter::Iterator for ValuesMut<'a, K, V> {
-    type Item = &'a mut V;
-    fn next(&mut self) -> Option<&'a mut V> {
-        self.order.next().and_then(|index| self.values[index].take())
+// SAFETY: each remaining tuple owns an exclusive node borrow from iter_mut.
+// Already yielded nodes have been removed, so moving the remaining disjoint
+// nodes needs K: Send, not K: Sync, even though their keys are read-only.
+unsafe impl<K: Send, V: Send> Send for IterMut<'_, K, V> {}
+impl<'a, K, V> Iterator for IterMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+    fn next(&mut self) -> Option<Self::Item> {
+        self.order.next().and_then(|index| self.entries[index].take())
     }
     fn size_hint(&self) -> (usize, Option<usize>) { self.order.size_hint() }
 }
-impl<'a, K, V> core::iter::DoubleEndedIterator for ValuesMut<'a, K, V> {
-    fn next_back(&mut self) -> Option<&'a mut V> {
-        core::iter::DoubleEndedIterator::next_back(&mut self.order).and_then(|index| self.values[index].take())
+impl<'a, K, V> core::iter::DoubleEndedIterator for IterMut<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.order.next_back().and_then(|index| self.entries[index].take())
     }
 }
-impl<'a, K, V> core::iter::ExactSizeIterator for ValuesMut<'a, K, V> {}
-impl<'a, K, V> core::iter::FusedIterator for ValuesMut<'a, K, V> {}
+impl<K, V> core::iter::ExactSizeIterator for IterMut<'_, K, V> {}
+impl<K, V> core::iter::FusedIterator for IterMut<'_, K, V> {}
+
+pub struct ValuesMut<'a, K, V> { inner: IterMut<'a, K, V> }
+impl<'a, K, V> Iterator for ValuesMut<'a, K, V> {
+    type Item = &'a mut V;
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next().map(|(_, value)| value) }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<'a, K, V> core::iter::DoubleEndedIterator for ValuesMut<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next_back().map(|(_, value)| value) }
+}
+impl<K, V> core::iter::ExactSizeIterator for ValuesMut<'_, K, V> {}
+impl<K, V> core::iter::FusedIterator for ValuesMut<'_, K, V> {}
 
 impl<K, V, Q: ?Sized> core::ops::Index<&Q> for BTreeMap<K, V>
 where K: Borrow<Q> + Ord, Q: Ord {
@@ -588,7 +645,7 @@ impl<K, V> BTreeMap<K, V> {
 
 impl<K, V> Clone for Iter<'_, K, V> {
     fn clone(&self) -> Self {
-        Self { map: self.map, stack: self.stack.clone(), remaining: self.remaining }
+        Self { map: self.map, stack: self.stack.clone(), back_stack: self.back_stack.clone(), remaining: self.remaining }
     }
 }
 impl<K, V> core::iter::ExactSizeIterator for Iter<'_, K, V> {}
@@ -599,6 +656,9 @@ impl<'a, K, V> Iterator for Keys<'a, K, V> {
     type Item = &'a K;
     fn next(&mut self) -> Option<Self::Item> { self.inner.next().map(|(key, _)| key) }
     fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<'a, K, V> core::iter::DoubleEndedIterator for Keys<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next_back().map(|(key, _)| key) }
 }
 impl<K, V> Clone for Keys<'_, K, V> {
     fn clone(&self) -> Self { Self { inner: self.inner.clone() } }
@@ -612,6 +672,9 @@ impl<'a, K, V> Iterator for Values<'a, K, V> {
     fn next(&mut self) -> Option<Self::Item> { self.inner.next().map(|(_, value)| value) }
     fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
 }
+impl<'a, K, V> core::iter::DoubleEndedIterator for Values<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next_back().map(|(_, value)| value) }
+}
 impl<K, V> Clone for Values<'_, K, V> {
     fn clone(&self) -> Self { Self { inner: self.inner.clone() } }
 }
@@ -622,6 +685,21 @@ impl<'a, K, V> IntoIterator for &'a BTreeMap<K, V> {
     type Item = (&'a K, &'a V);
     type IntoIter = Iter<'a, K, V>;
     fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+impl<'a, K, V> IntoIterator for &'a mut BTreeMap<K, V> {
+    type Item = (&'a K, &'a mut V);
+    type IntoIter = IterMut<'a, K, V>;
+    fn into_iter(self) -> Self::IntoIter { self.iter_mut() }
+}
+impl<K: Ord, V, const N: usize> From<[(K, V); N]> for BTreeMap<K, V> {
+    fn from(entries: [(K, V); N]) -> Self { entries.into_iter().collect() }
+}
+impl<K: Hash, V: Hash> Hash for BTreeMap<K, V> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Stable Hasher protocol for the collection length prefix.
+        state.write_usize(self.len());
+        for entry in self { entry.hash(state); }
+    }
 }
 impl<K: Ord, V> core::iter::Extend<(K, V)> for BTreeMap<K, V> {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, entries: I) {
@@ -653,13 +731,21 @@ pub enum Entry<'a, K, V> {
     Occupied(OccupiedEntry<'a, K, V>),
 }
 pub struct VacantEntry<'a, K, V> { map: &'a mut BTreeMap<K, V>, key: K }
-pub struct OccupiedEntry<'a, K, V> { map: &'a mut BTreeMap<K, V>, index: usize }
+pub struct OccupiedEntry<'a, K, V> { map: &'a mut BTreeMap<K, V>, index: usize, path: Vec<bool> }
 
 impl<K: Ord, V> BTreeMap<K, V> {
     pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
-        let index = self.find(&key);
-        if index == NONE { Entry::Vacant(VacantEntry { map: self, key }) }
-        else { Entry::Occupied(OccupiedEntry { map: self, index }) }
+        let mut index = self.root;
+        let mut path = Vec::new();
+        while index != NONE {
+            let node = &self.nodes[index];
+            match key.cmp(&node.entry.as_ref().unwrap().0) {
+                Ordering::Equal => return Entry::Occupied(OccupiedEntry { map: self, index, path }),
+                Ordering::Less => { path.push(true); index = node.left; },
+                Ordering::Greater => { path.push(false); index = node.right; },
+            }
+        }
+        Entry::Vacant(VacantEntry { map: self, key })
     }
 }
 impl<'a, K: Ord, V> Entry<'a, K, V> {
@@ -696,6 +782,12 @@ impl<'a, K: Ord, V> VacantEntry<'a, K, V> {
     }
 }
 impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
+    pub fn remove(self) -> V { self.remove_entry().1 }
+    pub fn remove_entry(self) -> (K, V) {
+        let (root, entry) = self.map.remove_path(self.map.root, &self.path);
+        self.map.root = root;
+        entry.unwrap()
+    }
     pub fn key(&self) -> &K { &self.map.nodes[self.index].entry.as_ref().unwrap().0 }
     pub fn get(&self) -> &V { &self.map.nodes[self.index].entry.as_ref().unwrap().1 }
     pub fn get_mut(&mut self) -> &mut V { &mut self.map.nodes[self.index].entry.as_mut().unwrap().1 }
@@ -703,6 +795,42 @@ impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
     pub fn insert(&mut self, value: V) -> V {
         core::mem::replace(&mut self.map.nodes[self.index].entry.as_mut().unwrap().1, value)
     }
+}
+
+impl<K, V> IntoIter<K, V> {
+    fn remaining(&self) -> Iter<'_, K, V> {
+        Iter { map: &self.map, stack: self.stack.clone(), back_stack: self.back_stack.clone(), remaining: self.map.len }
+    }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for Iter<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.debug_list().entries(self.clone()).finish() }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for IterMut<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.order.as_slice().iter().map(|index| {
+            let (key, value) = self.entries[*index].as_ref().unwrap();
+            (*key, &**value)
+        })).finish()
+    }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for IntoIter<K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.debug_list().entries(self.remaining()).finish() }
+}
+impl<K: core::fmt::Debug, V> core::fmt::Debug for Keys<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.debug_list().entries(self.clone()).finish() }
+}
+impl<K, V: core::fmt::Debug> core::fmt::Debug for Values<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.debug_list().entries(self.clone()).finish() }
+}
+impl<K, V: core::fmt::Debug> core::fmt::Debug for ValuesMut<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.inner.order.as_slice().iter().map(|index| {
+            &*self.inner.entries[*index].as_ref().unwrap().1
+        })).finish()
+    }
+}
+impl<K, V: core::fmt::Debug> core::fmt::Debug for IntoValues<K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.debug_list().entries(self.inner.remaining().map(|(_, value)| value)).finish() }
 }
 
 #[cfg(test)]
@@ -913,6 +1041,116 @@ mod tests {
         map.insert(33, Value { key: 33, armed: &armed, drops: &drops });
         drop(map);
         assert_eq!(drops.get(), 32);
+    }
+
+    #[test]
+    fn occupied_removal_does_not_compare_after_lookup() {
+        use std::cell::Cell;
+        struct Key<'a> { value: i32, allowed: &'a Cell<bool> }
+        impl PartialEq for Key<'_> { fn eq(&self, other: &Self) -> bool { self.value == other.value } }
+        impl Eq for Key<'_> {}
+        impl PartialOrd for Key<'_> { fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) } }
+        impl Ord for Key<'_> {
+            fn cmp(&self, other: &Self) -> Ordering {
+                assert!(self.allowed.get(), "occupied removal called Ord");
+                self.value.cmp(&other.value)
+            }
+        }
+        let allowed = Cell::new(true);
+        let mut map = BTreeMap::new();
+        for value in 0..127 { map.insert(Key { value, allowed: &allowed }, value); }
+        for value in [63, 31, 95, 0, 126] {
+            let entry = match map.entry(Key { value, allowed: &allowed }) {
+                Entry::Occupied(entry) => entry,
+                Entry::Vacant(_) => panic!("missing key"),
+            };
+            allowed.set(false);
+            let removed = entry.remove_entry();
+            allowed.set(true);
+            assert_eq!((removed.0.value, removed.1), (value, value));
+            assert!(!map.contains_key(&Key { value, allowed: &allowed }));
+            assert!(map.iter().map(|(key, _)| key.value).collect::<Vec<_>>().windows(2).all(|w| w[0] < w[1]));
+        }
+    }
+
+    #[test]
+    fn append_comparison_and_replaced_value_panics_preserve_ownership() {
+        use std::cell::Cell;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        struct Key<'a> { value: i32, remaining: &'a Cell<usize> }
+        impl PartialEq for Key<'_> { fn eq(&self, other: &Self) -> bool { self.value == other.value } }
+        impl Eq for Key<'_> {}
+        impl PartialOrd for Key<'_> { fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) } }
+        impl Ord for Key<'_> {
+            fn cmp(&self, other: &Self) -> Ordering {
+                let remaining = self.remaining.get();
+                assert!(remaining != 0, "comparison once");
+                self.remaining.set(remaining - 1);
+                self.value.cmp(&other.value)
+            }
+        }
+        struct Value<'a> { value: i32, bomb: &'a Cell<bool>, drops: &'a Cell<usize> }
+        impl Drop for Value<'_> {
+            fn drop(&mut self) {
+                self.drops.set(self.drops.get() + 1);
+                if self.value == 5 && self.bomb.replace(false) { panic!("drop once"); }
+            }
+        }
+        for quota in 0..9 {
+            let remaining = Cell::new(usize::MAX);
+            let bomb = Cell::new(false);
+            let drops = Cell::new(0);
+            let mut left = BTreeMap::new();
+            let mut right = BTreeMap::new();
+            for value in 0..15 { left.insert(Key { value, remaining: &remaining }, Value { value, bomb: &bomb, drops: &drops }); }
+            for value in 7..22 { right.insert(Key { value, remaining: &remaining }, Value { value: value + 100, bomb: &bomb, drops: &drops }); }
+            remaining.set(quota);
+            let _ = catch_unwind(AssertUnwindSafe(|| left.append(&mut right)));
+            remaining.set(usize::MAX);
+            assert!(right.is_empty());
+            let keys: Vec<_> = left.keys().map(|key| key.value).collect();
+            assert!(keys.windows(2).all(|w| w[0] < w[1]));
+            for key in keys { assert!(left.contains_key(&Key { value: key, remaining: &remaining })); }
+            drop(left); drop(right);
+            assert_eq!(drops.get(), 30);
+        }
+        let remaining = Cell::new(usize::MAX);
+        let bomb = Cell::new(false);
+        let drops = Cell::new(0);
+        let mut left = BTreeMap::new();
+        let mut right = BTreeMap::new();
+        left.insert(Key { value: 5, remaining: &remaining }, Value { value: 5, bomb: &bomb, drops: &drops });
+        for value in 4..7 { right.insert(Key { value, remaining: &remaining }, Value { value: value + 100, bomb: &bomb, drops: &drops }); }
+        bomb.set(true);
+        assert!(catch_unwind(AssertUnwindSafe(|| left.append(&mut right))).is_err());
+        assert!(right.is_empty());
+        assert_eq!(left.get(&Key { value: 5, remaining: &remaining }).unwrap().value, 105);
+        drop(left); drop(right); assert_eq!(drops.get(), 4);
+    }
+
+    #[test]
+    fn mutable_iterator_debug_panic_does_not_consume_entries() {
+        use std::cell::Cell;
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        struct Value<'a>(&'a Cell<bool>, i32);
+        impl core::fmt::Debug for Value<'_> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                assert!(!self.0.replace(false), "format once");
+                self.1.fmt(f)
+            }
+        }
+        let bomb = Cell::new(false);
+        let mut map = BTreeMap::new();
+        for key in 0..7 { map.insert(key, Value(&bomb, key)); }
+        let mut iter = map.iter_mut();
+        iter.next().unwrap().1.1 += 10;
+        iter.next_back().unwrap().1.1 += 20;
+        bomb.set(true);
+        assert!(catch_unwind(AssertUnwindSafe(|| format!("{iter:?}"))).is_err());
+        assert_eq!(iter.len(), 5);
+        let references: Vec<_> = iter.collect();
+        for (key, value) in references { value.1 += *key; }
+        assert_eq!(map.values().map(|v| v.1).collect::<Vec<_>>(), [10, 2, 4, 6, 8, 10, 26]);
     }
 
 }

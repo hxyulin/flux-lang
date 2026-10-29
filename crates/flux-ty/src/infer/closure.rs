@@ -219,7 +219,7 @@ impl Ctx<'_> {
             None => self.closure_head(id, params, param_types),
         };
         let mut hinted: Option<&'static [Ty]> =
-            hint.and_then(|h| match self.shallow(h.params).kind() {
+            hint.and_then(|h| match self.normalize(h.params, head).kind() {
                 TyKind::Tuple(list) => Some(list),
                 _ => None,
             });
@@ -251,6 +251,8 @@ impl Ctx<'_> {
             let expected = hinted.and_then(|h| h.get(i)).copied();
             let ty = match (declared, expected) {
                 (Some(declared), Some(expected)) => {
+                    let declared = self.normalize(declared, head);
+                    let expected = self.normalize(expected, head);
                     if !self.can_unify(declared, expected)
                         || !crate::fn_regions::same_binders(self.items, declared, expected)
                     {
@@ -280,6 +282,8 @@ impl Ctx<'_> {
             .filter(|_| !self.mismatched_closures.contains(&id));
         let ret_ty = match (declared_ret, hinted_ret) {
             (Some(declared), Some(expected)) => {
+                let declared = self.normalize(declared, head);
+                let expected = self.normalize(expected, head);
                 if !crate::fn_regions::same_binders(self.items, declared, expected) {
                     self.error(head, "type mismatch in closure return type");
                 } else if self.can_unify(declared, expected) {
@@ -651,6 +655,12 @@ impl Ctx<'_> {
     /// Callable trait arguments are type equalities. Expression coercions may
     /// specialize a pointer, but selecting Fn must retain nested binders.
     pub(super) fn unify_callable_types(&mut self, a: Ty, b: Ty) -> bool {
+        // Late parser inputs can determine projections in a callback tuple.
+        // Keep unknown projections pending under the ordinary caller guards.
+        let a = self.known(a);
+        let a = self.normalize(a, TextRange::default());
+        let b = self.known(b);
+        let b = self.normalize(b, TextRange::default());
         if !self.unify(a, b) {
             return false;
         }
@@ -1199,6 +1209,11 @@ impl Ctx<'_> {
     fn walk(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
         let body = self.body;
         match &body.exprs[expr] {
+            Expr::InlineAsm(asm) => {
+                for &operand in body.lists[asm.operands].iter() {
+                    self.borrow(operand, None, uses);
+                }
+            }
             Expr::Missing | Expr::Literal(_) | Expr::Continue { .. } => {}
             Expr::Path(Res::Local(_)) | Expr::Field { .. }
                 if self.capture_place(expr).is_some() =>
@@ -1807,6 +1822,7 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut FxHashSet<Bindin
             Expr::Tuple(list) | Expr::Array(list) => {
                 stack.extend(body.lists[*list].iter().copied())
             }
+            Expr::InlineAsm(asm) => stack.extend(body.lists[asm.operands].iter().copied()),
             Expr::Repeat { value, .. } => stack.push(*value),
             Expr::Index { base, index } => {
                 stack.push(*base);

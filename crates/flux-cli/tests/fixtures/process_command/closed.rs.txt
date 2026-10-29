@@ -1,0 +1,15 @@
+use std::io::Write;
+use std::os::unix::io::AsRawFd;
+use std::process::{Command,Stdio};
+fn main(){
+    let child=std::env::var_os("FLUX_PROCESS_CHILD").unwrap();
+    let root=std::path::PathBuf::from(std::env::var_os("FLUX_PROCESS_ROOT").unwrap());
+    unsafe extern "C" { fn close(fd:i32)->i32; fn _exit(code:i32)->!; }
+    unsafe {close(1);}
+    let mut process=Command::new(&child).arg("echo").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    process.stdin.take().unwrap().write_all(b"closed streams").unwrap();let output=process.wait_with_output().unwrap();assert!(output.status.success());assert_eq!(output.stdout,b"closed streams");
+    let file=std::fs::File::open("/dev/null").unwrap();let before=file.as_raw_fd();drop(file);
+    for _ in 0..40{assert!(Command::new(root.join("missing")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().is_err());}
+    let file=std::fs::File::open("/dev/null").unwrap();assert_eq!(file.as_raw_fd(),before);
+    unsafe {_exit(0)}
+}

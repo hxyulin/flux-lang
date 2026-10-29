@@ -192,7 +192,10 @@ reported as "not supported yet":
   Structural constants composed of derived-PartialEq structs, enums, tuples and arrays
   are supported. Floating literal patterns are refutable, with signed zeros
   equal and unnamed values including NaNs requiring wildcard coverage. Float
-  constant/range patterns and reference/pointer constants remain unsupported.
+  constant/range patterns and reference/pointer constants remain unsupported,
+except named shared `&str` patterns. Those compare string contents, including
+Unicode and NUL bytes, and remain refutable. They do not make string equality
+callable in constants.
 - **Attributes:** outer `#[cfg(predicate)]` on ordinary items (including
   modules, imports and item macros), associated items in traits and impls,
   and declarations in extern blocks. Multiple attributes are conjunctive;
@@ -301,7 +304,9 @@ single characters (not a `&str`).
 `char::is_alphabetic` and `is_alphanumeric` use complete generated Unicode
 property tables. `char::UNICODE_VERSION` is available through the char module.
 The generation check uses the selected Rust toolchain; native comparisons cover
-every Unicode scalar. Unicode case conversion remains unsupported. Programs print with `println!` and the other
+every Unicode scalar. `str::to_lowercase` uses complete Unicode 17 lowercase
+mappings and contextual final sigma; ASCII conversion preserves non-ASCII UTF-8.
+Other Unicode case conversion APIs remain unsupported. Programs print with `println!` and the other
 printing macros (below), or through C.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
@@ -328,8 +333,8 @@ rules tried in order, matched as rustc's macro parser matches them
 repetitions `$(..)*`, `+` and `?` with separators, nested), with rustc's
 errors ("no rules expected `x`", "unexpected end of macro invocation",
 local ambiguity, a fragment followed by what its kind does not allow,
-"recursion limit reached while expanding `m!`" past 128 nested
-expansions). A macro is in scope after its definition, to the end of
+"recursion limit reached while expanding `m!`" past the crate recursion limit
+(default 128, configurable with `#![recursion_limit = "..."]`)). A macro is in scope after its definition, to the end of
 its module or block (and after the module, with `#[macro_use]`), and
 everywhere as `crate::m!` with `#[macro_export]`; `use m;` makes it
 nameable by path (`crate::a::m!`, `self::m!`), as rustc's 2018 idiom
@@ -678,8 +683,9 @@ takes `&self` or `&mut self` (or `self`, which cannot be called on a
 trait object, E0161), has no type parameters, and names `Self` only in
 its receiver or as `Self::Item`); every associated type must be given
 (E0191) and every parameter whose default names `Self` (E0393); other
-traits than the first are rejected (including extra auto-trait bounds,
-which remain unsupported on trait objects), and a bare
+non-auto traits beyond the principal are rejected. Represented auto-trait
+bounds, including Send and Sync, can accompany it; coercion proves required
+markers and may erase them. A bare
 trait as a type is E0782. A method with `where Self: Sized` "cannot be
 invoked on a trait object". A trait object's lifetime bound (`dyn Tr +
 'a`) is, unless written, rustc's default: the reference it is behind,
@@ -693,8 +699,13 @@ into named constant slices. Their original allocation and byte offset are retain
 Raw trait-object constants can hold null or one-past data pointers without reading
 the pointee; references retain alignment, bounds and validity checks. Normal
 `Sync` and constant validity checks still apply. Boxed trait-object constant evaluation remains
-unsupported. References and trait objects in a trait object's generic arguments,
-references to trait objects cast to raw pointers and `dyn Any` remain restricted.
+unsupported. Non-callable objects retain lifetime rows inside principal type
+arguments and associated equalities, including borrowed iterator items. Those
+arguments are invariant independently of the object lifetime bound. Explicit
+trait lifetime arguments, nested objects, region-bearing function-pointer
+arguments and unrepresented supertrait argument transforms remain restricted. Same-object
+reference-to-raw-pointer casts preserve metadata; checked Any downcasts are
+supported with represented auto-trait bounds.
 A trait's crate may
 write inherent `impl dyn Tr` blocks (E0116 elsewhere), whose methods
 trait objects of it have.
@@ -703,7 +714,11 @@ Struct- and enum-level `#[non_exhaustive]` retains its defining crate through
 aliases and reexports. Outside that crate, struct construction/update is
 rejected, tuple/unit constructors are private, struct patterns require `..`,
 and enum matches need a wildcard. Same-crate use remains exhaustive.
-Variant-level attributes are explicitly unsupported.
+Variant-level attributes preserve the same crate boundary. External tuple/unit
+value constructors are private, including unit and tuple patterns. Their type
+namespace stays public for imports, reexports and record-style patterns.
+External record construction is rejected, and record-style patterns require
+`..`. A variant attribute alone does not make its containing enum open.
 
 A pattern that is not a binding sees through references, and then binds
 by reference, as rustc's default binding modes do: `Some(x)` matching a
@@ -850,6 +865,13 @@ depth-limited; no threading APIs are implied by these markers.
 references, raw pointers, Box, Rc, Arc and Arc's Weak remain Unpin regardless of
 the payload. Owned fields and PhantomData retain their payload requirements.
 The marker support does not provide `Pin` APIs.
+
+`UnwindSafe` and `RefUnwindSafe` propagate separately through owned fields and
+shared references. Mutable references are not `UnwindSafe`; `Cell` and
+`UnsafeCell` are not `RefUnwindSafe`. Owning containers, atomics and poisoned
+locks retain their standard marker contracts. `AssertUnwindSafe` supplies the
+explicit assertion wrapper and its consuming callable implementation. These
+markers do not provide `catch_unwind` or a panic-unwinding runtime.
 
 Every program can use flux's own `core` library, which has the parts of
 Rust's that flux supports so far: the integer types' constants (`MIN`,
@@ -1209,8 +1231,19 @@ return (E0308), and not contain itself (E0720); a body that only calls
 itself hides `!`. A closure returned so gets its signature from the
 `Fn` bound. Opaque types capture all type and const parameters. Edition 2024
 also captures every lifetime in scope, including elided ones. Older editions
-capture only lifetimes occurring in the opaque's bounds, including associated
-type equalities. The definition-site edition of the `impl` token controls this
+capture only lifetimes occurring in the opaque's bounds, including explicit
+trait lifetime arguments, reference-bearing type arguments and associated
+type equalities. Each written bound retains its own region rows; hidden-type
+checking and caller obligations use the same occurrence rather than borrowing
+an erased-equal bound's lifetimes. Ordinary opaque associated equalities
+use the declaring bound's original owner/type-input rows and output capture
+map. Repeated erased-equal bounds are accepted only when their input domains
+and output rows are identical or already proven equal. Distinct captured
+owner lifetimes, and mixtures of fixed/static and captured owner lifetimes,
+remain an explicit ambiguity boundary when more than one occurrence fits.
+This includes Rust's accepted static-first ordering of mixed-domain bounds;
+Flux does not emulate that order-sensitive inference by choosing one bound.
+The definition-site edition of the `impl` token controls this
 rule when macros cross crate editions. Explicit `use<'a, T>` lists override
 implicit captures and must name every type and const parameter: where it is
 used, what they borrow stays borrowed, and its hidden type may borrow
@@ -1277,8 +1310,8 @@ diagnosed. References in
 bounds need an explicit lifetime (E0637). Nominal contracts are checked at
 construction, in signatures and nested declarations, and when an explicit type
 argument forms a type. An unused type alias remains lazy; using it enforces the
-expanded type's bounds. Unsupported trait-declaration/supertrait edges and arbitrary
-opaque trait-argument regions retain explicit gates. Nominal lifetime contracts
+expanded type's bounds. Unsupported trait-declaration/supertrait edges and
+unrepresented higher-ranked opaque bounds retain explicit gates. Nominal lifetime contracts
 inside function-pointer signatures, and declaration equalities needing unrepresented
 owner/family projection input rows, also reject explicitly. Other existing use-site
 restrictions still apply.
@@ -1361,16 +1394,23 @@ contracts introducing higher-ranked reference inputs remain explicitly
 unsupported; this conservative boundary can reject valid methods with
 independent late input lifetimes. Fixed type-parameter or iterator-item inputs
 do not introduce such binders.
-The same boundary applies to free function items with explicit signature
-lifetime/type-outlives bounds or an own lifetime mentioned in a trait predicate.
-Occurrences in associated equalities and alias arguments count even when type
-normalization erases them. This includes tautological bounds; unrelated bounds
-can also conservatively reject an otherwise valid late input. Missing callback
-provenance is explicitly unsupported.
+For free function items, a signature lifetime fixed by an explicit bound or
+trait predicate cannot become a fresh callback binder. Occurrences in associated
+equalities and alias arguments count even when normalization erases them,
+including tautological bounds. Type-only conditions such as `T: 'static` and
+predicate-only lifetimes such as `'de` in `R: Read<'de>` do not bind a separate
+slice loan `'s`. Their original obligations are still proved when the item is
+used. Missing callback provenance is explicitly unsupported.
 Unbounded named and elided free-function lifetimes remain supported.
 Function-item-to-pointer coercions use the same provenance classification and
 reject missing metadata. Predicate-bound lifetimes cannot be generalized by
 first converting the item to a pointer, including through casts or `Clone`.
+
+Callable bounds check their associated `Output` against the original input
+lifetime rows. A fixed input lifetime or a lifetime captured by an instantiated
+type argument cannot become a fresh binder. A function returning a static
+reference therefore need not implement `for<'a> Fn(&'a T) -> &'a T`, even when an
+explicit function-pointer coercion can shorten that return type.
 
 Callable reference output lifetimes can be elided from a single input reference
 (`F: Fn(&T) -> &U`). Each call's result borrows from its argument. This also applies to returned
@@ -1577,7 +1617,11 @@ blocks.
 `core::any::type_name` and its `std` reexport return static diagnostic type
 descriptions after generic substitution. Formatting is implementation-specific;
 Flux's diagnostic printer can omit module paths and names are not unique.
-The function is non-const, and does not provide `Any`, `TypeId` or downcasting.
+The function is non-const. `TypeId::of` supplies opaque graph-local structural
+identities, shared by constant evaluation and generated code. `Any` supports
+checked shared/mutable downcasts, including represented Send/Sync marker bounds.
+`Arc<dyn Any + Send + Sync>::downcast` retains the allocation and reference counts.
+TypeId bits and ordering do not promise rustc's external ABI.
 
 The embedded `std` facade allows paths such as `std::fmt`,
 `std::mem`, `std::ops::Index` and `std::vec::Vec` to name the original

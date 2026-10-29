@@ -35,6 +35,32 @@ pub(crate) fn check_attrs(
     }
 }
 
+/// A bare attribute has neither arguments nor an unsafe wrapper.
+pub(super) fn bare_attr(attr: ast::Attr<'_>) -> bool {
+    attr.meta().is_some_and(|m| {
+        m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()
+    })
+}
+
+/// rustc interprets the string as a decimal host-sized expansion depth.
+pub(super) fn recursion_limit_attr(attr: ast::Attr<'_>) -> Option<usize> {
+    let token = attr
+        .meta()
+        .filter(|m| {
+            m.unsafe_token().is_none() && m.token_tree().is_none() && m.eq_token().is_some()
+        })?
+        .expr()
+        .and_then(|e| match e {
+            ast::Expr::Literal(l) => l.value(),
+            _ => None,
+        })?;
+    if token.kind() != SyntaxKind::STRING {
+        return None;
+    }
+    let value = crate::literal::unescape_str(token.text()).ok()?;
+    value.parse().ok()
+}
+
 /// A file's or module's own attributes: like [`check_attrs`], and in
 /// `core` also the crate attributes rustc needs to compile it, which mean
 /// nothing to flux.
@@ -52,6 +78,25 @@ pub(super) fn check_inner_attrs(
             .map(|(r, m)| Diagnostic::new(*r, m.clone())),
     );
     for attr in attrs.iter() {
+        if attr_name(attr) == Some("recursion_limit") {
+            if recursion_limit_attr(attr).is_none() {
+                diagnostics.push(Diagnostic::new(
+                    attr.syntax().text_range(),
+                    "recursion limit must be a non-negative integer string",
+                ));
+            }
+            // Like rustc's unused-attribute warning, non-root occurrences have no effect.
+            continue;
+        }
+        if attr_name(attr) == Some("macro_use") {
+            if !bare_attr(attr) {
+                diagnostics.push(Diagnostic::new(
+                    attr.syntax().text_range(),
+                    "arguments to `macro_use` are not allowed here",
+                ));
+            }
+            continue;
+        }
         if crate_root && matches!(attr_name(attr), Some("crate_name" | "crate_type")) {
             let name = attr_name(attr).unwrap();
             let value = attr
@@ -291,6 +336,23 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
             .and_then(|s| s.name_ref())
             .is_some_and(|n| n.text() == "diagnostic")
     {
+        return;
+    }
+    // This is lint metadata, including when rustc warns about its placement.
+    // It never substitutes for checking the annotated item or impl.
+    if name == Some("automatically_derived") {
+        let meta = attr.meta().expect("named attribute");
+        if meta.unsafe_token().is_some() {
+            diagnostics.push(Diagnostic::new(
+                attr.syntax().text_range(),
+                "`automatically_derived` is not an unsafe attribute",
+            ));
+        } else if meta.token_tree().is_some() || meta.eq_token().is_some() {
+            diagnostics.push(Diagnostic::new(
+                attr.syntax().text_range(),
+                "malformed `automatically_derived` attribute input",
+            ));
+        }
         return;
     }
     if name == Some("link_name") {

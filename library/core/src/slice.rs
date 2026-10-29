@@ -735,6 +735,13 @@ impl<T> [T] {
         Range { start, end: unsafe { start.add(self.len()) } }
     }
 
+    /// The half-open mutable pointer range, including the end pointer.
+    pub fn as_mut_ptr_range(&mut self) -> Range<*mut T> {
+        let start = self.as_mut_ptr();
+        // SAFETY: the one-past-end pointer stays within the slice allocation.
+        Range { start, end: unsafe { start.add(self.len()) } }
+    }
+
     /// A mutable pointer to the first element.
     pub const fn as_mut_ptr(&mut self) -> *mut T {
         self as *mut [T] as *mut T

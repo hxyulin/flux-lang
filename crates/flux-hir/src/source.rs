@@ -96,11 +96,27 @@ pub const STD_ROOT: &str = "<std>";
 
 const STD_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/std/src/lib.rs")),
+    (
+        "io/buffered.rs",
+        include_str!("../../../library/std/src/io/buffered.rs"),
+    ),
+    (
+        "io/stdio.rs",
+        include_str!("../../../library/std/src/io/stdio.rs"),
+    ),
     ("net.rs", include_str!("../../../library/std/src/net.rs")),
     ("os.rs", include_str!("../../../library/std/src/os.rs")),
     (
         "process.rs",
         include_str!("../../../library/std/src/process.rs"),
+    ),
+    (
+        "process/termination.rs",
+        include_str!("../../../library/std/src/process/termination.rs"),
+    ),
+    (
+        "process/command.rs",
+        include_str!("../../../library/std/src/process/command.rs"),
     ),
     ("arch.rs", include_str!("../../../library/std/src/arch.rs")),
     (
@@ -170,12 +186,20 @@ const STD_FILES: &[(&str, &str)] = &[
         "sync/poison.rs",
         include_str!("../../../library/std/src/sync/poison.rs"),
     ),
+    (
+        "sync/mpsc.rs",
+        include_str!("../../../library/std/src/sync/mpsc.rs"),
+    ),
 ];
 
 /// `library/alloc/src`, relative to [`ALLOC_ROOT`]: built into the
 /// compiler, after `core`, as rustc's `alloc` is after its `core`.
 const ALLOC_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/alloc/src/lib.rs")),
+    (
+        "collections/vec_deque.rs",
+        include_str!("../../../library/alloc/src/collections/vec_deque.rs"),
+    ),
     ("ffi.rs", include_str!("../../../library/alloc/src/ffi.rs")),
     ("rc.rs", include_str!("../../../library/alloc/src/rc.rs")),
     (
@@ -229,6 +253,14 @@ const ALLOC_FILES: &[(&str, &str)] = &[
     ),
     ("str.rs", include_str!("../../../library/alloc/src/str.rs")),
     (
+        "str/lowercase.rs",
+        include_str!("../../../library/alloc/src/str/lowercase.rs"),
+    ),
+    (
+        "str/lowercase_data.rs",
+        include_str!("../../../library/alloc/src/str/lowercase_data.rs"),
+    ),
+    (
         "string.rs",
         include_str!("../../../library/alloc/src/string.rs"),
     ),
@@ -242,6 +274,7 @@ const ALLOC_FILES: &[(&str, &str)] = &[
 /// `library/core/src`, relative to [`CORE_ROOT`].
 const CORE_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/core/src/lib.rs")),
+    ("time.rs", include_str!("../../../library/core/src/time.rs")),
     (
         "num/saturating.rs",
         include_str!("../../../library/core/src/num/saturating.rs"),
