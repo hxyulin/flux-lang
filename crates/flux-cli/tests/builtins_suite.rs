@@ -290,6 +290,32 @@ fn suite_checksum_stat_cache_rechecks_a_replaced_file() {
     let output = staged.compiler(false, "mir", &file);
     success(&output);
     trace(&output, "checksum=Hash");
+    let repair = flib_support::run(
+        staged.command().arg("build-builtins"),
+        "repair-replaced-suite-stamp",
+    );
+    success(&repair);
+    let output = staged.compiler(false, "mir", &file);
+    success(&output);
+    trace(&output, "checksum=Stat");
+    std::fs::remove_file(staged.suite.with_extension("flib.stamp")).unwrap();
+    let before = std::fs::metadata(&staged.suite).unwrap();
+    let repair = flib_support::run(
+        staged.command().arg("build-builtins"),
+        "repair-missing-suite-stamp",
+    );
+    success(&repair);
+    assert!(staged.suite.with_extension("flib.stamp").is_file());
+    assert_eq!(
+        std::fs::metadata(&staged.suite)
+            .unwrap()
+            .modified()
+            .unwrap(),
+        before.modified().unwrap()
+    );
+    let output = staged.compiler(false, "mir", &file);
+    success(&output);
+    trace(&output, "checksum=Stat");
 }
 
 #[test]

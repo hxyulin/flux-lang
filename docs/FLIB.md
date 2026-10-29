@@ -249,6 +249,8 @@ An atomically written `flux-builtins.flib.stamp` caches the suite file's own sta
 fields after staging. The loader compares them with its opened file and skips
 the payload checksum only on a match. A missing/stale sidecar uses the checksum;
 loading never rewrites either file.
+Explicit staging repairs a missing/stale stamp without rebuilding or rewriting
+a matching suite. The captured file hash must match the bytes staging verified.
 
 `FLUX_BUILTINS_SOURCE=1` forces source mode. `FLUX_BUILTINS_TRACE=1` reports the
 selected mode, identity check and suite load time. The CLI selects its mode once;

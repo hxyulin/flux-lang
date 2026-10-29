@@ -173,18 +173,23 @@ fn envelope(
     Ok((identity, payload, checksum))
 }
 
-fn already_staged(path: &Path, executable: &Path, native: bool, optimized: bool) -> bool {
-    let check = (|| -> Result<bool, String> {
+fn already_staged(
+    path: &Path,
+    executable: &Path,
+    native: bool,
+    optimized: bool,
+) -> Option<Vec<u8>> {
+    let check = (|| -> Result<Option<Vec<u8>>, String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let archive = Archive::decode(&bytes).map_err(|e| e.to_string())?;
         if archive.object.is_some() != native {
-            return Ok(false);
+            return Ok(None);
         }
         let (identity, payload, checksum) =
             envelope(&archive.metadata).map_err(|e| e.to_string())?;
         let current = identity.check(executable)?;
         if current.hash != identity.hash() || checksum.as_slice() != digest(payload) {
-            return Ok(false);
+            return Ok(None);
         }
         let mut d = Decoder::new(payload);
         let target = String::decode(&mut d).map_err(|e| e.to_string())?;
@@ -193,15 +198,30 @@ fn already_staged(path: &Path, executable: &Path, native: bool, optimized: bool)
         if flux_codegen::Target::host().is_none_or(|h| h.triple() != target)
             || (native && tier != optimized)
         {
-            return Ok(false);
+            return Ok(None);
         }
-        Ok(match (&archive.object, object_hash) {
+        let valid = match (&archive.object, object_hash) {
             (Some(bytes), Some(hash)) => hash.as_slice() == digest(bytes),
             (None, None) => true,
             _ => false,
-        })
+        };
+        Ok(valid.then_some(bytes))
     })();
-    check.unwrap_or(false)
+    check.ok().flatten()
+}
+
+fn write_stamp(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let stamp = ExecutableIdentity::capture(path)?;
+    if stamp.hash() != digest(bytes) {
+        return Err(invalid(
+            path,
+            "built-in suite changed while recording its stat fields",
+        ));
+    }
+    let mut record = Encoder::new();
+    stamp.encode(&mut record).map_err(|e| e.to_string())?;
+    write_atomic(&path.with_extension("flib.stamp"), &record.into_bytes())
+        .map_err(|e| invalid(path, e))
 }
 
 fn decode_payload(payload: &[u8], object: Option<Vec<u8>>) -> Result<BuiltinSuite, String> {
@@ -310,7 +330,11 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     {
         return Err("build-builtins requires an executable under target/ or out/".into());
     }
-    if already_staged(&path, &executable, native_object, optimized) {
+    if let Some(bytes) = already_staged(&path, &executable, native_object, optimized) {
+        let metadata = std::fs::metadata(&path).map_err(|e| invalid(&path, e))?;
+        if !cached_checksum(&path, &metadata) {
+            write_stamp(&path, &bytes)?;
+        }
         return Ok(path);
     }
     let identity = ExecutableIdentity::capture(&executable)?;
@@ -401,17 +425,7 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     .encode()
     .map_err(|e| e.to_string())?;
     write_atomic(&path, &bytes).map_err(|e| invalid(&path, e))?;
-    let stamp = ExecutableIdentity::capture(&path)?;
-    if stamp.hash() != digest(&bytes) {
-        return Err(invalid(
-            &path,
-            "built-in suite changed while recording its stat fields",
-        ));
-    }
-    let mut record = Encoder::new();
-    stamp.encode(&mut record).map_err(|e| e.to_string())?;
-    write_atomic(&path.with_extension("flib.stamp"), &record.into_bytes())
-        .map_err(|e| invalid(&path, e))?;
+    write_stamp(&path, &bytes)?;
     Ok(path)
 }
 
