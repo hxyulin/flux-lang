@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 mod build;
 mod cargo;
+mod flib_build;
 mod package;
 mod proc_macro_native;
 use flux_cli::proc_macro;
@@ -43,9 +44,18 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
-    /// Compile a program to an executable.
+    /// Compile a program or a Flux library.
     Build {
         file: PathBuf,
+        /// Compile an executable or a private Fluxlib library.
+        #[arg(long, value_enum, default_value = "bin")]
+        crate_type: CrateType,
+        /// Explicit crate identity name.
+        #[arg(long)]
+        crate_name: Option<String>,
+        /// Write metadata without native code (libraries only).
+        #[arg(long)]
+        metadata_only: bool,
         /// Where to write the executable; the file's name without `.rs` by
         /// default.
         #[arg(short, long)]
@@ -62,6 +72,12 @@ enum Command {
         #[arg(last = true)]
         args: Vec<String>,
     },
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
+enum CrateType {
+    Bin,
+    Lib,
 }
 
 #[derive(clap::Args, Clone, Copy)]
@@ -176,9 +192,27 @@ fn run(command: Command) -> Result<bool, String> {
             file,
             output,
             options,
+            crate_type,
+            crate_name,
+            metadata_only,
         } => {
-            let output = output.unwrap_or_else(|| PathBuf::from(build::crate_name(&file)));
-            build::build(&file, &output, options)
+            let name = crate_name.unwrap_or_else(|| build::crate_name(&file));
+            if crate_type == CrateType::Lib {
+                let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.flib")));
+                flib_build::library(&file, &output, &name, options, metadata_only)
+            } else {
+                if metadata_only {
+                    return Err("metadata-only output requires --crate-type lib".into());
+                }
+                let output = output.unwrap_or_else(|| PathBuf::from(&name));
+                build::compile(build::CompileRequest {
+                    file: &file,
+                    crate_name: &name,
+                    output: &output,
+                    options,
+                    sources: &[],
+                })
+            }
         }
         Command::Cargo { .. } | Command::Package { .. } | Command::Run { .. } => {
             unreachable!("handled in main")

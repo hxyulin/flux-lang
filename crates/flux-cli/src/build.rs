@@ -105,6 +105,21 @@ pub(crate) struct SourceInput {
     pub environment: Option<std::collections::BTreeMap<String, String>>,
 }
 
+impl SourceInput {
+    pub(crate) fn standalone(file: &Path, name: &str) -> Self {
+        Self {
+            host_macros: None,
+            compilation_dir: None,
+            edition: flux_syntax::Edition::E2024,
+            file: file.to_owned(),
+            name: name.to_owned(),
+            dependencies: Vec::new(),
+            cfg: flux_hir::CrateCfg::default(),
+            environment: None,
+        }
+    }
+}
+
 // The scoped boundary includes diagnostics and destruction of compile-local data.
 // It excludes CLI parsing, request construction, printing this timing report, final
 // driver error formatting, program execution, and process/global teardown.

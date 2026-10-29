@@ -1,7 +1,10 @@
 # Fluxlib separate compilation
 
-Status: design for `feat/flib`. No artifact writer or loader is implemented
-by this document. The existing source-graph path remains the comparison baseline.
+Status: implementation in progress on `feat/flib`. The container, structural
+metadata codecs, loaded-state providers and separate codegen APIs have focused
+regressions. `flux build --crate-type lib` writes an artifact; `--metadata-only`
+omits native code. Artifact-backed source checking and package reuse still await
+the library-cache integration seam. The source-graph path remains the baseline.
 
 A `.flib` (Fluxlib) contains one checked Flux crate. Loading it supplies the
 semantic information needed by downstream crates without parsing, lowering or
@@ -21,7 +24,9 @@ index. Reject duplicate members and unsupported member kinds.
 `flux.meta` begins with eight magic bytes `FLUXMETA`, a little-endian `u32`
 format version, and a length-prefixed compiler build identity. A section directory
 follows, with numeric section tags and checked `u64` offsets and lengths relative
-to the metadata member. Version 1 requires every defined section; empty sections
+to the metadata member. A trailing SHA-256 checksum covers the header, directory
+and section bytes; framing readers detect damaged payloads before freshness or
+semantic decoding. Version 1 requires every defined section; empty sections
 have zero records. Reject unknown versions, unknown section tags, duplicates,
 overlapping ranges and trailing payload bytes. Any incompatible schema change
 increments the version. There is no migration or best-effort decode.
@@ -33,6 +38,9 @@ interner handles or hash-map iteration order. Structural type records may refer
 to an artifact-local type table to share repeated subtrees. The decoder checks
 bounds, tags, UTF-8, arithmetic overflow, nesting depth and allocation budgets
 before allocating or indexing. Malformed input returns an error, never a panic.
+Each string/vector/table record is limited to 1,000,000 bytes or elements;
+metadata is limited to 512 MiB. Encoding and decoding enforce the same record
+limit. Packed references allow at most 256 crate slots, including the crate itself.
 Compression, lazy decoding and mmap are deferred.
 
 ## Metadata sections
@@ -84,19 +92,27 @@ Rust's process or implementation-dependent hashers. The crate hash covers the
 package/source identity, target kind, edition, cfg/features, semantic and codegen
 options, source contents and logical paths, compiler identity and exact dependency
 hashes. Include macro-host inputs and other tracked environment/generated inputs
-when supported. Dependency aliases belong to the consuming crate's input.
+when supported. HIR records the actual paths and SHA-256 contents read by
+`include!`, `include_str!` and `include_bytes!`, and the observed values or absence
+of variables read by `env!` and `option_env!`. These observations enter crate
+identity. Freshness also checks symlink targets and absent module alternatives;
+modification times alone never establish freshness. Dependency aliases belong to the consuming crate's input.
 Distinct package versions or source identities must remain distinct even when
 their crate names match. Do not include output paths or archive timestamps.
 
 The compiler identity must cover compiler sources, embedded library contents,
 the pinned Keel revision and build configuration that changes compilation.
-A release string or Git HEAD alone is insufficient for dirty builds. Until a
-reproducible build fingerprint exists, disable persistent reuse for builds whose
-identity cannot be established. The object capability also checks target triple,
+The implementation hashes the running compiler executable with SHA-256. This
+covers linked compiler/backend code and embedded libraries, including dirty
+builds; the executable's installation path is not hashed. If the executable
+cannot be read, artifact creation/loading fails rather than guessing identity.
+A release string or Git HEAD alone is insufficient. The object capability also checks target triple,
 ABI/layout revision, panic strategy and codegen settings.
 
 The loader validates the header, expected crate identity and dependency hashes
-before committing records. A check-only artifact is never accepted as linkable.
+before committing records. A check-only artifact is never accepted as linkable. Link requirements record
+an object checksum alongside the target and ABI revision; loading rejects a
+damaged or substituted object.
 A mismatched version, build, target or dependency yields a short error naming the
 artifact and requiring a rebuild. Explicit artifact loading does not silently
 fall back to dependency source. Package freshness separately compares recorded
@@ -124,7 +140,10 @@ local indices, not arena offsets. Rewrite `CrateId`, `FileId`, restricted
 visibility modules, closure owners, macro definition crates (`$crate`), hygiene
 contexts, constant relocations and MIR item references too. Source/node keys
 need explicit artifact-local maps; raw `NodeId` values cannot identify unrelated
-syntax trees. Embedded source is for diagnostics, never a source re-check path.
+syntax trees. Included-source coordinates are encoded as file identities plus
+relative byte offsets and receive fresh coordinate intervals on load. Call-site
+positions use the same mapping. Embedded source is for diagnostics, never a
+source re-check path.
 
 Append the remapped crate to `ItemTree` and its entries to `Signatures`; install
 its def-map scopes and merge derived trait/impl indexes. Downstream declarations
@@ -152,12 +171,15 @@ Mutable statics and identity-sensitive allocations use their owning crate/item
 identity; equal initial bytes must not merge their addresses. Recursive allocation
 graphs need canonical allocation identities rather than recursive byte hashing.
 
-Use coalescible `weak_odr` definitions for duplicate generic instances and their
+Use hidden `weak_odr` definitions for duplicate generic instances and their
 shims, with identical stable symbols, ABI and bodies in every object. The pinned
 Keel revision `d17902eb` exposes `Function::weak_odr` and emits Mach-O weak
-definitions and ELF weak symbols. This is API inspection, not a verified Flux
-multi-object link. Validate coalescing, relocations, function addresses and vtable
-calls on arm64 macOS before enabling separate codegen. Immutable local data can
+definitions and ELF weak symbols. Its AArch64 symbol-address selection does not
+recognize `weak_odr` as coalescible and emits direct page relocations; Keel's
+Mach-O linker rejects those for interposable weak symbols. Hidden definitions
+are private externs and coalesce within the executable without interposition.
+Native regressions verify shared generic function addresses, relocations and
+vtable calls with optimization disabled and full optimization on arm64 macOS. Immutable local data can
 use object-local copies; exported shared data needs a tested coalescing rule.
 The executable alone owns the C `main` wrapper and embedded runtime definitions.
 Link each dependency object once, in addition to downstream monomorphizations.
@@ -190,3 +212,24 @@ Each milestone gets its own local Conventional Commit and scoped validation.
 No Cargo compiler adapter, general resolver expansion, cross-version artifact
 compatibility, arbitrary proc-macro loading, cross-target linking or built-in
 library persistence is established by the first milestones.
+
+## Loaded-state integration
+
+`flux_hir::lower_source_on` appends and lowers only the source crate above an
+already loaded item tree. `flux_ty::flib::LoadedTypes` captures the checked
+signature tables and source arena boundary; `signatures_from` resolves only
+new declarations. `flux_mir::imported::ImportedMir` supplies checked MIR without
+requiring imported HIR or inference records.
+
+`ImportedMir::required_functions` scans imported calls, vtables, promotions and
+constant allocations once. Its roots feed type checking, MIR construction and
+codegen. This matters even for an unused emitted library function: its object
+may still contain references to embedded runtime functions. Lookup through the
+provider decides whether a visited body is already checked.
+
+Runtime `TypeId` uses 128 bits of a structural SHA-256 fingerprint after the
+solver's existing normalization and binder canonicalization. Definition keys
+contain crate identity, definition paths and disambiguators, with included
+spans converted to file-relative positions. A collision between different
+canonical keys is an internal error. Independent signature forks have separate
+identity caches; clones inside one compilation share the cache.
