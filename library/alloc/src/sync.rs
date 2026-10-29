@@ -117,6 +117,12 @@ impl<T: ?Sized> core::convert::AsRef<T> for Arc<T> {
 }
 
 impl<T: ?Sized> Arc<T> {
+    /// Returns the payload pointer without changing the strong owner count.
+    /// The pointer remains valid while a strong owner keeps the value alive.
+    pub fn as_ptr(this: &Self) -> *const T {
+        this.data.as_ptr()
+    }
+
     /// Creates a weak owner without extending the payload's lifetime.
     pub fn downgrade(this: &Arc<T>) -> Weak<T> {
         // SAFETY: a strong owner pins the header and its implicit weak count.
