@@ -209,6 +209,8 @@ use the fixed reified calling convention rather than the whole-program fast
 convention. The tree pipeline fixture currently runs slower through separate
 objects. Cross-crate inlining and improvements to Keel's weak ODR optimization
 and fixed calling conventions remain follow-up work.
+The [cross-crate inlining proposal](FLIB_INLINING.md) describes local direct-call
+copies with canonical function addresses and deterministic eligibility.
 
 Native regressions verify one shared generic definition and equal function
 addresses, data relocations, vtable calls and optimized/unoptimized output on
