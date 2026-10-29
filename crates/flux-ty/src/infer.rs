@@ -1045,9 +1045,9 @@ impl Ctx<'_> {
         if !self.accepts_var(var, ty) {
             return false;
         }
-        // A hidden type that would contain itself (`(f(),)` in `f`) is
-        // no type (E0720): only bodies with opaque types can make one.
-        if !self.own_opaques.is_empty() && ty.has_infer() && self.occurs(var, ty) {
+        // A type that would contain itself (`x = Some(x)`) is no type.
+        // A hidden type that does (`(f(),)` in `f`) is E0720.
+        if ty.has_infer() && self.occurs(var, ty) {
             let root = self.root(var);
             let hidden = self.own_opaques.clone().into_iter().any(
                 |h| matches!(self.shallow(h).kind(), TyKind::Infer(v) if self.root(v) == root),

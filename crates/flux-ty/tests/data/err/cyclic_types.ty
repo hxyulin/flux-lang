@@ -1,0 +1,11 @@
+fn same<T>(T, T) -> ()
+fn assign() -> ()
+    x@0: Option<{error}>
+fn argument() -> ()
+    x@0: Option<{error}>
+fn method() -> ()
+    v@0: Vec<{error}>
+fn main() -> ()
+error 282..283: mismatched types: expected `_`, found `Option<_>`
+error 340..341: mismatched types: expected `_`, found `Option<_>`
+error 401..402: mismatched types: expected `_`, found `Vec<_>`
