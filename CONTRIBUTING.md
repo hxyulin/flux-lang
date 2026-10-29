@@ -9,7 +9,7 @@ reports are useful contributions.
 
 - Rust stable, with `rustfmt` and `clippy` (selected by `rust-toolchain.toml`).
 - [just](https://github.com/casey/just) for the repository recipes.
-- Python 3.10 or newer for test selection and scheduling (standard library only).
+- Python 3.9 or newer for test selection and scheduling (standard library only).
 - [actionlint](https://github.com/rhysd/actionlint) for workflow edits; CI pins 1.7.12.
 
 ```sh
@@ -79,12 +79,14 @@ The fast plan runs unit tests and explicit samples for syntax, name resolution,
 inference, borrowing, object emission and library APIs. On arm64 macOS it also
 runs two end-to-end programs and the Cow/C-string native checks. It excludes
 source-graph audits, scaling tests, large oracle matrices and the exhaustive
-runtime sweep. `just test fast` is an alias for `just test-fast`. Complete validation also runs
-the fast plan to catch stale smoke filters.
+runtime sweep. `just test fast` is an alias for `just test-fast`. `just check`
+runs the complete plan instead, which includes every smoke target.
 
-The plan prints its exact function and fixture filters. Fast checks fail if a
-configured function or case pattern disappears, rather than passing an empty
-selection. Each test binary has a 30-second deadline, adjustable with `--timeout`.
+The plan prints its exact function and fixture filters. Before running a smoke
+target, the runner lists its tests with libtest `--list` and fails if the
+function filter selects none; it also fails if a case pattern matches no case.
+A filter may select any number of tests, so adding or renaming a test does not
+break the plan. Each test binary has a 30-second deadline, adjustable with `--timeout`.
 Compiling changed crates happens before that deadline; a fresh build can still
 take longer than the tests themselves. Use `--list` to inspect a plan without
 building. Filter overrides require `--target`.
@@ -134,13 +136,25 @@ Direct Cargo commands can use `FLUX_TEST_CASE=c_str cargo test -p flux-ty --test
 -- --nocapture`; the runner additionally checks for unmatched filters. Corpus and
 source-graph inventories deliberately remain complete.
 
-Set `--jobs N` to bound concurrently running ordinary test binaries. Their test
-functions run serially. Source-graph audits, scaling tests, the runtime sweep and
-proof compatibility run alone; the latter two use the budget internally. Outside fast mode, all
-binaries have a 30-minute outer deadline, adjustable with `--timeout SECONDS`, in
-addition to their existing command deadlines. Interrupting the runner stops active
-test process groups and prevents queued tests from starting. Logs, individual timings and
-`results.json` live under `out/test-runs/`. Local builds may pass `--cargo mbx`.
+The runner builds all selected targets with one Cargo command. `--jobs N`, or
+`FLUX_TEST_JOBS=N` in the environment, bounds the concurrently running test
+processes; the default is three quarters of the available cores, which leaves
+room for builds and other work on a shared machine. Ordinary test binaries run
+their test functions serially and hold one job each. The runtime sweep holds
+half the jobs, or all of them when it runs alone, and compares that many
+programs at once; proof compatibility holds up to four and runs that many test
+functions at once. Binaries start longest first, using the durations in recent
+`results.json` files; binaries without a recorded duration start first, in
+name order. Scaling tests and `flux-ty::trait_solver` assert elapsed time, so
+they run one at a time after the others.
+
+Outside fast mode, each binary's outer deadline is five times its last passing
+duration, at least 300 seconds, or 900 seconds without one. `--timeout SECONDS`
+sets one deadline for every binary. These add to the tests' own command
+deadlines. Interrupting the runner stops active test process groups and
+prevents queued tests from starting. Logs, individual timings and
+`results.json` live under `out/test-runs/`; the runner keeps the 10 most recent
+runs, adjustable with `--keep-runs N`. Local builds may pass `--cargo mbx`.
 
 A complete plan that includes the unfiltered runtime sweep assigns ordinary
 `support::oracle` native comparisons to that sweep. Focused suites still execute
@@ -209,6 +223,9 @@ repository, which panic messages show.
 Shared CLI test mechanics live in `crates/flux-cli/tests/support`: `process`
 runs bounded commands with file-backed output, `oracle` compares ordinary native
 fixtures, and `inventory` records original bytes and physical diagnostic paths.
+`tests/support/scratch.rs` gives each test a fresh directory that is removed
+when the test passes and kept when it fails; `tests/run` and the self-host
+tests use it.
 Graph tests keep their dependencies, cfg and assertions explicit. Audit parents
 check original source bytes even when their worker fails or times out.
 

@@ -88,8 +88,9 @@ Run checks appropriate to the change before finishing:
   claiming a self-hosting milestone. Do not repeatedly run all graph audits
   while editing unrelated components.
 - Run `just check` once after the implementation settles: format, clippy,
-  runner policy checks, smoke tests, the complete suite, and workspace
-  `flux check`. Report which scope passed; never call a smoke pass full validation.
+  the runner's unit tests, the complete suite (which covers every smoke
+  target), and workspace `flux check`. Report which scope passed; never call
+  a smoke pass full validation.
 - Scripts and documentation use plain Cargo commands. When local `mbx` is
   installed, pass `--cargo mbx` to `scripts/test.py` for executed runner commands,
   and run direct Cargo commands through `mbx`.

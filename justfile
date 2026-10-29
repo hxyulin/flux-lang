@@ -16,7 +16,6 @@ check:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
     python3 -m unittest discover -s scripts -p 'test_*.py'
-    python3 scripts/test.py fast
     python3 scripts/test.py all
     cargo run -q -p flux-cli -- check examples/*.rs $(find crates -name '*.rs' -not -path '*/tests/data/*')
 

@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from pathlib import Path
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -81,17 +83,129 @@ class Planning(unittest.TestCase):
         self.assertEqual([t.name for t in graphs], ["mir_selfhost"])
         self.assertFalse(any(runner.in_group(t, "codegen") for t in graphs))
 
-    def test_large_targets_run_exclusively(self):
-        self.assertTrue(next(t for t in self.targets if t.name == "run").exclusive)
-        self.assertTrue(next(t for t in self.targets if t.name == "mir_selfhost").exclusive)
-        self.assertFalse(next(t for t in self.targets if t.name == "native_fixtures").exclusive)
+    def test_only_timing_sensitive_targets_run_exclusively(self):
+        def target(package, name):
+            return runner.Target(package, name, "test", f"/{package}/tests/{name}.rs")
+        for package, name in (("flux-mir", "scaling"), ("flux-ty", "solver_scaling"), ("flux-ty", "trait_solver")):
+            self.assertTrue(target(package, name).exclusive, name)
+        for package, name in (("flux-cli", "run"), ("flux-cli", "mir_selfhost"), ("flux-cli", "proof_compatibility"),
+                              ("flux-cli", "keel_asm_readiness"), ("flux-cli", "native_fixtures"),
+                              ("flux-cli", "trait_solver")):
+            self.assertFalse(target(package, name).exclusive, name)
 
-    def test_reduced_keel_suite_is_an_exclusive_source_graph(self):
+    def test_reduced_keel_suite_is_a_source_graph_in_the_pool(self):
         target = runner.Target("flux-cli", "keel_reduced_suite", "test",
                                "/flux-cli/tests/keel_reduced_suite.rs")
         self.assertTrue(runner.in_group(target, "graphs"))
-        self.assertTrue(target.exclusive)
+        self.assertFalse(target.exclusive)
         self.assertFalse(runner.in_group(target, "codegen"))
+
+    def test_default_jobs_leave_headroom_and_follow_the_environment(self):
+        self.assertEqual(runner.default_jobs({}, cpus=18), 14)
+        self.assertEqual(runner.default_jobs({}, cpus=4), 3)
+        self.assertEqual(runner.default_jobs({}, cpus=1), 1)
+        self.assertEqual(runner.default_jobs({"FLUX_TEST_JOBS": "6"}, cpus=18), 6)
+        for value in ("0", "-1", "many"):
+            with self.assertRaisesRegex(RuntimeError, "FLUX_TEST_JOBS"):
+                runner.default_jobs({"FLUX_TEST_JOBS": value}, cpus=18)
+
+    def test_internally_parallel_targets_hold_part_of_the_budget(self):
+        run = runner.Target("flux-cli", "run", "test", "/flux-cli/tests/run.rs")
+        proof = runner.Target("flux-cli", "proof_compatibility", "test", "/flux-cli/tests/proof_compatibility.rs")
+        other = runner.Target("flux-mir", "run", "test", "/flux-mir/tests/run.rs")
+        self.assertEqual(runner.workers(run, 14, alone=False), 7)
+        self.assertEqual(runner.workers(run, 14, alone=True), 14)
+        self.assertEqual(runner.workers(run, 1, alone=False), 1)
+        self.assertEqual(runner.workers(proof, 14, alone=False), 4)
+        self.assertEqual(runner.workers(proof, 2, alone=False), 2)
+        self.assertEqual(runner.workers(other, 14, alone=False), 1)
+
+    def write_run(self, directory, name, records):
+        run = directory / name
+        run.mkdir(parents=True)
+        (run / "results.json").write_text(json.dumps(records))
+        return run
+
+    def test_history_takes_the_newest_passing_unfiltered_record(self):
+        def record(target, seconds, **extra):
+            return {"target": target, "seconds": seconds, "exit_code": 0, "filter": None, "case": None, **extra}
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.write_run(directory, "100-1", [record("a", 50), record("b", 9), record("c", 7)])
+            self.write_run(directory, "200-1", [record("a", 5, filter="fixtures"), record("b", 40, exit_code=1),
+                                                record("c", 3)])
+            (directory / "300-1").mkdir()  # Interrupted before any result.
+            (directory / "notes").mkdir()
+            runs = runner.previous_runs(directory)
+            self.assertEqual([r.name for r in runs], ["300-1", "200-1", "100-1"])
+            previous = runner.history(runs)
+            self.assertEqual({k: v["seconds"] for k, v in previous.items()}, {"a": 50, "b": 9, "c": 3})
+        self.assertEqual(runner.previous_runs(Path("/nonexistent/test-runs")), [])
+
+    def test_pool_runs_longest_first_and_unknown_targets_lead(self):
+        names = ["alpha", "beta", "gamma", "delta", "epsilon"]
+        pool = [runner.Target("p", name, "test", f"/p/tests/{name}.rs") for name in names]
+        previous = {"p::alpha": {"seconds": 1}, "p::beta": {"seconds": 60},
+                    "p::gamma": {"seconds": 30}, "p::epsilon": {"seconds": 40, "workers": 8}}
+        settings = {t: argparse.Namespace(workers=2 if t.name == "epsilon" else 1) for t in pool}
+        order = runner.run_order(pool, previous, settings)
+        # epsilon had 8 workers and now has 2: it should take four times as long.
+        self.assertEqual([t.name for t in order], ["delta", "epsilon", "beta", "gamma", "alpha"])
+        self.assertEqual(runner.run_order(pool, {}, settings), pool)
+
+    def test_deadline_scales_previous_duration_with_a_floor(self):
+        self.assertEqual(runner.deadline(None, 1), runner.TIMEOUT_UNKNOWN)
+        self.assertEqual(runner.deadline({"seconds": 2}, 1), runner.TIMEOUT_FLOOR)
+        self.assertEqual(runner.deadline({"seconds": 100}, 1), 100 * runner.TIMEOUT_FACTOR)
+        self.assertEqual(runner.deadline({"seconds": 100, "workers": 4}, 2), 200 * runner.TIMEOUT_FACTOR)
+        self.assertEqual(runner.deadline({"seconds": 100, "workers": 2}, 4), 100 * runner.TIMEOUT_FACTOR)
+
+    def test_prune_keeps_the_newest_runs_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for name in ("100-1", "900-2", "1000-3", "50-9"):
+                self.write_run(directory, name, [])
+            (directory / "keep-me").mkdir()
+            runner.prune(directory, 2)
+            self.assertEqual(sorted(p.name for p in directory.iterdir()), ["1000-3", "900-2", "keep-me"])
+
+    def test_schedule_respects_weights_and_fills_free_slots(self):
+        lock = threading.Lock()
+        started, active, peak = [], [0], [0]
+        weights = {"a": 1, "wide": 3, "b": 1, "c": 1}
+
+        def run(item):
+            with lock:
+                started.append(item)
+                active[0] += weights[item]
+                peak[0] = max(peak[0], active[0])
+            time.sleep(0.05)
+            with lock:
+                active[0] -= weights[item]
+            return item
+
+        finished = []
+        runner.schedule(3, ["a", "wide", "b", "c"], weights.get, run, finished.append, threading.Event())
+        self.assertEqual(started[:2], ["a", "b"], "b fills the slot that wide cannot use yet")
+        self.assertEqual(sorted(finished), ["a", "b", "c", "wide"])
+        self.assertEqual(peak[0], 3)
+
+    def test_schedule_reraises_job_errors_after_running_jobs_finish(self):
+        def run(item):
+            if item == "bad":
+                raise ValueError("broken job")
+            time.sleep(0.05)
+            return item
+
+        finished = []
+        with self.assertRaisesRegex(ValueError, "broken job"):
+            runner.schedule(2, ["good", "bad"], lambda _: 1, run, finished.append, threading.Event())
+        self.assertEqual(finished, ["good"])
+
+    def test_cancelled_schedule_starts_nothing(self):
+        stopped = threading.Event()
+        stopped.set()
+        runner.schedule(2, ["a"], lambda _: 1, lambda item: self.fail("started"), lambda _: None, stopped)
 
     def smoke_targets(self):
         keys = {key for component in runner.FAST_COMPONENTS.values() for key in component}
@@ -149,31 +263,58 @@ class Planning(unittest.TestCase):
         args.case = "moves.rs"
         self.assertEqual(runner.job_settings(target, args, plan).case, "moves.rs")
 
+    def fake_libtest(self, directory, listed):
+        """An executable that lists `listed` tests and, when run, prints one case."""
+        executable = directory / "fake"
+        lines = "".join(f"{name}: test\\n" for name in listed)
+        executable.write_text(f"#!/bin/sh\nif [ \"$1\" = --list ]; then printf '{lines}'; exit 0; fi\n"
+                              "printf 'running 1 test\\nflux-case: existing\\n'\n")
+        executable.chmod(0o755)
+        return executable
+
     def test_empty_smoke_function_and_case_filters_fail(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            executable = directory / "empty"
             target = runner.Target("fixture", "empty", "test", str(directory / "tests" / "empty.rs"))
             args = argparse.Namespace(fast=True, jobs=1, case=None, filter="renamed", timeout=5)
-            executable.write_text("#!/bin/sh\nprintf 'running 0 tests\n'\n")
-            executable.chmod(0o755)
-            self.assertEqual(runner.run_target(target, executable, args, directory, False)["exit_code"], 1)
-            executable.write_text("#!/bin/sh\nprintf 'running 1 test\nflux-case: existing\n'\n")
+            executable = self.fake_libtest(directory, [])
+            result = runner.run_target(target, executable, args, directory, False)
+            self.assertEqual(result["exit_code"], 1)
+            self.assertIn("selected no test functions", Path(result["log"]).read_text())
+            executable = self.fake_libtest(directory, ["fixtures"])
             args.case = "existing,missing"
             self.assertEqual(runner.run_target(target, executable, args, directory, False)["exit_code"], 1)
             args.case = "existing"
             self.assertEqual(runner.run_target(target, executable, args, directory, False)["exit_code"], 0)
 
-    def test_smoke_cannot_silently_lose_one_of_its_fixture_functions(self):
+    def test_smoke_filter_may_select_any_nonzero_number_of_tests(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            executable = directory / "partial"
-            executable.write_text("#!/bin/sh\nprintf 'running 1 test\n'\n")
-            executable.chmod(0o755)
             target = runner.Target("fixture", "partial", "test", str(directory / "tests" / "partial.rs"))
-            args = argparse.Namespace(fast=True, jobs=1, case=None, filter="fixtures",
-                                      expected_tests=2, timeout=5)
-            self.assertEqual(runner.run_target(target, executable, args, directory, False)["exit_code"], 1)
+            args = argparse.Namespace(fast=True, jobs=1, case=None, filter="fixtures", timeout=5)
+            for listed in (["fixtures_ok"], ["fixtures_ok", "fixtures_err", "fixtures_new"]):
+                executable = self.fake_libtest(directory, listed)
+                self.assertEqual(runner.run_target(target, executable, args, directory, False)["exit_code"], 0)
+
+    def test_multi_package_plan_builds_with_one_command(self):
+        first = runner.Target("first", "a", "test", "/first/tests/a.rs", "first-id")
+        lib = runner.Target("first", "first", "lib", "/first/src/lib.rs", "first-id")
+        second = runner.Target("second", "second", "lib", "/second/src/lib.rs", "second-id")
+        binary = runner.Target("second", "tool", "bin", "/second/src/main.rs", "second-id")
+        selected = [first, lib, second, binary, runner.RUNNER]
+        messages = [{"reason": "compiler-artifact", "package_id": t.package_id, "profile": {"test": True},
+                     "target": {"name": t.name, "kind": [t.kind], "src_path": t.source},
+                     "executable": f"/target/{t.name}"} for t in selected if t.kind != "python"]
+        result = SimpleNamespace(stdout="\n".join(json.dumps(m) for m in messages), returncode=0)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(runner.subprocess, "run", return_value=result) as run:
+            executables = runner.build("cargo", selected, Path(temporary))
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args[0][0], ["cargo", "test", "--no-run", "--message-format=json",
+                                               "-p", "first", "-p", "second",
+                                               "--test", "a", "--lib", "--bin", "tool"])
+        self.assertEqual(executables[binary], Path("/target/tool"))
+        self.assertEqual(executables[runner.RUNNER], Path(sys.executable))
 
     def test_workspace_artifacts_with_same_name_keep_their_package_identity(self):
         first = runner.Target("first", "shared", "test", "/first/tests/shared.rs", "first-id")
@@ -257,6 +398,19 @@ class Planning(unittest.TestCase):
             self.assertEqual(result["exit_code"], 0)
             self.assertEqual(result["source"], target.source)
             self.assertEqual(result["executable"], str(executable))
+            self.assertEqual(result["workers"], 1)
+
+    def test_runtime_sweep_gets_its_share_of_the_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            executable = directory / "run"
+            executable.write_text('#!/bin/sh\ntest "$FLUX_TEST_JOBS" = "7"\n')
+            executable.chmod(0o755)
+            target = runner.Target("flux-cli", "run", "test", str(directory / "tests" / "run.rs"))
+            args = argparse.Namespace(jobs=14, workers=7, case=None, filter=None, timeout=5)
+            result = runner.run_target(target, executable, args, directory, False)
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(result["workers"], 7)
 
 
 if __name__ == "__main__":
