@@ -755,7 +755,7 @@ impl SourceDb {
         // Like rustc, ignore a leading byte order mark. Diagnostics take
         // their offsets from the stored text, which no longer has it.
         if text.starts_with('\u{feff}') {
-            text.drain(..'\u{feff}'.len_utf8());
+            text.remove(0);
         }
         Ok(self.add_with_edition(path, text, edition))
     }
