@@ -92,13 +92,17 @@ pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
     // friends stay available to their own rules.
     let mut has_mods = false;
     let mut has_abi = false;
+    let mut has_const = false;
+    let mut has_async = false;
     if p.at(T![const]) && !matches!(p.nth(1), IDENT | T![_] | T!['{']) {
         p.bump(T![const]);
         has_mods = true;
+        has_const = true;
     }
     if p.at(T![async]) && !matches!(p.nth(1), T!['{'] | T![move] | T![|]) {
         p.bump(T![async]);
         has_mods = true;
+        has_async = true;
     }
     if p.at(T![unsafe]) && p.nth(1) != T!['{'] {
         p.bump(T![unsafe]);
@@ -108,6 +112,19 @@ pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
         abi(p);
         has_mods = true;
         has_abi = true;
+    }
+
+    // Only `unsafe` may come before `impl` and `trait`; the messages
+    // are rustc's.
+    if let keyword @ (T![impl] | T![trait]) = p.current() {
+        if has_async {
+            p.error("expected an item, found keyword `async`");
+        } else if has_abi {
+            let keyword = if keyword == T![impl] { "impl" } else { "trait" };
+            p.error(format!("expected `{{`, found keyword `{keyword}`"));
+        } else if has_const {
+            p.error("const trait impls are experimental");
+        }
     }
 
     match p.current() {

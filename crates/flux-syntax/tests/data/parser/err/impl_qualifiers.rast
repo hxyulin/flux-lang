@@ -1,0 +1,122 @@
+SOURCE_FILE@0..138
+  STRUCT@0..9
+    STRUCT_KW@0..6 "struct"
+    WHITESPACE@6..7 " "
+    NAME@7..8
+      IDENT@7..8 "S"
+    SEMICOLON@8..9 ";"
+  WHITESPACE@9..10 "\n"
+  IMPL@10..30
+    ABI@10..20
+      EXTERN_KW@10..16 "extern"
+      WHITESPACE@16..17 " "
+      STRING@17..20 "\"C\""
+    WHITESPACE@20..21 " "
+    IMPL_KW@21..25 "impl"
+    WHITESPACE@25..26 " "
+    PATH_TYPE@26..27
+      PATH@26..27
+        PATH_SEGMENT@26..27
+          NAME_REF@26..27
+            IDENT@26..27 "S"
+    WHITESPACE@27..28 " "
+    ASSOC_ITEM_LIST@28..30
+      L_CURLY@28..29 "{"
+      R_CURLY@29..30 "}"
+  WHITESPACE@30..31 "\n"
+  TRAIT@31..48
+    ABI@31..37
+      EXTERN_KW@31..37 "extern"
+    WHITESPACE@37..38 " "
+    TRAIT_KW@38..43 "trait"
+    WHITESPACE@43..44 " "
+    NAME@44..45
+      IDENT@44..45 "A"
+    WHITESPACE@45..46 " "
+    ASSOC_ITEM_LIST@46..48
+      L_CURLY@46..47 "{"
+      R_CURLY@47..48 "}"
+  WHITESPACE@48..49 "\n"
+  TRAIT@49..65
+    ASYNC_KW@49..54 "async"
+    WHITESPACE@54..55 " "
+    TRAIT_KW@55..60 "trait"
+    WHITESPACE@60..61 " "
+    NAME@61..62
+      IDENT@61..62 "B"
+    WHITESPACE@62..63 " "
+    ASSOC_ITEM_LIST@63..65
+      L_CURLY@63..64 "{"
+      R_CURLY@64..65 "}"
+  WHITESPACE@65..66 "\n"
+  IMPL@66..81
+    ASYNC_KW@66..71 "async"
+    WHITESPACE@71..72 " "
+    IMPL_KW@72..76 "impl"
+    WHITESPACE@76..77 " "
+    PATH_TYPE@77..78
+      PATH@77..78
+        PATH_SEGMENT@77..78
+          NAME_REF@77..78
+            IDENT@77..78 "S"
+    WHITESPACE@78..79 " "
+    ASSOC_ITEM_LIST@79..81
+      L_CURLY@79..80 "{"
+      R_CURLY@80..81 "}"
+  WHITESPACE@81..82 "\n"
+  IMPL@82..97
+    CONST_KW@82..87 "const"
+    WHITESPACE@87..88 " "
+    IMPL_KW@88..92 "impl"
+    WHITESPACE@92..93 " "
+    PATH_TYPE@93..94
+      PATH@93..94
+        PATH_SEGMENT@93..94
+          NAME_REF@93..94
+            IDENT@93..94 "S"
+    WHITESPACE@94..95 " "
+    ASSOC_ITEM_LIST@95..97
+      L_CURLY@95..96 "{"
+      R_CURLY@96..97 "}"
+  WHITESPACE@97..98 "\n"
+  TRAIT@98..114
+    CONST_KW@98..103 "const"
+    WHITESPACE@103..104 " "
+    TRAIT_KW@104..109 "trait"
+    WHITESPACE@109..110 " "
+    NAME@110..111
+      IDENT@110..111 "C"
+    WHITESPACE@111..112 " "
+    ASSOC_ITEM_LIST@112..114
+      L_CURLY@112..113 "{"
+      R_CURLY@113..114 "}"
+  WHITESPACE@114..115 "\n"
+  IMPL@115..137
+    UNSAFE_KW@115..121 "unsafe"
+    WHITESPACE@121..122 " "
+    IMPL_KW@122..126 "impl"
+    WHITESPACE@126..127 " "
+    PATH_TYPE@127..128
+      PATH@127..128
+        PATH_SEGMENT@127..128
+          NAME_REF@127..128
+            IDENT@127..128 "D"
+    WHITESPACE@128..129 " "
+    FOR_KW@129..132 "for"
+    WHITESPACE@132..133 " "
+    PATH_TYPE@133..134
+      PATH@133..134
+        PATH_SEGMENT@133..134
+          NAME_REF@133..134
+            IDENT@133..134 "S"
+    WHITESPACE@134..135 " "
+    ASSOC_ITEM_LIST@135..137
+      L_CURLY@135..136 "{"
+      R_CURLY@136..137 "}"
+  WHITESPACE@137..138 "\n"
+error 20..20: expected `{`, found keyword `impl`
+error 37..37: expected `{`, found keyword `trait`
+error 54..54: expected an item, found keyword `async`
+error 71..71: expected an item, found keyword `async`
+error 87..87: const trait impls are experimental
+error 103..103: const trait impls are experimental
