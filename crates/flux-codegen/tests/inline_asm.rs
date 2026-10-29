@@ -23,8 +23,9 @@ fn tied_asm_effects_survive_optimization() {
         let mut module = module.clone();
         keel_opt::optimize_with_tier(&mut module, tier).unwrap();
         keel_ir::verify_module(&module).unwrap();
-        let mut count = 0;
+        let mut holders = 0;
         for function in &module.functions {
+            let mut count = 0;
             for (_, instruction) in function.layout_insts() {
                 if let keel_ir::InstData::InlineAsm { asm, args } = function.inst_data(instruction)
                 {
@@ -45,8 +46,14 @@ fn tied_asm_effects_survive_optimization() {
                     }
                 }
             }
+            // Optimization may inline `main` into the C entry point; each copy
+            // keeps both statements.
+            if count != 0 {
+                assert_eq!(count, 2, "{tier:?}: {:?}", function.name);
+                holders += 1;
+            }
         }
-        assert_eq!(count, 2, "{tier:?}");
+        assert!(holders > 0, "{tier:?}: the assembly was removed");
         keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
     }
 }
