@@ -195,6 +195,7 @@ pub struct Evaluator<'a> {
     /// Each constant's name, for messages.
     pub names: &'a dyn Fn(ConstId) -> String,
     values: FxHashMap<ConstInstance, Result<Value, EvalError>>,
+    imported_provider: Option<&'a crate::imported::ImportedMir>,
     imported_values: Option<&'a ConstValues>,
     imported_discriminants: Option<&'a crate::Discriminants>,
     in_progress: Vec<ConstInstance>,
@@ -239,6 +240,7 @@ impl<'a> Evaluator<'a> {
             consts,
             names,
             values: FxHashMap::default(),
+            imported_provider: None,
             imported_values: None,
             imported_discriminants: None,
             in_progress: Vec::new(),
@@ -284,7 +286,11 @@ impl<'a> Evaluator<'a> {
         {
             return Ok(value.clone());
         }
-        let Some(body) = self.consts.get(c.konst) else {
+        let Some(body) = self
+            .consts
+            .get(c.konst)
+            .or_else(|| self.imported_provider?.konst(c.konst))
+        else {
             self.unbuilt.push(c.konst);
             return Err(error(
                 TextRange::default(),
@@ -2366,7 +2372,11 @@ impl<'a> Evaluator<'a> {
         {
             self.check_field_layout_dependency(ty, range)?;
         }
-        let Some(callee) = self.functions.get(func) else {
+        let Some(callee) = self
+            .functions
+            .get(func)
+            .or_else(|| self.imported_provider?.function(func))
+        else {
             return Err(error(
                 range,
                 "calling this function in constants is not supported yet".to_owned(),
@@ -4066,6 +4076,12 @@ fn float_binary(op: BinOp, l: &Value, r: &Value) -> Option<Value> {
 }
 
 impl<'a> Evaluator<'a> {
+    /// Uses immutable checked templates on demand, including shared built-ins.
+    pub fn with_provider(mut self, imported: &'a crate::imported::ImportedMir) -> Self {
+        self.imported_provider = Some(imported);
+        self.with_imported(&imported.mir().const_values, &imported.mir().discriminants)
+    }
+
     /// Reuses checked dependency values before requesting initializer MIR.
     /// Generic values absent from the snapshot still evaluate their MIR templates.
     pub fn with_imported(

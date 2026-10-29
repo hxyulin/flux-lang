@@ -518,8 +518,7 @@ fn check_patterns(
     let names = |id: ConstId| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
     if let Some(imported) = imported {
-        evaluator =
-            evaluator.with_imported(&imported.mir().const_values, &imported.mir().discriminants);
+        evaluator = evaluator.with_provider(imported);
     }
     let mut unsupported_patterns = Vec::new();
     let (mut diagnostics, failed) = flux_ty::check_deferred_patterns(hir, typed, &mut |c| {
@@ -781,8 +780,7 @@ fn evaluate_consts(
     let names = |id: ConstId| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, &typed.sigs, bodies, consts, &names);
     if let Some(imported) = imported {
-        evaluator =
-            evaluator.with_imported(&imported.mir().const_values, &imported.mir().discriminants);
+        evaluator = evaluator.with_provider(imported);
     }
     let mut checked = evaluate_discriminants(items, &mut evaluator, discriminants);
     let mut wanted: Vec<flux_ty::ConstInstance> = items

@@ -52,7 +52,7 @@ impl LibraryTypes {
 
     /// The libraries' inference, if `hir`'s item tree starts with them.
     pub fn of(hir: &Hir) -> Option<&'static LibraryTypes> {
-        (hir.items.core.functions > 0).then(LibraryTypes::get)
+        (hir.items.core.functions > 0 && !hir.items.has_artifact_builtins()).then(LibraryTypes::get)
     }
 
     /// Whether `owner` is one of the libraries' functions or constants,

@@ -26,10 +26,45 @@ impl LoadedTypes {
         signatures: Signatures,
         loaded: &[(CrateId, [u8; 32])],
     ) -> Result<Self, Error> {
+        Self::checked(items, signatures, loaded, false)
+    }
+
+    /// Accepts an authenticated built-in prefix and ordinary decoded dependencies.
+    /// The HIR suite decoder is the only producer of the required trusted marker.
+    pub fn with_builtin_prefix(
+        items: &ItemTree,
+        signatures: Signatures,
+        loaded: &[(CrateId, [u8; 32])],
+    ) -> Result<Self, Error> {
+        if !items.has_artifact_builtins() {
+            return Err(Error("expected authenticated built-in metadata"));
+        }
+        let mut signatures = signatures;
+        signatures.freeze();
+        signatures.type_ids = signatures.type_ids.fork();
+        Self::checked(items, signatures, loaded, true)
+    }
+
+    fn checked(
+        items: &ItemTree,
+        signatures: Signatures,
+        loaded: &[(CrateId, [u8; 32])],
+        builtins: bool,
+    ) -> Result<Self, Error> {
         let mut hashes = FxHashMap::default();
         let mut seen_hashes = FxHashSet::default();
         let mut functions = FxHashSet::default();
         let mut consts = FxHashSet::default();
+        if builtins {
+            for (index, data) in items.crates.iter().enumerate() {
+                if data.root.into_raw() < items.core.modules {
+                    let krate = CrateId(index as u32);
+                    if !loaded.iter().any(|&(id, _)| id == krate) {
+                        return Err(Error("missing built-in crate identity"));
+                    }
+                }
+            }
+        }
         for &(krate, hash) in loaded {
             let data = items
                 .crates
@@ -42,7 +77,8 @@ impl LoadedTypes {
             if root.krate != krate {
                 return Err(Error("invalid loaded crate root ownership"));
             }
-            if data.is_core || items.is_std(data.root) {
+            let builtin = builtins && data.root.into_raw() < items.core.modules;
+            if !builtin && (data.is_core || items.is_std(data.root)) {
                 return Err(Error("embedded crates cannot be imported as user flibs"));
             }
             if hashes.insert(krate, hash).is_some() || !seen_hashes.insert(hash) {
@@ -55,7 +91,9 @@ impl LoadedTypes {
                     return Err(Error("missing loaded function signature"));
                 }
                 let function = &items.functions[id];
-                if function.intrinsic.is_some() || signatures.sized_dispatch.contains_key(&id) {
+                if !builtin
+                    && (function.intrinsic.is_some() || signatures.sized_dispatch.contains_key(&id))
+                {
                     return Err(Error("untrusted loaded intrinsic"));
                 }
                 for index in 0..function.opaques.len() as u32 {
@@ -97,6 +135,20 @@ impl LoadedTypes {
                     return Err(Error("missing loaded impl signature"));
                 }
             }
+        }
+        if builtins
+            && (functions
+                .iter()
+                .filter(|id| id.into_raw() < items.core.functions)
+                .count()
+                != items.core.functions as usize
+                || consts
+                    .iter()
+                    .filter(|id| id.into_raw() < items.core.consts)
+                    .count()
+                    != items.core.consts as usize)
+        {
+            return Err(Error("incomplete built-in signature prefix"));
         }
         Ok(Self {
             signatures,

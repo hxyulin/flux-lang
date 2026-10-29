@@ -1,5 +1,7 @@
 //! Checked dependency bodies supplied without dependency HIR or inference.
 
+use std::sync::Arc;
+
 use flux_hir::flib::Error;
 use flux_hir::{ConstId, FunctionId, ItemCounts};
 use flux_ty::{ClosureId, ClosureKind, ClosureOwner};
@@ -17,6 +19,7 @@ pub struct RequiredRoots {
 #[derive(Debug)]
 pub struct ImportedMir {
     mir: FileMir,
+    builtins: Option<Arc<FileMir>>,
     source_counts: ItemCounts,
     required_instances: Vec<flux_ty::Instance>,
 }
@@ -44,9 +47,115 @@ impl ImportedMir {
         }
         Ok(Self {
             mir,
+            builtins: None,
             source_counts,
             required_instances: Vec::new(),
         })
+    }
+
+    /// Shares an authenticated whole-prefix suite without copying its functions.
+    /// The mutable MIR contains user imports and the built-in constant tables;
+    /// suite function templates are copied only when a compilation reaches them.
+    pub fn with_builtin_prefix(
+        items: &flux_hir::ItemTree,
+        mir: FileMir,
+        suite: Arc<FileMir>,
+    ) -> Result<Self, Error> {
+        if !items.has_artifact_builtins() {
+            return Err(Error::new("expected authenticated built-in metadata"));
+        }
+        let mut imported = Self::new(mir, items.counts())?;
+        if suite
+            .bodies
+            .iter()
+            .any(|(id, _)| id.into_raw() >= items.core.functions)
+            || suite
+                .consts
+                .iter()
+                .any(|(id, _)| id.into_raw() >= items.core.consts)
+            || suite.closures.keys().any(|(id, _)| match id.owner {
+                ClosureOwner::Function(f) => f.into_raw() >= items.core.functions,
+                ClosureOwner::Const(c) => c.into_raw() >= items.core.consts,
+            })
+            || suite
+                .const_values
+                .items
+                .iter()
+                .any(|(id, _)| id.into_raw() >= items.core.consts)
+            || suite
+                .const_values
+                .instances
+                .keys()
+                .any(|key| key.konst.into_raw() >= items.core.consts)
+            || suite
+                .discriminants
+                .iter()
+                .any(|(id, _)| id.into_raw() >= items.core.structs)
+            || !suite.diagnostics.is_empty()
+            || !suite.bugs.is_empty()
+        {
+            return Err(Error::new("invalid built-in MIR prefix"));
+        }
+        for (id, function) in items.functions.iter().take(items.core.functions as usize) {
+            if function.has_body && suite.bodies.get(id).is_none() {
+                return Err(Error::new("missing built-in function MIR"));
+            }
+        }
+        for (id, konst) in items.consts.iter().take(items.core.consts as usize) {
+            if konst.has_body && suite.consts.get(id).is_none() {
+                return Err(Error::new("missing built-in constant MIR"));
+            }
+        }
+        if imported
+            .mir
+            .bodies
+            .iter()
+            .any(|(id, _)| id.into_raw() < items.core.functions)
+            || imported
+                .mir
+                .consts
+                .iter()
+                .any(|(id, _)| id.into_raw() < items.core.consts)
+            || imported.mir.closures.keys().any(|(id, _)| match id.owner {
+                ClosureOwner::Function(f) => f.into_raw() < items.core.functions,
+                ClosureOwner::Const(c) => c.into_raw() < items.core.consts,
+            })
+        {
+            return Err(Error::new("duplicate built-in MIR provider"));
+        }
+        for (id, body) in suite.consts.iter() {
+            imported.mir.consts.insert(id, body.clone());
+        }
+        for (&key, body) in &suite.closures {
+            if matches!(key.0.owner, ClosureOwner::Const(_)) {
+                imported.mir.closures.insert(key, body.clone());
+            }
+        }
+        for (id, value) in suite.const_values.items.iter() {
+            if imported.mir.const_values.items.get(id).is_some() {
+                return Err(Error::new("duplicate built-in constant value"));
+            }
+            imported.mir.const_values.items.insert(id, value.clone());
+        }
+        for (&key, value) in &suite.const_values.instances {
+            if imported
+                .mir
+                .const_values
+                .instances
+                .insert(key, value.clone())
+                .is_some()
+            {
+                return Err(Error::new("duplicate built-in constant instance"));
+            }
+        }
+        for (id, values) in suite.discriminants.iter() {
+            if imported.mir.discriminants.get(id).is_some() {
+                return Err(Error::new("duplicate built-in enum discriminants"));
+            }
+            imported.mir.discriminants.insert(id, values.clone());
+        }
+        imported.builtins = Some(suite);
+        Ok(imported)
     }
 
     /// Adds concrete dependencies recorded by the producing object's collector.
@@ -74,12 +183,18 @@ impl ImportedMir {
 
     /// A dependency function's already checked generic template.
     pub fn function(&self, id: FunctionId) -> Option<&Body> {
-        self.mir.bodies.get(id)
+        self.mir
+            .bodies
+            .get(id)
+            .or_else(|| self.builtins.as_ref()?.bodies.get(id))
     }
 
     /// A dependency constant's checked initializer.
     pub fn konst(&self, id: ConstId) -> Option<&Body> {
-        self.mir.consts.get(id)
+        self.mir
+            .consts
+            .get(id)
+            .or_else(|| self.builtins.as_ref()?.consts.get(id))
     }
 
     /// Checked closure bodies and callable shims belonging to one dependency owner.
@@ -90,6 +205,12 @@ impl ImportedMir {
         self.mir
             .closures
             .iter()
+            .chain(
+                self.builtins
+                    .iter()
+                    .flat_map(|suite| suite.closures.iter())
+                    .filter(|((id, _), _)| matches!(id.owner, ClosureOwner::Function(_))),
+            )
             .filter(move |((id, _), _)| id.owner == owner)
             .map(|(&key, body)| (key, body))
     }
@@ -215,6 +336,11 @@ pub(crate) enum SharedMir<'a> {
 impl ImportedMir {
     /// Whether an owner belongs to a decoded user crate, excluding the core prefix.
     pub fn owns(&self, owner: ClosureOwner, core: ItemCounts) -> bool {
+        let core = if self.builtins.is_some() {
+            ItemCounts::default()
+        } else {
+            core
+        };
         match owner {
             ClosureOwner::Function(id) => {
                 (core.functions..self.source_counts.functions).contains(&id.into_raw())

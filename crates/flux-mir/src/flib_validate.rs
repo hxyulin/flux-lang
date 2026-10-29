@@ -264,15 +264,22 @@ pub(super) fn body_for_owner(
     sigs: &Signatures,
     owner: flux_ty::ClosureOwner,
 ) -> Result<(), Error> {
-    if body.in_core {
+    let loc = match owner {
+        flux_ty::ClosureOwner::Function(f) => items.functions.get(f).ok_or_else(invalid)?.loc,
+        flux_ty::ClosureOwner::Const(c) => items.consts.get(c).ok_or_else(invalid)?.loc,
+    };
+    let builtin_owner = match owner {
+        flux_ty::ClosureOwner::Function(f) => f.into_raw() < items.core.functions,
+        flux_ty::ClosureOwner::Const(c) => c.into_raw() < items.core.consts,
+    };
+    if body.in_core
+        && !(items.has_artifact_builtins() && builtin_owner && items.is_core(loc.module))
+    {
         return Err(Error::new(
             "user MIR cannot claim embedded library privileges",
         ));
     }
-    let file = match owner {
-        flux_ty::ClosureOwner::Function(f) => items.functions.get(f).ok_or_else(invalid)?.loc.file,
-        flux_ty::ClosureOwner::Const(c) => items.consts.get(c).ok_or_else(invalid)?.loc.file,
-    };
+    let file = loc.file;
     let source_range = |range: TextRange| -> Result<(), Error> {
         let (file, range) = items.source_span(file, range);
         let source = items.files.get(&file).ok_or_else(invalid)?;

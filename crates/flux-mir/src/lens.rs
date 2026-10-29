@@ -118,9 +118,7 @@ fn eval_lens_from(
         let names = |id: ConstId| items.const_name(id);
         let evaluator = crate::eval::Evaluator::new(items, &typed.sigs, &bodies, &consts, &names);
         let mut evaluator = match imported {
-            Some(imported) => {
-                evaluator.with_imported(&imported.mir().const_values, &imported.mir().discriminants)
-            }
+            Some(imported) => evaluator.with_provider(imported),
             None => evaluator,
         };
         let mut waiting = Vec::new();
