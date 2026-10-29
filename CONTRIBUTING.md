@@ -123,10 +123,15 @@ checks, not a claim that downstream behavior is unaffected.
 `--changed BASE` includes tracked edits, deletions and untracked files. Production
 edits select the owning crate and all workspace dependents, including graph tests.
 An independent integration-test edit selects that binary. Shared test fixtures
-select the crate and its dependents; runtime fixture edits select CLI tests. Embedded-library,
-configuration, runner and unknown paths select the entire suite. Explicit group,
-`--package` and `--target` restrictions intersect this selection. Review `--list`
-before narrowing it further. No changed paths means no tests run.
+select the crate and its dependents. A `tests/run` program selects the runtime
+sweep and every test file that names it, by path or by quoted file stem; files
+under `tests/run/support` select all CLI tests. `scripts/` edits select the
+runner's unit tests (`scripts::runner`). Markdown files, `docs/`, and untracked
+files outside `crates/`, `library/`, `tests/`, `scripts/` and `examples/` select
+nothing. Embedded-library, configuration and other unknown paths select the
+entire suite. Explicit group, `--package` and `--target` restrictions intersect
+this selection. Review `--list` before narrowing it further. No changed paths
+means no tests run.
 
 `--filter` selects Rust test functions. `--case` selects comma-separated case-name
 substrings inside snapshot fixtures, ordinary native fixtures and named oracle

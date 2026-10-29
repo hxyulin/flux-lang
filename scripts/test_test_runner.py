@@ -37,8 +37,8 @@ class Planning(unittest.TestCase):
         self.metadata = metadata()
         self.targets = runner.targets(self.metadata)
 
-    def affected(self, *paths):
-        return runner.affected(self.metadata, list(paths), self.targets)
+    def affected(self, *paths, untracked=()):
+        return runner.affected(self.metadata, list(paths), self.targets, set(untracked))
 
     def test_source_change_selects_all_downstream_targets_including_graphs(self):
         selected = self.affected("crates/flux-ty/src/infer.rs")
@@ -59,8 +59,25 @@ class Planning(unittest.TestCase):
             self.assertFalse(runner.in_group(target, "borrowing"), package)
 
     def test_library_unknown_and_configuration_changes_fall_back_to_all(self):
-        for path in ("library/core/src/ptr.rs", "Cargo.lock", "scripts/new.py", "README.md"):
+        for path in ("library/core/src/ptr.rs", "Cargo.lock", "justfile", "tests/support/cases.rs"):
             self.assertEqual(self.affected(path), set(self.targets), path)
+
+    def test_documentation_and_untracked_notes_select_nothing(self):
+        for path in ("README.md", "docs/LANGUAGE.md", "crates/flux-mir/README.md"):
+            self.assertEqual(self.affected(path), set(), path)
+        self.assertEqual(self.affected("KNOWN_ISSUES.md", "notes.txt", untracked=["KNOWN_ISSUES.md", "notes.txt"]), set())
+
+    def test_untracked_sources_and_tests_still_select(self):
+        selected = self.affected("crates/flux-mir/src/new.rs", untracked=["crates/flux-mir/src/new.rs"])
+        self.assertEqual({t.package for t in selected}, {"flux-mir", "flux-cli"})
+        self.assertEqual(self.affected("notes.txt"), set(self.targets), "tracked unknown files select all")
+
+    def test_scripts_select_the_runner_unit_tests(self):
+        available = self.targets + [runner.RUNNER]
+        self.assertEqual(runner.affected(self.metadata, ["scripts/test.py"], available), {runner.RUNNER})
+        self.assertTrue(runner.in_group(runner.RUNNER, "all"))
+        self.assertTrue(runner.in_group(runner.RUNNER, "units"))
+        self.assertFalse(runner.in_group(runner.RUNNER, "codegen"))
 
     def test_independent_test_file_selects_its_binary(self):
         selected = self.affected("crates/flux-mir/tests/mir.rs")
@@ -70,9 +87,35 @@ class Planning(unittest.TestCase):
         for path in ("crates/flux-mir/tests/data/err/a.rs", "crates/flux-mir/tests/removed.rs"):
             self.assertEqual(self.affected(path), {t for t in self.targets if t.package in {"flux-mir", "flux-cli"}})
 
-    def test_runtime_edits_retain_specialized_cli_checks(self):
-        self.assertEqual(self.affected("tests/run/c_strings.rs"),
-                         {t for t in self.targets if t.package == "flux-cli"})
+    def test_runtime_program_selects_the_sweep_and_tests_that_name_it(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            sources = {
+                ("flux-cli", "run"): "read_dir(root.join(\"tests/run\"))",
+                ("flux-cli", "native_fixtures"): 'compare_fixture("cow_as_ref");\ncompare_fixture("pending/deep");',
+                ("flux-cli", "float_math"): 'for name in ["float_math"] { format!("tests/run/{name}.rs") }',
+                ("flux-mir", "refcell_guards"): 'include_str!("../../../tests/run/refcell_guards.rs")',
+                ("flux-cli", "unrelated"): 'compare_fixture("cow_as_ref_other");',
+            }
+            available = []
+            for (package, name), text in sources.items():
+                source = directory / package / "tests" / f"{name}.rs"
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_text(text)
+                available.append(runner.Target(package, name, "test", str(source), package))
+            available.append(runner.Target("flux-cli", "flux_cli", "lib", "/missing/lib.rs", "flux-cli"))
+
+            def selected(path):
+                return {t.name for t in runner.affected(self.metadata, [path], available)}
+
+            self.assertEqual(selected("tests/run/cow_as_ref.rs"), {"run", "native_fixtures"})
+            self.assertEqual(selected("tests/run/float_math.rs"), {"run", "float_math"})
+            self.assertEqual(selected("tests/run/refcell_guards.rs"), {"run", "refcell_guards"})
+            self.assertEqual(selected("tests/run/pending/deep.rs"), {"run", "native_fixtures"})
+            self.assertEqual(selected("tests/run/c_strings.rs"), {"run"})
+            # Programs include support files, so these keep every CLI test.
+            self.assertEqual(selected("tests/run/support/include_str/data.txt"),
+                             {t.name for t in available if t.package == "flux-cli"})
 
     def test_no_changes_selects_nothing(self):
         self.assertEqual(self.affected(), set())

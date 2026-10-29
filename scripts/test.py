@@ -27,6 +27,8 @@ TIMEOUT_FACTOR = 5
 TIMEOUT_FLOOR = 300
 TIMEOUT_UNKNOWN = 900
 FAST_TIMEOUT = 30
+# Untracked files outside these directories are notes, not sources or tests.
+SOURCE_DIRECTORIES = ("crates/", "library/", "tests/", "scripts/", "examples/")
 
 
 @dataclass(frozen=True, order=True)
@@ -46,7 +48,7 @@ class Target:
         return "scaling" in self.name or self.label in TIMED
 
 
-# The runner's own unit tests, run by Python.
+# The runner's own unit tests, selected by `scripts/` edits and run by Python.
 RUNNER = Target("scripts", "runner", "python", str(ROOT / "scripts" / "test_test_runner.py"))
 
 
@@ -222,19 +224,43 @@ def in_group(target: Target, group: str) -> bool:
     return target.package in packages[group] and not graph(target)
 
 
-def changed_paths(base: str) -> list[str]:
+def changed_paths(base: str) -> tuple[list[str], set[str]]:
+    """Changed paths, and which of them are untracked."""
     # Include both sides of renames, deletions, unstaged changes, and new files.
     tracked = subprocess.check_output(
         ["git", "diff", "--no-renames", "--name-only", "-z", base, "--"], cwd=ROOT
     ).decode().split("\0")
-    untracked = subprocess.check_output(
+    untracked = set(subprocess.check_output(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=ROOT
-    ).decode().split("\0")
-    return sorted(set(tracked + untracked) - {""})
+    ).decode().split("\0")) - {""}
+    return sorted((set(tracked) | untracked) - {""}), untracked
 
 
-def affected(metadata: dict, paths: list[str], available: list[Target]) -> set[Target]:
-    """Production edits select the reverse dependency closure; unknown paths select all."""
+def program_references(path: str, available: list[Target]) -> set[Target]:
+    """`flux-cli::run` and the test files that name a `tests/run` program."""
+    relative = path[len("tests/run/"):]
+    if not relative.endswith(".rs") or relative.startswith("support/"):
+        # Programs include support files; their drivers are bundled by several tests.
+        return {t for t in available if t.package == "flux-cli"}
+    selected = {t for t in available if t.package == "flux-cli" and t.name == "run"}
+    stem = relative[:-len(".rs")]
+    for target in available:
+        if target.kind != "test":
+            continue
+        try:
+            text = Path(target.source).read_text()
+        except OSError:
+            continue
+        # Tests name a program by path, or by stem for `tests/run/{name}.rs`.
+        if path in text or f'"{stem}"' in text:
+            selected.add(target)
+    return selected
+
+
+def affected(metadata: dict, paths: list[str], available: list[Target],
+             untracked: set[str] = frozenset()) -> set[Target]:
+    """Production edits select the reverse dependency closure; unknown paths select all.
+    Documentation and untracked notes select nothing."""
     members = set(metadata["workspace_members"])
     packages = {p["name"]: p for p in metadata["packages"] if p["id"] in members}
     roots = {name: Path(p["manifest_path"]).parent.relative_to(ROOT).as_posix()
@@ -242,8 +268,15 @@ def affected(metadata: dict, paths: list[str], available: list[Target]) -> set[T
     selected: set[Target] = set()
     changed_packages: set[str] = set()
     for path in paths:
+        if path.endswith(".md") or path.startswith("docs/"):
+            continue
+        if path in untracked and not path.startswith(SOURCE_DIRECTORIES):
+            continue
+        if path.startswith("scripts/"):
+            selected.update(t for t in available if t == RUNNER)
+            continue
         if path.startswith("tests/run/"):
-            selected.update(t for t in available if t.package == "flux-cli")
+            selected.update(program_references(path, available))
             continue
         owner = next((name for name, root in roots.items() if path.startswith(root + "/")), None)
         if owner is None:
@@ -504,9 +537,9 @@ def main() -> int:
     selected = list(smokes) if args.fast else [t for t in available if in_group(t, args.group)]
     changed = []
     if args.changed is not None:
-        changed = changed_paths(args.changed)
+        changed, untracked = changed_paths(args.changed)
         print(f"Changed paths: {len(changed)}", flush=True)
-        selected = sorted(set(selected) & affected(metadata, changed, available))
+        selected = sorted(set(selected) & affected(metadata, changed, available, untracked))
     for field, actual in ((args.package, {t.package for t in available}), (args.target, {t.name for t in available})):
         if set(field) - actual:
             parser.error(f"unknown selection: {sorted(set(field) - actual)}")
