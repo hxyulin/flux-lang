@@ -3277,7 +3277,7 @@ impl Lower<'_, '_, '_> {
             return Some(self.b.ins().iconst(Type::I8, i64::from(equal)));
         }
         let a = self.scalar(l)?;
-        let mut b = self.scalar(r)?;
+        let b = self.scalar(r)?;
         if ty.as_float().is_some() {
             use keel_ir::FloatCC;
             return Some(match op {
@@ -3315,23 +3315,11 @@ impl Lower<'_, '_, '_> {
             BinOp::BitAnd => self.b.ins().and(a, b),
             BinOp::BitOr => self.b.ins().or(a, b),
             BinOp::BitXor => self.b.ins().xor(a, b),
-            BinOp::Shl | BinOp::Shr => {
-                // keel takes shift amounts modulo the width, which is
-                // Rust's masking; the amount needs the shifted value's type.
-                let amount_ty = self.body.operand_ty(r, self.sigs);
-                let (amount_bits, value_bits) = (bits(amount_ty), bits(ty));
-                let value_ty = keel_type(ty)?;
-                if amount_bits > value_bits {
-                    b = self.b.ins().trunc(value_ty, b);
-                } else if amount_bits < value_bits {
-                    b = self.b.ins().uext(value_ty, b);
-                }
-                match op {
-                    BinOp::Shl => self.b.ins().shl(a, b),
-                    _ if signed => self.b.ins().sshr(a, b),
-                    _ => self.b.ins().ushr(a, b),
-                }
-            }
+            // keel takes shift amounts of any integer type, modulo the
+            // shifted value's width, which is Rust's masking.
+            BinOp::Shl => self.b.ins().shl(a, b),
+            BinOp::Shr if signed => self.b.ins().sshr(a, b),
+            BinOp::Shr => self.b.ins().ushr(a, b),
             BinOp::Eq => self.b.ins().icmp(IntCC::Eq, a, b),
             BinOp::Ne => self.b.ins().icmp(IntCC::Ne, a, b),
             BinOp::Lt => self.b.ins().icmp(cmp(IntCC::Slt, IntCC::Ult), a, b),
