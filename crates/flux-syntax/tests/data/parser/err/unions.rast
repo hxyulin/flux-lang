@@ -134,7 +134,7 @@ SOURCE_FILE@0..186
   WHITESPACE@185..186 "\n"
 error 11..11: expected `{`
 error 11..11: expected an item
-error 14..14: expected BANG
+error 14..14: expected `!`
 error 14..14: expected an item
 error 15..15: expected an item
 error 27..27: expected `{`
@@ -143,5 +143,5 @@ error 48..48: expected `{`
 error 75..75: expected a type
 error 104..104: expected `:`
 error 137..137: expected `,`
-error 154..154: expected BANG
+error 154..154: expected `!`
 error 155..155: missing `struct` for struct definition

@@ -1,0 +1,82 @@
+SOURCE_FILE@0..53
+  ERROR@0..3
+    PATH@0..3
+      PATH_SEGMENT@0..3
+        NAME_REF@0..3
+          IDENT@0..3 "foo"
+  ERROR@3..4
+    SEMICOLON@3..4 ";"
+  WHITESPACE@4..5 "\n"
+  TYPE_ALIAS@5..20
+    TYPE_KW@5..9 "type"
+    WHITESPACE@9..10 " "
+    NAME@10..11
+      IDENT@10..11 "F"
+    WHITESPACE@11..12 " "
+    EQ@12..13 "="
+    WHITESPACE@13..14 " "
+    FN_PTR_TYPE@14..20
+      UNSAFE_KW@14..20 "unsafe"
+  WHITESPACE@20..21 " "
+  ERROR@21..23
+    PATH@21..23
+      PATH_SEGMENT@21..23
+        NAME_REF@21..23
+          IDENT@21..23 "u8"
+  ERROR@23..24
+    SEMICOLON@23..24 ";"
+  WHITESPACE@24..25 "\n"
+  FN@25..52
+    FN_KW@25..27 "fn"
+    WHITESPACE@27..28 " "
+    NAME@28..29
+      IDENT@28..29 "f"
+    PARAM_LIST@29..31
+      L_PAREN@29..30 "("
+      R_PAREN@30..31 ")"
+    WHITESPACE@31..32 " "
+    BLOCK_EXPR@32..52
+      L_CURLY@32..33 "{"
+      WHITESPACE@33..34 " "
+      LET_STMT@34..50
+        LET_KW@34..37 "let"
+        WHITESPACE@37..38 " "
+        IDENT_PAT@38..39
+          NAME@38..39
+            IDENT@38..39 "c"
+        WHITESPACE@39..40 " "
+        EQ@40..41 "="
+        WHITESPACE@41..42 " "
+        CLOSURE_EXPR@42..49
+          PARAM_LIST@42..44
+            PIPE@42..43 "|"
+            PARAM@43..44
+              IDENT_PAT@43..44
+                NAME@43..44
+                  IDENT@43..44 "a"
+          WHITESPACE@44..45 " "
+          BIN_EXPR@45..49
+            PATH_EXPR@45..46
+              PATH@45..46
+                PATH_SEGMENT@45..46
+                  NAME_REF@45..46
+                    IDENT@45..46 "b"
+            PIPE@46..47 "|"
+            WHITESPACE@47..48 " "
+            PATH_EXPR@48..49
+              PATH@48..49
+                PATH_SEGMENT@48..49
+                  NAME_REF@48..49
+                    IDENT@48..49 "a"
+        SEMICOLON@49..50 ";"
+      WHITESPACE@50..51 " "
+      R_CURLY@51..52 "}"
+  WHITESPACE@52..53 "\n"
+error 3..3: expected `!`
+error 3..3: expected an item
+error 20..20: expected `fn`
+error 20..20: expected `;`
+error 23..23: expected `!`
+error 23..23: expected an item
+error 44..44: expected `,`
+error 44..44: expected `|`

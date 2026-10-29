@@ -416,7 +416,10 @@ fn describe(kind: SyntaxKind) -> String {
         COLON2 => "::",
         FAT_ARROW => "=>",
         THIN_ARROW => "->",
+        BANG => "!",
+        PIPE => "|",
         IN_KW => "in",
+        FN_KW => "fn",
         _ => return format!("{kind:?}"),
     };
     format!("`{text}`")
