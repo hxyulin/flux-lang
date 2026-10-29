@@ -1,10 +1,19 @@
 # Fluxlib separate compilation
 
-Status: implementation in progress on `feat/flib`. The container, structural
-metadata codecs, loaded-state providers and separate codegen APIs have focused
-regressions. `flux build --crate-type lib` writes an artifact; `--metadata-only`
-omits native code. Artifact-backed source checking and package reuse still await
-the library-cache integration seam. The source-graph path remains the baseline.
+Status: implementation in progress on `feat/flib`. `flux build --crate-type lib`
+writes checked metadata and one native object. `--metadata-only` omits the object.
+`flux build --extern alias=path.flib` compiles against decoded dependencies without
+reading their sources. Package builds write libraries under `target/flux/deps`
+and reuse exact input snapshots. `flux package build --lib` writes the root
+library there too. Proc-macro exports retain checked host descriptors and use
+the existing expansion protocol after loading. Trusted built-in persistence is
+the remaining gate; the source-graph path remains the comparison baseline.
+
+The native package corpus exposed a pinned Keel unwind-linking bug when duplicate
+weak definitions require DWARF-mode compact unwind entries. Their compact records
+retain physical function addresses while FDE relocations select the coalesced
+symbol. Keel must discard or remap the losing records. Flux does not strip unwind
+information to conceal the mismatch.
 
 A `.flib` (Fluxlib) contains one checked Flux crate. Loading it supplies the
 semantic information needed by downstream crates without parsing, lowering or
@@ -81,9 +90,18 @@ An inline body does not permit dropping its out-of-line definition when an
 address or a call still requires it.
 
 Store proc-macro names, kinds and host artifact identities, not loaded process
-handles or executable bytes masquerading as target code. Initially reject crates
-requiring proc-macro export loading. Supporting these descriptors later must use
-the existing host expansion contract and validate the host artifact separately.
+handles or executable bytes masquerading as target code. Descriptors identify
+canonical host executable/dylib paths, their SHA-256 contents, platform,
+protocol and export selector. Loading checks the actual host export catalog;
+expansion rechecks its files. Each compilation graph pools restored host state,
+while invocation crates and independent graphs remain isolated. Attribute,
+derive and function exports keep their kind and helper declarations. The host
+implementation source is never read while restoring a descriptor.
+
+Host macros can observe undeclared state, so packages containing them decline
+freshness reuse. Crate identity includes their actual output tokens and hygiene,
+including body-position outputs, so a changed expansion invalidates downstream
+artifacts even when source and host executable contents stay the same.
 
 ## Identity and freshness
 
@@ -106,6 +124,10 @@ The implementation hashes the running compiler executable with SHA-256. This
 covers linked compiler/backend code and embedded libraries, including dirty
 builds; the executable's installation path is not hashed. If the executable
 cannot be read, artifact creation/loading fails rather than guessing identity.
+Staged-suite lookup will record device, inode, size, modification and change
+times (including nanoseconds) beside the hash. A complete stat match reuses the
+recorded identity; every mismatch takes the full content-hash path. A copied
+executable can therefore accept the same suite, while a dirty rebuild rejects it.
 A release string or Git HEAD alone is insufficient. The object capability also checks target triple,
 ABI/layout revision, panic strategy and codegen settings.
 
@@ -238,3 +260,25 @@ contain crate identity, definition paths and disambiguators, with included
 spans converted to file-relative positions. A collision between different
 canonical keys is an internal error. Independent signature forks have separate
 identity caches; clones inside one compilation share the cache.
+
+## Built-in suite plan
+
+After the user/provider/package gates pass, an explicit `flux build-builtins`
+staging command will write `flux-builtins.flib` beside the built compiler under
+`target/<profile>`. There is no `build.rs` and no first-run creation. The staged
+suite will contain the compiler-owned `core`, `alloc` and `std` prefix in its
+original item/file order, including diagnostic paths, include coordinate ranges,
+roles and privileged lookup tables. User artifacts cannot enable this trusted
+loader. The source path and suite path use the same suite/core-role identity.
+
+CLI startup will select a matching suite or source mode for the whole invocation.
+Missing and build-mismatched suites use source mode; a corrupt matching suite
+will report its path and request `flux build-builtins` again. Staging uses an
+atomic replacement in the same directory. A source override keeps native source
+coverage in the runner. In-process tests retain the per-process library cache.
+
+Measure native object size, link time and the run corpus with a complete suite
+object versus reached-function emission from suite MIR. Record the object
+optimization tier explicitly, and do not change debug/release library semantics
+by accident. Preserve shared generic definitions while the Keel unwind fix is
+pending.
