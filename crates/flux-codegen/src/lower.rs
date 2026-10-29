@@ -2127,7 +2127,8 @@ impl Lower<'_, '_, '_> {
     }
 
     /// Stores a direct tag, `discriminant` (of the enum's discriminant
-    /// type) truncated to its width.
+    /// type) truncated or extended to its width. A tag widened to a
+    /// field's alignment is wider than the discriminant.
     fn store_tag_of(&mut self, address: Value, ty: Ty, value: Value) {
         let layout = self.ctx.layouts.of(ty);
         let Shape::Enum { tag: Some(tag), .. } = layout.shape else {
@@ -2137,8 +2138,12 @@ impl Lower<'_, '_, '_> {
         let int = tag_int(tag.bytes);
         let value = if int.bits() < from.bits() {
             self.b.ins().trunc(int_type(int), value)
-        } else {
+        } else if int.bits() == from.bits() {
             value
+        } else if from.is_signed() {
+            self.b.ins().sext(int_type(int), value)
+        } else {
+            self.b.ins().uext(int_type(int), value)
         };
         let at = self.offset(address, tag.offset);
         self.b.ins().store_with_flags(
