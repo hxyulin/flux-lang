@@ -294,4 +294,5 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>
     std::fs::rename(&guard.0, path)
 }
 
+pub mod executable;
 pub mod freshness;

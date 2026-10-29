@@ -2,26 +2,14 @@ use flux_cli::flib::semantic::{Dependency, crate_hash};
 use flux_hir::flib::CrateIndices;
 use flux_intern::Symbol;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-struct Scratch(PathBuf);
-impl Scratch {
-    fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let directory = std::env::temp_dir().join(format!(
-            "flux-flib-identity-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        Self(directory)
-    }
-}
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
+#[path = "../../../tests/support/scratch.rs"]
+mod scratch;
+use scratch::Scratch;
+
+fn scratch() -> Scratch {
+    Scratch::new(std::env::temp_dir().join("flux-flib-tests"))
 }
 
 fn hash_inputs(path: &Path, value: &str, configuration: &[u8]) -> [u8; 32] {
@@ -39,9 +27,9 @@ fn hash_inputs(path: &Path, value: &str, configuration: &[u8]) -> [u8; 32] {
 
 #[test]
 fn crate_identity_includes_observed_file_and_environment_contents() {
-    let scratch = Scratch::new();
-    let source = scratch.0.join("lib.rs");
-    let data = scratch.0.join("data.txt");
+    let scratch = scratch();
+    let source = scratch.path().join("lib.rs");
+    let data = scratch.path().join("data.txt");
     std::fs::write(&source,"pub const TEXT: &str = include_str!(\"data.txt\"); pub const BYTES: &[u8] = include_bytes!(\"data.txt\"); pub const ENV: Option<&str> = option_env!(\"VALUE\");").unwrap();
     std::fs::write(&data, "alpha").unwrap();
     let original = hash_inputs(&source, "first", b"debug");
@@ -96,4 +84,21 @@ fn crate_identity_uses_dependency_aliases_and_hashes_instead_of_arena_offsets() 
     assert_eq!(original, graph_hash(true, "dep", [1; 32]));
     assert_ne!(original, graph_hash(false, "renamed", [1; 32]));
     assert_ne!(original, graph_hash(false, "dep", [2; 32]));
+}
+
+#[test]
+fn built_executable_identity_hashes_all_bytes() {
+    let path = std::path::Path::new(env!("CARGO_BIN_EXE_flux"));
+    let started = std::time::Instant::now();
+    let mut bytes = std::fs::read(path).unwrap();
+    let expected = flux_hir::flib::digest(&bytes);
+    eprintln!(
+        "compiler identity: {} bytes read and SHA-256 in {:?}",
+        bytes.len(),
+        started.elapsed()
+    );
+    // A dirty compiler rebuild changes executable content even at the same git commit.
+    let last = bytes.last_mut().unwrap();
+    *last ^= 1;
+    assert_ne!(expected, flux_hir::flib::digest(&bytes));
 }
