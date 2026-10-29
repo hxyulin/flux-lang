@@ -238,11 +238,12 @@ fn member(out: &mut Vec<u8>, name: &str, bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
+static COMPILER_ID: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
+
 /// Identifies this compiler executable, including its linked backend and embedded libraries.
 /// An unreadable executable disables artifact creation/loading rather than guessing identity.
 pub fn compiler_identity() -> Result<[u8; 32], String> {
-    static ID: std::sync::OnceLock<[u8; 32]> = std::sync::OnceLock::new();
-    if let Some(id) = ID.get() {
+    if let Some(id) = COMPILER_ID.get() {
         return Ok(*id);
     }
     let path =
@@ -250,7 +251,14 @@ pub fn compiler_identity() -> Result<[u8; 32], String> {
     let bytes =
         std::fs::read(&path).map_err(|e| format!("cannot fingerprint {}: {e}", path.display()))?;
     let id = flux_hir::flib::digest(&bytes);
-    Ok(*ID.get_or_init(|| id))
+    Ok(*COMPILER_ID.get_or_init(|| id))
+}
+
+pub(crate) fn checked_compiler_identity(hash: [u8; 32]) -> Result<(), String> {
+    if *COMPILER_ID.get_or_init(|| hash) != hash {
+        return Err("compiler identity changed within one process".into());
+    }
+    Ok(())
 }
 
 pub mod semantic;

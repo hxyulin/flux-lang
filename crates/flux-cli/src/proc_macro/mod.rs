@@ -93,7 +93,7 @@ pub fn exports(
             crates: Default::default(),
         }),
     });
-    let mut db = flux_hir::SourceDb::new();
+    let mut db = flux_hir::SourceDb::empty();
     let root = db.load(source)?;
     db.set_crate_cfg(root, cfg)?;
     let helpers = flux_hir::proc_macro_declarations(db.file(root))?;

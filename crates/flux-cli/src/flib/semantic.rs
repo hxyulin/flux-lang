@@ -517,10 +517,20 @@ pub struct DependencyState {
 impl DependencyState {
     /// Starts with the compiler-owned embedded libraries and their signature tables.
     pub fn new() -> Result<Self, String> {
-        let db = SourceDb::new();
-        let mut items = flux_hir::Core::get().items.clone();
+        let (db, mut items, sigs) = if let Some(suite) = crate::builtins::active() {
+            (
+                suite.db.fork(),
+                suite.items.clone(),
+                suite.sigs.fork_for_extension(),
+            )
+        } else {
+            (
+                SourceDb::new(),
+                flux_hir::Core::get().items.clone(),
+                flux_ty::LibraryTypes::get().sigs.fork_for_extension(),
+            )
+        };
         items.core = items.counts();
-        let sigs = flux_ty::LibraryTypes::get().sigs.fork_for_extension();
         let compiler = compiler_identity()?;
         let dependencies = items
             .crates

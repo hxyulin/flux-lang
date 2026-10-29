@@ -150,9 +150,10 @@ fn compile_inner(
         options,
         sources,
     } = request;
+    let suite = flux_cli::builtins::active();
     // `core`'s files are parsed with the database.
     let (mut db, root) = timings.time("database + root load/parse", || {
-        let mut db = SourceDb::new();
+        let mut db = suite.map_or_else(SourceDb::new, |s| s.db.fork());
         let edition = sources
             .last()
             .map_or(flux_syntax::Edition::E2024, |s| s.edition);
@@ -193,14 +194,39 @@ fn compile_inner(
         Ok::<_, String>(graph)
     })?;
     let hir = timings.time("hir (includes module load/parse)", || {
-        if graph.is_empty() {
+        if let Some(suite) = suite {
+            if graph.is_empty() {
+                flux_hir::lower_source_on(
+                    &mut db,
+                    suite.items.clone(),
+                    root,
+                    Symbol::intern(crate_name),
+                    Vec::new(),
+                )
+            } else {
+                flux_hir::lower_sources_on(&mut db, suite.items.clone(), &graph)
+            }
+        } else if graph.is_empty() {
             flux_hir::lower(&mut db, root, Symbol::intern(crate_name))
         } else {
             flux_hir::lower_sources(&mut db, &graph)
         }
     });
+    let providers = suite.map(|s| s.providers()).transpose()?;
+    let roots = providers
+        .as_ref()
+        .map(|(loaded, imported)| imported.required_functions(&hir.items, loaded.signatures()));
     let typed = timings.time("types (includes const evaluation)", || {
-        flux_mir::check_file(&hir)
+        if let Some((loaded, imported)) = &providers {
+            flux_mir::check_file_from(
+                &hir,
+                loaded,
+                imported,
+                &roots.as_ref().expect("provider roots").functions,
+            )
+        } else {
+            flux_mir::check_file(&hir)
+        }
     });
     let mut errors = db.syntax_errors();
     errors.extend(flux_cli::identifiers::diagnostics(&db));
@@ -211,17 +237,55 @@ fn compile_inner(
     }
     if !errors.is_empty() {
         let more = timings.time("mir checks on clean bodies", || {
-            flux_mir::check_clean_bodies(&hir, &typed, &errors)
+            if let Some((_, imported)) = &providers {
+                flux_mir::check_clean_bodies_from(&hir, &typed, &errors, imported)
+            } else {
+                flux_mir::check_clean_bodies(&hir, &typed, &errors)
+            }
         });
         errors.extend(more);
     } else {
-        let mir = timings.time("mir build + checks", || flux_mir::build_file(&hir, &typed));
+        let mir = timings.time("mir build + checks", || {
+            if let Some((_, imported)) = &providers {
+                flux_mir::build_file_from(
+                    &hir,
+                    &typed,
+                    imported,
+                    &roots.as_ref().expect("provider roots").functions,
+                )
+            } else {
+                flux_mir::build_file(&hir, &typed)
+            }
+        });
         errors.extend(mir.diagnostics.iter().cloned());
         if errors.is_empty() {
             let target = Target::host()
                 .ok_or("flux can only compile for arm64 macOS and x86-64 Linux hosts")?;
+            let builtin_object = suite.is_some_and(|s| s.use_object(options.optimize));
+            let hashes = if builtin_object {
+                flux_cli::builtins::graph_hashes(&hir.items)?
+            } else {
+                Vec::new()
+            };
             let mut module = match timings.time("mono + keel lowering", || {
-                flux_codegen::lower_module(&hir, &typed, &mir)
+                if builtin_object {
+                    let roots = roots.as_ref().expect("native suite has providers");
+                    flux_codegen::lower_crate(
+                        &hir,
+                        &typed,
+                        &mir,
+                        flux_codegen::Compilation {
+                            kind: flux_codegen::OutputKind::Executable,
+                            crate_hashes: &hashes,
+                            imported: &[],
+                            required_functions: &roots.functions,
+                            required_instances: &roots.instances,
+                            builtin_object: true,
+                        },
+                    )
+                } else {
+                    flux_codegen::lower_module(&hir, &typed, &mir)
+                }
             }) {
                 Ok(module) => module,
                 Err(found) => {
@@ -255,6 +319,29 @@ fn compile_inner(
                     .map_err(|error| error.to_string())?
             };
             let warnings = timings.time("link", || {
+                if builtin_object {
+                    let builtin = suite
+                        .expect("native suite selected")
+                        .object
+                        .as_deref()
+                        .expect("native object exists");
+                    return flux_codegen::link_objects(
+                        &[
+                            flux_codegen::ObjectInput {
+                                name: crate_name,
+                                bytes: &object,
+                            },
+                            flux_codegen::ObjectInput {
+                                name: "flux-builtins",
+                                bytes: builtin,
+                            },
+                        ],
+                        target,
+                        output,
+                        &hir.items.native_libraries,
+                    )
+                    .map_err(|error| error.to_string());
+                }
                 flux_codegen::link_executable_with_libraries(
                     &object,
                     target,

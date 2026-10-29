@@ -70,7 +70,12 @@ pub(crate) fn compile(
         imports.push((flux_intern::Symbol::intern(alias), dependency.krate));
         aliases.push((alias.clone(), manifest.hash));
     }
-    let builtin_count = flux_hir::Core::get().items.crates.len();
+    let builtin_count = state
+        .items
+        .crates
+        .iter()
+        .filter(|c| c.root.into_raw() < state.items.core.modules)
+        .count();
     let loaded_hashes: Vec<_> = state
         .dependencies
         .iter()
@@ -80,11 +85,28 @@ pub(crate) fn compile(
     if capability == Capability::Object && state.objects.len() != loaded_hashes.len() {
         return Err("a dependency Fluxlib has no native object".into());
     }
-    let loaded = flux_ty::flib::LoadedTypes::new(&state.items, state.sigs, &loaded_hashes)
-        .map_err(|e| e.to_string())?;
-    let imported = flux_mir::imported::ImportedMir::new(state.mir, state.items.counts())
-        .and_then(|provider| provider.with_required_instances(state.required_instances))
-        .map_err(|e| e.to_string())?;
+    let all_hashes: Vec<_> = state
+        .dependencies
+        .iter()
+        .map(|d| (d.krate, d.hash))
+        .collect();
+    let loaded = if state.items.has_artifact_builtins() {
+        flux_ty::flib::LoadedTypes::with_builtin_prefix(&state.items, state.sigs, &all_hashes)
+    } else {
+        flux_ty::flib::LoadedTypes::new(&state.items, state.sigs, &loaded_hashes)
+    }
+    .map_err(|e| e.to_string())?;
+    let imported = if let Some(suite) = flux_cli::builtins::active() {
+        flux_mir::imported::ImportedMir::with_builtin_prefix(
+            &state.items,
+            state.mir,
+            suite.mir.clone(),
+        )
+    } else {
+        flux_mir::imported::ImportedMir::new(state.mir, state.items.counts())
+    }
+    .and_then(|provider| provider.with_required_instances(state.required_instances))
+    .map_err(|e| e.to_string())?;
     let root = if let Some(exports) = &input.host_macros {
         state
             .db
@@ -167,6 +189,8 @@ pub(crate) fn compile(
                         imported: &imported_crates,
                         required_functions: &roots.functions,
                         required_instances: &roots.instances,
+                        builtin_object: flux_cli::builtins::active()
+                            .is_some_and(|s| s.use_object(options.optimize)),
                     },
                 )
             })
@@ -207,6 +231,16 @@ pub(crate) fn compile(
             name: &input.name,
             bytes: &object,
         }];
+        if let Some(suite) = flux_cli::builtins::active().filter(|s| s.use_object(options.optimize))
+        {
+            inputs.push(flux_codegen::ObjectInput {
+                name: "flux-builtins",
+                bytes: suite
+                    .object
+                    .as_deref()
+                    .expect("selected suite object exists"),
+            });
+        }
         let names: Vec<_> = state
             .objects
             .iter()

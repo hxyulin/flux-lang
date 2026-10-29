@@ -21,6 +21,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Stage checked built-in types and MIR beside the compiler executable.
+    BuildBuiltins {
+        /// Include every non-generic built-in definition in one native object.
+        #[arg(long)]
+        native_object: bool,
+        #[arg(short = 'O')]
+        optimize: bool,
+    },
     /// Prepare Cargo host inputs or build target sources with Flux.
     Cargo {
         #[command(subcommand)]
@@ -95,6 +103,17 @@ struct BuildOptions {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    if !matches!(
+        cli.command,
+        Command::BuildBuiltins { .. }
+            | Command::Lex { .. }
+            | Command::Parse { .. }
+            | Command::Check { .. }
+    ) && let Err(message) = flux_cli::builtins::initialize()
+    {
+        eprintln!("error: {message}");
+        return ExitCode::from(2);
+    }
     if let Command::Cargo { command } = &cli.command {
         return match cargo::execute(command) {
             Ok(code) => code,
@@ -140,6 +159,14 @@ fn main() -> ExitCode {
 /// Runs a command. `Ok(false)` means the input had errors.
 fn run(command: Command) -> Result<bool, String> {
     match command {
+        Command::BuildBuiltins {
+            native_object,
+            optimize,
+        } => {
+            let path = flux_cli::builtins::stage(native_object, optimize)?;
+            println!("{}", path.display());
+            Ok(true)
+        }
         Command::Lex { file } => {
             let text = read(&file)?;
             let lexed = LexedStr::new(&text);
@@ -176,17 +203,45 @@ fn run(command: Command) -> Result<bool, String> {
         }
         Command::Mir { file } => {
             let (db, hir) = load(&file)?;
-            let typed = flux_mir::check_file(&hir);
+            let providers = flux_cli::builtins::active()
+                .map(|s| s.providers())
+                .transpose()?;
+            let roots = providers.as_ref().map(|(loaded, imported)| {
+                imported.required_functions(&hir.items, loaded.signatures())
+            });
+            let typed = if let Some((loaded, imported)) = &providers {
+                flux_mir::check_file_from(
+                    &hir,
+                    loaded,
+                    imported,
+                    &roots.as_ref().expect("provider roots").functions,
+                )
+            } else {
+                flux_mir::check_file(&hir)
+            };
             let mut errors = db.syntax_errors();
             errors.extend(flux_cli::identifiers::diagnostics(&db));
             errors.extend(hir.diagnostics.iter().cloned());
             errors.extend(typed.diagnostics.iter().cloned());
             if !errors.is_empty() {
-                let more = flux_mir::check_clean_bodies(&hir, &typed, &errors);
+                let more = if let Some((_, imported)) = &providers {
+                    flux_mir::check_clean_bodies_from(&hir, &typed, &errors, imported)
+                } else {
+                    flux_mir::check_clean_bodies(&hir, &typed, &errors)
+                };
                 errors.extend(more);
                 return Ok(report_all(&db, &mut errors));
             }
-            let mir = flux_mir::build_file(&hir, &typed);
+            let mir = if let Some((_, imported)) = &providers {
+                flux_mir::build_file_from(
+                    &hir,
+                    &typed,
+                    imported,
+                    &roots.as_ref().expect("provider roots").functions,
+                )
+            } else {
+                flux_mir::build_file(&hir, &typed)
+            };
             print!("{}", mir.debug_dump(&hir));
             let mut errors = mir.diagnostics.clone();
             Ok(report_all(&db, &mut errors))
@@ -249,10 +304,15 @@ fn run(command: Command) -> Result<bool, String> {
 /// Reads the program whose root is `file`, with its modules' files, and
 /// lowers it.
 fn load(file: &std::path::Path) -> Result<(SourceDb, Hir), String> {
-    let mut db = SourceDb::new();
+    let suite = flux_cli::builtins::active();
+    let mut db = suite.map_or_else(SourceDb::new, |s| s.db.fork());
     let root = db.load(file)?;
     let name = flux_intern::Symbol::intern(&build::crate_name(file));
-    let hir = flux_hir::lower(&mut db, root, name);
+    let hir = if let Some(suite) = suite {
+        flux_hir::lower_source_on(&mut db, suite.items.clone(), root, name, Vec::new())
+    } else {
+        flux_hir::lower(&mut db, root, name)
+    };
     Ok((db, hir))
 }
 

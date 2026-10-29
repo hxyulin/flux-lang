@@ -73,6 +73,7 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
                 imported: &[],
                 required_functions: &[],
                 required_instances: &[],
+                builtin_object: false,
             },
         )
         .unwrap();
@@ -151,6 +152,7 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
                 imported: &[a_id],
                 required_functions: &required_functions.functions,
                 required_instances: &required_functions.instances,
+                builtin_object: false,
             },
         )
         .unwrap();

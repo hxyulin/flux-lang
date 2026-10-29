@@ -2,4 +2,5 @@
 pub mod identifiers;
 pub mod proc_macro;
 
+pub mod builtins;
 pub mod flib;
