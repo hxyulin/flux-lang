@@ -13,6 +13,11 @@ use flux_hir::{CrateCfg, SourceCrate, SourceDb};
 use flux_intern::Symbol;
 use flux_syntax::Edition;
 
+// The reference and flux-built consumers took 6-21 s on a quiet machine.
+// At a load average of 60 on 18 cores the reference took 27 s and the
+// unoptimized consumer passed 60 s; allow that contention.
+const NATIVE_RUN_SECONDS: u64 = 300;
+
 mod cases {
     include!("fixtures/ty_selfhost/cases.rs.txt");
 }
@@ -50,7 +55,7 @@ fn unchanged_full_ty_matches_rustc() {
     worker
         .args(["--exact", "ty_selfhost_worker", "--ignored", "--nocapture"])
         .env("FLUX_TY_SELFHOST_ROOT", &root);
-    let output = bounded(&mut worker, &root, "audit", 300);
+    let output = bounded(&mut worker, &root, "audit", 900);
     // Also compare after a worker panic, abort, or timeout. A killed worker
     // cannot run its own final integrity check.
     let inventory_path = root.join("source-inventory.json");
@@ -298,7 +303,7 @@ fn ty_selfhost_worker() {
             &mut Command::new(&libraries[11]),
             &root,
             "run-reference",
-            60,
+            NATIVE_RUN_SECONDS,
         );
         success(&expected, &root, "run-reference");
         let mut db = SourceDb::new();
@@ -400,7 +405,7 @@ fn ty_selfhost_worker() {
                 &mut Command::new(executable),
                 &root,
                 &format!("run-flux-{label}"),
-                60,
+                NATIVE_RUN_SECONDS,
             );
             assert_eq!(actual.status.code(), expected.status.code());
             assert_eq!(actual.stdout, expected.stdout);

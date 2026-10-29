@@ -15,9 +15,9 @@ use flux_syntax::Edition;
 
 // The unoptimized consumer rechecks the entire embedded library for each
 // input. The flux-built executables took 75-87 s beside other tests and over
-// 120 s on a loaded machine; allow that contention without changing the
-// compiler's evaluation or recursion limits.
-const NATIVE_RUN_SECONDS: u64 = 300;
+// 120 s on a loaded machine, where the 31 s reference took 87 s. Allow that
+// contention without changing the compiler's evaluation or recursion limits.
+const NATIVE_RUN_SECONDS: u64 = 600;
 
 mod cases {
     include!("fixtures/mir_selfhost/cases.rs.txt");
@@ -60,7 +60,7 @@ fn unchanged_full_mir_matches_rustc() {
     worker
         .args(["--exact", "unchanged_full_mir_matches_rustc", "--nocapture"])
         .env("FLUX_MIR_SELFHOST_ROOT", &root);
-    let output = bounded(&mut worker, &root, "audit", 600);
+    let output = bounded(&mut worker, &root, "audit", 1200);
     // Also compare after a worker panic, abort, or timeout. A killed worker
     // cannot run its own final integrity check.
     let inventory_path = root.join("source-inventory.json");
