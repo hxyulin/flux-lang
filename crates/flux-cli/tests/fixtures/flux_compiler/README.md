@@ -20,7 +20,7 @@ with the local Cargo configuration removed afterward.
 The outer audit is bounded to 20 minutes and its Flux worker to 18 minutes,
 including frontend checks, both object builds and native compiler smoke tests.
 
-The current graph uses git-pinned Keel `d17902eb`, without local path patches.
+The current graph uses git-pinned Keel `e4c72445`, without local path patches.
 It contains 87 packages after adding the backend's bbtree/Verus closure and
 splitting `flux-ty-ir` and `flux-solve` out of `flux-ty`, plus the CLI-only
 `flux-proc-macro` host token API. HIR and type-checker source graphs keep

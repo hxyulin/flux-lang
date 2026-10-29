@@ -7,7 +7,7 @@ AArch64 macOS. The test runs one worker with a 300-second deadline and leaves ev
 The source graph comes from workspace `cargo metadata --offline --locked`.
 The harness checks package IDs, every normal dependency edge, editions and
 features against the reviewed closure below. Both Keel packages must have
-source revision `d17902eb0b45730e02cc41f653f0b5f49b2043dd`.
+source revision `e4c72445116afcc826c1020e28befca3a5fc6645`.
 A changed closure fails the audit and needs review.
 
 | Index | Package | Edition | Features | Normal dependency indices |

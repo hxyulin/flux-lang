@@ -575,7 +575,7 @@
     {
       "name": "keel-asm-ir",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -709,7 +709,7 @@
     {
       "name": "keel-asm",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -739,7 +739,7 @@
     {
       "name": "keel-ir",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -762,7 +762,7 @@
     {
       "name": "keel-codegen",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -784,7 +784,7 @@
     {
       "name": "keel-frontend",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -1015,7 +1015,7 @@
     {
       "name": "bbtree",
       "version": "0.1.5",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [
         "cache-line-alignment"
@@ -1287,7 +1287,7 @@
     {
       "name": "keel-link",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [],
       "proc_macro": false,
@@ -1317,7 +1317,7 @@
     {
       "name": "keel-opt",
       "version": "0.1.0",
-      "source": "git+https://github.com/hxyulin/keel?rev=d17902eb0b45730e02cc41f653f0b5f49b2043dd#d17902eb0b45730e02cc41f653f0b5f49b2043dd",
+      "source": "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645",
       "edition": "2024",
       "features": [],
       "proc_macro": false,

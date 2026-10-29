@@ -6,7 +6,7 @@ compiles and executes a smoke program in both optimization modes. It has not yet
 rebuilt the complete compiler graph. Cargo and rustc still supply host build
 scripts and procedural macros.
 
-The current git pin is Keel `d17902eb0b45730e02cc41f653f0b5f49b2043dd`, which
+The current git pin is Keel `e4c72445116afcc826c1020e28befca3a5fc6645`, which
 includes the vector-assembly fixes and needs no local backend override for host
 builds. The stage-1 proof below records the earlier locally patched `f37f0bd`
 snapshot. The new complete backend graph adds bbtree and Verus; its first audit
