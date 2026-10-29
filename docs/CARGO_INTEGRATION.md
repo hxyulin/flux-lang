@@ -490,13 +490,12 @@ are not an implementation. Keep rustc artifacts out of the Flux cache.
 
 ### Later gates
 
-Choose **one** dependency artifact strategy for A: serialized Flux
-interfaces plus generic bodies for separate compilation, or a documented
-Flux source-descriptor artifact that lets later jobs reload the graph.
-The latter can cooperate with Cargo scheduling but is whole-program
-compilation with private artifacts, not rustc `.rlib` interoperability.
-It also requires sound dep-info/invalidation and no fake check results.
-C's source graph is reusable here.
+The chosen dependency artifact strategy is [Fluxlib (`.flib`)](FLIB.md):
+serialized Flux interfaces and generic MIR, followed by one Keel object per
+crate for separate compilation. The format is private to Flux and provides
+no rustc artifact interoperability. The design specifies identity checks,
+ID remapping, symbols, linkage and staged acceptance gates. C's source graph
+remains the comparison baseline until artifact loading passes those gates.
 
 Add features/configuration and per-unit identities before broadening
 dependency support; metadata alone is insufficient for unrestricted Cargo
