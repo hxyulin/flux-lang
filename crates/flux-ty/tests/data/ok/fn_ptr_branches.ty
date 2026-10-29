@@ -1,0 +1,14 @@
+fn safe() -> ()
+fn not_safe() -> ()
+fn branches(bool) -> ()
+    c@0: bool
+    a@1: fn()
+    b@2: unsafe fn()
+    p@3: unsafe fn()
+    q@4: unsafe fn()
+fn arms(i32) -> ()
+    n@0: i32
+    a@1: fn()
+    b@2: unsafe fn()
+    p@3: unsafe fn()
+fn main() -> ()

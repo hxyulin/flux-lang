@@ -691,6 +691,16 @@ impl Ctx<'_> {
                     && (ptr.is_unsafe || !def.sig.is_unsafe)
                     && self.can_unify(reified, expected);
             }
+            // `fn()` to `unsafe fn()`, as `coerce` makes it.
+            (TyKind::FnPtr(from), TyKind::FnPtr(to)) => {
+                let offered = Ty::new(TyKind::FnPtr(crate::FnSigTy {
+                    is_unsafe: to.is_unsafe,
+                    ..from
+                }));
+                return from.is_c == to.is_c
+                    && (to.is_unsafe || !from.is_unsafe)
+                    && self.can_unify(offered, expected);
+            }
             (TyKind::Ref(from, pointee), TyKind::RawPtr(to, expected_pointee)) => {
                 return (from == to || from == Mutability::Mut)
                     && self.can_unify(pointee, expected_pointee);
