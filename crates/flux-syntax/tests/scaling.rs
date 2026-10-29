@@ -55,3 +55,21 @@ fn long_expressions() {
     };
     assert_scales("terms in an expression", 2000, make, |text| parse(text));
 }
+
+#[test]
+fn parents_of_statements() {
+    let make = |n| {
+        let body = repeat(n, |_| "    assert_eq!(x, 1);".to_owned());
+        format!("fn f(x: i32) {{\n{body}}}\n")
+    };
+    assert_scales("parents of statements", 2000, make, |text| {
+        let parse = flux_syntax::parse_source_file(text);
+        let root = parse.tree().root();
+        for node in root.descendants() {
+            if let Some(parent) = node.parent() {
+                let (p, c) = (parent.text_range(), node.text_range());
+                assert!(p.start() <= c.start() && c.end() <= p.end());
+            }
+        }
+    });
+}

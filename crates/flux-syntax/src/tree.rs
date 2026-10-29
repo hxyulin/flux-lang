@@ -122,7 +122,27 @@ pub struct SyntaxTree {
     /// For a macro expansion, where its tokens and nodes came from.
     spans: Option<Box<Spans>>,
     cfg: Option<Arc<CfgOptions>>,
+    parents: Parents,
 }
+
+/// Each node's parent id, built on the first [`SyntaxNode::parent`] call.
+/// A cache only: it never affects equality, and a clone starts empty.
+#[derive(Default)]
+struct Parents(std::sync::OnceLock<Box<[u32]>>);
+
+impl Clone for Parents {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Parents {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Parents {}
 
 /// Where a token of a macro expansion came from, as the expander says:
 /// its range in the file the expansion is part of, a *group* (tokens of
@@ -182,6 +202,7 @@ impl SyntaxTree {
             nodes,
             spans: None,
             cfg: None,
+            parents: Parents::default(),
         }
     }
 
@@ -553,25 +574,27 @@ impl<'t> SyntaxNode<'t> {
         self.children().next()
     }
 
-    /// The node directly containing this one. Parents are not stored, so
-    /// this walks down from the root: its cost grows with depth and with
-    /// the number of siblings on the way.
+    /// The node directly containing this one. The first call builds a
+    /// parent table for the whole tree.
     pub fn parent(self) -> Option<SyntaxNode<'t>> {
-        let target = self.id.0;
-        let mut node = self.tree.root();
-        if target == 0 {
-            return None;
-        }
-        loop {
-            let child = node
-                .children()
-                .find(|c| c.id.0 <= target && target <= c.id.0 + c.data().descendants)
-                .expect("a node lies inside one of the root's children");
-            if child.id.0 == target {
-                return Some(node);
+        let parents = self.tree.parents.0.get_or_init(|| {
+            let nodes = &self.tree.nodes;
+            let mut parents = vec![u32::MAX; nodes.len()].into_boxed_slice();
+            for (id, node) in nodes.iter().enumerate() {
+                let end = id + node.descendants as usize;
+                let mut child = id + 1;
+                while child <= end {
+                    parents[child] = id as u32;
+                    child += nodes[child].descendants as usize + 1;
+                }
             }
-            node = child;
-        }
+            parents
+        });
+        let parent = parents[self.id.0 as usize];
+        (parent != u32::MAX).then_some(SyntaxNode {
+            id: NodeId(parent),
+            ..self
+        })
     }
 
     fn data(self) -> &'t NodeData {
