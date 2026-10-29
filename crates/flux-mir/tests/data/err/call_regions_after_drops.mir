@@ -1,0 +1,133 @@
+fn id<T>(_1: T) -> T {
+    let mut _0: T;
+
+    bb0: {
+        _0 = move _1;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let mut _1: Vec<String>; // v
+    let _2: ();
+    let _3: &mut Vec<String>;
+    let _4: String;
+    let _5: String; // s
+    let _6: &str; // r
+    let _7: &str;
+    let _8: &String;
+    let _9: &String;
+    let _10: &str;
+    let _11: ();
+    let _12: ();
+    let _13: Arguments;
+    let _14: &[&str];
+    let _15: &[&str; 3];
+    let _16: &[Argument; 2];
+    let _17: [Argument; 2];
+    let _18: (&usize, &&str);
+    let _19: &usize;
+    let _20: usize;
+    let _21: &Vec<String>;
+    let _22: &&str;
+    let _23: (&usize, &&str); // args
+    let _24: Argument;
+    let _25: &&str;
+    let _26: Argument;
+    let _27: &usize;
+
+    bb0: {
+        _1 = new::<String>() -> bb1;
+    }
+
+    bb1: {
+        _3 = &two_phase _1;
+        _4 = new() -> bb2;
+    }
+
+    bb2: {
+        _2 = push::<String>(move _3, move _4) -> bb3;
+    }
+
+    bb3: {
+        _5 = from::<String, &str>(const &promoted[0]) -> bb4;
+    }
+
+    bb4: {
+        _8 = &_5;
+        _9 = &(*_8);
+        _10 = deref::<String>(move _9) -> bb5;
+    }
+
+    bb5: {
+        _7 = &(*_10);
+        _6 = id::<&str>(copy _7) -> bb6;
+    }
+
+    bb6: {
+        _15 = const &promoted[1];
+        _14 = copy _15 as &[&str] (unsize);
+        _21 = &_1;
+        _20 = len::<String>(copy _21) -> bb7;
+    }
+
+    bb7: {
+        _19 = &_20;
+        _22 = &_6;
+        _18 = (copy _19, copy _22);
+        _23 = copy _18;
+        goto -> bb10;
+    }
+
+    bb8: {
+        _16 = &_17;
+        _13 = new_v1::<2>(copy _14, copy _16) -> bb13;
+    }
+
+    bb9: {
+        unreachable;
+    }
+
+    bb10: {
+        _25 = copy _23.1;
+        _24 = new_display::<&str>(copy _25) -> bb11;
+    }
+
+    bb11: {
+        _27 = copy _23.0;
+        _26 = new_display::<usize>(copy _27) -> bb12;
+    }
+
+    bb12: {
+        _17 = [copy _24, copy _26];
+        StorageDead(_23);
+        goto -> bb8;
+    }
+
+    bb13: {
+        _12 = _print(copy _13) -> bb14;
+    }
+
+    bb14: {
+        StorageDead(_17);
+        StorageDead(_18);
+        StorageDead(_20);
+        _11 = const ();
+        _0 = const ();
+        StorageDead(_6);
+        drop(_5) -> bb15;
+    }
+
+    bb15: {
+        StorageDead(_5);
+        drop(_1) -> bb16;
+    }
+
+    bb16: {
+        StorageDead(_1);
+        return;
+    }
+}
+
+error 155..157: `s` does not live long enough
