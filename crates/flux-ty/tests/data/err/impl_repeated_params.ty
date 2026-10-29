@@ -1,0 +1,12 @@
+struct Pair<A, B> { 0: A, 1: B }
+fn second(&Pair<T, T>) -> T
+    self@0: &Pair<T, T>
+fn method() -> ()
+    p@0: Pair<i32, u8>
+    x@1: i32
+fn nested(Pair<Option<i32>, Option<u8>>) -> ()
+    p@0: Pair<Option<i32>, Option<u8>>
+    y@1: {error}
+fn main() -> ()
+error 312..318: no method named `second` found for struct `Pair<i32, u8>` in the current scope
+error 385..391: no method named `second` found for struct `Pair<Option<i32>, Option<u8>>` in the current scope

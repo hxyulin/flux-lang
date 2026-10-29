@@ -1948,25 +1948,46 @@ impl Ctx<'_> {
     }
 
     /// Whether an `impl` block for `pattern`, in terms of its parameters,
-    /// may be for `ty`: whether they unify, with the parameters and
-    /// variables standing for any type.
+    /// may be for `ty`: whether they unify, with variables standing for
+    /// any type and each parameter for the type it first matched.
     fn impl_applies(&mut self, pattern: Ty, ty: Ty) -> bool {
+        self.impl_applies_in(pattern, ty, &mut Vec::new())
+    }
+
+    fn impl_applies_in(&mut self, pattern: Ty, ty: Ty, seen: &mut Vec<(u32, Ty)>) -> bool {
         let ty = self.shallow(ty);
         match (pattern.kind(), ty.kind()) {
-            (TyKind::Param(_) | TyKind::Error, _) | (_, TyKind::Error) => true,
+            (TyKind::Error, _) | (_, TyKind::Error) => true,
+            (TyKind::Param(p), _) => match seen.iter().find(|&&(i, _)| i == p.index) {
+                Some(&(_, first)) => self.can_unify(first, ty),
+                None => {
+                    seen.push((p.index, ty));
+                    true
+                }
+            },
             (_, TyKind::Infer(var)) => self.accepts_var(var, pattern),
             (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) => {
-                a == b && xs.iter().zip(ys).all(|(&x, &y)| self.impl_applies(x, y))
+                a == b
+                    && xs
+                        .iter()
+                        .zip(ys)
+                        .all(|(&x, &y)| self.impl_applies_in(x, y, seen))
             }
             (TyKind::Tuple(xs), TyKind::Tuple(ys)) => {
-                xs.len() == ys.len() && xs.iter().zip(ys).all(|(&x, &y)| self.impl_applies(x, y))
+                xs.len() == ys.len()
+                    && xs
+                        .iter()
+                        .zip(ys)
+                        .all(|(&x, &y)| self.impl_applies_in(x, y, seen))
             }
             (TyKind::Ref(m, x), TyKind::Ref(n, y))
-            | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => m == n && self.impl_applies(x, y),
-            (TyKind::Array(x, m), TyKind::Array(y, n)) => {
-                self.impl_applies(m, n) && self.impl_applies(x, y)
+            | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
+                m == n && self.impl_applies_in(x, y, seen)
             }
-            (TyKind::Slice(x), TyKind::Slice(y)) => self.impl_applies(x, y),
+            (TyKind::Array(x, m), TyKind::Array(y, n)) => {
+                self.impl_applies_in(m, n, seen) && self.impl_applies_in(x, y, seen)
+            }
+            (TyKind::Slice(x), TyKind::Slice(y)) => self.impl_applies_in(x, y, seen),
             _ => pattern == ty,
         }
     }
@@ -2007,8 +2028,9 @@ impl Ctx<'_> {
                 .unwrap_or(Ty::ERROR)
                 .subst(&vars);
             if let Some(target) = target {
-                // Checked by `applicable`.
-                self.unify(impl_ty, target);
+                // Selection checked that the block is for `target`.
+                let unified = self.unify(impl_ty, target);
+                debug_assert!(unified, "selected impl block is not for `{target:?}`");
             }
             args.extend(vars);
         }

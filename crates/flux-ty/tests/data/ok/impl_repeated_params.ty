@@ -1,0 +1,10 @@
+struct Pair<A, B> { 0: A, 1: B }
+fn second(&Pair<T, T>) -> T
+    self@0: &Pair<T, T>
+fn main() -> ()
+    same@0: i32
+    unsuffixed@1: i32
+    one_known@2: i64
+    options@3: Option<u16>
+    floats@4: f32
+    args@5: (&i32, &i32, &i64, &Option<u16>, &f32)
