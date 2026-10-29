@@ -274,15 +274,7 @@ pub fn stable_key(
     canonical_ty: Ty,
 ) -> Result<Vec<u8>, &'static str> {
     let mut refs = std::collections::BTreeSet::new();
-    let mut pending = vec![(canonical_ty, 0u32)];
-    let mut visited = rustc_hash::FxHashSet::default();
-    while let Some((ty, depth)) = pending.pop() {
-        if !visited.insert(ty) {
-            continue;
-        }
-        if depth > 128 {
-            return Err("type identity recursion limit reached");
-        }
+    for ty in identity_postorder(canonical_ty)? {
         match ty.kind() {
             TyKind::Adt(adt, _) => {
                 refs.insert((IdKind::Struct, adt.strukt.into_raw()));
@@ -291,9 +283,6 @@ pub fn stable_key(
                 refs.insert((IdKind::Trait, d.trait_.into_raw()));
                 for auto in d.auto_traits {
                     refs.insert((IdKind::Trait, auto.trait_.into_raw()));
-                    for &arg in auto.args {
-                        pending.push((arg, depth + 1));
-                    }
                 }
             }
             TyKind::FnDef(f) => {
@@ -312,7 +301,6 @@ pub fn stable_key(
             | TyKind::Error => return Err("type identity requires a fully resolved type"),
             _ => {}
         }
-        pending.extend(ty.children().map(|child| (child, depth + 1)));
     }
     let mut definitions = Vec::new();
     for (kind, raw) in refs {
@@ -321,7 +309,7 @@ pub fn stable_key(
     definitions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let mut ids = IdMap::strict();
     let mut prefix = Encoder::new();
-    prefix.write(b"flux-type-id-v1");
+    prefix.write(b"flux-type-id-v2");
     definitions
         .len()
         .encode(&mut prefix)
@@ -353,11 +341,59 @@ pub fn stable_key(
         ty
     }
     let mut e = Encoder::with_ids(ids);
-    ordered(canonical_ty, &e.ids, &mut FxHashMap::default())
-        .encode(&mut e)
-        .map_err(|_| "invalid type identity metadata")?;
+    let ordered = ordered(canonical_ty, &e.ids, &mut FxHashMap::default());
+    // Encode definitions before their parents. Nested metadata wrappers then
+    // contain only completed type references, so the wire nesting budget does
+    // not impose a stricter limit than the semantic type-depth budget.
+    for ty in identity_postorder(ordered)? {
+        ty.encode(&mut e).map_err(|error| error.0)?;
+    }
     prefix.write(&e.into_bytes());
     Ok(prefix.into_bytes())
+}
+
+// Every type-valued field serialized by Ty, including fields omitted by the
+// ordinary semantic child walk. Completion order also computes subtree heights,
+// so sharing a child at different depths cannot hide an over-limit type.
+fn identity_children(ty: Ty) -> Vec<Ty> {
+    let mut children: Vec<_> = ty.children().collect();
+    match ty.kind() {
+        TyKind::Value(value) => children.push(value.ty),
+        TyKind::Dynamic(object) => {
+            for bound in object.auto_traits {
+                children.extend_from_slice(bound.args);
+            }
+        }
+        _ => {}
+    }
+    children
+}
+
+fn identity_postorder(root: Ty) -> Result<Vec<Ty>, &'static str> {
+    let mut pending = vec![(root, false)];
+    let mut depths = FxHashMap::<Ty, u32>::default();
+    let mut ordered = Vec::new();
+    while let Some((ty, complete)) = pending.pop() {
+        if depths.contains_key(&ty) {
+            continue;
+        }
+        let children = identity_children(ty);
+        if !complete {
+            pending.push((ty, true));
+            pending.extend(children.into_iter().rev().map(|child| (child, false)));
+            continue;
+        }
+        let mut depth = 1;
+        for child in children {
+            depth = depth.max(depths[&child] + 1);
+        }
+        if depth > flux_hir::flib::MAX_NESTING_DEPTH {
+            return Err("type identity recursion limit reached");
+        }
+        depths.insert(ty, depth);
+        ordered.push(ty);
+    }
+    Ok(ordered)
 }
 
 /// Fingerprints canonical structural type bytes using 128 bits of SHA-256.
@@ -377,6 +413,29 @@ mod tests {
     use super::*;
     use crate::{IntTy, Mutability};
     use flux_intern::Symbol;
+
+    #[test]
+    fn legal_semantic_depth_does_not_exhaust_wire_nesting() {
+        let items = ItemTree::default();
+        let mut ty = Ty::BOOL;
+        for _ in 1..flux_hir::flib::MAX_NESTING_DEPTH {
+            ty = Ty::tuple(&[ty]);
+        }
+        let key = stable_key(&items, &[], ty).unwrap();
+        assert!(key.len() < 4096, "type definitions must remain linear");
+        assert!(stable_id(&items, &[], ty).is_ok());
+        let too_deep = Ty::tuple(&[ty]);
+        assert_eq!(
+            stable_key(&items, &[], too_deep),
+            Err("type identity recursion limit reached")
+        );
+        // The same subtree is first reached shallowly, then through a deeper
+        // branch. Its cached completion must still contribute its full height.
+        assert_eq!(
+            stable_key(&items, &[], Ty::tuple(&[Ty::BOOL, too_deep])),
+            Err("type identity recursion limit reached")
+        );
+    }
 
     #[test]
     fn query_order_does_not_assign_runtime_identity() {
