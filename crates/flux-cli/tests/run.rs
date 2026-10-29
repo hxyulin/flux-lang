@@ -10,11 +10,17 @@
 
 #[path = "../../../tests/support/cases.rs"]
 mod cases;
+#[path = "../../../tests/support/scratch.rs"]
+mod scratch;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
+
+use scratch::Scratch;
 
 #[derive(Debug, PartialEq, Eq)]
 struct Outcome {
@@ -47,6 +53,12 @@ impl Outcome {
 
 /// How long a program may run before it counts as hung.
 const TIME_LIMIT: Duration = Duration::from_secs(10);
+
+/// This fixture checks every Unicode scalar, rather than a small sample.
+/// Both baseline Flux modes take about 17 seconds on the validation host,
+/// so it gets a longer limit and starts first instead of running alone at
+/// the end.
+const SLOW_PROGRAM: &str = "unicode_properties";
 
 /// `stderr` with the thread id of `thread 'main' (123) panicked`
 /// replaced by `N`.
@@ -147,15 +159,14 @@ fn programs_match_rustc() {
         .filter(|p| p.extension().is_some_and(|ext| ext == "rs"))
         .collect();
     programs.sort();
+    programs.sort_by_key(|path| path.file_stem() != Some(SLOW_PROGRAM.as_ref()));
     assert!(!programs.is_empty());
     programs.retain(|path| cases::path_selected(path));
     if programs.is_empty() {
         return;
     }
-    let dir = std::env::temp_dir().join(format!("flux-run-tests-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-
-    compare_programs(&root, &dir, &programs);
+    let scratch = Scratch::new(std::env::temp_dir().join("flux-run-tests"));
+    compare_programs(&root, scratch.path(), &programs);
 }
 
 /// A small executable milestone toward compiling flux with itself.
@@ -172,8 +183,8 @@ fn compiler_modules_match_rustc() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    let dir = std::env::temp_dir().join(format!("flux-compiler-tests-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let scratch = Scratch::new(std::env::temp_dir().join("flux-compiler-tests"));
+    let dir = scratch.path();
 
     // Compile unchanged compiler implementations, rather than copies of
     // their algorithms. Bundle modules until flux supports `#[path]`.
@@ -203,7 +214,7 @@ fn compiler_modules_match_rustc() {
         ),
     )
     .unwrap();
-    compare_programs(&root, &dir, &[internals]);
+    compare_programs(&root, dir, &[internals]);
 }
 
 #[test]
@@ -212,18 +223,14 @@ fn trait_required_lifetime_matches_rustc() {
         return;
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let dir = std::env::temp_dir().join(format!(
-        "flux-trait-required-lifetime-{}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
     // The broad sweep owns this ordinary fixture in a complete runner plan.
     if std::env::var_os("FLUX_TEST_NATIVE_SWEEP").is_none()
         && cases::selected("trait_required_lifetime")
     {
+        let scratch = Scratch::new(std::env::temp_dir().join("flux-trait-required-lifetime"));
         compare_programs(
             &root,
-            &dir,
+            scratch.path(),
             &[root.join("tests/run/trait_required_lifetime.rs")],
         );
     }
@@ -235,79 +242,86 @@ fn compare_programs(root: &Path, dir: &Path, programs: &[PathBuf]) {
         .map_or(1, usize::from)
         .min(cases::workers())
         .min(programs.len().max(1));
-    let failures = std::thread::scope(|scope| {
-        let handles: Vec<_> = programs
-            .chunks(programs.len().div_ceil(workers).max(1))
-            .map(|chunk| scope.spawn(move || compare_chunk(root, dir, chunk)))
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|handle| handle.join().unwrap())
-            .collect::<Vec<_>>()
+    // Workers take the next program from one queue, so a slow program does
+    // not hold back the programs that a fixed chunk would have queued after it.
+    let next = AtomicUsize::new(0);
+    let results = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(program) = programs.get(index) else {
+                        break;
+                    };
+                    let failures = compare_program(root, dir, program);
+                    results.lock().unwrap().push((index, failures));
+                }
+            });
+        }
     });
-    let _ = std::fs::remove_dir_all(dir);
+    // Report failures in program order.
+    let mut results = results.into_inner().unwrap();
+    results.sort_by_key(|&(index, _)| index);
+    let failures: Vec<String> = results.into_iter().flat_map(|(_, f)| f).collect();
     assert!(failures.is_empty(), "\n{}", failures.join("\n\n"));
 }
 
-fn compare_chunk(root: &Path, dir: &Path, programs: &[PathBuf]) -> Vec<String> {
+fn compare_program(root: &Path, dir: &Path, program: &Path) -> Vec<String> {
     let mut failures = Vec::new();
-    for program in programs {
-        let name = program.file_stem().unwrap().to_string_lossy().into_owned();
-        // This fixture checks every Unicode scalar, rather than a small sample.
-        // Both baseline Flux modes take about 17 seconds on the validation host.
-        let time_limit = if name == "unicode_properties" {
-            Duration::from_secs(60)
-        } else {
-            TIME_LIMIT
-        };
-        // As given on the command line, which panic messages show.
-        let program = program.strip_prefix(root).unwrap_or(program);
-        let reference = dir.join(format!("{name}-rustc"));
-        let result = compile(
-            Command::new("rustc")
-                .current_dir(root)
-                .args([
-                    "--edition",
-                    "2024",
-                    "-C",
-                    "overflow-checks=off",
-                    "-C",
-                    "panic=abort",
-                ])
-                .arg("-o")
-                .arg(&reference)
-                .arg(program),
-            "rustc",
-        );
-        if let Err(message) = result {
-            failures.push(format!("{name}: {message}"));
+    let name = program.file_stem().unwrap().to_string_lossy().into_owned();
+    let time_limit = if name == SLOW_PROGRAM {
+        Duration::from_secs(60)
+    } else {
+        TIME_LIMIT
+    };
+    // As given on the command line, which panic messages show.
+    let program = program.strip_prefix(root).unwrap_or(program);
+    let reference = dir.join(format!("{name}-rustc"));
+    let result = compile(
+        Command::new("rustc")
+            .current_dir(root)
+            .args([
+                "--edition",
+                "2024",
+                "-C",
+                "overflow-checks=off",
+                "-C",
+                "panic=abort",
+            ])
+            .arg("-o")
+            .arg(&reference)
+            .arg(program),
+        "rustc",
+    );
+    if let Err(message) = result {
+        failures.push(format!("{name}: {message}"));
+        return failures;
+    }
+    let expected = run(&reference, time_limit);
+    for optimize in [false, true] {
+        let suffix = if optimize { "-O" } else { "" };
+        let executable = dir.join(format!("{name}-flux{suffix}"));
+        let mut flux = Command::new(env!("CARGO_BIN_EXE_flux"));
+        flux.current_dir(root)
+            .arg("build")
+            .arg(program)
+            .arg("-o")
+            .arg(&executable);
+        if optimize {
+            flux.arg("-O");
+        }
+        if let Err(message) = compile(&mut flux, "flux") {
+            failures.push(format!("{name}{suffix}: {message}"));
             continue;
         }
-        let expected = run(&reference, time_limit);
-        for optimize in [false, true] {
-            let suffix = if optimize { "-O" } else { "" };
-            let executable = dir.join(format!("{name}-flux{suffix}"));
-            let mut flux = Command::new(env!("CARGO_BIN_EXE_flux"));
-            flux.current_dir(root)
-                .arg("build")
-                .arg(program)
-                .arg("-o")
-                .arg(&executable);
-            if optimize {
-                flux.arg("-O");
-            }
-            if let Err(message) = compile(&mut flux, "flux") {
-                failures.push(format!("{name}{suffix}: {message}"));
-                continue;
-            }
-            let actual = run(&executable, time_limit);
-            if actual != expected {
-                failures.push(format!(
-                    "{name}{suffix}: expected {}, got {}",
-                    expected.brief(),
-                    actual.brief()
-                ));
-            }
+        let actual = run(&executable, time_limit);
+        if actual != expected {
+            failures.push(format!(
+                "{name}{suffix}: expected {}, got {}",
+                expected.brief(),
+                actual.brief()
+            ));
         }
     }
     failures
