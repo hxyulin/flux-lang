@@ -38,6 +38,8 @@ pub(crate) use resolve::{contains_ref, expand_alias, fill_type_defaults, type_ar
 
 mod fn_regions;
 mod infer;
+mod library;
+pub use library::LibraryTypes;
 pub mod objects;
 mod pats;
 pub mod regions;
@@ -836,9 +838,16 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
             }
         }
     };
+    // What this compilation does not infer: the embedded libraries'
+    // bodies, inferred once per process, unless every body is checked.
+    let library = (!all).then(|| LibraryTypes::of(hir)).flatten();
+    let shared = |owner: ClosureOwner| library.filter(|library| library.owns(owner));
     let mut consts = ArenaMap::new();
     for (id, (body, source_map)) in hir.const_bodies() {
-        let result = infer_const(items, &sigs, id, body, source_map);
+        let result = match shared(ClosureOwner::Const(id)) {
+            Some(library) => library.konst(id).clone(),
+            None => infer_const(items, &sigs, id, body, source_map),
+        };
         reached(&result, &mut queue);
         consts.insert(id, result);
     }
@@ -862,10 +871,18 @@ fn check(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> TypedFile {
         if bodies.get(id).is_some() {
             continue;
         }
-        let Some((body, source_map)) = hir.body(id) else {
-            continue;
+        let result = match shared(ClosureOwner::Function(id)) {
+            Some(library) => match library.body(id) {
+                Some(result) => result.clone(),
+                None => continue,
+            },
+            None => {
+                let Some((body, source_map)) = hir.body(id) else {
+                    continue;
+                };
+                infer_body(items, &sigs, id, body, source_map)
+            }
         };
-        let result = infer_body(items, &sigs, id, body, source_map);
         reached(&result, &mut queue);
         bodies.insert(id, result);
     }

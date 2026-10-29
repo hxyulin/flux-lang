@@ -27,7 +27,7 @@ pub use closure::{Capture, CaptureMode, CaptureProj, ClosureInfo};
 use solve::{CallSite, Obligation};
 
 /// The types of one body.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct InferenceResult {
     /// The type of every expression, except the callee of a direct call
     /// (`f` in `f(x)`), which has no value of its own.

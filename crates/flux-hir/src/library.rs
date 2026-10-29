@@ -15,8 +15,8 @@ use std::sync::Arc;
 
 use crate::source::SourceFile;
 use crate::{
-    Body, BodySourceMap, Const, ConstId, Diagnostic, FunctionId, ItemTree, LoweredBody, SourceDb,
-    lower_body,
+    Body, BodySourceMap, Const, ConstId, Diagnostic, FunctionId, Hir, ItemTree, LoweredBody,
+    SourceDb, lower_body,
 };
 
 /// The embedded libraries, lowered. [`Core::get`] builds them on first use.
@@ -33,6 +33,8 @@ pub struct Core {
     pub(crate) const_bodies: ArenaMap<Const, (Body, BodySourceMap)>,
     /// From lowering the constants; the item tree's are in `items`.
     pub(crate) diagnostics: Vec<Diagnostic>,
+    /// The embedded crates alone, as a program sees them.
+    hir: OnceLock<Hir>,
 }
 
 impl Core {
@@ -55,7 +57,19 @@ impl Core {
             bodies,
             const_bodies,
             diagnostics,
+            hir: OnceLock::new(),
         }
+    }
+
+    /// The embedded crates as a program without items of its own: a
+    /// tree whose items all come before [`ItemTree::core`]'s counts, so
+    /// that their bodies can be checked apart from any program.
+    pub fn hir(&self) -> &Hir {
+        self.hir.get_or_init(|| {
+            let mut items = self.items.clone();
+            items.core = items.counts();
+            crate::lower_items(&SourceDb::new(), items, true)
+        })
     }
 
     /// The body of `core`'s function `function`, if it has one, lowered
