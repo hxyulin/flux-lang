@@ -695,6 +695,7 @@ pub(crate) fn value_functions<'a>(
     use crate::eval::Value;
     let mut values = vec![value];
     let mut globals = FxHashSet::default();
+    let mut allocations = FxHashSet::default();
     while let Some(value) = values.pop() {
         match value {
             Value::Function(instance) => out.push(*instance),
@@ -721,16 +722,25 @@ pub(crate) fn value_functions<'a>(
                         }
                     }
                 }
-                values.push(pointer);
+                if allocations.insert((0, std::sync::Arc::as_ptr(pointer) as usize)) {
+                    values.push(pointer);
+                }
             }
             Value::Aggregate(fields) | Value::Variant { fields, .. } => {
-                values.extend(fields.iter())
+                if allocations.insert((1, std::sync::Arc::as_ptr(fields) as *const Value as usize))
+                {
+                    values.extend(fields.iter());
+                }
             }
-            Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. } => {
-                values.push(value)
+            Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. }
+                if allocations.insert((0, std::sync::Arc::as_ptr(value) as usize)) =>
+            {
+                values.push(value);
             }
-            Value::PointerView { pointer, .. } | Value::PointerOffset { pointer, .. } => {
-                values.push(pointer)
+            Value::PointerView { pointer, .. } | Value::PointerOffset { pointer, .. }
+                if allocations.insert((0, std::sync::Arc::as_ptr(pointer) as usize)) =>
+            {
+                values.push(pointer);
             }
             Value::Static(id) | Value::StaticPart { id, .. } if globals.insert(*id) => {
                 if let Some(value) = constants.items.get(*id) {

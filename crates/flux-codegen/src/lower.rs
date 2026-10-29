@@ -393,6 +393,8 @@ fn lower_inner(
         strings: FxHashMap::default(),
         vtables: FxHashMap::default(),
         promoted: FxHashMap::default(),
+        referenced_storage: FxHashMap::default(),
+        named_constants: FxHashMap::default(),
         data: Vec::new(),
         data_errors: Vec::new(),
         layouts,
@@ -1017,6 +1019,13 @@ fn entry_point(
     function
 }
 
+struct ReferencedStorage {
+    // Keep the allocation alive while its address is a cache key.
+    _owner: Arc<flux_mir::eval::Value>,
+    symbol: String,
+    length: Option<u64>,
+}
+
 struct Ctx<'a> {
     hir: &'a Hir,
     typed: &'a TypedFile,
@@ -1047,6 +1056,10 @@ struct Ctx<'a> {
     /// The data objects of promoted constants, by their bytes and
     /// alignment.
     promoted: FxHashMap<(Vec<u8>, u32), String>,
+    /// Allocation identity is only a process-local shortcut before content hashing.
+    referenced_storage: FxHashMap<(usize, Ty), ReferencedStorage>,
+    /// Monomorphic constant addresses also form DAG edges by item identity.
+    named_constants: FxHashMap<flux_hir::ConstId, String>,
     data: Vec<DataObject>,
     data_errors: Vec<Diagnostic>,
     /// How values are laid out in memory, as rustc lays them out.
@@ -1264,11 +1277,16 @@ impl Ctx<'_> {
             }
             return name.clone();
         }
+        if let Some(name) = self.named_constants.get(&id) {
+            return name.clone();
+        }
         let value = self
             .evaluator
             .eval_const(id)
             .expect("promoted constant was evaluated");
-        self.promoted(&value, self.typed.sigs.consts[id])
+        let name = self.promoted(&value, self.typed.sigs.consts[id]);
+        self.named_constants.insert(id, name.clone());
+        name
     }
 
     fn static_part(
@@ -1526,12 +1544,20 @@ impl Ctx<'_> {
 
     /// The data object a reference of type `ty` to `pointee`, in a
     /// constant, points to, and for a slice its length.
-    fn referenced(&mut self, pointee: &flux_mir::eval::Value, ty: Ty) -> (String, Option<u64>) {
+    fn referenced(
+        &mut self,
+        pointee: &Arc<flux_mir::eval::Value>,
+        ty: Ty,
+    ) -> (String, Option<u64>) {
+        let key = (Arc::as_ptr(pointee) as usize, ty);
+        if let Some(stored) = self.referenced_storage.get(&key) {
+            return (stored.symbol.clone(), stored.length);
+        }
         let target = match ty.kind() {
             TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t,
             _ => Ty::ERROR,
         };
-        match (target.kind(), pointee) {
+        let (symbol, length) = match (target.kind(), pointee.as_ref()) {
             (TyKind::Slice(elem), flux_mir::eval::Value::Aggregate(elements)) => {
                 let len = elements.len() as u64;
                 let array = Ty::array(elem, len);
@@ -1544,7 +1570,16 @@ impl Ctx<'_> {
                 (self.promoted(pointee, array), Some(len))
             }
             _ => (self.promoted(pointee, target), None),
-        }
+        };
+        self.referenced_storage.insert(
+            key,
+            ReferencedStorage {
+                _owner: Arc::clone(pointee),
+                symbol: symbol.clone(),
+                length,
+            },
+        );
+        (symbol, length)
     }
 
     /// The name of the read-only data object of `concrete`'s vtable as

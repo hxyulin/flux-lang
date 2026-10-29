@@ -703,3 +703,99 @@ pub fn exported<T>(_: T) -> i32 {{ {operation} }}
         );
     }
 }
+
+#[test]
+fn forty_level_constant_allocation_dags_keep_shared_storage() {
+    use flux_mir::eval::Value;
+    use flux_ty_ir::{Mutability, Ty, TyKind};
+    use std::sync::Arc;
+
+    const DEPTH: usize = 40;
+    // Construct checked IR directly: resolving a source tree of duplicated
+    // type aliases would test alias expansion rather than storage sharing.
+    let mut source = String::from("fn callback(x: i32) -> i32 { x + 1 }\n");
+    for level in 0..DEPTH {
+        source.push_str(&format!("const V{level}: fn(i32) -> i32 = callback;\n"));
+    }
+    source.push_str("pub static ROOT: fn(i32) -> i32 = callback;\n");
+    let (_db, _root, hir) = flux_hir::lower_text("allocation-dag.rs", &source);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let mut typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mut mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let krate = hir.items.main_crate();
+    let callback = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "callback")
+        .unwrap()
+        .0;
+    let find = |name: &str| {
+        hir.items
+            .consts
+            .iter()
+            .find(|(_, c)| c.name.is_some_and(|n| n.as_str() == name))
+            .unwrap()
+            .0
+    };
+    let root = find("ROOT");
+    let mut ty = typed.sigs.consts[root];
+    let mut value = Value::Function(flux_ty::Instance {
+        function: callback,
+        args: &[],
+    });
+    for level in 0..DEPTH {
+        let id = find(&format!("V{level}"));
+        typed.sigs.consts.insert(id, ty);
+        mir.const_values.items.insert(id, value);
+        let reference = Ty::new(TyKind::Ref(Mutability::Not, ty));
+        ty = Ty::tuple(&[reference, reference]);
+        value = Value::Aggregate(vec![Value::Static(id), Value::Static(id)].into());
+    }
+    typed.sigs.consts.insert(root, ty);
+    mir.const_values.items.insert(root, value);
+    let hashes = [(krate, [96; 32])];
+    let compilation = Compilation {
+        kind: OutputKind::Library(krate),
+        crate_hashes: &hashes,
+        imported: &[],
+        required_functions: &[],
+    };
+    let named = flux_codegen::lower_crate(&hir, &typed, &mir, compilation).unwrap();
+    let mut value = Value::Function(flux_ty::Instance {
+        function: callback,
+        args: &[],
+    });
+    for _ in 0..DEPTH {
+        let child = Arc::new(value);
+        value = Value::Aggregate(vec![Value::Ref(child.clone()), Value::Ref(child)].into());
+    }
+    mir.const_values.items.insert(root, value);
+    let shared = flux_codegen::lower_crate(&hir, &typed, &mir, compilation).unwrap();
+    assert_eq!(
+        named.data, shared.data,
+        "allocation identity must not enter emitted data or relocations"
+    );
+    for module in [&named, &shared] {
+        assert_eq!(
+            module.data.iter().filter(|d| d.init.is_some()).count(),
+            DEPTH + 1
+        );
+        assert_eq!(
+            module
+                .functions
+                .iter()
+                .filter(|f| f.name.contains("callback"))
+                .count(),
+            1
+        );
+        flux_codegen::compile_object(
+            &mut module.clone(),
+            Target::Aarch64AppleDarwin,
+            OptimizationTier::None,
+        )
+        .unwrap();
+    }
+}

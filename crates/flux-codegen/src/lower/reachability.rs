@@ -783,6 +783,7 @@ impl<'a> Reach<'a> {
     fn value(&mut self, value: &flux_mir::eval::Value) {
         use flux_mir::eval::Value;
         let mut pending = vec![value];
+        let mut allocations = FxHashSet::default();
         while let Some(value) = pending.pop() {
             match value {
                 Value::Function(instance) => self.call(instance.function, instance.args, true),
@@ -794,16 +795,26 @@ impl<'a> Reach<'a> {
                     ..
                 } => {
                     self.vtable(*object, *concrete);
-                    pending.push(pointer);
+                    if allocations.insert((0, std::sync::Arc::as_ptr(pointer) as usize)) {
+                        pending.push(pointer);
+                    }
                 }
                 Value::Aggregate(fields) | Value::Variant { fields, .. } => {
-                    pending.extend(fields.iter())
+                    if allocations
+                        .insert((1, std::sync::Arc::as_ptr(fields) as *const Value as usize))
+                    {
+                        pending.extend(fields.iter());
+                    }
                 }
                 Value::Ref(value)
                 | Value::InteriorRef(value)
                 | Value::PointerView { pointer: value, .. }
                 | Value::PointerOffset { pointer: value, .. }
-                | Value::LocalRef { value, .. } => pending.push(value),
+                | Value::LocalRef { value, .. }
+                    if allocations.insert((0, std::sync::Arc::as_ptr(value) as usize)) =>
+                {
+                    pending.push(value);
+                }
                 _ => {}
             }
         }
