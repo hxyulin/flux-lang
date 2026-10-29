@@ -55,7 +55,7 @@ dependencies = [
 [[package]]
 name = "bbtree"
 version = "0.1.5"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "vstd",
 ]
@@ -417,7 +417,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "keel-asm"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "bumpalo",
  "keel-asm-ir",
@@ -429,7 +429,7 @@ dependencies = [
 [[package]]
 name = "keel-asm-ir"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "smallvec",
 ]
@@ -437,7 +437,7 @@ dependencies = [
 [[package]]
 name = "keel-codegen"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "keel-asm-ir",
  "keel-ir",
@@ -447,7 +447,7 @@ dependencies = [
 [[package]]
 name = "keel-frontend"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "keel-ir",
  "smallvec",
@@ -456,7 +456,7 @@ dependencies = [
 [[package]]
 name = "keel-ir"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "keel-asm-ir",
 ]
@@ -464,7 +464,7 @@ dependencies = [
 [[package]]
 name = "keel-link"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "bbtree",
  "object",
@@ -476,7 +476,7 @@ dependencies = [
 [[package]]
 name = "keel-opt"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=e4c72445116afcc826c1020e28befca3a5fc6645#e4c72445116afcc826c1020e28befca3a5fc6645"
+source = "git+https://github.com/hxyulin/keel?rev=103c23de480d76e02267c5a8d5a9d3505bc73231#103c23de480d76e02267c5a8d5a9d3505bc73231"
 dependencies = [
  "keel-ir",
  "profiling",

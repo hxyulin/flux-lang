@@ -69,5 +69,6 @@ canonical pointer equality across objects. Inspect optimized Keel IR to prove
 that eligible direct calls inline while the owning definition remains present.
 Measure artifact bytes, downstream build time, binary size and native runtime.
 
-Keel's current weak ODR inlining restriction is separate work. This proposal
-does not replace shared generic instances with local copies to bypass it.
+Generic instances are hidden `weak_odr` definitions with
+`no_semantic_interposition`, which Keel inlines at direct calls. This proposal
+does not replace shared generic instances with local copies.

@@ -1143,9 +1143,11 @@ impl Ctx<'_> {
         // interposed by another image. Hidden binding permits direct addresses.
         function.hidden = self.compilation.is_some();
         // Hidden strong definitions bind within this executable, so the
-        // optimizer may substitute their bodies at direct calls. Keel currently
-        // rejects weak ODR bodies for inlining separately.
+        // optimizer may substitute their bodies at direct calls. The linker may
+        // keep another object's copy of a weak ODR instance instead, so those
+        // promise only that every copy has an equivalent body.
         function.attrs.noninterposable = function.hidden && !function.weak_odr;
+        function.attrs.no_semantic_interposition = function.hidden && function.weak_odr;
         let typed = self.typed;
         let owner = body.owner.unwrap_or(instance.function);
         let file = self.hir.items.functions[owner].loc.file;

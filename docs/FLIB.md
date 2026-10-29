@@ -190,9 +190,9 @@ identity; equal initial bytes must not merge their addresses. Recursive allocati
 graphs need canonical allocation identities rather than recursive byte hashing.
 
 Use hidden `weak_odr` definitions for duplicate generic instances and their
-shims, with identical stable symbols, ABI and bodies in every object. The pinned
-Keel revision `e4c72445` recognizes weak ODR symbols when selecting AArch64 address
-relocations and resolves each weak copy's unwind records to that object's body.
+shims, with identical stable symbols, ABI and bodies in every object. Keel
+recognizes weak ODR symbols when selecting AArch64 address relocations and
+resolves each weak copy's unwind records to that object's body.
 
 Hidden definitions are private externs that resolve and coalesce across objects
 within one executable. Fluxlib has no dynamic-export or interposition contract;
@@ -202,13 +202,14 @@ not a workaround for the older Keel address-relocation bug.
 
 Hidden strong definitions set `noninterposable`, so Keel's Full tier can inline
 direct calls within their owning object while retaining the exported definition.
-Keel `e4c72445` still rejects `weak_odr` bodies for inlining. Generic instances
-retain shared linkage and address identity despite that optimization restriction.
-Separate objects also prevent inlining non-generic functions across crates, and
-use the fixed reified calling convention rather than the whole-program fast
-convention. The tree pipeline fixture currently runs slower through separate
-objects. Cross-crate inlining and improvements to Keel's weak ODR optimization
-and fixed calling conventions remain follow-up work.
+Hidden `weak_odr` instances set `no_semantic_interposition` instead. The linker
+may keep another object's copy, so they promise an equivalent body, not an exact
+binding. Keel inlines direct calls to them from `dcd44219` on. The definition
+keeps its linkage, so the instance keeps one shared address. Separate objects
+still prevent inlining non-generic functions across crates, and use the fixed
+reified calling convention rather than the whole-program fast convention. The
+tree pipeline fixture currently runs slower through separate objects.
+Cross-crate inlining and fixed calling conventions remain follow-up work.
 The [cross-crate inlining proposal](FLIB_INLINING.md) describes local direct-call
 copies with canonical function addresses and deterministic eligibility.
 

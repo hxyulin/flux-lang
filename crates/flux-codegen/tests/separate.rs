@@ -913,3 +913,63 @@ fn hidden_strong_definitions_allow_inlining_without_changing_linkage() {
             .any(|f| f.name == leaf && !f.local && !f.weak_odr)
     );
 }
+
+const WEAK_ODR_LIBRARY: &str = "
+pub fn twice<T: Copy + std::ops::Add<Output = T>>(x: T) -> T { x + x }
+pub fn combined(x: u64) -> u64 { twice(x) * 2 }
+pub fn pointer() -> fn(u64) -> u64 { twice::<u64> }
+";
+
+#[test]
+fn weak_odr_instances_allow_inlining_without_changing_linkage() {
+    let mut module = staged_module(&[("a", WEAK_ODR_LIBRARY, &[], 112)], Some(0));
+    let instance = module
+        .functions
+        .iter()
+        .find(|f| f.weak_odr && f.name.contains("twice"))
+        .unwrap();
+    // Another object's copy may win at link time, so the instance promises an
+    // equivalent body rather than an exact binding.
+    assert!(instance.hidden && !instance.local);
+    assert!(instance.attrs.no_semantic_interposition && !instance.attrs.noninterposable);
+    let instance = instance.name.clone();
+    let calls_instance = |function: &keel_ir::Function| {
+        function.layout_insts().any(|(_, inst)| {
+        matches!(function.inst_data(inst), keel_ir::InstData::Call { func, .. } if function.callee(*func).name == instance)
+    })
+    };
+    assert!(module.functions.iter().any(calls_instance));
+    keel_opt::optimize_with_tier(&mut module, OptimizationTier::Full).unwrap();
+    assert!(!module.functions.iter().any(calls_instance));
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|f| f.name == instance && f.weak_odr && f.hidden && !f.local)
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[test]
+fn inlined_weak_odr_instances_keep_one_address_across_objects() {
+    let root = "
+fn main() {
+    let mut total = 0u64;
+    let mut i = 0u64;
+    while i < 1000 { total = total.wrapping_add(a::twice(i)); i += 1; }
+    let local: fn(u64) -> u64 = a::twice::<u64>;
+    println!(\"{} {} {}\", total, a::combined(5), a::pointer() as usize == local as usize);
+}
+";
+    let sources = [
+        ("a", WEAK_ODR_LIBRARY, &[][..], 113),
+        ("root", root, &[("a", 0)][..], 114),
+    ];
+    let a = staged_lowered(&sources, Some(0), &[]);
+    let b = staged_lowered(&sources, None, &a.required_instances);
+    run_objects(
+        &[a.module, b.module],
+        "weak-odr-inlining",
+        "999000 20 true\n",
+    );
+}
