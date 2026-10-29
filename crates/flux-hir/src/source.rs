@@ -482,12 +482,31 @@ impl SourceDb {
         SourceDb::with_files(crate::Core::get().files.clone())
     }
 
+    /// An empty database for explicitly trusted, precompiled library metadata.
+    pub fn empty() -> SourceDb {
+        SourceDb::with_files(Vec::new())
+    }
+
+    /// Forks the database while sharing immutable diagnostic sources without parsing.
+    pub fn fork(&self) -> SourceDb {
+        SourceDb {
+            files: self.files.clone(),
+            by_path: self.by_path.clone(),
+            next_include_offset: self.next_include_offset,
+            compilation_dirs: self.compilation_dirs.clone(),
+            proc_macros: self.proc_macros.clone(),
+            metadata_proc_macros: self.metadata_proc_macros,
+            environments: self.environments.clone(),
+            configured: self.configured.clone(),
+        }
+    }
+
     /// All embedded library sources before building the shared item tree.
     pub(crate) fn core_only() -> SourceDb {
         SourceDb::with_files(core_files().to_vec())
     }
 
-    fn with_files(files: Vec<Arc<SourceFile>>) -> SourceDb {
+    pub(crate) fn with_files(files: Vec<Arc<SourceFile>>) -> SourceDb {
         let by_path = (files.iter().enumerate())
             .filter(|(_, f)| f.expansion_of.is_none())
             .map(|(i, f)| (f.path.clone(), FileId(i as u32)))

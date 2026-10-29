@@ -5,6 +5,32 @@ use crate::macros::{MacroDef, MacroKind, MacroScope};
 use flux_syntax::{SyntaxKind, TokenOrigin};
 use std::sync::Arc;
 
+use crate::macros::builtin::Builtin;
+const BUILTINS: [Builtin; 22] = [
+    Builtin::Derive,
+    Builtin::Asm,
+    Builtin::Assert,
+    Builtin::Panic,
+    Builtin::Unreachable,
+    Builtin::FormatArgs,
+    Builtin::ConstFormatArgs,
+    Builtin::FormatArgsNl,
+    Builtin::Concat,
+    Builtin::Stringify,
+    Builtin::Include,
+    Builtin::IncludeStr,
+    Builtin::IncludeBytes,
+    Builtin::Env,
+    Builtin::OptionEnv,
+    Builtin::Line,
+    Builtin::Column,
+    Builtin::File,
+    Builtin::ModulePath,
+    Builtin::Cfg,
+    Builtin::CompileError,
+    Builtin::Unsupported,
+];
+
 impl Encode for TokenOrigin {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.range.encode(e)?;
@@ -131,6 +157,14 @@ impl Encode for MacroDef {
                 export.helpers.encode(e)?;
                 descriptor.encode(e)
             }
+            MacroKind::Builtin(builtin) if e.trusted_builtin_suite => {
+                2u8.encode(e)?;
+                let tag = BUILTINS
+                    .iter()
+                    .position(|value| value == builtin)
+                    .ok_or(Error("unknown builtin macro"))?;
+                (tag as u8).encode(e)
+            }
             MacroKind::Builtin(_) => Err(Error(
                 "builtin macro exports cannot be written as user metadata",
             )),
@@ -172,6 +206,14 @@ impl Decode for MacroDef {
                     helpers,
                     expander,
                 }))
+            }
+            2 if d.trusted_builtin_suite => {
+                let tag = u8::decode(d)? as usize;
+                MacroKind::Builtin(
+                    *BUILTINS
+                        .get(tag)
+                        .ok_or(Error("invalid builtin macro tag"))?,
+                )
             }
             _ => return Err(Error("unsupported macro export kind")),
         };

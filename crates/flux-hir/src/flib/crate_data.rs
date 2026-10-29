@@ -3,8 +3,11 @@ use super::{CrateData, LoadedCrates, Mutex};
 use crate::flib::{Decode, Decoder, Encode, Encoder, Error};
 impl Encode for CrateData {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
-        if self.is_core {
+        if self.is_core && !e.trusted_builtin_suite {
             return Err(Error("embedded crates cannot be written as user flibs"));
+        }
+        if e.trusted_builtin_suite {
+            self.is_core.encode(e)?;
         }
         self.name.encode(e)?;
         self.root.encode(e)?;
@@ -28,6 +31,11 @@ impl Encode for CrateData {
 }
 impl Decode for CrateData {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        let is_core = if d.trusted_builtin_suite {
+            bool::decode(d)?
+        } else {
+            false
+        };
         let name = Decode::decode(d)?;
         let root = Decode::decode(d)?;
         let edition = Decode::decode(d)?;
@@ -52,7 +60,7 @@ impl Decode for CrateData {
             dependencies,
             no_std,
             macro_use,
-            is_core: false,
+            is_core,
             compilation_dir,
             environment,
             cfg,

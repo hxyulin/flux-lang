@@ -62,6 +62,7 @@ pub struct CrateId(pub u32);
 /// in [`Core`](crate::Core)'s tree and shared by every program's.
 #[derive(Debug, Clone, Default)]
 pub struct ItemTree {
+    pub(crate) artifact_builtins: bool,
     pub crates: Vec<CrateData>,
     pub modules: LayeredArena<Module>,
     /// Free functions, functions in `extern` blocks, and the associated
@@ -1418,6 +1419,11 @@ impl std::fmt::Display for TypeRef {
 }
 
 impl ItemTree {
+    /// Whether the compiler library prefix was loaded from trusted metadata.
+    pub fn has_artifact_builtins(&self) -> bool {
+        self.artifact_builtins
+    }
+
     /// Collects the items of the crate whose root is `root`, reading the
     /// files of its modules, and resolves their names: after a copy of
     /// `core`'s, if `with_core`.

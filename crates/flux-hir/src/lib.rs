@@ -127,6 +127,28 @@ pub fn lower_sources(db: &mut SourceDb, sources: &[SourceCrate]) -> Hir {
     lower_items(db, items, true)
 }
 
+/// Appends a source graph to an existing checked prefix without loading source libraries.
+pub fn lower_sources_on(db: &mut SourceDb, mut items: ItemTree, sources: &[SourceCrate]) -> Hir {
+    assert!(!sources.is_empty(), "expected an executable source crate");
+    let from = items.counts();
+    let base = items.crates.len() as u32;
+    for (index, source) in sources.iter().enumerate() {
+        let dependencies = source
+            .dependencies
+            .iter()
+            .map(|&(name, target)| {
+                assert!(
+                    target < index,
+                    "source dependencies must precede their consumer"
+                );
+                (name, CrateId(base + target as u32))
+            })
+            .collect();
+        items.add_source_crate(db, source.root, source.name, false, dependencies);
+    }
+    lower_items_from(db, items, true, from)
+}
+
 /// Collects and lowers one source crate after previously loaded artifact crates.
 /// Dependency IDs refer to existing crates in `items`.
 pub fn lower_source_on(
@@ -153,7 +175,7 @@ fn lower_items_from(
     from: item_tree::ItemCounts,
 ) -> Hir {
     let mut diagnostics = std::mem::take(&mut items.diagnostics);
-    if with_core {
+    if with_core && !items.has_artifact_builtins() {
         diagnostics.extend(Core::get().diagnostics.iter().cloned());
     }
     let mut bodies = ArenaMap::new();
@@ -242,7 +264,7 @@ impl Hir {
         if let Some(body) = self.bodies.get(function) {
             return Some(body);
         }
-        if self.is_program(function) {
+        if self.is_program(function) || self.items.has_artifact_builtins() {
             return None;
         }
         Core::get().body(function)
@@ -251,12 +273,19 @@ impl Hir {
     /// Lowers `core`'s function `function` again, with its diagnostics:
     /// for tests that check `core` itself.
     pub fn lower_core_body(&self, function: FunctionId) -> LoweredBody {
+        assert!(
+            !self.items.has_artifact_builtins(),
+            "artifact builtins have no HIR source bodies"
+        );
         Core::get().lower_body(function)
     }
 
     /// The value of constant `konst`, if it has one.
     pub fn const_body(&self, konst: ConstId) -> Option<&(Body, BodySourceMap)> {
         if konst.index() < self.items.core.consts as usize {
+            if self.items.has_artifact_builtins() {
+                return None;
+            }
             return Core::get().const_body(konst);
         }
         self.const_bodies.get(konst)
@@ -264,7 +293,8 @@ impl Hir {
 
     /// Every constant's value, `core`'s first.
     pub fn const_bodies(&self) -> impl Iterator<Item = (ConstId, &(Body, BodySourceMap))> {
-        let core = (self.items.core.consts > 0).then(|| Core::get().const_bodies.iter());
+        let core = (self.items.core.consts > 0 && !self.items.has_artifact_builtins())
+            .then(|| Core::get().const_bodies.iter());
         core.into_iter().flatten().chain(self.const_bodies.iter())
     }
 

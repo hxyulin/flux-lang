@@ -2,6 +2,8 @@
 
 mod allocations;
 mod archive;
+mod builtin_suite;
+pub use builtin_suite::{read_builtin_suite, write_builtin_suite};
 mod digest;
 mod identity;
 mod items;
@@ -132,6 +134,7 @@ impl IdMap {
 /// A binary metadata writer with explicit item identity mappings.
 #[derive(Debug, Default)]
 pub struct Encoder {
+    pub(crate) trusted_builtin_suite: bool,
     bytes: Vec<u8>,
     depth: u32,
     pub ids: IdMap,
@@ -148,6 +151,7 @@ impl Encoder {
     }
     pub fn with_ids(ids: IdMap) -> Self {
         Self {
+            trusted_builtin_suite: false,
             bytes: Vec::new(),
             depth: 0,
             ids,
@@ -234,6 +238,7 @@ impl Encoder {
 /// A bounded metadata reader. Lengths and nesting are checked before allocation.
 #[derive(Debug)]
 pub struct Decoder<'a> {
+    pub(crate) trusted_builtin_suite: bool,
     proc_macro_resolver: Option<std::sync::Arc<dyn crate::ProcMacroResolver>>,
     proc_macro_error: Option<String>,
     bytes: &'a [u8],
@@ -253,6 +258,7 @@ impl<'a> Decoder<'a> {
     }
     pub fn with_ids(bytes: &'a [u8], ids: IdMap) -> Self {
         Self {
+            trusted_builtin_suite: false,
             bytes,
             position: 0,
             depth: 0,
