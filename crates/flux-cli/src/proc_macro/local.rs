@@ -550,6 +550,11 @@ fn transform(text: &str, cfg: &HashSet<String>) -> Result<(String, Vec<Export>),
 
 /// Registers a local executable through HIR's shared host-expander interface.
 pub fn descriptors(executable: &Path, exports: Vec<Export>) -> Vec<ProcMacro> {
+    let identity = super::flib::HostIdentity::local(executable).ok();
+    let executable = identity.as_ref().map_or_else(
+        || executable.to_owned(),
+        |identity| identity.local_path().to_owned(),
+    );
     exports
         .into_iter()
         .map(|export| ProcMacro {
@@ -557,7 +562,8 @@ pub fn descriptors(executable: &Path, exports: Vec<Export>) -> Vec<ProcMacro> {
             kind: export.kind,
             helpers: Some(export.helpers.iter().map(|s| Symbol::intern(s)).collect()),
             expander: Arc::new(LocalHost {
-                executable: executable.to_owned(),
+                identity: identity.clone(),
+                executable: executable.clone(),
                 name: export.name,
             }),
         })
@@ -568,9 +574,27 @@ pub fn descriptors(executable: &Path, exports: Vec<Export>) -> Vec<ProcMacro> {
 struct LocalHost {
     executable: PathBuf,
     name: String,
+    identity: Option<super::flib::HostIdentity>,
+}
+
+pub(super) fn restore_host(
+    identity: super::flib::HostIdentity,
+    name: String,
+) -> Arc<dyn ProcMacroExpander> {
+    Arc::new(LocalHost {
+        executable: identity.local_path().to_owned(),
+        name,
+        identity: Some(identity),
+    })
 }
 impl ProcMacroExpander for LocalHost {
+    fn flib_descriptor(&self) -> Option<Vec<u8>> {
+        self.identity.as_ref()?.descriptor(&self.name).ok()
+    }
     fn expand(&self, invocation: ProcMacroInput) -> Result<Vec<ProcMacroToken>, String> {
+        if let Some(identity) = &self.identity {
+            identity.verify()?;
+        }
         if invocation
             .tokens
             .iter()
@@ -591,6 +615,9 @@ impl ProcMacroExpander for LocalHost {
             &invocation,
             std::time::Duration::from_secs(60),
         )?;
+        if let Some(identity) = &self.identity {
+            identity.verify()?;
+        }
         output_tokens(output, &invocation)
     }
 }

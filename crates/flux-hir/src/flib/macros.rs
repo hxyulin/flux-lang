@@ -117,7 +117,23 @@ impl Encode for MacroDef {
                 rules.local_inner_macros.encode(e)?;
                 rules.toks.encode(e)
             }
-            _ => Err(Error("macro export kind is not supported in flib yet")),
+            MacroKind::ProcMacro(export) => {
+                if export.name != self.name {
+                    return Err(Error("inconsistent procedural macro export name"));
+                }
+                let descriptor = export
+                    .expander
+                    .flib_descriptor()
+                    .ok_or(Error("procedural macro host has no persistent descriptor"))?;
+                1u8.encode(e)?;
+                export.name.encode(e)?;
+                export.kind.encode(e)?;
+                export.helpers.encode(e)?;
+                descriptor.encode(e)
+            }
+            MacroKind::Builtin(_) => Err(Error(
+                "builtin macro exports cannot be written as user metadata",
+            )),
         }
     }
 }
@@ -127,25 +143,45 @@ impl Decode for MacroDef {
         let krate = Decode::decode(d)?;
         let file = Decode::decode(d)?;
         let name_range = Decode::decode(d)?;
-        if u8::decode(d)? != 0 {
-            return Err(Error("unsupported macro export kind"));
-        }
-        let edition = flux_syntax::Edition::decode(d)?;
-        let local_inner_macros = bool::decode(d)?;
-        let toks = Vec::<Tok>::decode(d)?;
-        validate_rule_tokens(&toks)?;
-        let (mut rules, errors) = crate::macros::mbe::parse_rules(toks, name_range, edition);
-        if !errors.is_empty() || rules.invalid {
-            return Err(Error("invalid exported macro tokens"));
-        }
-        rules.local_inner_macros = local_inner_macros;
+        let kind = match u8::decode(d)? {
+            0 => {
+                let edition = flux_syntax::Edition::decode(d)?;
+                let local_inner_macros = bool::decode(d)?;
+                let toks = Vec::<Tok>::decode(d)?;
+                validate_rule_tokens(&toks)?;
+                let (mut rules, errors) =
+                    crate::macros::mbe::parse_rules(toks, name_range, edition);
+                if !errors.is_empty() || rules.invalid {
+                    return Err(Error("invalid exported macro tokens"));
+                }
+                rules.local_inner_macros = local_inner_macros;
+                MacroKind::Rules(Arc::new(rules))
+            }
+            1 => {
+                let export_name = Decode::decode(d)?;
+                if export_name != name {
+                    return Err(Error("inconsistent procedural macro export name"));
+                }
+                let kind = Decode::decode(d)?;
+                let helpers = Decode::decode(d)?;
+                let descriptor = Vec::<u8>::decode(d)?;
+                let expander = d.resolve_proc_macro(&descriptor)?;
+                MacroKind::ProcMacro(Arc::new(crate::ProcMacro {
+                    name: export_name,
+                    kind,
+                    helpers,
+                    expander,
+                }))
+            }
+            _ => return Err(Error("unsupported macro export kind")),
+        };
         Ok(Self {
             name,
             krate,
             file,
             name_range,
             group: crate::macros::fresh_group(),
-            kind: MacroKind::Rules(Arc::new(rules)),
+            kind,
         })
     }
 }
@@ -679,6 +715,48 @@ impl Decode for SyntaxKind {
             247 => Ok(Self::MACRO_FRAGMENT),
             _ => Err(Error("invalid syntax kind tag")),
         }
+    }
+}
+
+impl Encode for crate::ProcMacroKind {
+    fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        let tag = match self {
+            Self::Derive => 0u8,
+            Self::Attribute => 1,
+            Self::Function => 2,
+        };
+        tag.encode(e)
+    }
+}
+impl Decode for crate::ProcMacroKind {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        match u8::decode(d)? {
+            0 => Ok(Self::Derive),
+            1 => Ok(Self::Attribute),
+            2 => Ok(Self::Function),
+            _ => Err(Error("invalid procedural macro kind")),
+        }
+    }
+}
+
+impl Encode for crate::ProcMacroToken {
+    fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        self.edition.encode(e)?;
+        self.kind.encode(e)?;
+        self.text.encode(e)?;
+        self.joint.encode(e)?;
+        self.origin.encode(e)
+    }
+}
+impl Decode for crate::ProcMacroToken {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            edition: Decode::decode(d)?,
+            kind: Decode::decode(d)?,
+            text: Decode::decode(d)?,
+            joint: Decode::decode(d)?,
+            origin: Decode::decode(d)?,
+        })
     }
 }
 

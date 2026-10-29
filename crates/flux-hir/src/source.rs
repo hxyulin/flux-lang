@@ -86,6 +86,7 @@ pub struct SourceDb {
     next_include_offset: u32,
     compilation_dirs: rustc_hash::FxHashMap<FileId, PathBuf>,
     proc_macros: rustc_hash::FxHashMap<FileId, Vec<crate::ProcMacro>>,
+    metadata_proc_macros: bool,
     environments: rustc_hash::FxHashMap<FileId, Arc<std::collections::BTreeMap<String, String>>>,
     configured: rustc_hash::FxHashMap<(FileId, Option<Arc<flux_syntax::CfgOptions>>), FileId>,
 }
@@ -503,6 +504,7 @@ impl SourceDb {
             next_include_offset,
             compilation_dirs: Default::default(),
             proc_macros: Default::default(),
+            metadata_proc_macros: false,
             environments: Default::default(),
             configured: Default::default(),
         }
@@ -536,8 +538,12 @@ impl SourceDb {
         root
     }
 
+    pub(crate) fn note_metadata_proc_macros(&mut self) {
+        self.metadata_proc_macros = true;
+    }
+
     pub(crate) fn has_proc_macros(&self) -> bool {
-        !self.proc_macros.is_empty()
+        self.metadata_proc_macros || !self.proc_macros.is_empty()
     }
 
     pub(crate) fn proc_macros(&self, root: FileId) -> Option<&[crate::ProcMacro]> {

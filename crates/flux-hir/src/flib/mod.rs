@@ -234,6 +234,8 @@ impl Encoder {
 /// A bounded metadata reader. Lengths and nesting are checked before allocation.
 #[derive(Debug)]
 pub struct Decoder<'a> {
+    proc_macro_resolver: Option<std::sync::Arc<dyn crate::ProcMacroResolver>>,
+    proc_macro_error: Option<String>,
     bytes: &'a [u8],
     position: usize,
     depth: u32,
@@ -254,6 +256,8 @@ impl<'a> Decoder<'a> {
             bytes,
             position: 0,
             depth: 0,
+            proc_macro_resolver: None,
+            proc_macro_error: None,
             ids,
             contexts: BTreeMap::new(),
             groups: BTreeMap::new(),
@@ -261,6 +265,35 @@ impl<'a> Decoder<'a> {
             type_depths: BTreeMap::new(),
             allocations: Vec::new(),
             allocation_memo: BTreeMap::new(),
+        }
+    }
+    /// Installs the driver-owned host resolver shared by one compilation graph.
+    pub fn set_proc_macro_resolver(
+        &mut self,
+        resolver: std::sync::Arc<dyn crate::ProcMacroResolver>,
+    ) {
+        self.proc_macro_resolver = Some(resolver);
+    }
+    /// The host's detailed failure, when procedural-macro restoration failed.
+    pub fn proc_macro_error(&self) -> Option<&str> {
+        self.proc_macro_error.as_deref()
+    }
+    pub(crate) fn resolve_proc_macro(
+        &mut self,
+        descriptor: &[u8],
+    ) -> Result<std::sync::Arc<dyn crate::ProcMacroExpander>, Error> {
+        let resolver = self
+            .proc_macro_resolver
+            .as_ref()
+            .ok_or(Error("procedural macro metadata requires a host resolver"))?;
+        match resolver.resolve(descriptor) {
+            Ok(expander) => Ok(expander),
+            Err(message) => {
+                self.proc_macro_error = Some(message);
+                Err(Error(
+                    "cannot restore procedural macro host; rebuild artifact",
+                ))
+            }
         }
     }
     /// Returns the semantic depth of a validated interned type in this stream.
@@ -785,7 +818,8 @@ impl Encode for crate::TrackedInputs {
             path.encode(e)?;
             digest.as_slice().encode(e)?;
         }
-        self.environment.encode(e)
+        self.environment.encode(e)?;
+        self.macro_outputs.encode(e)
     }
 }
 impl Decode for crate::TrackedInputs {
@@ -805,6 +839,7 @@ impl Decode for crate::TrackedInputs {
         Ok(Self {
             files,
             environment: Decode::decode(d)?,
+            macro_outputs: Decode::decode(d)?,
         })
     }
 }

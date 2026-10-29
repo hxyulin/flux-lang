@@ -1,5 +1,7 @@
 //! Toolchain-matched, out-of-process host execution. No dylib enters Flux.
+mod flib;
 pub mod local;
+pub use flib::FlibHostResolver;
 mod protocol;
 mod tokens;
 use flux_hir::{ProcMacro, ProcMacroExpander, ProcMacroInput, ProcMacroToken};
@@ -22,6 +24,7 @@ struct Host {
     catalog: Arc<Catalog>,
     dylib: PathBuf,
     name: String,
+    identity: flib::HostIdentity,
 }
 impl std::fmt::Debug for Host {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -73,11 +76,16 @@ pub fn exports(
     }
     let sysroot = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
     let server = Path::new(sysroot.trim()).join("libexec/rust-analyzer-proc-macro-srv");
+    let identity = flib::HostIdentity::rustc(&server, dylib)?;
+    let (server, dylib) = identity.rustc_paths();
+    let server = server.to_owned();
+    let dylib = dylib.to_owned();
     let service = Service::start(server.clone(), TIMEOUT);
-    let names = match service.submit(Task::List(dylib.to_owned()))? {
+    let names = match service.submit(Task::List(dylib.clone()))? {
         Reply::List(names) => names,
         _ => return Err("unexpected proc-macro export list".into()),
     };
+    identity.verify()?;
     let catalog = Arc::new(Catalog {
         server,
         processes: std::sync::Mutex::new(CatalogState {
@@ -113,6 +121,7 @@ pub fn exports(
                     catalog: catalog.clone(),
                     dylib: dylib.to_owned(),
                     name,
+                    identity: identity.clone(),
                 }),
             })
         })
@@ -120,13 +129,19 @@ pub fn exports(
 }
 
 impl ProcMacroExpander for Host {
+    fn flib_descriptor(&self) -> Option<Vec<u8>> {
+        self.identity.descriptor(&self.name).ok()
+    }
     fn expand(&self, input: ProcMacroInput) -> Result<Vec<ProcMacroToken>, String> {
+        self.identity.verify()?;
         let service = self.catalog.for_crate(input.invocation_crate)?;
-        match service.submit(Task::Expand {
+        let reply = service.submit(Task::Expand {
             dylib: self.dylib.clone(),
             name: self.name.clone(),
             input: Box::new(input),
-        })? {
+        })?;
+        self.identity.verify()?;
+        match reply {
             Reply::Tokens(tokens) => Ok(tokens),
             _ => Err("unexpected proc-macro expansion reply".into()),
         }

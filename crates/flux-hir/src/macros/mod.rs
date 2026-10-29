@@ -1089,18 +1089,21 @@ pub(crate) fn expand_proc(
         current_dir,
     });
     match result {
-        Ok(tokens) => Some(
-            tokens
-                .into_iter()
-                .map(|t| Tok {
-                    edition: t.edition,
-                    kind: t.kind,
-                    text: Symbol::intern(&t.text),
-                    joint: t.joint,
-                    origin: t.origin,
-                })
-                .collect(),
-        ),
+        Ok(tokens) => {
+            site.items.crates[site.krate.0 as usize].record_macro_output(&tokens);
+            Some(
+                tokens
+                    .into_iter()
+                    .map(|t| Tok {
+                        edition: t.edition,
+                        kind: t.kind,
+                        text: Symbol::intern(&t.text),
+                        joint: t.joint,
+                        origin: t.origin,
+                    })
+                    .collect(),
+            )
+        }
         Err(message) => {
             diagnostics.push(Diagnostic::new(
                 call,

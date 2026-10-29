@@ -16,7 +16,7 @@ pub enum ProcMacroKind {
 }
 
 /// A token crossing the host boundary, retaining punctuation and source origin.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcMacroToken {
     pub edition: Edition,
     pub kind: SyntaxKind,
@@ -43,6 +43,18 @@ pub struct ProcMacroInput {
 /// Drivers implement host execution; HIR neither loads dylibs nor mutates env.
 pub trait ProcMacroExpander: std::fmt::Debug + Send + Sync {
     fn expand(&self, input: ProcMacroInput) -> Result<Vec<ProcMacroToken>, String>;
+
+    /// Returns a private, immutable host identity that a graph-scoped resolver can restore.
+    /// Custom expanders without a persistent host return `None`.
+    fn flib_descriptor(&self) -> Option<Vec<u8>> {
+        None
+    }
+}
+
+/// Restores validated host execution without putting host loading in HIR.
+/// Drivers create one resolver per compilation graph to share host state across exports.
+pub trait ProcMacroResolver: std::fmt::Debug + Send + Sync {
+    fn resolve(&self, descriptor: &[u8]) -> Result<Arc<dyn ProcMacroExpander>, String>;
 }
 
 /// A host export, optionally supplemented by checked helper declarations.

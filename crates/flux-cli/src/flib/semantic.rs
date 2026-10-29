@@ -54,6 +54,7 @@ pub fn crate_hash(
         }
     }
     encode(sources.encode(&mut e))?;
+    encode(expansion_observations(items, krate, dependencies)?.encode(&mut e))?;
     let tracked = data.tracked_inputs();
     let files: Vec<_> = tracked
         .files
@@ -77,6 +78,76 @@ pub fn crate_hash(
     hashes.sort();
     encode(hashes.encode(&mut e))?;
     Ok(flux_hir::flib::digest(&e.into_bytes()))
+}
+
+// Host macros can observe undeclared inputs. Hash their actual tokens and
+// hygiene, with process-local source and context IDs remapped canonically.
+fn expansion_observations(
+    items: &ItemTree,
+    krate: CrateId,
+    dependencies: &[Dependency],
+) -> Result<Vec<u8>, String> {
+    let own = CrateIndices::collect(items, krate);
+    let mut ids = IdMap::strict();
+    own.add_mapping(&mut ids, krate, 0)
+        .map_err(|e| e.to_string())?;
+    let mut dependencies: Vec<_> = dependencies.iter().collect();
+    dependencies.sort_by_key(|d| d.hash);
+    for (slot, dependency) in dependencies.iter().enumerate() {
+        dependency
+            .indices
+            .add_mapping(&mut ids, dependency.krate, (slot + 1) as u32)
+            .map_err(|e| e.to_string())?;
+    }
+    // The embedded macros are implicit imports. Compiler identity already
+    // covers them, even for callers that supply no explicit dependencies.
+    let mut implicit: Vec<_> = items
+        .crates
+        .iter()
+        .enumerate()
+        .filter(|(index, data)| {
+            let id = CrateId(*index as u32);
+            id != krate
+                && data.root.into_raw() < items.core.modules
+                && !dependencies.iter().any(|d| d.krate == id)
+        })
+        .collect();
+    implicit.sort_by_key(|(_, data)| data.name.as_str());
+    for (offset, (index, _)) in implicit.into_iter().enumerate() {
+        let id = CrateId(index as u32);
+        CrateIndices::collect(items, id)
+            .add_mapping(&mut ids, id, (dependencies.len() + offset + 1) as u32)
+            .map_err(|e| e.to_string())?;
+    }
+    let mut e = Encoder::with_ids(ids);
+    for raw in own.files {
+        let file = items
+            .files
+            .get(&flux_hir::FileId(raw))
+            .ok_or("missing expansion source")?;
+        if file.expansion_of.is_none() {
+            continue;
+        }
+        file.text().encode(&mut e).map_err(|e| e.to_string())?;
+        for token in file.parse.root().tokens() {
+            token
+                .lexical_kind()
+                .encode(&mut e)
+                .map_err(|e| e.to_string())?;
+            token.edition().encode(&mut e).map_err(|e| e.to_string())?;
+            token
+                .tree()
+                .token_origin(token.index())
+                .encode(&mut e)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    items.crates[krate.0 as usize]
+        .tracked_inputs()
+        .macro_outputs
+        .encode(&mut e)
+        .map_err(|e| e.to_string())?;
+    Ok(e.into_bytes())
 }
 
 /// One checked crate and the identities needed to encode it.
@@ -180,6 +251,26 @@ pub fn load_checked(
     mir: &mut FileMir,
     dependencies: &[Dependency],
 ) -> Result<Loaded, String> {
+    load_checked_with_resolver(
+        bytes,
+        db,
+        items,
+        sigs,
+        mir,
+        dependencies,
+        std::sync::Arc::new(crate::proc_macro::FlibHostResolver::default()),
+    )
+}
+
+fn load_checked_with_resolver(
+    bytes: &[u8],
+    db: &mut SourceDb,
+    items: &mut ItemTree,
+    sigs: &mut Signatures,
+    mir: &mut FileMir,
+    dependencies: &[Dependency],
+    resolver: std::sync::Arc<dyn flux_hir::ProcMacroResolver>,
+) -> Result<Loaded, String> {
     let archive = Archive::decode(bytes).map_err(|e| e.to_string())?;
     let metadata =
         Metadata::decode(&archive.metadata, compiler_identity()?).map_err(|e| e.to_string())?;
@@ -212,8 +303,12 @@ pub fn load_checked(
             .map_err(|e| e.to_string())?;
     }
     let mut names = Decoder::with_ids(section(3)?, ids);
-    let (krate, indices) =
-        flux_hir::flib::read_items(items, db, &mut names).map_err(|e| e.to_string())?;
+    names.set_proc_macro_resolver(resolver);
+    let (krate, indices) = flux_hir::flib::read_items(items, db, &mut names).map_err(|e| {
+        names
+            .proc_macro_error()
+            .map_or_else(|| e.to_string(), str::to_owned)
+    })?;
     names.finish().map_err(|e| e.to_string())?;
     if items.crates[krate.0 as usize].name != name {
         return Err("inconsistent flux crate identity".into());
@@ -407,11 +502,9 @@ impl DependencyState {
     /// Starts with the compiler-owned embedded libraries and their signature tables.
     pub fn new() -> Result<Self, String> {
         let db = SourceDb::new();
-        let items = flux_hir::Core::get().items.clone();
-        let (sigs, errors) = flux_ty::signatures(&items);
-        if !errors.is_empty() {
-            return Err("embedded library signatures contain errors".into());
-        }
+        let mut items = flux_hir::Core::get().items.clone();
+        items.core = items.counts();
+        let sigs = flux_ty::LibraryTypes::get().sigs.fork_for_extension();
         let compiler = compiler_identity()?;
         let dependencies = items
             .crates
@@ -448,14 +541,16 @@ impl DependencyState {
 
     /// Loads exact artifact dependencies. Failure consumes the unpublished staging state.
     pub fn load(mut self, paths: &[std::path::PathBuf]) -> Result<Self, String> {
+        let resolver = std::sync::Arc::new(crate::proc_macro::FlibHostResolver::default());
         for artifact in resolve_paths(paths, &self.dependencies)? {
-            let loaded = load_checked(
+            let loaded = load_checked_with_resolver(
                 &artifact.bytes,
                 &mut self.db,
                 &mut self.items,
                 &mut self.sigs,
                 &mut self.mir,
                 &self.dependencies,
+                resolver.clone(),
             )
             .map_err(|e| format!("{}: {e}", artifact.path.display()))?;
             if loaded.dependency.hash != artifact.manifest.hash {

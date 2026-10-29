@@ -242,6 +242,7 @@ impl Collector<'_> {
             no_std: false,
         });
         if let Some(exports) = self.db.proc_macros(root) {
+            self.items.files.insert(root, self.db.shared(root));
             self.items.crates[krate.0 as usize].no_std = true;
             for host in exports {
                 let name = host.name;

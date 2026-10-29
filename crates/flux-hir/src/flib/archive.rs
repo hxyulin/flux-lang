@@ -445,6 +445,14 @@ pub fn read_items(
     staged
         .artifact_files
         .insert(krate, indices.files.iter().copied().map(FileId).collect());
+    if indices.macros.iter().any(|&id| {
+        matches!(
+            staged.macros[Idx::from_raw(id)].kind,
+            crate::MacroKind::ProcMacro(_)
+        )
+    }) {
+        db.note_metadata_proc_macros();
+    }
     *items = staged;
     Ok((krate, indices))
 }

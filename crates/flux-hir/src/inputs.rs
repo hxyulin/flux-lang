@@ -11,6 +11,8 @@ pub struct TrackedInputs {
     pub files: BTreeMap<PathBuf, [u8; 32]>,
     /// Variable names and their values, including absent `option_env!` inputs.
     pub environment: BTreeMap<String, Option<String>>,
+    /// Successful host output, including body expansions without stored parses.
+    pub macro_outputs: Vec<Vec<crate::ProcMacroToken>>,
 }
 
 #[derive(Debug, Default)]
@@ -31,6 +33,15 @@ impl crate::CrateData {
             .lock()
             .expect("input trace lock poisoned")
             .clone()
+    }
+
+    pub(crate) fn record_macro_output(&self, tokens: &[crate::ProcMacroToken]) {
+        self.input_trace
+            .0
+            .lock()
+            .expect("input trace lock poisoned")
+            .macro_outputs
+            .push(tokens.to_vec());
     }
 
     pub(crate) fn record_file_input(&self, path: PathBuf, bytes: &[u8]) -> Result<(), String> {
