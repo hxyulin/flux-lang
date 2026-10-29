@@ -203,7 +203,10 @@ fn string(text: &str, mode: Mode, mut out: impl FnMut(Unit)) -> Result<(), Strin
             '\r' => return Err("bare CR not allowed in string, use `\\r` instead".to_owned()),
             '\\' if !raw => {
                 let rest = chars.as_str();
-                if let Some(after) = rest.strip_prefix('\n') {
+                if let Some(after) = rest
+                    .strip_prefix('\n')
+                    .or_else(|| rest.strip_prefix("\r\n"))
+                {
                     // A line continuation: skips the newline and the
                     // whitespace after it.
                     chars = after.trim_start_matches([' ', '\t', '\n', '\r']).chars();
@@ -344,6 +347,7 @@ mod tests {
         assert_eq!(c(r#"c"\u{e9}\u{1F_600}""#).unwrap(), "é😀".as_bytes());
         assert_eq!(c("c\"a\\\n    b\"").unwrap(), b"ab");
         assert_eq!(c("c\"a\r\nb\"").unwrap(), b"a\nb");
+        assert_eq!(c("c\"a\\\r\n    b\"").unwrap(), b"ab");
         assert_eq!(
             c(r##"cr#"no \n "escapes""#"##).unwrap(),
             br#"no \n "escapes""#
@@ -356,6 +360,13 @@ mod tests {
         assert!(c(r#"c"\x4""#).is_err());
         assert!(c(r#"c"\u{110000}""#).is_err());
         assert!(c("c\"a\rb\"").is_err());
+    }
+
+    #[test]
+    fn crlf_line_continuations() {
+        assert_eq!(unescape_str("\"a\\\r\n  \r\n\tb\"").unwrap(), "ab");
+        assert_eq!(unescape_byte_str("b\"a\\\r\n    b\"").unwrap(), b"ab");
+        assert!(unescape_str("\"a\\\rb\"").is_err());
     }
 
     #[test]

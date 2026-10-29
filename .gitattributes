@@ -1,0 +1,2 @@
+# Keep this fixture's CRLF line endings.
+tests/run/crlf_line_continuation.rs -text
