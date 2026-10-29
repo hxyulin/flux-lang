@@ -750,8 +750,13 @@ impl SourceDb {
                 path.display()
             ));
         }
-        let text = std::fs::read_to_string(path)
+        let mut text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        // Like rustc, ignore a leading byte order mark. Diagnostics take
+        // their offsets from the stored text, which no longer has it.
+        if text.starts_with('\u{feff}') {
+            text.drain(..'\u{feff}'.len_utf8());
+        }
         Ok(self.add_with_edition(path, text, edition))
     }
 

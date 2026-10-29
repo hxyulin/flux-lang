@@ -226,7 +226,13 @@ pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool 
 }
 
 fn read(file: &PathBuf) -> Result<String, String> {
-    std::fs::read_to_string(file).map_err(|e| format!("cannot read {}: {e}", file.display()))
+    let text = std::fs::read_to_string(file)
+        .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
+    // Like rustc, ignore a leading byte order mark.
+    Ok(match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_owned(),
+        None => text,
+    })
 }
 
 /// Prints `file:line:column: error: message`.
