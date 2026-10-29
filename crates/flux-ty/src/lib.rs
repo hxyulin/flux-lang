@@ -737,6 +737,11 @@ pub(crate) fn mentions_param(ty: Ty, index: u32) -> bool {
         }
         TyKind::FnDef(_) | TyKind::FnPtr(_) => ty.children().any(|t| mentions_param(t, index)),
         TyKind::Opaque(opaque) => opaque.args.iter().any(|&t| mentions_param(t, index)),
+        TyKind::Dynamic(object) => object
+            .args
+            .iter()
+            .chain(object.assoc_tys.iter())
+            .any(|&t| mentions_param(t, index)),
         _ => false,
     }
 }
