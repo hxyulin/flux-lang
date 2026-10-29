@@ -9,12 +9,6 @@ library there too. Proc-macro exports retain checked host descriptors and use
 the existing expansion protocol after loading. Trusted built-in persistence is
 the remaining gate; the source-graph path remains the comparison baseline.
 
-The native package corpus exposed a pinned Keel unwind-linking bug when duplicate
-weak definitions require DWARF-mode compact unwind entries. Their compact records
-retain physical function addresses while FDE relocations select the coalesced
-symbol. Keel must discard or remap the losing records. Flux does not strip unwind
-information to conceal the mismatch.
-
 A `.flib` (Fluxlib) contains one checked Flux crate. Loading it supplies the
 semantic information needed by downstream crates without parsing, lowering or
 type-checking the dependency again. This is a private Flux format. It provides
@@ -280,5 +274,5 @@ coverage in the runner. In-process tests retain the per-process library cache.
 Measure native object size, link time and the run corpus with a complete suite
 object versus reached-function emission from suite MIR. Record the object
 optimization tier explicitly, and do not change debug/release library semantics
-by accident. Preserve shared generic definitions while the Keel unwind fix is
-pending.
+by accident. Preserve shared generic definitions and their image-local visibility when
+comparing these strategies.
