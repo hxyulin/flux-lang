@@ -145,10 +145,11 @@ fn generic_arg(p: &mut Parser<'_>) {
             if p.at(T![<]) {
                 generic_arg_list(p);
             }
+            // The lookahead skipped to the matching `>`, which the
+            // arguments may not have reached: `Y<Z + W>: V`.
             if p.eat(T![=]) {
                 types::type_(p);
-            } else {
-                p.bump(T![:]);
+            } else if p.expect(T![:]) {
                 generics::bounds(p);
             }
             m.complete(p, ASSOC_TYPE_ARG);
