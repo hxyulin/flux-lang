@@ -1,0 +1,177 @@
+SOURCE_FILE@0..198
+  FN@0..117
+    FN_KW@0..2 "fn"
+    WHITESPACE@2..3 " "
+    NAME@3..14
+      IDENT@3..14 "comparisons"
+    PARAM_LIST@14..16
+      L_PAREN@14..15 "("
+      R_PAREN@15..16 ")"
+    WHITESPACE@16..17 " "
+    BLOCK_EXPR@17..117
+      L_CURLY@17..18 "{"
+      WHITESPACE@18..23 "\n    "
+      LET_STMT@23..54
+        LET_KW@23..26 "let"
+        WHITESPACE@26..27 " "
+        WILDCARD_PAT@27..28
+          UNDERSCORE@27..28 "_"
+        WHITESPACE@28..29 " "
+        EQ@29..30 "="
+        WHITESPACE@30..31 " "
+        BIN_EXPR@31..53
+          BIN_EXPR@31..44
+            LITERAL@31..35
+              TRUE_KW@31..35 "true"
+            WHITESPACE@35..36 " "
+            EQ2@36..38 "=="
+            WHITESPACE@38..39 " "
+            LITERAL@39..44
+              FALSE_KW@39..44 "false"
+          WHITESPACE@44..45 " "
+          EQ2@45..47 "=="
+          WHITESPACE@47..48 " "
+          LITERAL@48..53
+            FALSE_KW@48..53 "false"
+        SEMICOLON@53..54 ";"
+      WHITESPACE@54..59 "\n    "
+      LET_STMT@59..77
+        LET_KW@59..62 "let"
+        WHITESPACE@62..63 " "
+        WILDCARD_PAT@63..64
+          UNDERSCORE@63..64 "_"
+        WHITESPACE@64..65 " "
+        EQ@65..66 "="
+        WHITESPACE@66..67 " "
+        BIN_EXPR@67..76
+          BIN_EXPR@67..72
+            LITERAL@67..68
+              INT_NUMBER@67..68 "1"
+            WHITESPACE@68..69 " "
+            L_ANGLE@69..70 "<"
+            WHITESPACE@70..71 " "
+            LITERAL@71..72
+              INT_NUMBER@71..72 "2"
+          WHITESPACE@72..73 " "
+          R_ANGLE@73..74 ">"
+          WHITESPACE@74..75 " "
+          LITERAL@75..76
+            INT_NUMBER@75..76 "3"
+        SEMICOLON@76..77 ";"
+      WHITESPACE@77..82 "\n    "
+      LET_STMT@82..115
+        LET_KW@82..85 "let"
+        WHITESPACE@85..86 " "
+        WILDCARD_PAT@86..87
+          UNDERSCORE@86..87 "_"
+        WHITESPACE@87..88 " "
+        EQ@88..89 "="
+        WHITESPACE@89..90 " "
+        BIN_EXPR@90..114
+          BIN_EXPR@90..96
+            LITERAL@90..91
+              INT_NUMBER@90..91 "1"
+            WHITESPACE@91..92 " "
+            EQ2@92..94 "=="
+            WHITESPACE@94..95 " "
+            LITERAL@95..96
+              INT_NUMBER@95..96 "2"
+          WHITESPACE@96..97 " "
+          AMP2@97..99 "&&"
+          WHITESPACE@99..100 " "
+          BIN_EXPR@100..114
+            BIN_EXPR@100..106
+              LITERAL@100..101
+                INT_NUMBER@100..101 "3"
+              WHITESPACE@101..102 " "
+              EQ2@102..104 "=="
+              WHITESPACE@104..105 " "
+              LITERAL@105..106
+                INT_NUMBER@105..106 "4"
+            WHITESPACE@106..107 " "
+            EQ2@107..109 "=="
+            WHITESPACE@109..110 " "
+            LITERAL@110..114
+              TRUE_KW@110..114 "true"
+        SEMICOLON@114..115 ";"
+      WHITESPACE@115..116 "\n"
+      R_CURLY@116..117 "}"
+  WHITESPACE@117..119 "\n\n"
+  FN@119..197
+    FN_KW@119..121 "fn"
+    WHITESPACE@121..122 " "
+    NAME@122..128
+      IDENT@122..128 "ranges"
+    PARAM_LIST@128..130
+      L_PAREN@128..129 "("
+      R_PAREN@129..130 ")"
+    WHITESPACE@130..131 " "
+    BLOCK_EXPR@131..197
+      L_CURLY@131..132 "{"
+      WHITESPACE@132..137 "\n    "
+      LET_STMT@137..153
+        LET_KW@137..140 "let"
+        WHITESPACE@140..141 " "
+        WILDCARD_PAT@141..142
+          UNDERSCORE@141..142 "_"
+        WHITESPACE@142..143 " "
+        EQ@143..144 "="
+        WHITESPACE@144..145 " "
+        RANGE_EXPR@145..152
+          RANGE_EXPR@145..149
+            LITERAL@145..146
+              INT_NUMBER@145..146 "1"
+            DOT2@146..148 ".."
+            LITERAL@148..149
+              INT_NUMBER@148..149 "2"
+          DOT2@149..151 ".."
+          LITERAL@151..152
+            INT_NUMBER@151..152 "3"
+        SEMICOLON@152..153 ";"
+      WHITESPACE@153..158 "\n    "
+      LET_STMT@158..173
+        LET_KW@158..161 "let"
+        WHITESPACE@161..162 " "
+        WILDCARD_PAT@162..163
+          UNDERSCORE@162..163 "_"
+        WHITESPACE@163..164 " "
+        EQ@164..165 "="
+        WHITESPACE@165..166 " "
+        RANGE_EXPR@166..172
+          RANGE_EXPR@166..169
+            DOT2@166..168 ".."
+            LITERAL@168..169
+              INT_NUMBER@168..169 "1"
+          DOT2@169..171 ".."
+          LITERAL@171..172
+            INT_NUMBER@171..172 "2"
+        SEMICOLON@172..173 ";"
+      WHITESPACE@173..178 "\n    "
+      LET_STMT@178..195
+        LET_KW@178..181 "let"
+        WHITESPACE@181..182 " "
+        WILDCARD_PAT@182..183
+          UNDERSCORE@182..183 "_"
+        WHITESPACE@183..184 " "
+        EQ@184..185 "="
+        WHITESPACE@185..186 " "
+        RANGE_EXPR@186..194
+          RANGE_EXPR@186..191
+            LITERAL@186..187
+              INT_NUMBER@186..187 "1"
+            DOT2EQ@187..190 "..="
+            LITERAL@190..191
+              INT_NUMBER@190..191 "2"
+          DOT2@191..193 ".."
+          LITERAL@193..194
+            INT_NUMBER@193..194 "3"
+        SEMICOLON@194..195 ";"
+      WHITESPACE@195..196 "\n"
+      R_CURLY@196..197 "}"
+  WHITESPACE@197..198 "\n"
+error 44..44: comparison operators cannot be chained
+error 72..72: comparison operators cannot be chained
+error 106..106: comparison operators cannot be chained
+error 149..149: range operators cannot be chained
+error 169..169: range operators cannot be chained
+error 191..191: range operators cannot be chained

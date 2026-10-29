@@ -257,6 +257,9 @@ fn expr_bp(
             }
         };
     }
+    // The operator of the last binary or range node at this level: rustc
+    // rejects `a == b == c` and `a..b..c` rather than nesting them.
+    let mut prev_op = p.at(T![..]).then_some(T![..]);
     let (mut lhs, mut blocklike) = lhs(p, r)?;
     if r.prefer_stmt && blocklike == BlockLike::Block {
         if !(p.at(T![.]) && !p.at(T![..])) && !p.at(T![?]) {
@@ -276,6 +279,14 @@ fn expr_bp(
         }
         blocklike = BlockLike::NotBlock;
         let m = lhs.precede(p);
+        if let Some(prev) = prev_op {
+            if is_comparison(op) && is_comparison(prev) {
+                p.error("comparison operators cannot be chained");
+            } else if is_range(op) && is_range(prev) {
+                p.error("range operators cannot be chained");
+            }
+        }
+        prev_op = Some(op);
         p.bump(op);
         match op {
             T![as] => {
@@ -343,6 +354,14 @@ fn current_op(p: &mut Parser<'_>) -> (u8, SyntaxKind) {
         T![as] => (12, T![as]),
         _ => NOT_AN_OP,
     }
+}
+
+fn is_comparison(op: SyntaxKind) -> bool {
+    matches!(op, T![==] | T![!=] | T![<] | T![<=] | T![>] | T![>=])
+}
+
+fn is_range(op: SyntaxKind) -> bool {
+    matches!(op, T![..] | T![..=])
 }
 
 fn is_assignment(op: SyntaxKind) -> bool {
