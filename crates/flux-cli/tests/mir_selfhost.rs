@@ -14,9 +14,10 @@ use flux_intern::Symbol;
 use flux_syntax::Edition;
 
 // The unoptimized consumer rechecks the entire embedded library for each
-// input. A measured isolated run approaches a minute; allow CPU contention
-// without changing the compiler's evaluation or recursion limits.
-const NATIVE_RUN_SECONDS: u64 = 120;
+// input. The flux-built executables took 75-87 s beside other tests and over
+// 120 s on a loaded machine; allow that contention without changing the
+// compiler's evaluation or recursion limits.
+const NATIVE_RUN_SECONDS: u64 = 300;
 
 mod cases {
     include!("fixtures/mir_selfhost/cases.rs.txt");
@@ -312,119 +313,136 @@ fn mir_selfhost_worker() {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        let expected = bounded(
-            &mut Command::new(&libraries[13]),
-            &root,
-            "run-reference",
-            NATIVE_RUN_SECONDS,
-        );
-        success(&expected, &root, "run-reference");
-        let mut db = SourceDb::new();
-        let sources: Vec<_> = roots
-            .iter()
-            .enumerate()
-            .map(|(index, source)| SourceCrate {
-                root: db.load_with_edition(source, editions[index]).unwrap(),
-                name: Symbol::intern(names[index]),
-                dependencies: dependencies[index]
-                    .iter()
-                    .map(|&dep| (Symbol::intern(names[dep]), dep))
-                    .collect(),
-            })
-            .collect();
-        for (index, source) in sources.iter().enumerate() {
-            db.set_crate_cfg(
-                source.root,
-                CrateCfg {
-                    names: vec![],
-                    values: features[index]
+        // The consumers only compute and print, so the reference and both
+        // flux-built executables run while other work continues.
+        std::thread::scope(|scope| {
+            let reference = scope.spawn(|| {
+                bounded(
+                    &mut Command::new(&libraries[13]),
+                    &root,
+                    "run-reference",
+                    NATIVE_RUN_SECONDS,
+                )
+            });
+            let mut db = SourceDb::new();
+            let sources: Vec<_> = roots
+                .iter()
+                .enumerate()
+                .map(|(index, source)| SourceCrate {
+                    root: db.load_with_edition(source, editions[index]).unwrap(),
+                    name: Symbol::intern(names[index]),
+                    dependencies: dependencies[index]
                         .iter()
-                        .map(|feature| (Symbol::intern("feature"), Symbol::intern(feature)))
+                        .map(|&dep| (Symbol::intern(names[dep]), dep))
                         .collect(),
-                },
+                })
+                .collect();
+            for (index, source) in sources.iter().enumerate() {
+                db.set_crate_cfg(
+                    source.root,
+                    CrateCfg {
+                        names: vec![],
+                        values: features[index]
+                            .iter()
+                            .map(|feature| (Symbol::intern("feature"), Symbol::intern(feature)))
+                            .collect(),
+                    },
+                )
+                .unwrap();
+            }
+            phase(&root, "syntax-hir");
+            let hir = flux_hir::lower_sources(&mut db, &sources);
+            report(&root, "syntax", &db, &db.syntax_errors());
+            report(&root, "hir", &db, &hir.diagnostics);
+            std::fs::write(
+                root.join("loaded-files.json"),
+                serde_json::to_vec_pretty(&db.files().map(|(_, f)| &f.path).collect::<Vec<_>>())
+                    .unwrap(),
             )
             .unwrap();
-        }
-        phase(&root, "syntax-hir");
-        let hir = flux_hir::lower_sources(&mut db, &sources);
-        report(&root, "syntax", &db, &db.syntax_errors());
-        report(&root, "hir", &db, &hir.diagnostics);
-        std::fs::write(
-            root.join("loaded-files.json"),
-            serde_json::to_vec_pretty(&db.files().map(|(_, f)| &f.path).collect::<Vec<_>>())
-                .unwrap(),
-        )
-        .unwrap();
-        let clean_hir = db.syntax_errors().is_empty() && hir.diagnostics.is_empty();
-        // Explicit opt-in permits read-only inventories below known admission
-        // errors. Reports retain their provisional names and never reach codegen.
-        let provisional = std::env::var_os("FLUX_MIR_PROVISIONAL").is_some()
-            && !clean_hir
-            && db.syntax_errors().is_empty()
-            && hir.diagnostics.iter().all(|d| {
-                d.message.starts_with("cannot find")
-                    || d.message.starts_with("unresolved import `std::")
-                    || d.message == "impl Trait in edition 2021 are not supported yet"
-                    || d.message == "higher-ranked bounds are not supported yet"
-            });
-        if !clean_hir && !provisional {
-            panic!("syntax/HIR blockers; see {}", root.display());
-        }
-        phase(&root, "type");
-        let typed = flux_mir::check_file(&hir);
-        report(
-            &root,
-            if provisional {
-                "provisional-type"
-            } else {
-                "type"
-            },
-            &db,
-            &typed.diagnostics,
-        );
-        if !clean_hir || !typed.diagnostics.is_empty() {
-            if std::env::var_os("FLUX_MIR_PROVISIONAL").is_some() {
-                let mut errors = hir.diagnostics.clone();
-                errors.extend(typed.diagnostics.iter().cloned());
-                phase(&root, "provisional-mir");
-                let diagnostics = flux_mir::check_clean_bodies(&hir, &typed, &errors);
-                report(&root, "provisional-mir", &db, &diagnostics);
+            let clean_hir = db.syntax_errors().is_empty() && hir.diagnostics.is_empty();
+            // Explicit opt-in permits read-only inventories below known admission
+            // errors. Reports retain their provisional names and never reach codegen.
+            let provisional = std::env::var_os("FLUX_MIR_PROVISIONAL").is_some()
+                && !clean_hir
+                && db.syntax_errors().is_empty()
+                && hir.diagnostics.iter().all(|d| {
+                    d.message.starts_with("cannot find")
+                        || d.message.starts_with("unresolved import `std::")
+                        || d.message == "impl Trait in edition 2021 are not supported yet"
+                        || d.message == "higher-ranked bounds are not supported yet"
+                });
+            if !clean_hir && !provisional {
+                panic!("syntax/HIR blockers; see {}", root.display());
             }
-            panic!("type/admission blockers; see {}", root.display());
-        }
-        assert!(flux_ty::check_main(&hir.items, &typed.sigs).is_none());
-        phase(&root, "mir");
-        let mir = flux_mir::build_file(&hir, &typed);
-        report(&root, "mir", &db, &mir.diagnostics);
-        assert!(
-            mir.diagnostics.is_empty(),
-            "MIR blockers; see {}",
-            root.display()
-        );
-        for (label, tier) in [
-            ("unoptimized", flux_codegen::OptimizationTier::None),
-            ("optimized", flux_codegen::OptimizationTier::Full),
-        ] {
-            phase(&root, &format!("codegen-{label}"));
-            let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
-            let target = flux_codegen::Target::Aarch64AppleDarwin;
-            phase(&root, &format!("compile-object-{label}"));
-            let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
-            let executable = root.join(format!("flux-{label}"));
-            phase(&root, &format!("link-{label}"));
-            flux_codegen::link_executable(&object, target, &executable).unwrap();
-            phase(&root, &format!("execute-{label}"));
-            let actual = bounded(
-                &mut Command::new(executable),
+            phase(&root, "type");
+            let typed = flux_mir::check_file(&hir);
+            report(
                 &root,
-                &format!("run-flux-{label}"),
-                NATIVE_RUN_SECONDS,
+                if provisional {
+                    "provisional-type"
+                } else {
+                    "type"
+                },
+                &db,
+                &typed.diagnostics,
             );
-            assert_eq!(actual.status.code(), expected.status.code());
-            assert_eq!(actual.stdout, expected.stdout);
-            assert_eq!(actual.stderr, expected.stderr);
-        }
-        phase(&root, "native-verified");
+            if !clean_hir || !typed.diagnostics.is_empty() {
+                if std::env::var_os("FLUX_MIR_PROVISIONAL").is_some() {
+                    let mut errors = hir.diagnostics.clone();
+                    errors.extend(typed.diagnostics.iter().cloned());
+                    phase(&root, "provisional-mir");
+                    let diagnostics = flux_mir::check_clean_bodies(&hir, &typed, &errors);
+                    report(&root, "provisional-mir", &db, &diagnostics);
+                }
+                panic!("type/admission blockers; see {}", root.display());
+            }
+            assert!(flux_ty::check_main(&hir.items, &typed.sigs).is_none());
+            phase(&root, "mir");
+            let mir = flux_mir::build_file(&hir, &typed);
+            report(&root, "mir", &db, &mir.diagnostics);
+            assert!(
+                mir.diagnostics.is_empty(),
+                "MIR blockers; see {}",
+                root.display()
+            );
+            let mut runs = Vec::new();
+            for (label, tier) in [
+                ("unoptimized", flux_codegen::OptimizationTier::None),
+                ("optimized", flux_codegen::OptimizationTier::Full),
+            ] {
+                phase(&root, &format!("codegen-{label}"));
+                let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
+                let target = flux_codegen::Target::Aarch64AppleDarwin;
+                phase(&root, &format!("compile-object-{label}"));
+                let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
+                let executable = root.join(format!("flux-{label}"));
+                phase(&root, &format!("link-{label}"));
+                flux_codegen::link_executable(&object, target, &executable).unwrap();
+                let root = &root;
+                runs.push((
+                    label,
+                    scope.spawn(move || {
+                        bounded(
+                            &mut Command::new(executable),
+                            root,
+                            &format!("run-flux-{label}"),
+                            NATIVE_RUN_SECONDS,
+                        )
+                    }),
+                ));
+            }
+            phase(&root, "execute");
+            let expected = reference.join().unwrap();
+            success(&expected, &root, "run-reference");
+            for (label, run) in runs {
+                let actual = run.join().unwrap();
+                assert_eq!(actual.status.code(), expected.status.code(), "{label}");
+                assert_eq!(actual.stdout, expected.stdout, "{label}");
+                assert_eq!(actual.stderr, expected.stderr, "{label}");
+            }
+            phase(&root, "native-verified");
+        });
     }));
     let changed: Vec<_> = support::inventory::changed(&originals);
     std::fs::write(
