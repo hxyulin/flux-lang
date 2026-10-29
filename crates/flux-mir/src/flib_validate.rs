@@ -248,13 +248,18 @@ fn operand(o: &Operand, body: &Body, items: &ItemTree, sigs: &Signatures) -> Res
     Ok(())
 }
 
-pub(super) fn body(body: &Body, items: &ItemTree, sigs: &Signatures) -> Result<(), Error> {
+pub(super) fn body(
+    body: &Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    check_types: bool,
+) -> Result<(), Error> {
     let owner = match (body.owner, body.constant_owner) {
         (Some(f), None) => flux_ty::ClosureOwner::Function(f),
         (None, Some(c)) => flux_ty::ClosureOwner::Const(c),
         _ => return Err(invalid()),
     };
-    body_for_owner(body, items, sigs, owner)
+    body_for_owner(body, items, sigs, owner, check_types)
 }
 
 /// Closure table keys authenticate generated shims whose Body has no owner.
@@ -263,6 +268,7 @@ pub(super) fn body_for_owner(
     items: &ItemTree,
     sigs: &Signatures,
     owner: flux_ty::ClosureOwner,
+    check_types: bool,
 ) -> Result<(), Error> {
     let loc = match owner {
         flux_ty::ClosureOwner::Function(f) => items.functions.get(f).ok_or_else(invalid)?.loc,
@@ -478,6 +484,9 @@ pub(super) fn body_for_owner(
             }
             _ => {}
         }
+    }
+    if !check_types {
+        return Ok(());
     }
     let env = match owner {
         flux_ty::ClosureOwner::Function(f) => flux_solve::traits::projections_of(items, sigs, f),

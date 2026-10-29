@@ -245,6 +245,9 @@ or stale suites select source mode for the process. Corrupt matching suites
 name the artifact and instruct the user to run `flux build-builtins` again.
 Staging validates an existing matching suite without rebuilding it. New contents
 are written to a temporary file in the same directory and renamed into place.
+Before writing, staging decodes the new payload with every check, including
+MIR type checking. The loader then skips only the MIR type checks: a suite
+loads only for the compiler binary that staged it, with a matching checksum.
 An atomically written `flux-builtins.flib.stamp` caches the suite file's own stat
 fields after staging. The loader compares them with its opened file and skips
 the payload checksum only on a match. A missing/stale sidecar uses the checksum;

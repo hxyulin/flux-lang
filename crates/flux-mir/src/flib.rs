@@ -1386,6 +1386,7 @@ impl FileMir {
         items: &flux_hir::ItemTree,
         sigs: &Signatures,
     ) -> Result<(), Error> {
+        let check_types = !d.mir_typing_staged();
         let bodies = decode_map::<flux_hir::Function, Body>(d)?;
         for (id, body) in bodies.iter() {
             if body.owner != Some(id) || body.constant_owner.is_some() {
@@ -1398,7 +1399,7 @@ impl FileMir {
             {
                 return Err(Error::new("MIR function parameter count mismatch"));
             }
-            boundary::body(body, items, sigs)?;
+            boundary::body(body, items, sigs, check_types)?;
             if self.bodies.get(id).is_some() {
                 return Err(Error::new("duplicate imported MIR body"));
             }
@@ -1439,7 +1440,7 @@ impl FileMir {
             if !matches!(closure.kind(),TyKind::Closure(id,_) if id==key.0) {
                 return Err(Error::new("MIR closure receiver identity mismatch"));
             }
-            boundary::body_for_owner(&body, items, sigs, key.0.owner)?;
+            boundary::body_for_owner(&body, items, sigs, key.0.owner, check_types)?;
             if self.closures.insert(key, body).is_some() {
                 return Err(Error::new("duplicate imported closure"));
             }
@@ -1452,7 +1453,7 @@ impl FileMir {
             if body.param_count != 0 {
                 return Err(Error::new("constant MIR has parameters"));
             }
-            boundary::body(body, items, sigs)?;
+            boundary::body(body, items, sigs, check_types)?;
             if self.consts.get(id).is_some() {
                 return Err(Error::new("duplicate imported constant body"));
             }
@@ -1634,7 +1635,7 @@ mod boundary_tests {
             .unwrap()
             .0;
         let body = mir.bodies[id].clone();
-        boundary::body(&body, &hir.items, &typed.sigs).unwrap();
+        boundary::body(&body, &hir.items, &typed.sigs, true).unwrap();
         (body, hir.items, typed.sigs)
     }
 
@@ -1650,14 +1651,36 @@ mod boundary_tests {
                 ),
                 range: TextRange::new(0, 0),
             });
-        assert!(boundary::body(&body, &items, &sigs).is_err());
+        assert!(boundary::body(&body, &items, &sigs, true).is_err());
+    }
+
+    #[test]
+    fn staged_suites_skip_only_type_checks() {
+        let (mut body, items, sigs) = checked_context();
+        let mut assign = |value| {
+            body.blocks[BasicBlock::from_raw(0)]
+                .statements
+                .push(Statement {
+                    kind: StatementKind::Assign(
+                        Place::from(Body::RETURN),
+                        Rvalue::Use(Operand::Const(value)),
+                    ),
+                    range: TextRange::new(0, 0),
+                });
+        };
+        // A `bool` stored into a `()` return place is well formed but ill-typed.
+        assign(Constant::Bool(true));
+        assert!(boundary::body(&body, &items, &sigs, true).is_err());
+        boundary::body(&body, &items, &sigs, false).unwrap();
+        body.in_core = true;
+        assert!(boundary::body(&body, &items, &sigs, false).is_err());
     }
 
     #[test]
     fn imported_privileges_and_inconsistent_capture_rows_fail() {
         let (mut body, items, sigs) = checked_context();
         body.in_core = true;
-        assert!(boundary::body(&body, &items, &sigs).is_err());
+        assert!(boundary::body(&body, &items, &sigs, true).is_err());
         body.in_core = false;
         body.upvars = Some(Upvars {
             kind: ClosureKind::Fn,
@@ -1667,7 +1690,7 @@ mod boundary_tests {
             annotated_refs: false,
             fixed_args: vec![],
         });
-        assert!(boundary::body(&body, &items, &sigs).is_err());
+        assert!(boundary::body(&body, &items, &sigs, true).is_err());
     }
 }
 

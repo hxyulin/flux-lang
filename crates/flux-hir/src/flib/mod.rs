@@ -239,6 +239,7 @@ impl Encoder {
 #[derive(Debug)]
 pub struct Decoder<'a> {
     pub(crate) trusted_builtin_suite: bool,
+    staged_mir_typing: bool,
     proc_macro_resolver: Option<std::sync::Arc<dyn crate::ProcMacroResolver>>,
     proc_macro_error: Option<String>,
     bytes: &'a [u8],
@@ -256,9 +257,19 @@ impl<'a> Decoder<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
         Self::with_ids(bytes, IdMap::default())
     }
+    /// Skips type checking of decoded MIR bodies. Only for a built-in suite
+    /// whose exact bytes this compiler type checked when it staged them.
+    pub fn skip_staged_mir_typing(&mut self) {
+        self.staged_mir_typing = true;
+    }
+    /// Whether decoded MIR bodies were type checked when the suite was staged.
+    pub fn mir_typing_staged(&self) -> bool {
+        self.staged_mir_typing
+    }
     pub fn with_ids(bytes: &'a [u8], ids: IdMap) -> Self {
         Self {
             trusted_builtin_suite: false,
+            staged_mir_typing: false,
             bytes,
             position: 0,
             depth: 0,

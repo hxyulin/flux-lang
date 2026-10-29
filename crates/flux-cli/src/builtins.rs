@@ -136,7 +136,8 @@ pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, Chec
         Ok(())
     })
     .map_err(|e| invalid(path, e))?;
-    let mut suite = decode_payload(payload, archive.object).map_err(|e| invalid(path, e))?;
+    // Staging type checked these exact bytes with this compiler.
+    let mut suite = decode_payload(payload, archive.object, true).map_err(|e| invalid(path, e))?;
     suite.compiler = checked.hash;
     Ok(Some((suite, checked.method)))
 }
@@ -224,8 +225,15 @@ fn write_stamp(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|e| invalid(path, e))
 }
 
-fn decode_payload(payload: &[u8], object: Option<Vec<u8>>) -> Result<BuiltinSuite, String> {
+fn decode_payload(
+    payload: &[u8],
+    object: Option<Vec<u8>>,
+    staged: bool,
+) -> Result<BuiltinSuite, String> {
     let mut d = Decoder::new(payload);
+    if staged {
+        d.skip_staged_mir_typing();
+    }
     let target = String::decode(&mut d).map_err(|e| e.to_string())?;
     if flux_codegen::Target::host().is_none_or(|host| host.triple() != target) {
         return Err("built-in suite target mismatch".into());
@@ -406,6 +414,9 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     typed.sigs.encode_flib(&mut e).map_err(|e| e.to_string())?;
     mir.encode_flib(&mut e).map_err(|e| e.to_string())?;
     let payload = e.into_bytes();
+    // Loading skips MIR type checks, so check the exact bytes here, once.
+    decode_payload(&payload, object.clone(), false)
+        .map_err(|e| format!("staged built-in suite does not load: {e}"))?;
     let mut header = Encoder::new();
     header.write(MAGIC);
     VERSION.encode(&mut header).map_err(|e| e.to_string())?;
