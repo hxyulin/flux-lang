@@ -41,7 +41,19 @@ runtime feature detection are supported. A later source-guarded retry still
 prepared 71 source crates and five host proc macros. It reached diagnostics for
 compound legacy constant arguments, SHA and carry-less multiplication APIs,
 AVX-512, x86 inline assembly and `remove_dir_all`. Argument capture remains a
-runtime gap. Cargo and rustc still supply host build scripts and procedural macros.
+runtime gap in that audit. Linux now captures argc/argv at the generated entry
+point, including when main calls into a separately compiled path dependency.
+Recursive removal and bounded integer inline assembly pass native comparisons;
+the new removal implementation also checks symlink replacement races and
+rejects a trailing slash on a root symlink before touching its target.
+Cargo and rustc still supply host build scripts and procedural macros.
+
+The retry after those Linux changes prepared 71 source crates and five host proc
+macros, with no plan blockers and unchanged source guards. The x86 assembly and
+recursive-removal diagnostics are gone. The remaining diagnostics concern crypto
+APIs/features, AVX-512 and compound legacy constants. No Linux self-built compiler
+was produced. Full validation passed all 473 targets on both native hosts, plus
+formatting, clippy, runner units, workspace/example checks and codegen docs.
 
 ## Executable source graphs
 
@@ -546,8 +558,8 @@ The backend emits and links native arm64 macOS and x86-64 Linux executables.
 Linux uses Keel's ELF linker with installed glibc startup objects and shared
 libraries located through `cc`. Linux package builds are supported; the Cargo
 source driver remains gated to arm64 macOS. Linux self-hosting still needs
-command-line argument capture and recursive directory removal, plus crypto
-extensions, AVX-512, compound legacy constants and x86 inline assembly. Process spawning, owned pipes and channels
+crypto extensions, AVX-512 and compound legacy constants. Argument capture,
+recursive removal, bounded integer inline assembly, process spawning, owned pipes and channels
 have native comparison coverage on glibc x86-64 Linux. A rustc-built backend
 can help diagnose
 frontend milestones, but leaves part of the compiler built by rustc. The final
@@ -805,3 +817,17 @@ The unchanged production fix also passed the complete 469-target regression
 suite in `out/test-runs/1793350466552616000-33436/results.json`, workspace clippy
 with warnings denied, formatting, 43 runner unit tests and workspace/example
 source checks before this guarded retry.
+
+## Linux backend capability boundary
+
+The pinned Keel IR represents vectors up to 256 bits. Its x86 inline assembly
+transport also stops at 256 bits. The assembler can encode some EVEX instructions,
+but that does not supply a 512-bit IR value or ZMM transport for `__m512i`.
+Adding the Rust type and feature attribute alone cannot enable AVX-512 codegen.
+
+crc32fast 1.5.3's build script emits `stable_vpclmulqdq` when the host rustc is
+at least 1.89. That cfg compiles both its AVX2 and AVX-512 folding kernels.
+The Cargo source plan retains this host build output, so runtime CPU detection
+cannot remove the AVX-512 frontend requirement. Supporting the wider backend or
+providing explicit compiler capability configuration remains separate work.
+The argument and filesystem changes do not alter dependency sources or their cfgs.

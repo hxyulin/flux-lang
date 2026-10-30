@@ -619,6 +619,25 @@ fn lower_inner(
                 );
                 (instance_symbol(hir, &symbols, instance), flush_sig)
             });
+        let init = items
+            .lang_fns
+            .get(&flux_intern::Symbol::intern("args_init"))
+            .filter(|&&f| mir.bodies.get(f).is_some())
+            .map(|&f| {
+                let instance = Instance {
+                    function: f,
+                    args: &[],
+                };
+                (
+                    instance_symbol(hir, &symbols, instance),
+                    ctx_signature(
+                        &typed.sigs,
+                        &ctx.layouts,
+                        &typed.sigs[f],
+                        compilation.is_some(),
+                    ),
+                )
+            });
         let runner = if sig.ret != Ty::UNIT && sig.ret != Ty::NEVER {
             flux_ty::entry::main_runner(items, &typed.sigs).map(|function| {
                 let instance = Instance {
@@ -641,6 +660,7 @@ fn lower_inner(
             sig.ret == Ty::NEVER,
             flush,
             runner,
+            init,
         );
         module.functions.push(entry);
     }
@@ -1072,6 +1092,7 @@ fn entry_point(
     never: bool,
     flush: Option<(String, Signature)>,
     runner: Option<(String, Signature)>,
+    init: Option<(String, Signature)>,
 ) -> Function {
     let mut function = Function::new(
         "main",
@@ -1080,8 +1101,12 @@ fn entry_point(
     let mut b = FunctionBuilder::new(&mut function);
     let entry = b.create_block();
     b.switch_to_block(entry);
-    b.append_block_param(entry, Type::I32);
-    b.append_block_param(entry, Type::Ptr);
+    let argc = b.append_block_param(entry, Type::I32);
+    let argv = b.append_block_param(entry, Type::Ptr);
+    if let Some((name, sig)) = init {
+        let init = b.import_function(&name, sig);
+        b.ins().call(init, &[argc, argv]);
+    }
     let callee = b.import_function(rust_main, main_sig.clone());
     let status = if let Some((name, sig)) = runner {
         let address = b.ins().symbol_addr(keel_ir::Symbol::Func(callee));
@@ -3366,7 +3391,13 @@ impl Lower<'_, '_, '_> {
         if !options.preserves_flags {
             constraints.push("~{cc}".to_owned());
         }
-        let mut text = String::new();
+        // Keel expands GNU register operands with percent prefixes. Intel
+        // prefix syntax preserves Rust's operand order while accepting them.
+        let mut text = if cfg!(target_arch = "x86_64") {
+            String::from(".intel_syntax prefix\n")
+        } else {
+            String::new()
+        };
         for piece in template {
             match piece {
                 AsmTemplatePiece::Text(literal) => {
@@ -3374,11 +3405,21 @@ impl Lower<'_, '_, '_> {
                 }
                 AsmTemplatePiece::Operand { index, modifier } => {
                     use std::fmt::Write;
-                    let modifier = modifier.unwrap_or(match registers[*index as usize].class() {
-                        AsmRegister::Reg => 'x',
-                        AsmRegister::Vreg => 'v',
-                        _ => unreachable!(),
-                    });
+                    let modifier = if cfg!(target_arch = "x86_64") {
+                        match modifier {
+                            Some('l') => 'b',
+                            Some('x') => 'w',
+                            Some('e') => 'k',
+                            Some('r') | None => 'q',
+                            _ => unreachable!("validated x86 register modifier"),
+                        }
+                    } else {
+                        modifier.unwrap_or(match registers[*index as usize].class() {
+                            AsmRegister::Reg => 'x',
+                            AsmRegister::Vreg => 'v',
+                            _ => unreachable!(),
+                        })
+                    };
                     let index = template_indices[*index as usize];
                     write!(text, "%{modifier}[{index}]").unwrap();
                 }

@@ -79,7 +79,7 @@ pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collec
 }
 
 /// Collects executable roots and additional concrete instances in one traversal.
-/// The usual main, termination runner, stdout flush and static roots remain active.
+/// Main, runtime initialization, termination, stdout flush and static roots remain active.
 pub fn collect_all_with_roots(
     hir: &Hir,
     sigs: &Signatures,
@@ -177,16 +177,18 @@ fn collect_roots(
             depths.insert(instance, 0);
             instances.push(instance);
         }
-        // What the entry point calls after `main`.
-        if let Some(&flush) = items.lang_fns.get(&Symbol::intern("flush_stdout"))
-            && mir.bodies.get(flush).is_some()
-        {
-            let instance = Instance {
-                function: flush,
-                args: &[],
-            };
-            depths.insert(instance, 0);
-            instances.push(instance);
+        // Runtime hooks invoked around the user main function.
+        for hook in ["args_init", "flush_stdout"] {
+            if let Some(&function) = items.lang_fns.get(&Symbol::intern(hook))
+                && mir.bodies.get(function).is_some()
+            {
+                let instance = Instance {
+                    function,
+                    args: &[],
+                };
+                depths.insert(instance, 0);
+                instances.push(instance);
+            }
         }
     }
     for &instance in additional_roots {

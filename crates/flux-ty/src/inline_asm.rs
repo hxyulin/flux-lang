@@ -34,16 +34,17 @@ pub fn is_vector(items: &ItemTree, ty: Ty) -> bool {
 pub fn supports(items: &ItemTree, sigs: &Signatures, ty: Ty, register: AsmRegister) -> bool {
     match register.class() {
         AsmRegister::Reg => match ty.kind() {
-            TyKind::Int(i) => i.bits() <= 64,
+            TyKind::Int(i) => i.bits() <= 64 && (cfg!(target_arch = "aarch64") || i.bits() >= 16),
             TyKind::Float(_) => true,
             TyKind::FnPtr(_) => true,
             TyKind::RawPtr(_, p) => !sigs.is_unsized(p),
             _ => false,
         },
         AsmRegister::Vreg => {
-            matches!(ty.kind(), TyKind::Float(_))
-                || ty.as_int().is_some_and(|i| i.bits() <= 64)
-                || is_vector(items, ty)
+            cfg!(target_arch = "aarch64")
+                && (matches!(ty.kind(), TyKind::Float(_))
+                    || ty.as_int().is_some_and(|i| i.bits() <= 64)
+                    || is_vector(items, ty))
         }
         _ => unreachable!(),
     }

@@ -742,8 +742,9 @@ pub fn core_drop_fns(items: &ItemTree) -> Vec<FunctionId> {
 
 /// `core`'s functions code generation calls without MIR naming them:
 /// those a failed check panics through, and what the entry point calls
-/// after `main`, by their `#[lang]` names.
+/// before and after `main`, by their `#[lang]` names.
 pub const RUNTIME_LANG_FNS: &[&str] = &[
+    "args_init",
     "coroutine_alloc",
     "coroutine_free",
     "panic_bounds_check",

@@ -482,3 +482,103 @@ pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
     // traversal; no callback/state is supplied and symbolic links are not followed.
     if unsafe { removefile(name.as_ptr(), core::ptr::null_mut(), 1) } < 0 { Err(Error::last_os_error()) } else { Ok(()) }
 }
+
+/// Removes a directory tree without traversing symbolic links.
+#[cfg(target_os = "linux")]
+pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
+    // A trailing slash must not turn a root symlink into an ancestor that
+    // open(O_NOFOLLOW) would follow before reaching its final component.
+    let bytes = path.as_ref().as_os_str().as_encoded_bytes();
+    let mut length = bytes.len();
+    while length > 1 && bytes[length - 1] == b'/' { length -= 1; }
+    let path = PathBuf::from(OsString { bytes: bytes[..length].to_vec() });
+    let raw = path.as_os_str().as_encoded_bytes();
+    let (parent, entry) = match raw.iter().rposition(|&byte| byte == b'/') {
+        Some(index) if index + 1 < raw.len() => (&raw[..index.max(1)], &raw[index + 1..]),
+        _ => (b".".as_slice(), raw),
+    };
+    let parent = c_path(Path::new(&OsString { bytes: parent.to_vec() }))?;
+    let name = c_path(Path::new(&OsString { bytes: entry.to_vec() }))?;
+    // SAFETY: O_PATH pins the parent without requiring read permission. Its
+    // path may contain symlinks, just as ordinary Unix pathname resolution does.
+    let parent = unsafe { directory_native::openat(-100, parent.as_ptr(), directory_native::PARENT_FLAGS) };
+    if parent < 0 { return Err(Error::last_os_error()); }
+    let parent = Descriptor(parent);
+    let mut storage = [0u64; 32];
+    // SAFETY: the name is terminated and the aligned buffer exceeds the native
+    // stat record. AT_SYMLINK_NOFOLLOW classifies the entry in this pinned parent.
+    if unsafe { directory_native::fstatat(parent.0, name.as_ptr(), storage.as_mut_ptr(), 0x100) } < 0 {
+        return Err(Error::last_os_error());
+    }
+    let kind = metadata_record(&storage).file_type();
+    if kind.is_symlink() {
+        if length != bytes.len() { return Err(Error::from_raw_os_error(20)); }
+        // SAFETY: unlinkat removes the named entry without following a symlink.
+        return if unsafe { directory_native::unlinkat(parent.0, name.as_ptr(), 0) } < 0 {
+            Err(Error::last_os_error())
+        } else { Ok(()) };
+    }
+    if !kind.is_dir() { return Err(Error::from_raw_os_error(20)); }
+    // SAFETY: both the initial open and final unlink use the same parent fd.
+    // O_NOFOLLOW rejects replacement of the selected directory with a symlink.
+    let fd = unsafe { directory_native::openat(parent.0, name.as_ptr(), directory_native::OPEN_FLAGS) };
+    if fd < 0 { return Err(Error::last_os_error()); }
+    remove_directory_contents(Descriptor(fd))?;
+    // SAFETY: unlinkat removes only the named directory entry, never a symlink target.
+    if unsafe { directory_native::unlinkat(parent.0, name.as_ptr(), 0x200) } < 0 {
+        Err(Error::last_os_error())
+    } else { Ok(()) }
+}
+
+#[cfg(target_os = "linux")]
+mod directory_native {
+    // O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC.
+    #[cfg(target_arch = "x86_64")]
+    pub const OPEN_FLAGS: i32 = 0xb0000;
+    #[cfg(target_arch = "aarch64")]
+    pub const OPEN_FLAGS: i32 = 0x8c000;
+    // O_PATH | O_DIRECTORY | O_CLOEXEC. Parent paths may follow symlinks.
+    #[cfg(target_arch = "x86_64")]
+    pub const PARENT_FLAGS: i32 = 0x290000;
+    #[cfg(target_arch = "aarch64")]
+    pub const PARENT_FLAGS: i32 = 0x284000;
+    unsafe extern "C" {
+        pub fn fstatat(directory: i32, name: *const u8, storage: *mut u64, flags: i32) -> i32;
+        pub fn openat(directory: i32, name: *const u8, flags: i32, ...) -> i32;
+        pub fn fdopendir(fd: i32) -> *mut core::ffi::c_void;
+        pub fn unlinkat(directory: i32, name: *const u8, flags: i32) -> i32;
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn remove_directory_contents(fd: Descriptor) -> Result<()> {
+    let raw = fd.0;
+    // SAFETY: fd owns an open directory. fdopendir takes ownership on success.
+    let stream = unsafe { directory_native::fdopendir(raw) };
+    if stream.is_null() { return Err(Error::last_os_error()); }
+    core::mem::forget(fd);
+    let mut entries = ReadDir { directory: stream, path: PathBuf::new(), done: false };
+    for entry in &mut entries {
+        let name = c_path(Path::new(&entry?.file_name()))?;
+        // SAFETY: the parent fd remains open for this entire iteration. Opening
+        // the child relative to it cannot traverse a replaced parent path.
+        let child = unsafe { directory_native::openat(raw, name.as_ptr(), directory_native::OPEN_FLAGS) };
+        let flags = if child >= 0 {
+            remove_directory_contents(Descriptor(child))?;
+            0x200 // AT_REMOVEDIR.
+        } else {
+            let error = Error::last_os_error();
+            match error.raw_os_error() {
+                Some(2) => continue, // A concurrent remover already deleted it.
+                Some(20) | Some(40) => 0, // ENOTDIR or ELOOP: remove the entry itself.
+                _ => return Err(error),
+            }
+        };
+        // SAFETY: the copied name is terminated; the parent fd pins this directory.
+        if unsafe { directory_native::unlinkat(raw, name.as_ptr(), flags) } < 0 {
+            let error = Error::last_os_error();
+            if error.raw_os_error() != Some(2) { return Err(error); }
+        }
+    }
+    Ok(())
+}

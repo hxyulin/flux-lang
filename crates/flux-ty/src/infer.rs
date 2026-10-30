@@ -7300,7 +7300,13 @@ impl Ctx<'_> {
                         } = *piece
                         {
                             let valid = match asm.registers[index as usize].class() {
-                                flux_hir::AsmRegister::Reg => matches!(modifier, 'w' | 'x'),
+                                flux_hir::AsmRegister::Reg => {
+                                    if cfg!(target_arch = "x86_64") {
+                                        matches!(modifier, 'l' | 'x' | 'e' | 'r')
+                                    } else {
+                                        matches!(modifier, 'w' | 'x')
+                                    }
+                                }
                                 flux_hir::AsmRegister::Vreg => {
                                     matches!(modifier, 'v' | 'b' | 'h' | 's' | 'd' | 'q')
                                 }

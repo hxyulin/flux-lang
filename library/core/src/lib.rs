@@ -46,6 +46,9 @@ pub mod panicking;
 pub mod prelude;
 pub mod ptr;
 pub mod result;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub mod runtime;
 pub mod slice;
 pub mod str;
 pub mod sync;

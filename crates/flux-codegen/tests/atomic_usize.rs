@@ -23,7 +23,14 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
         let mut operations = Vec::new();
         for function in &module.functions {
             for (_, inst) in function.layout_insts() {
+                // Entry-point argument capture may add unrelated pointer atomics.
                 match function.inst_data(inst) {
+                    InstData::AtomicLoad { ty: Type::Ptr, .. } => continue,
+                    InstData::AtomicStore { value, .. }
+                        if function.value_type(*value) == Type::Ptr =>
+                    {
+                        continue;
+                    }
                     InstData::AtomicLoad { ty, ordering, .. } => {
                         assert_eq!(*ty, Type::I64);
                         operations.push(("load", *ordering));

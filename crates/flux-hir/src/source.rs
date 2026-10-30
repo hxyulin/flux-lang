@@ -341,6 +341,10 @@ const CORE_FILES: &[(&str, &str)] = &[
     ),
     ("arch.rs", include_str!("../../../library/core/src/arch.rs")),
     (
+        "runtime.rs",
+        include_str!("../../../library/core/src/runtime.rs"),
+    ),
+    (
         "arch/x86_64.rs",
         include_str!("../../../library/core/src/arch/x86_64.rs"),
     ),

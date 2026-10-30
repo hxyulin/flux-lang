@@ -165,30 +165,26 @@ impl core::fmt::Debug for ArgsOs {
         f.debug_struct("ArgsOs").field("inner", &self.inner.as_slice()).finish()
     }
 }
-/// Copies native Darwin argv without requiring Unicode. Linux command-line
-/// access requires a runtime entrypoint handoff and remains unsupported.
+/// Copies the process arguments without requiring Unicode.
 pub fn args_os() -> ArgsOs {
     #[cfg(target_os = "macos")]
-    {
+    let (count, values) = {
         unsafe extern "C" {
             fn _NSGetArgc() -> *mut i32;
-            fn _NSGetArgv() -> *mut *mut *mut u8;
+            fn _NSGetArgv() -> *mut *mut *const u8;
         }
-        let mut arguments = Vec::new();
-        // SAFETY: Darwin's runtime owns argc and the argument-pointer array
-        // for the process lifetime. Entries are copied through their NULs;
-        // the returned iterator holds no references into runtime storage.
-        unsafe {
-            let count = *_NSGetArgc();
-            let values = *_NSGetArgv();
-            for index in 0..count as usize {
-                arguments.push(OsString { bytes: copy_environment_string(*values.add(index)) });
-            }
-        }
-        ArgsOs { inner: arguments.into_iter(), marker: core::marker::PhantomData }
+        // SAFETY: Darwin owns argc and argv for the process lifetime.
+        unsafe { (*_NSGetArgc() as usize, *_NSGetArgv()) }
+    };
+    #[cfg(target_os = "linux")]
+    let (count, values) = core::runtime::args();
+    let mut arguments = Vec::new();
+    for index in 0..count {
+        // SAFETY: the native runtime supplies count immutable C strings.
+        // The iterator owns copies and retains no references into argv.
+        unsafe { arguments.push(OsString { bytes: copy_environment_string(*values.add(index)) }); }
     }
-    #[cfg(not(target_os = "macos"))]
-    { panic!("command-line argument access is not supported on this target") }
+    ArgsOs { inner: arguments.into_iter(), marker: core::marker::PhantomData }
 }
 
 /// Returns the running executable's canonical path.

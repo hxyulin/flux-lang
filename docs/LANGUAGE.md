@@ -1514,6 +1514,15 @@ imports. It supports the same feature names, checks CPUID and checks OSXSAVE
 and XCR0 before reporting AVX/AVX2. Unknown names are rejected.
 Native Linux comparisons cover both optimization modes and match rustc.
 
+On x86-64, `core::arch::asm!` supports Intel syntax with `in(reg)` and
+`inout(reg)` operands. Registers accept 16/32/64-bit integers, floats, thin pointers
+and function pointers. Modifiers `l`, `x`, `e` and `r` select low-byte,
+halfword, word and doubleword names. `nomem`, `readonly`, `preserves_flags`,
+`nostack` and `pure` retain the existing bounded assembly interface.
+Fixed registers, separate outputs, SIMD register classes and the `att_syntax`
+option remain unsupported. The backend translates Rust register modifiers to
+Keel's GNU operands and switches syntax for the template's Intel operand order.
+
 On AArch64, `core::arch::aarch64` (also reexported as `std::arch::aarch64`)
 provides distinct `uint8x16_t`,
 `uint16x8_t`, `uint64x2_t`, `uint8x8_t` and `uint64x1_t` types, with their
@@ -1781,11 +1790,21 @@ remains unsupported.
 
 The Unix library supplies `fs::read_dir`, owned directory entries, `symlink_metadata`,
 file-type queries, Unix symlink creation and device/inode/change-time metadata queries.
-Darwin additionally supplies recursive directory removal without following symlinks.
+Both Darwin and Linux supply recursive directory removal without traversing
+child symlinks. Linux pins directories with file descriptors, opens children
+relative to their parents with `O_NOFOLLOW`, and deletes entries with `unlinkat`.
+A root symlink with a trailing slash is rejected before traversal. This differs
+from the tested Linux Rust runtime, which can empty that target before returning
+`NotADirectory`. Ordinary root symlinks are removed without changing their targets.
 `env::current_exe` returns a canonical executable path. `thread::sleep` resumes after
 signal interruption. Native tests compare directory operations, stat record fields,
 executable discovery and sleeping with rustc on arm64 macOS. Focused x86-64
-Linux comparisons cover file I/O and clocks; recursive removal remains Darwin-only.
+Linux comparisons cover file I/O, clocks and recursive removal, including
+non-Unicode names, read-only files, descriptor cleanup and symlink replacement races.
+`env::args_os` copies raw argument bytes on both hosts. Linux's generated C entry
+point hands argc/argv to the core runtime before invoking user main or its
+termination runner. Each iterator owns a snapshot, including empty and
+non-Unicode arguments; it remains neither Send nor Sync.
 
 The bounded `process::Command` interface supports spawning, inherited/explicit
 environments, working directories, owned stdio pipes, simultaneous stdout/stderr
