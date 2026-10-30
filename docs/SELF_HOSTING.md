@@ -34,8 +34,13 @@ host gate exposed missing x86 intrinsics, feature attributes and detection,
 inline assembly, and Linux runtime APIs. No Linux self-built compiler was
 produced. After the process and channel port, a source-guarded retry still
 prepared the same 71 crates and five host proc macros. Process/channel import
-and host Send/Sync errors are gone; x86 intrinsic/feature handling and
-`remove_dir_all` remain compile-time blockers. Argument capture remains a
+and host Send/Sync errors are gone. The integer SSE/AVX2 bridge now passes native
+comparisons, and unchanged hashbrown sources and the feature-free memchr wrapper
+execute on Linux in both optimization modes. Function-local ISA permissions and
+runtime feature detection are supported. A later source-guarded retry still
+prepared 71 source crates and five host proc macros. It reached diagnostics for
+compound legacy constant arguments, SHA and carry-less multiplication APIs,
+AVX-512, x86 inline assembly and `remove_dir_all`. Argument capture remains a
 runtime gap. Cargo and rustc still supply host build scripts and procedural macros.
 
 ## Executable source graphs
@@ -541,8 +546,8 @@ The backend emits and links native arm64 macOS and x86-64 Linux executables.
 Linux uses Keel's ELF linker with installed glibc startup objects and shared
 libraries located through `cc`. Linux package builds are supported; the Cargo
 source driver remains gated to arm64 macOS. Linux self-hosting still needs
-command-line argument capture and recursive directory removal, plus x86
-intrinsics and feature handling. Process spawning, owned pipes and channels
+command-line argument capture and recursive directory removal, plus crypto
+extensions, AVX-512, compound legacy constants and x86 inline assembly. Process spawning, owned pipes and channels
 have native comparison coverage on glibc x86-64 Linux. A rustc-built backend
 can help diagnose
 frontend milestones, but leaves part of the compiler built by rustc. The final

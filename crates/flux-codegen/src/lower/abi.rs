@@ -242,10 +242,13 @@ fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, layouts: &Layouts, 
     match ty.kind() {
         TyKind::Adt(adt, _) => {
             let data = &items.structs[adt.strukt];
-            // The core NEON wrappers represent vectors, whose C register
+            // The core SIMD wrappers represent vectors, whose C register
             // classification differs from an integer struct of the same size.
             let vector = items.is_core(data.loc.module)
-                && items.modules[data.loc.module].name.as_str() == "aarch64";
+                && matches!(
+                    items.modules[data.loc.module].name.as_str(),
+                    "aarch64" | "x86_64"
+                );
             if let Some(variants) = flux_solve::variants(sigs, ty) {
                 return c_scalar(sigs, layouts, ty).is_some()
                     && ((variants.iter().any(|v| !v.is_empty())

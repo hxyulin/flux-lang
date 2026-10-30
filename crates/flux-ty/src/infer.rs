@@ -1891,6 +1891,22 @@ impl Ctx<'_> {
                     || match own.as_str() {
                         "sha3" => matches!(feature.as_str(), "sha2" | "neon"),
                         "sha2" => feature.as_str() == "neon",
+                        "avx2" => matches!(
+                            feature.as_str(),
+                            "avx" | "sse4.2" | "sse4.1" | "ssse3" | "sse3" | "sse2" | "sse"
+                        ),
+                        "avx" => matches!(
+                            feature.as_str(),
+                            "sse4.2" | "sse4.1" | "ssse3" | "sse3" | "sse2" | "sse"
+                        ),
+                        "sse4.2" => matches!(
+                            feature.as_str(),
+                            "sse4.1" | "ssse3" | "sse3" | "sse2" | "sse"
+                        ),
+                        "sse4.1" => matches!(feature.as_str(), "ssse3" | "sse3" | "sse2" | "sse"),
+                        "ssse3" => matches!(feature.as_str(), "sse3" | "sse2" | "sse"),
+                        "sse3" => matches!(feature.as_str(), "sse2" | "sse"),
+                        "sse2" => feature.as_str() == "sse",
                         _ => false,
                     }
             })
@@ -3253,8 +3269,8 @@ impl Ctx<'_> {
                 }
                 // Address exposure does not expose a callable lifetime recipe.
                 // Retain the real machine signature and monomorphized instance,
-                // then lower the immediately consumed pointer through ptrtoint.
-                let from = if to.as_int().is_some()
+                // then expose it as an integer address or a thin raw pointer.
+                let from = if (to.as_int().is_some() || matches!(to.kind(), TyKind::RawPtr(..)))
                     && let TyKind::FnDef(def) = self.shallow(from).kind()
                 {
                     if self.items.functions[def.function].intrinsic.is_some() {
@@ -7475,6 +7491,7 @@ impl Ctx<'_> {
                         }
                         (TyKind::RawPtr(_, pointee), TyKind::Int(_)) => !self.is_unsized(pointee),
                         (TyKind::FnPtr(_), TyKind::Int(_)) => true,
+                        (TyKind::FnPtr(_), TyKind::RawPtr(_, pointee)) => !self.is_unsized(pointee),
                         (TyKind::Int(_), TyKind::RawPtr(_, pointee)) => !self.is_unsized(pointee),
                         // A fieldless enum, to its discriminant.
                         (TyKind::Adt(adt, _), TyKind::Int(_)) => {

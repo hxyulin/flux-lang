@@ -3,7 +3,7 @@ use std::process::Command;
 
 #[test]
 fn target_feature_acceptance_matches_rustc() {
-    if std::env::consts::ARCH != "aarch64" {
+    if !matches!(std::env::consts::ARCH, "aarch64" | "x86_64") {
         return;
     }
     let accepted = [
@@ -45,8 +45,13 @@ fn target_feature_acceptance_matches_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (sources, expected) in [(&accepted[..], true), (&rejected[..], false)] {
         for source in sources {
+            let source = if cfg!(target_arch = "x86_64") {
+                source.replace("sse2", "not-real").replace("neon", "sse2")
+            } else {
+                source.to_string()
+            };
             let path = dir.join("probe.rs");
-            std::fs::write(&path, source).unwrap();
+            std::fs::write(&path, &source).unwrap();
             let output = Command::new("rustc")
                 .args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
                 .arg(&path)
@@ -60,7 +65,7 @@ fn target_feature_acceptance_matches_rustc() {
                 "{source}\n{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            let (db, root, hir) = flux_hir::lower_text(&path, source);
+            let (db, root, hir) = flux_hir::lower_text(&path, &source);
             assert!(db.file(root).parse.errors().is_empty(), "{source}");
             assert_eq!(
                 hir.diagnostics.is_empty(),
@@ -80,7 +85,7 @@ fn unsupported_target_feature_contexts_remain_errors() {
         "#[target_feature(enable = \"aes\")] unsafe fn f() {}",
         "#[target_feature(enable = \"neon,aes\")] #[target_feature(enable = \"neon\")] unsafe fn f() {}",
         "#[cfg_attr(all(), target_feature(enable = \"aes\"))] unsafe fn f() {}",
-        "#[target_feature(enable = \"avx2\")] unsafe fn f() {}",
+        "#[target_feature(enable = \"avx512f\")] unsafe fn f() {}",
     ] {
         let (_, _, hir) = flux_hir::lower_text("probe.rs", source);
         assert!(!hir.diagnostics.is_empty(), "{source}");

@@ -20,3 +20,9 @@ same lookup; GNU library scripts are rejected by Keel, so libc and libm use
 versioned shared objects. Linux output is a dynamically linked non-PIE executable.
 Failed links preserve an existing destination. Linux cross-linking from macOS
 and x86-64 macOS (including Rosetta) are not supported.
+
+Integer SSE/AVX wrappers keep vector values in memory at Rust call boundaries
+and introduce packed Keel values inside intrinsic calls. Function target-feature
+attributes grant local ISA permissions. Assembly uses the union of those
+permissions after code generation checks each function against its own set.
+Runtime AVX detection checks CPUID and OS-managed XMM/YMM state through XCR0.

@@ -1490,6 +1490,30 @@ in-bounds index and, for strings, UTF-8 boundaries. String mutation preserves
 UTF-8 through checked mutable ranges, while unsafe byte views require the
 caller to restore that invariant before their borrow ends.
 
+On x86-64, `core::arch::x86_64` and `std::arch::x86_64` provide
+`__m128i` and `__m256i` with native sizes and alignments. The bounded integer
+API covers constructors, aligned/unaligned loads, 128-bit aligned/unaligned stores,
+byte/halfword/word comparisons, byte masks, bitwise operations, wrapping adds,
+halfword subtraction/multiplication, SSE unsigned high/widening multiplication,
+logical immediate shifts, byte/word shuffles, byte alignment, halfword blending,
+saturating signed packs, prefetch hints, and 128-bit half extraction/insertion.
+Operations lower to Keel vector IR and
+x86 intrinsics. Constructors and half composition use ordinary Rust.
+Immediate ranges are checked after generic substitution, including function
+values and legacy trailing constant arguments. This is not the full Rust
+SSE/AVX API; floating-point vectors, AVX-512 and SHA instructions remain unsupported.
+Vector arguments and returns through the C ABI are rejected.
+
+x86 `target_feature` accepts `sse`, `sse2`, `sse3`, `ssse3`, `sse4.1`,
+`sse4.2`, `avx` and `avx2`. Feature implications permit safe calls between
+annotated functions; memory operations retain their unsafe requirements.
+Permissions reach Keel per function and are preserved by its optimizer.
+The module-wide assembler permission union does not change baseline functions.
+`is_x86_feature_detected!` works at the std root, in `std::arch` and through
+imports. It supports the same feature names, checks CPUID and checks OSXSAVE
+and XCR0 before reporting AVX/AVX2. Unknown names are rejected.
+Native Linux comparisons cover both optimization modes and match rustc.
+
 On AArch64, `core::arch::aarch64` (also reexported as `std::arch::aarch64`)
 provides distinct `uint8x16_t`,
 `uint16x8_t`, `uint64x2_t`, `uint8x8_t` and `uint64x1_t` types, with their
@@ -1588,8 +1612,10 @@ Unsafe `[T]::align_to<U>` splits a shared slice into a T prefix, aligned U
 middle and T suffix, preserving whole-element boundaries and the source
 lifetime. Zero-sized and impossible-alignment cases are supported. Callers
 must establish the U values' validity; mutable and const forms remain absent.
-Runtime function-item and function-pointer casts to integers expose the reified
-function's address, preserving its Rust/C ABI and unsafe signature. Taking an
+Function-item and function-pointer casts to thin raw pointers expose the
+reified function's address, including in static initializers. Runtime casts
+to integers also expose that address. Both preserve the Rust/C ABI and
+unsafe signature. Taking an
 address grants no permission to invoke an unsafe or target-feature function.
 Pointer-to-integer casts remain rejected in constants.
 `core::mem::discriminant` returns a Copy/Clone, Eq, Hash and Debug variant identity

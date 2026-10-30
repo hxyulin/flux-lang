@@ -1185,6 +1185,23 @@ impl Ctx<'_> {
         );
         function.local = self.compilation.is_none();
         function.attrs = attrs(sig);
+        if cfg!(target_arch = "x86_64") {
+            let owner = body.owner.unwrap_or(instance.function);
+            let features = self.hir.items.functions[owner]
+                .target_features
+                .as_deref()
+                .unwrap_or(&[]);
+            function.attrs.target_features =
+                keel_ir::X86TargetFeatures::new(features.iter().filter_map(|feature| {
+                    match feature.as_str() {
+                        "sse" | "sse2" => None, // Part of Keel's x86-64 baseline.
+                        "sse4.1" => Some("sse41".to_owned()),
+                        "sse4.2" => Some("sse42".to_owned()),
+                        feature => Some(feature.to_owned()),
+                    }
+                }))
+                .expect("validated x86 target features");
+        }
         function.weak_odr =
             self.compilation.is_some() && generic_instance(&self.hir.items, instance);
         // Separate instances coalesce inside the executable and cannot be
@@ -3899,6 +3916,13 @@ impl Lower<'_, '_, '_> {
                 }
                 if items.functions[*func]
                     .intrinsic
+                    .is_some_and(flux_hir::Intrinsic::is_x86)
+                {
+                    self.x86_intrinsic(*func, generic_args, args, dest, *target);
+                    return;
+                }
+                if items.functions[*func]
+                    .intrinsic
                     .is_some_and(flux_hir::Intrinsic::is_neon)
                 {
                     self.neon_intrinsic(*func, generic_args, args, dest, *target);
@@ -4540,6 +4564,307 @@ impl Lower<'_, '_, '_> {
         self.call_values(sig.ret, data, leaves, dest, target, |b, values| {
             b.ins().call_indirect(sig_ref, pointer, values)
         });
+    }
+
+    /// Packed values exist only inside the operation; Rust calls retain the
+    /// ordinary memory aggregate convention used by the embedded vector types.
+    fn x86_intrinsic(
+        &mut self,
+        func: FunctionId,
+        generic_args: &[Ty],
+        args: &[Operand],
+        dest: &Place,
+        target: Option<flux_mir::BasicBlock>,
+    ) {
+        use keel_ir::{BinaryOp, Intrinsic, VectorBinaryOp, VectorType};
+        let name = self.ctx.hir.items.functions[func].name;
+        let first = self.operand(&args[0])[0];
+        if name.as_str() == "__x86_mm_prefetch" {
+            let TyKind::Value(strategy) = generic_args[0].kind() else {
+                unreachable!("validated prefetch strategy")
+            };
+            let id = match strategy.bits() {
+                0 => Intrinsic::X86Prefetchnta,
+                1 => Intrinsic::X86Prefetcht2,
+                2 => Intrinsic::X86Prefetcht1,
+                3 => Intrinsic::X86Prefetcht0,
+                _ => unreachable!("validated prefetch strategy"),
+            };
+            self.b.ins().intrinsic(id, &[first]);
+            match target {
+                Some(target) => {
+                    self.b.ins().jump(self.blocks[target.index()], &[]);
+                }
+                None => {
+                    self.b.ins().trap();
+                }
+            }
+            return;
+        }
+        let value = match name.as_str() {
+            name if !matches!(
+                name,
+                "__x86_mm_shuffle_epi32"
+                    | "__x86_mm_alignr_epi8"
+                    | "__x86_mm256_alignr_epi8"
+                    | "__x86_mm_blend_epi16"
+                    | "__x86_mm_extract_epi32"
+            ) && name.starts_with("__x86_mm") =>
+            {
+                enum Operation {
+                    Load,
+                    Binary(VectorBinaryOp),
+                    Compare(IntCC),
+                    Native(Intrinsic),
+                    Shift(Intrinsic),
+                    Mask(Intrinsic),
+                    Shift32(Intrinsic),
+                }
+                use Operation::*;
+                let (shape, operation) = match name {
+                    "__x86_mm_and_si128" => (VectorType::I8x16, Binary(VectorBinaryOp::And)),
+                    "__x86_mm_or_si128" => (VectorType::I8x16, Binary(VectorBinaryOp::Or)),
+                    "__x86_mm_xor_si128" => (VectorType::I8x16, Binary(VectorBinaryOp::Xor)),
+                    "__x86_mm_add_epi32" => (VectorType::I32x4, Binary(VectorBinaryOp::Iadd)),
+                    "__x86_mm_add_epi64" => (VectorType::I64x2, Binary(VectorBinaryOp::Iadd)),
+                    "__x86_mm_sub_epi16" => (VectorType::I16x8, Binary(VectorBinaryOp::Isub)),
+                    "__x86_mm_mullo_epi16" => (VectorType::I16x8, Binary(VectorBinaryOp::Imul)),
+                    "__x86_mm_cmpeq_epi8" => (VectorType::I8x16, Compare(IntCC::Eq)),
+                    "__x86_mm_cmpgt_epi8" => (VectorType::I8x16, Compare(IntCC::Sgt)),
+                    "__x86_mm_loadu_si128" => (VectorType::I8x16, Load),
+                    "__x86_mm_load_si128" => (VectorType::I8x16, Load),
+                    "__x86_mm_movemask_epi8" => {
+                        (VectorType::I8x16, Mask(Intrinsic::X86SsePmovmskb128))
+                    }
+                    "__x86_mm_shuffle_epi8" => {
+                        (VectorType::I8x16, Native(Intrinsic::X86Ssse3Pshufb128))
+                    }
+                    "__x86_mm_slli_epi16" => (VectorType::I16x8, Shift(Intrinsic::X86Sse2Psllw128)),
+                    "__x86_mm_srli_epi16" => (VectorType::I16x8, Shift(Intrinsic::X86Sse2Psrlw128)),
+                    "__x86_mm_slli_epi32" => (VectorType::I32x4, Shift(Intrinsic::X86Sse2Pslld128)),
+                    "__x86_mm_srli_epi32" => (VectorType::I32x4, Shift(Intrinsic::X86Sse2Psrld128)),
+                    "__x86_mm_slli_epi64" => (VectorType::I64x2, Shift(Intrinsic::X86Sse2Psllq128)),
+                    "__x86_mm_srli_epi64" => (VectorType::I64x2, Shift(Intrinsic::X86Sse2Psrlq128)),
+                    "__x86_mm256_and_si256" => (VectorType::I8x32, Binary(VectorBinaryOp::And)),
+                    "__x86_mm256_or_si256" => (VectorType::I8x32, Binary(VectorBinaryOp::Or)),
+                    "__x86_mm256_xor_si256" => (VectorType::I8x32, Binary(VectorBinaryOp::Xor)),
+                    "__x86_mm256_add_epi32" => (VectorType::I32x8, Binary(VectorBinaryOp::Iadd)),
+                    "__x86_mm256_add_epi64" => (VectorType::I64x4, Binary(VectorBinaryOp::Iadd)),
+                    "__x86_mm256_sub_epi16" => (VectorType::I16x16, Binary(VectorBinaryOp::Isub)),
+                    "__x86_mm256_mullo_epi16" => (VectorType::I16x16, Binary(VectorBinaryOp::Imul)),
+                    "__x86_mm256_cmpeq_epi8" => (VectorType::I8x32, Compare(IntCC::Eq)),
+                    "__x86_mm256_cmpgt_epi8" => (VectorType::I8x32, Compare(IntCC::Sgt)),
+                    "__x86_mm256_loadu_si256" => (VectorType::I8x32, Load),
+                    "__x86_mm256_load_si256" => (VectorType::I8x32, Load),
+                    "__x86_mm256_movemask_epi8" => {
+                        (VectorType::I8x32, Mask(Intrinsic::X86Avx2Vpmovmskb256))
+                    }
+                    "__x86_mm256_shuffle_epi8" => {
+                        (VectorType::I8x32, Native(Intrinsic::X86Avx2Vpshufb256))
+                    }
+                    "__x86_mm256_slli_epi16" => {
+                        (VectorType::I16x16, Shift(Intrinsic::X86Avx2Vpsllw256))
+                    }
+                    "__x86_mm256_srli_epi16" => {
+                        (VectorType::I16x16, Shift(Intrinsic::X86Avx2Vpsrlw256))
+                    }
+                    "__x86_mm256_slli_epi32" => {
+                        (VectorType::I32x8, Shift(Intrinsic::X86Avx2Vpslld256))
+                    }
+                    "__x86_mm256_srli_epi32" => {
+                        (VectorType::I32x8, Shift(Intrinsic::X86Avx2Vpsrld256))
+                    }
+                    "__x86_mm256_slli_epi64" => {
+                        (VectorType::I64x4, Shift(Intrinsic::X86Avx2Vpsllq256))
+                    }
+                    "__x86_mm256_srli_epi64" => {
+                        (VectorType::I64x4, Shift(Intrinsic::X86Avx2Vpsrlq256))
+                    }
+                    "__x86_mm_mulhi_epu16" => {
+                        (VectorType::I16x8, Native(Intrinsic::X86Sse2Pmulhuw128))
+                    }
+                    "__x86_mm_mul_epu32" => {
+                        (VectorType::I32x4, Native(Intrinsic::X86Sse2Pmuludq128))
+                    }
+                    "__x86_mm_add_epi8" => (VectorType::I8x16, Binary(VectorBinaryOp::Iadd)),
+                    "__x86_mm_cmpeq_epi16" => (VectorType::I16x8, Compare(IntCC::Eq)),
+                    "__x86_mm_cmpeq_epi32" => (VectorType::I32x4, Compare(IntCC::Eq)),
+                    "__x86_mm_cmpgt_epi16" => (VectorType::I16x8, Compare(IntCC::Sgt)),
+                    "__x86_mm_cmpgt_epi32" => (VectorType::I32x4, Compare(IntCC::Sgt)),
+                    "__x86_mm_packs_epi16" => {
+                        (VectorType::I16x8, Native(Intrinsic::X86Sse2Packsswb128))
+                    }
+                    "__x86_mm_packs_epi32" => {
+                        (VectorType::I32x4, Native(Intrinsic::X86Sse2Packssdw128))
+                    }
+                    "__x86_mm_srli_si128" => {
+                        (VectorType::I8x16, Shift32(Intrinsic::X86Sse2Psrldq128))
+                    }
+                    _ => unreachable!("registered vector operation"),
+                };
+                let ty = Type::Vector(shape);
+                let a = self.b.ins().load(ty, first);
+                match operation {
+                    Load => a,
+                    Mask(id) => {
+                        let inst = self.b.ins().intrinsic(id, &[a]);
+                        self.b.function().inst_results(inst)[0]
+                    }
+                    Shift(id) | Shift32(id) => {
+                        let TyKind::Value(count) = generic_args[0].kind() else {
+                            unreachable!("validated immediate")
+                        };
+                        let ty = if matches!(operation, Shift32(_)) {
+                            Type::I32
+                        } else {
+                            Type::I64
+                        };
+                        let count = self.b.ins().iconst(ty, count.bits() as i64);
+                        let inst = self.b.ins().intrinsic(id, &[a, count]);
+                        self.b.function().inst_results(inst)[0]
+                    }
+                    Binary(_) | Compare(_) | Native(_) => {
+                        let second = self.operand(&args[1])[0];
+                        let b = self.b.ins().load(ty, second);
+                        match operation {
+                            Binary(op) => self.b.ins().vector_binary(op, a, b),
+                            Compare(cc) => self.b.ins().vicmp(cc, a, b),
+                            Native(id) => {
+                                let inst = self.b.ins().intrinsic(id, &[a, b]);
+                                self.b.function().inst_results(inst)[0]
+                            }
+                            _ => unreachable!(),
+                        }
+                    }
+                }
+            }
+            "__x86_mm_shuffle_epi32" => {
+                let ty = Type::Vector(VectorType::I8x16);
+                let a = self.b.ins().load(ty, first);
+                let TyKind::Value(immediate) = generic_args[0].kind() else {
+                    unreachable!("validated immediate")
+                };
+                let immediate = immediate.bits() as usize;
+                let lanes = (0..16)
+                    .map(|i| (((immediate >> (2 * (i / 4))) & 3) * 4 + i % 4) as u8)
+                    .collect();
+                self.b.ins().vshuffle(a, a, lanes)
+            }
+            "__x86_mm_alignr_epi8" => {
+                let ty = Type::Vector(VectorType::I8x16);
+                let a = self.b.ins().load(ty, first);
+                let TyKind::Value(immediate) = generic_args[0].kind() else {
+                    unreachable!("validated immediate")
+                };
+                let immediate = immediate.bits() as usize;
+                let second = self.operand(&args[1])[0];
+                let b = self.b.ins().load(ty, second);
+                let zero = self.b.ins().iconst(Type::I8, 0);
+                let mut result = self.b.ins().vsplat(ty, zero);
+                for i in 0..16 {
+                    let source = i % 16 + immediate;
+                    if source < 32 {
+                        let lane = self.b.ins().vextract(
+                            if source < 16 { b } else { a },
+                            (i / 16 * 16 + source % 16) as u8,
+                        );
+                        result = self.b.ins().vinsert(result, lane, i as u8);
+                    }
+                }
+                result
+            }
+            "__x86_mm256_alignr_epi8" => {
+                let ty = Type::Vector(VectorType::I8x32);
+                let a = self.b.ins().load(ty, first);
+                let TyKind::Value(immediate) = generic_args[0].kind() else {
+                    unreachable!("validated immediate")
+                };
+                let immediate = immediate.bits() as usize;
+                let second = self.operand(&args[1])[0];
+                let b = self.b.ins().load(ty, second);
+                let zero = self.b.ins().iconst(Type::I8, 0);
+                let mut result = self.b.ins().vsplat(ty, zero);
+                for i in 0..32 {
+                    let source = i % 16 + immediate;
+                    if source < 32 {
+                        let lane = self.b.ins().vextract(
+                            if source < 16 { b } else { a },
+                            (i / 16 * 16 + source % 16) as u8,
+                        );
+                        result = self.b.ins().vinsert(result, lane, i as u8);
+                    }
+                }
+                result
+            }
+            "__x86_mm_blend_epi16" => {
+                let ty = Type::Vector(VectorType::I8x16);
+                let a = self.b.ins().load(ty, first);
+                let TyKind::Value(immediate) = generic_args[0].kind() else {
+                    unreachable!("validated immediate")
+                };
+                let immediate = immediate.bits() as usize;
+                let second = self.operand(&args[1])[0];
+                let b = self.b.ins().load(ty, second);
+                let lanes = (0..16)
+                    .map(|i| {
+                        (i + if immediate & (1 << (i / 2)) != 0 {
+                            16
+                        } else {
+                            0
+                        }) as u8
+                    })
+                    .collect();
+                self.b.ins().vshuffle(a, b, lanes)
+            }
+            "__x86_mm_extract_epi32" => {
+                let TyKind::Value(lane) = generic_args[0].kind() else {
+                    unreachable!("validated lane")
+                };
+                let vector = self.b.ins().load(Type::Vector(VectorType::I32x4), first);
+                self.b.ins().vextract(vector, lane.bits() as u8)
+            }
+            "__x86_cpuid" => {
+                let leaf = first;
+                let subleaf = self.operand(&args[1])[0];
+                let register = self.operand(&args[2])[0];
+                let inst = self
+                    .b
+                    .ins()
+                    .intrinsic(Intrinsic::X86Cpuid, &[leaf, subleaf]);
+                let result = self.b.function().inst_results(inst)[0];
+                let register = self.b.ins().convert(ConvertOp::Uext, Type::I128, register);
+                let bits = self.b.ins().iconst(Type::I128, 32);
+                let shift = self.b.ins().binary(BinaryOp::Imul, register, bits);
+                let result = self.b.ins().binary(BinaryOp::Ushr, result, shift);
+                self.b.ins().convert(ConvertOp::Trunc, Type::I32, result)
+            }
+            "__x86_xgetbv" => {
+                let inst = self.b.ins().intrinsic(Intrinsic::X86CpuXcr0, &[]);
+                self.b.function().inst_results(inst)[0]
+            }
+            _ => unreachable!("registered x86 intrinsic"),
+        };
+        if name.as_str().contains("movemask")
+            || matches!(
+                name.as_str(),
+                "__x86_cpuid" | "__x86_xgetbv" | "__x86_mm_extract_epi32"
+            )
+        {
+            self.write(dest, &[value]);
+        } else {
+            let (Location::Memory(address), _) = self.locate(dest) else {
+                unreachable!("x86 vector aggregates live in memory")
+            };
+            self.b.ins().store(value, address);
+        }
+        match target {
+            Some(target) => {
+                self.b.ins().jump(self.blocks[target.index()], &[]);
+            }
+            None => {
+                self.b.ins().trap();
+            }
+        }
     }
 
     /// NEON values use the ordinary indirect array aggregate convention at

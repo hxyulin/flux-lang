@@ -1,4 +1,4 @@
-//! A bounded AArch64 NEON foundation and target assembly.
+//! Bounded AArch64 NEON and x86 integer SIMD operations and target assembly.
 
 /// Inline target assembly, checked and lowered by the compiler.
 #[rustc_builtin_macro]
@@ -8,6 +8,10 @@ macro_rules! asm {
 }
 pub use crate::asm;
 
+#[cfg(target_arch = "x86_64")]
+pub mod x86_64;
+
+#[cfg(target_arch = "aarch64")]
 pub mod aarch64 {
 
     /// 16 i8 lanes with the native NEON size and alignment.

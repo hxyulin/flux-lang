@@ -486,6 +486,35 @@ fn collect_roots(
                 let callee_data = &hir.items.functions[callee.function];
                 let name = callee_data.name;
                 if hir.items.is_core(callee_data.loc.module)
+                    && (name.as_str().starts_with("_mm") || name.as_str().starts_with("__x86_mm"))
+                    && !callee.args.is_empty()
+                {
+                    let limit = if matches!(
+                        name.as_str(),
+                        "_mm256_extracti128_si256" | "_mm256_insertf128_si256"
+                    ) {
+                        2
+                    } else if matches!(
+                        name.as_str(),
+                        "_mm_extract_epi32"
+                            | "__x86_mm_extract_epi32"
+                            | "_mm_prefetch"
+                            | "__x86_mm_prefetch"
+                    ) {
+                        4
+                    } else {
+                        256
+                    };
+                    if !matches!(callee.args.first().map(|ty| ty.kind()), Some(TyKind::Value(v)) if v.bits() < limit)
+                    {
+                        let mut d =
+                            Diagnostic::new(data.terminator.range, "immediate out of range");
+                        d.file = hir.items.functions[caller.function].loc.file;
+                        return Err(d);
+                    }
+                }
+
+                if hir.items.is_core(callee_data.loc.module)
                     && matches!(
                         name.as_str(),
                         "vgetq_lane_u64"
@@ -1291,6 +1320,7 @@ pub fn expand_intrinsics(
                 | "fmaf32"
                 | "fmaf64"
         ) || intrinsic.is_neon()
+            || intrinsic.is_x86()
             || atomic_intrinsic(intrinsic.name()).is_some()
         {
             // Code generation's: where the call is.

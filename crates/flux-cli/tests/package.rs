@@ -637,7 +637,10 @@ fn no_std_path_library_can_opt_in_to_alloc_or_std() {
     assert_eq!(output.stdout, b"library 3\napp [3, 5, 7]\n");
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn copy_source_package(source: &std::path::Path, target: &std::path::Path) {
     std::fs::create_dir_all(target).unwrap();
     for entry in std::fs::read_dir(source).unwrap() {
@@ -664,7 +667,10 @@ fn original_unicode_ident_package_matches_rustc_on_every_unicode_scalar() {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn memchr_sources_match_rustc_across_search_boundaries() {
     // This explicit edition-2024, feature-free wrapper exercises unchanged
     // sources, not memchr's original manifest or its edition-2021 semantics.
@@ -678,7 +684,11 @@ fn memchr_sources_match_rustc_across_search_boundaries() {
             "--format-version",
             "1",
             "--filter-platform",
-            "aarch64-apple-darwin",
+            if cfg!(target_arch = "x86_64") {
+                "x86_64-unknown-linux-gnu"
+            } else {
+                "aarch64-apple-darwin"
+            },
         ])
         .output()
         .unwrap();

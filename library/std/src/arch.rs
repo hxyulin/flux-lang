@@ -1,8 +1,7 @@
 //! Architecture intrinsics and bounded runtime feature detection.
 
-#[cfg(target_arch = "aarch64")]
-pub use core::arch::*;
 pub use crate::__is_aarch64_feature_detected as is_aarch64_feature_detected;
+pub use core::arch::*;
 
 #[doc(hidden)]
 pub fn __crc_detected() -> bool {
@@ -52,4 +51,40 @@ fn query(name: &[u8]) -> bool {
         )
     };
     result == 0 && length == core::mem::size_of::<i32>() && value != 0
+}
+
+#[cfg(target_arch = "x86_64")]
+pub use crate::is_x86_feature_detected;
+
+/// Runtime feature query used by the x86 detection macro.
+#[doc(hidden)]
+#[cfg(target_arch = "x86_64")]
+pub fn __x86_detected(feature: &str) -> bool {
+    use core::arch::x86_64::{__cpuid_count, _xgetbv};
+    // SAFETY: CPUID is available on all x86-64 processors.
+    let leaf = unsafe { __cpuid_count(1, 0) };
+    match feature {
+        "sse" => leaf.edx & (1 << 25) != 0,
+        "sse2" => leaf.edx & (1 << 26) != 0,
+        "sse3" => leaf.ecx & 1 != 0,
+        "ssse3" => leaf.ecx & (1 << 9) != 0,
+        "sse4.1" => leaf.ecx & (1 << 19) != 0,
+        "sse4.2" => leaf.ecx & (1 << 20) != 0,
+        "avx" | "avx2" => {
+            // AVX requires XSAVE, OSXSAVE, hardware AVX and OS-managed XMM/YMM state.
+            if leaf.ecx & (7 << 26) != 7 << 26 {
+                return false;
+            }
+            // SAFETY: OSXSAVE was checked above; only XCR0 is queried.
+            if unsafe { _xgetbv(0) } & 6 != 6 {
+                return false;
+            }
+            if feature == "avx" {
+                return true;
+            }
+            // SAFETY: CPUID is available on all x86-64 processors.
+            unsafe { __cpuid_count(0, 0).eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 5) != 0 }
+        }
+        _ => false,
+    }
 }

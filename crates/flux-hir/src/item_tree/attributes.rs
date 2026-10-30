@@ -171,7 +171,7 @@ pub(super) fn target_feature_attr(
     let mut enabled = Vec::new();
     let range = attr.syntax().text_range();
     let meta = attr.meta().expect("named attribute");
-    if std::env::consts::ARCH != "aarch64" {
+    if !matches!(std::env::consts::ARCH, "aarch64" | "x86_64") {
         unsupported(
             diagnostics,
             range,
@@ -224,7 +224,21 @@ pub(super) fn target_feature_attr(
         match crate::literal::unescape_str(value.text.as_str()) {
             Ok(features) => {
                 for feature in features.split(',') {
-                    if !matches!(feature, "neon" | "crc" | "sha2" | "sha3") {
+                    if !match std::env::consts::ARCH {
+                        "aarch64" => matches!(feature, "neon" | "crc" | "sha2" | "sha3"),
+                        "x86_64" => matches!(
+                            feature,
+                            "sse"
+                                | "sse2"
+                                | "sse3"
+                                | "ssse3"
+                                | "sse4.1"
+                                | "sse4.2"
+                                | "avx"
+                                | "avx2"
+                        ),
+                        _ => false,
+                    } {
                         diagnostics.push(Diagnostic::new(
                             value.range(),
                             format!("target feature `{feature}` is not supported yet"),

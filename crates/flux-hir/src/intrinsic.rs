@@ -21,6 +21,62 @@ macro_rules! intrinsics {
 }
 
 intrinsics! {
+    X86MmAndSi128 => "__x86_mm_and_si128",
+    X86MmOrSi128 => "__x86_mm_or_si128",
+    X86MmXorSi128 => "__x86_mm_xor_si128",
+    X86MmAddEpi32 => "__x86_mm_add_epi32",
+    X86MmAddEpi64 => "__x86_mm_add_epi64",
+    X86MmSubEpi16 => "__x86_mm_sub_epi16",
+    X86MmMulloEpi16 => "__x86_mm_mullo_epi16",
+    X86MmCmpeqEpi8 => "__x86_mm_cmpeq_epi8",
+    X86MmCmpgtEpi8 => "__x86_mm_cmpgt_epi8",
+    X86MmLoaduSi128 => "__x86_mm_loadu_si128",
+    X86MmLoadSi128 => "__x86_mm_load_si128",
+    X86MmMovemaskEpi8 => "__x86_mm_movemask_epi8",
+    X86MmShuffleEpi8 => "__x86_mm_shuffle_epi8",
+    X86MmSlliEpi16 => "__x86_mm_slli_epi16",
+    X86MmSrliEpi16 => "__x86_mm_srli_epi16",
+    X86MmSlliEpi32 => "__x86_mm_slli_epi32",
+    X86MmSrliEpi32 => "__x86_mm_srli_epi32",
+    X86MmSlliEpi64 => "__x86_mm_slli_epi64",
+    X86MmSrliEpi64 => "__x86_mm_srli_epi64",
+    X86Mm256AndSi256 => "__x86_mm256_and_si256",
+    X86Mm256OrSi256 => "__x86_mm256_or_si256",
+    X86Mm256XorSi256 => "__x86_mm256_xor_si256",
+    X86Mm256AddEpi32 => "__x86_mm256_add_epi32",
+    X86Mm256AddEpi64 => "__x86_mm256_add_epi64",
+    X86Mm256SubEpi16 => "__x86_mm256_sub_epi16",
+    X86Mm256MulloEpi16 => "__x86_mm256_mullo_epi16",
+    X86Mm256CmpeqEpi8 => "__x86_mm256_cmpeq_epi8",
+    X86Mm256CmpgtEpi8 => "__x86_mm256_cmpgt_epi8",
+    X86Mm256LoaduSi256 => "__x86_mm256_loadu_si256",
+    X86Mm256LoadSi256 => "__x86_mm256_load_si256",
+    X86Mm256MovemaskEpi8 => "__x86_mm256_movemask_epi8",
+    X86Mm256ShuffleEpi8 => "__x86_mm256_shuffle_epi8",
+    X86Mm256SlliEpi16 => "__x86_mm256_slli_epi16",
+    X86Mm256SrliEpi16 => "__x86_mm256_srli_epi16",
+    X86Mm256SlliEpi32 => "__x86_mm256_slli_epi32",
+    X86Mm256SrliEpi32 => "__x86_mm256_srli_epi32",
+    X86Mm256SlliEpi64 => "__x86_mm256_slli_epi64",
+    X86Mm256SrliEpi64 => "__x86_mm256_srli_epi64",
+    X86MmMulhiEpu16 => "__x86_mm_mulhi_epu16",
+    X86MmMulEpu32 => "__x86_mm_mul_epu32",
+    X86Cpuid => "__x86_cpuid",
+    X86Xgetbv => "__x86_xgetbv",
+    X86MmShuffleEpi32 => "__x86_mm_shuffle_epi32",
+    X86MmAlignrEpi8 => "__x86_mm_alignr_epi8",
+    X86Mm256AlignrEpi8 => "__x86_mm256_alignr_epi8",
+    X86MmBlendEpi16 => "__x86_mm_blend_epi16",
+    X86MmAddEpi8 => "__x86_mm_add_epi8",
+    X86MmCmpeqEpi16 => "__x86_mm_cmpeq_epi16",
+    X86MmCmpeqEpi32 => "__x86_mm_cmpeq_epi32",
+    X86MmCmpgtEpi16 => "__x86_mm_cmpgt_epi16",
+    X86MmCmpgtEpi32 => "__x86_mm_cmpgt_epi32",
+    X86MmPacksEpi16 => "__x86_mm_packs_epi16",
+    X86MmPacksEpi32 => "__x86_mm_packs_epi32",
+    X86MmSrliSi128 => "__x86_mm_srli_si128",
+    X86MmExtractEpi32 => "__x86_mm_extract_epi32",
+    X86MmPrefetch => "__x86_mm_prefetch",
     PtrWithAddr => "ptr_with_addr",
     AtomicU16CasRelaxed => "__atomic_u16_cas_relaxed",
     AtomicU16CasAcquire => "__atomic_u16_cas_acquire",
@@ -152,6 +208,68 @@ intrinsics! {
 }
 
 impl Intrinsic {
+    pub const fn is_x86(self) -> bool {
+        matches!(
+            self,
+            Self::X86MmShuffleEpi32
+                | Self::X86MmAlignrEpi8
+                | Self::X86Mm256AlignrEpi8
+                | Self::X86MmBlendEpi16
+                | Self::X86MmAddEpi8
+                | Self::X86MmCmpeqEpi16
+                | Self::X86MmCmpeqEpi32
+                | Self::X86MmCmpgtEpi16
+                | Self::X86MmCmpgtEpi32
+                | Self::X86MmPacksEpi16
+                | Self::X86MmPacksEpi32
+                | Self::X86MmSrliSi128
+                | Self::X86MmExtractEpi32
+                | Self::X86MmPrefetch
+                | Self::X86MmAndSi128
+                | Self::X86MmOrSi128
+                | Self::X86MmXorSi128
+                | Self::X86MmAddEpi32
+                | Self::X86MmAddEpi64
+                | Self::X86MmSubEpi16
+                | Self::X86MmMulloEpi16
+                | Self::X86MmCmpeqEpi8
+                | Self::X86MmCmpgtEpi8
+                | Self::X86MmLoaduSi128
+                | Self::X86MmLoadSi128
+                | Self::X86MmMovemaskEpi8
+                | Self::X86MmShuffleEpi8
+                | Self::X86MmSlliEpi16
+                | Self::X86MmSrliEpi16
+                | Self::X86MmSlliEpi32
+                | Self::X86MmSrliEpi32
+                | Self::X86MmSlliEpi64
+                | Self::X86MmSrliEpi64
+                | Self::X86Mm256AndSi256
+                | Self::X86Mm256OrSi256
+                | Self::X86Mm256XorSi256
+                | Self::X86Mm256AddEpi32
+                | Self::X86Mm256AddEpi64
+                | Self::X86Mm256SubEpi16
+                | Self::X86Mm256MulloEpi16
+                | Self::X86Mm256CmpeqEpi8
+                | Self::X86Mm256CmpgtEpi8
+                | Self::X86Mm256LoaduSi256
+                | Self::X86Mm256LoadSi256
+                | Self::X86Mm256MovemaskEpi8
+                | Self::X86Mm256ShuffleEpi8
+                | Self::X86Mm256SlliEpi16
+                | Self::X86Mm256SrliEpi16
+                | Self::X86Mm256SlliEpi32
+                | Self::X86Mm256SrliEpi32
+                | Self::X86Mm256SlliEpi64
+                | Self::X86Mm256SrliEpi64
+                | Self::X86MmMulhiEpu16
+                | Self::X86MmMulEpu32
+                | Self::X86Cpuid
+                | Self::X86Xgetbv
+        )
+    }
+
     pub const fn is_neon(self) -> bool {
         matches!(
             self,

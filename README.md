@@ -52,9 +52,10 @@ against rustc's output. The audited source inputs stayed unchanged.
 
 x86-64 Linux supports native executable and local package builds, including
 library artifact reuse. Process spawning, owned pipes and channels have native
-Linux comparisons. Linux self-hosting still needs x86 intrinsics and feature
-handling, argument capture and recursive directory removal. x86-64 macOS and Rosetta are not
-supported targets. Cargo and rustc still build host build scripts and procedural
+Linux comparisons. Integer SSE/AVX2 operations and runtime CPU detection have
+native Linux comparison coverage. Linux self-hosting still needs crypto extensions, AVX-512, compound legacy
+constants, inline assembly, argument capture and recursive directory removal. x86-64 macOS and
+Rosetta are not supported targets. Cargo and rustc still build host build scripts and procedural
 macros. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the audited graph,
 verification scope and remaining blockers.
 
@@ -71,7 +72,7 @@ Counted with `tokei` on 2026-10-30, Rust only, vendored code excluded.
 | flux tests | 134k |
 | Keel tests, suite and tools | 172k |
 
-`tests/run` holds 491 programs that both rustc and flux compile and run.
+`tests/run` holds 493 programs that both rustc and flux compile and run.
 
 ## Compile time
 

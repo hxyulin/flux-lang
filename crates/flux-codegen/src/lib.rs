@@ -98,7 +98,12 @@ fn compile_object_inner(
             Target::Aarch64AppleDarwin => {
                 keel_asm::assemble_program_object(&program, keel_asm::TargetFeatures::default())
             }
-            Target::X86_64LinuxGnu => keel_asm::x86::assemble_program_object(&program),
+            Target::X86_64LinuxGnu => {
+                let features =
+                    keel_codegen::x86_features::module_features(module, Default::default())
+                        .map_err(Error::codegen)?;
+                keel_asm::x86::assemble_program_object_with_features(&program, features)
+            }
             Target::Aarch64LinuxGnu => {
                 return Err(Error::message(
                     Stage::Codegen,

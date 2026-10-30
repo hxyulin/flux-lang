@@ -1,7 +1,10 @@
 //! Audits the unchanged hashbrown 0.17.1 source graph used by flux-intern.
 //! Features are disabled, matching flux-intern's dependency declaration.
 //! Package resolution and upstream source rewrites are outside this probe.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -120,7 +123,11 @@ fn prepare(label: &str) -> (PathBuf, Vec<(PathBuf, Vec<u8>)>) {
             "--format-version",
             "1",
             "--filter-platform",
-            "aarch64-apple-darwin",
+            if cfg!(target_arch = "x86_64") {
+                "x86_64-unknown-linux-gnu"
+            } else {
+                "aarch64-apple-darwin"
+            },
         ])
         .output()
         .unwrap();
@@ -254,7 +261,7 @@ fn unchanged_hashbrown_executes_with_flux_off_and_on() {
         ("on", flux_codegen::OptimizationTier::Full),
     ] {
         let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
-        let target = flux_codegen::Target::Aarch64AppleDarwin;
+        let target = flux_codegen::Target::host().unwrap();
         let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
         let executable = root.join(format!("flux-{label}"));
         flux_codegen::link_executable(&object, target, &executable).unwrap();
