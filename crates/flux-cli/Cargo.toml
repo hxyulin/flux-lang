@@ -29,3 +29,7 @@ toml = { version = "0.8", default-features = false, features = ["parse"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Fetch the pinned registry fixture before its offline Cargo integration test.
+bitflags = { version = "=2.13.2", features = ["std"] }

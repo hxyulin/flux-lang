@@ -1642,16 +1642,28 @@ impl<'a> Cx<'a> {
                 } else { p.alias.args.first() == Some(&self_param) }
             })
         {
-            // Trait declarations have no region tables for written reference
-            // lifetimes. Only slots substituted from Self/type arguments can
-            // be represented here; do not invent regions for anything else.
+            // Associated output contracts retain written lifetime rows,
+            // including static references nested in equality RHS tuples.
             if !self.impl_aliases_known(p.ty, &args)
                 && !self.impl_aliases_proven(p.ty, &args, env, 0)
             {
                 return None;
             }
             let expected_ty = self.normalize(p.ty.subst(&args));
-            let expected = self.instantiate_sig(p.ty, &[], &mut |_| None, &args, &goal.vars)?;
+            let table = if associated {
+                self.sigs.regions.traits.get(goal.predicate.trait_ref.trait_)
+                    .into_iter().flat_map(|r| r.families.iter())
+                    .flat_map(|(_, family)| family.output_projections.iter())
+                    .find(|(projection, _)| projection == p)
+                    .map_or(&[][..], |(_, row)| row.as_ref())
+            } else {
+                &[]
+            };
+            let expected = self.instantiate_sig(p.ty, table, &mut |region| match region {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => goal.lifetimes.get(i as usize).copied(),
+                Region::Erased | Region::Late(_) => None,
+            }, &args, &goal.vars)?;
             if expected.len() != self.slots(expected_ty) as usize {
                 return None;
             }

@@ -1,0 +1,43 @@
+use bitflags::bitflags;
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Permissions: u32 {
+        const READ = 1;
+        const WRITE = 2;
+        const EXECUTE = 4;
+    }
+}
+
+impl core::fmt::Display for Permissions {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        bitflags::parser::to_writer(self, f)
+    }
+}
+
+fn main() {
+    for bits in 0..16 {
+        let flags = Permissions::from_bits_retain(bits);
+        let mut edited = flags;
+        edited.insert(Permissions::READ);
+        edited.toggle(Permissions::WRITE);
+        edited.remove(Permissions::EXECUTE);
+        println!("{} {} {} {} {}", bits, flags.contains(Permissions::READ),
+            flags.intersects(Permissions::WRITE | Permissions::EXECUTE),
+            edited.bits(), (!flags).bits());
+        let text = format!("{}", flags);
+        let parsed = bitflags::parser::from_str::<Permissions>(&text).unwrap();
+        assert_eq!(parsed, flags);
+        println!("{} {:?}", text, flags);
+        let collected: Permissions = flags.iter().collect();
+        assert_eq!(collected, flags);
+    }
+    assert!(Permissions::from_bits(8).is_none());
+    assert_eq!(Permissions::from_bits_truncate(15).bits(), 7);
+    assert!(bitflags::parser::from_str::<Permissions>("MISSING").is_err());
+    let flags = Permissions::READ | Permissions::WRITE;
+    assert_eq!((flags & Permissions::WRITE).bits(), 2);
+    assert_eq!((flags - Permissions::READ).bits(), 2);
+    assert_eq!((flags ^ Permissions::READ).bits(), 2);
+    println!("registry bitflags complete");
+}

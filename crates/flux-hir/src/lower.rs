@@ -145,7 +145,11 @@ pub fn lower_body<'a>(
                 mutable: param.amp_token().is_none() && param.mut_token().is_some(),
                 by_ref: None,
             });
-            let self_name = Ident::new(kw::SelfLower, param.syntax().ctxt());
+            // A macro may supply `self` separately from the reference tokens.
+            let ctxt = param
+                .self_token()
+                .map_or(param.syntax().ctxt(), |token| token.ctxt());
+            let self_name = Ident::new(kw::SelfLower, ctxt);
             ctx.scopes.push((self_name, binding));
             let range = param.syntax().text_range();
             params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, range));

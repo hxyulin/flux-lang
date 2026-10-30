@@ -9,6 +9,16 @@ use std::process::Command;
 fn supertrait_equalities_match_rustc() {
     let cases = [
         (
+            "associated_static_tuple",
+            "trait P { type Item; } trait C: Sized { type Iter: P<Item = (&'static str, Self)>; } struct Iter<T>(T); impl<T> P for Iter<T> { type Item = (&'static str, T); } struct S; impl C for S { type Iter = Iter<Self>; } fn main() {}",
+            true,
+        ),
+        (
+            "associated_static_tuple_rejects_shorter",
+            "trait P { type Item; } trait C: Sized { type Iter: P<Item = (&'static str, Self)>; } struct Iter<'a,T>(&'a str,T); impl<'a,T> P for Iter<'a,T> { type Item = (&'a str,T); } struct S<'a>(&'a str); impl<'a> C for S<'a> { type Iter = Iter<'a,Self>; } fn main() {}",
+            false,
+        ),
+        (
             "assoc_wrong_region",
             include_str!("data/supertrait_equalities/assoc_wrong_region.rs"),
             false,

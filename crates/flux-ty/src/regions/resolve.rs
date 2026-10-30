@@ -2397,7 +2397,23 @@ fn check_trait_wf(
         return;
     };
     for requirement in requirements {
-        if !outlives_known(requirement, assumptions) {
+        // A concrete associated type can satisfy the bound without a written
+        // assumption. Only normalize types with no region slots: otherwise
+        // selection must also reconstruct the output's lifetime mapping.
+        let concrete = match requirement {
+            Outlives::Type(ty, region) if slots(items, ty) == 0 => {
+                let normalized = flux_solve::traits::normalize(items, sigs, &[], ty);
+                normalized != ty
+                    && slots(items, normalized) == 0
+                    && outlives_type_components(sigs, normalized)
+                        .into_iter()
+                        .all(|component| {
+                            outlives_known(Outlives::Type(component, region), assumptions)
+                        })
+            }
+            _ => false,
+        };
+        if !outlives_known(requirement, assumptions) && !concrete {
             let message = match requirement {
                 Outlives::Region(..) => "lifetime bound not satisfied",
                 Outlives::Type(..) => "type does not fulfill the required lifetime",

@@ -281,3 +281,37 @@ fn nested_array_const_arguments_have_no_outlives_requirement() {
         "{messages:?}"
     );
 }
+
+#[test]
+fn concrete_associated_storage_satisfies_static_trait_bound() {
+    let source = r#"
+trait Storage { type Internal; }
+struct Internal(u32);
+struct Flags(<Flags as Storage>::Internal);
+impl Storage for Flags { type Internal = Internal; }
+trait Static: 'static {}
+impl Static for Flags {}
+fn main() {}
+"#;
+    oracle(source, true);
+    let (_, _, messages) = resolve(source);
+    assert!(messages.is_empty(), "{messages:?}");
+}
+
+#[test]
+fn associated_storage_with_borrow_does_not_satisfy_static_trait_bound() {
+    let source = r#"
+trait Storage<'a> { type Internal; }
+struct Flags<'a>(<Flags<'a> as Storage<'a>>::Internal);
+impl<'a> Storage<'a> for Flags<'a> { type Internal = &'a u32; }
+trait Static: 'static {}
+impl<'a> Static for Flags<'a> {}
+fn main() {}
+"#;
+    oracle(source, false);
+    let (_, _, messages) = resolve(source);
+    assert!(
+        !messages.is_empty(),
+        "borrowed storage must not prove 'static"
+    );
+}

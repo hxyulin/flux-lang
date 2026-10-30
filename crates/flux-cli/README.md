@@ -87,3 +87,13 @@ and [build-script outputs](https://doc.rust-lang.org/cargo/reference/build-scrip
 The expansion interface follows Rust’s [procedural-macro token model](https://doc.rust-lang.org/reference/procedural-macros.html).
 Run `cargo test -p flux-cli --lib --test proc_macros --test cargo_host` for the
 bridge, host lifecycle, real Serde expansion, and native comparisons.
+
+The `registry_bitflags` integration test builds unchanged registry `bitflags`
+2.13.2 with its `std` feature through this driver. Its consumer exercises exported
+macros, flag operations, iteration, parsing, and formatting, and compares stdout,
+stderr, and exit status with rustc in both Flux optimization modes. The test
+checks registry source bytes and the consumer lockfile after compilation. The
+pinned dev dependency supplies the registry fixture for offline test execution.
+Run it with `cargo test -p flux-cli --test registry_bitflags` on arm64 macOS.
+This covers the Cargo-backed driver; standalone registry resolution is still
+unsupported.

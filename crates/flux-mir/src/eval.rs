@@ -2895,6 +2895,29 @@ impl<'a> Evaluator<'a> {
                         value @ (Value::PointerView { .. } | Value::PointerOffset { .. }),
                     )) = locals.get(place.local.index())
                     {
+                        if place.projection.len() > 1
+                            && place.projection.last() == Some(&ProjectionElem::Deref)
+                        {
+                            // Reborrow a reference stored inside projected storage.
+                            // Reading the reference preserves its own allocation,
+                            // rather than projecting through the outer allocation.
+                            let mut pointer_place = place.clone();
+                            pointer_place.projection = place.projection
+                                [..place.projection.len() - 1]
+                                .to_vec()
+                                .into();
+                            let target = body.place_ty(&pointer_place, self.sigs).subst(generics);
+                            let pointer = self.operand(
+                                locals,
+                                generics,
+                                &Operand::Copy(pointer_place),
+                                range,
+                            )?;
+                            if !*raw {
+                                self.pointer_value(&pointer, target, target, range)?;
+                            }
+                            return Ok(pointer);
+                        }
                         if place.projection.len() != 1 {
                             return Err(unsupported_view(range));
                         }
