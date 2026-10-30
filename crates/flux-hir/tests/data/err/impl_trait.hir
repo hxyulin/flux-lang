@@ -8,9 +8,9 @@ trait Tr;
 
 impl Tr for S;
 
-fn m(&Self) -> <error>;
+fn m(&Self) -> <opaque 0>;
 
-fn <S as Tr>::m(self@0: &Self) -> <error> {
+fn <S as Tr>::m(self@0: &Self) -> <opaque 0> {
     1
 }
 
@@ -48,9 +48,7 @@ error 109..118: `impl Trait` is not allowed in field types
 error 131..140: `impl Trait` is not allowed in const types
 error 158..167: `impl Trait` is not allowed in static types
 error 183..192: `impl Trait` in type aliases is unstable
-error 240..249: `impl Trait` types in the return types of trait methods are not supported yet
 error 285..294: `impl Trait` in associated types is unstable
-error 316..325: `impl Trait` types in the return types of trait methods are not supported yet
 error 368..377: `impl Trait` is not allowed in `fn` pointer parameters
 error 391..400: `impl Trait` is not allowed in `fn` pointer return types
 error 442..451: `impl Trait` is not allowed in the return type of `Fn` trait bounds

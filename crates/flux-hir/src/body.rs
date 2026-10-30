@@ -81,6 +81,13 @@ pub enum Expr {
     Literal(Literal),
     /// An opaque, always-returning target assembly operation.
     InlineAsm(InlineAsm),
+    /// A layout query that does not construct or borrow a value.
+    /// A moved value borrowed in compiler-owned pinned temporary storage.
+    Pin(ExprId),
+    OffsetOf {
+        container: TypeRefId,
+        fields: Box<[Symbol]>,
+    },
     /// A name, resolved.
     Path(Res),
     /// `()` or `(a, b)`.
@@ -197,6 +204,7 @@ pub enum Expr {
         ret: Option<TypeRefId>,
         body: ExprId,
         is_move: bool,
+        is_async: bool,
     },
     /// `S { a: 1, b, ..base }` or `E::V { a: 1 }`, in source order.
     Record {
@@ -208,11 +216,26 @@ pub enum Expr {
     },
 }
 
-/// Register classes currently represented by inline assembly.
+/// Register class and direction of an inline assembly operand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AsmRegister {
     Reg,
     Vreg,
+    InputReg,
+    InputVreg,
+}
+
+impl AsmRegister {
+    pub const fn input_only(self) -> bool {
+        matches!(self, Self::InputReg | Self::InputVreg)
+    }
+
+    pub const fn class(self) -> Self {
+        match self {
+            Self::Reg | Self::InputReg => Self::Reg,
+            Self::Vreg | Self::InputVreg => Self::Vreg,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -234,7 +257,7 @@ pub struct AsmOptions {
 pub struct InlineAsm {
     pub template: Box<[AsmTemplatePiece]>,
     pub registers: Box<[AsmRegister]>,
-    /// Every operand is an inout place, evaluated once in source order.
+    /// Inputs and inout places, evaluated once in source order.
     pub operands: SliceId<ExprId>,
     pub options: AsmOptions,
 }

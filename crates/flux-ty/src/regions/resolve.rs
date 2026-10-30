@@ -359,9 +359,9 @@ fn resolve_trait_families(
             let bindings=family.bounds.iter().flat_map(|b| {let args=b.path.args(b.path.segments.len().saturating_sub(1));args.into_iter().flat_map(move |args|args.bindings.iter().map(move |binding|(binding,Some(args))))});
             let projections:Vec<_>=bindings.zip(implied).map(|((binding,args),projection)|(binding,args,projection)).collect();
             let mut contract = family_contract(items,sigs,data.loc.module,flux_hir::Owner::Trait(id),owner_names,&family.generics,Ty::param(0,kw::SelfUpper),None,None,&family.lifetime_bounds,&output,&projections,schema,&mut list);
-            // Generic associated outputs are Sized by default. HIR currently
-            // rejects relaxed family bounds, so every accepted family has it.
+            // Generic associated outputs are Sized unless explicitly relaxed.
             if let Some(sized) = sigs.builtins.sized
+                && !family.maybe_unsized
                 && (!family.generics.lifetimes.is_empty() || !family.generics.params.is_empty())
             {
                 let mut bounds = contract.output_traits.into_vec();
@@ -786,6 +786,8 @@ pub(crate) fn resolve_regions(
             &t.generics,
             &named,
             &generics,
+            Some(Ty::param(0, kw::SelfUpper)),
+            None,
             &mut outlives,
             &mut list,
         );
@@ -1163,6 +1165,8 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             &imp.generics,
             &names,
             &generics,
+            Some(self_ty),
+            Some(&self_regions),
             &mut outlives,
             &mut list,
         );
@@ -1460,7 +1464,7 @@ pub(super) fn safe_method_contract(
     );
     errors.append(&mut walker.errors);
     let region_names: Vec<_> = all_names.iter().map(|name| name.name).collect();
-    let mut outlives = Vec::new();
+    let mut outlives = trait_outlives_contract(items, sigs, owner)?.to_vec();
     bounds_outlives(
         items,
         sigs,
@@ -1468,6 +1472,8 @@ pub(super) fn safe_method_contract(
         &function.generics,
         &region_names,
         &names,
+        Some(self_ty),
+        None,
         &mut outlives,
         &mut errors,
     );
@@ -1608,6 +1614,13 @@ fn functions(
                 )
             })
         });
+        if function.ctor.is_some() && self_regions.is_none() {
+            self_regions = Some(
+                (0..function.generics.lifetimes.len() as u32)
+                    .map(Region::Param)
+                    .collect(),
+            );
+        }
         let mut walker = Walker::new(items, function.loc.module, names);
         walker.self_regions = self_regions.as_deref();
         walker.self_types = &self_types;
@@ -1752,6 +1765,8 @@ fn functions(
             &function.generics,
             &names,
             &generics,
+            self_ty,
+            self_regions.as_deref(),
             &mut outlives,
             &mut list,
         );
@@ -2000,6 +2015,11 @@ pub(super) fn callback_binder(
             &function.generics,
             &names,
             &type_names,
+            crate::self_ty(sigs, function.owner),
+            function.owner.and_then(|owner| match owner {
+                flux_hir::Owner::Impl(id) => sigs.regions.impls.get(id).map(|r| r.self_ty.as_ref()),
+                _ => None,
+            }),
             &mut required,
             &mut errors,
         );
@@ -2786,6 +2806,37 @@ fn dedup<T: PartialEq>(list: &mut Vec<T>) {
     }
 }
 
+/// Reconstruct the written owner bounds before admission trusts their table.
+pub(super) fn trait_outlives_contract(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::TraitId,
+) -> Option<Box<[Outlives<Region>]>> {
+    let declaration = items.traits.get(id)?;
+    let names: Vec<_> = own_names(&declaration.generics).map(|n| n.name).collect();
+    let generics = crate::generic_names(
+        items,
+        Some(flux_hir::Owner::Trait(id)),
+        &Generics::default(),
+    );
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    bounds_outlives(
+        items,
+        sigs,
+        declaration.loc.module,
+        &declaration.generics,
+        &names,
+        &generics,
+        Some(Ty::param(0, kw::SelfUpper)),
+        None,
+        &mut out,
+        &mut errors,
+    );
+    dedup(&mut out);
+    errors.is_empty().then(|| out.into_boxed_slice())
+}
+
 /// The lifetime bounds of `generics` (`'a: 'b`, `T: 'a`), with the
 /// lifetimes `names` and the type parameters `type_names` in scope,
 /// into `out`.
@@ -2797,10 +2848,13 @@ fn bounds_outlives(
     generics: &Generics,
     names: &[Option<Symbol>],
     type_names: &[Symbol],
+    self_ty: Option<Ty>,
+    self_regions: Option<&[Region]>,
     out: &mut Vec<Outlives<Region>>,
     errors: &mut Vec<(TextRange, String)>,
 ) {
     let mut walker = Walker::new(items, module, names.to_vec());
+    walker.self_regions = self_regions;
     walker.elided = Elided::NotAllowed;
     for p in generics.outlives.iter() {
         let a = walker.named(p.longer);
@@ -2811,12 +2865,7 @@ fn bounds_outlives(
     }
     let scope = TypeScope {
         generics: type_names,
-        // A trait's first type parameter is `Self`; unlike an impl's,
-        // it is an abstract parameter rather than a concrete header type.
-        self_ty: type_names
-            .iter()
-            .position(|&n| n == kw::SelfUpper)
-            .map(|i| Ty::param(i as u32, kw::SelfUpper)),
+        self_ty,
         ..TypeScope::default()
     };
     // Type-outlives subjects can be associated projections. Resolve them
@@ -3128,6 +3177,9 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
         let type_names: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
         let mut out = Vec::new();
         let mut list = Vec::new();
+        let self_regions: Vec<_> = (0..s.generics.lifetimes.len() as u32)
+            .map(Region::Param)
+            .collect();
         bounds_outlives(
             items,
             sigs,
@@ -3135,6 +3187,8 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
             &s.generics,
             &names,
             &type_names,
+            Some(Ty::adt(id, s.name, &crate::params_of(&s.generics, 0))),
+            Some(&self_regions),
             &mut out,
             &mut list,
         );

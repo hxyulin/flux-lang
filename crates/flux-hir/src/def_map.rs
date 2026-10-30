@@ -40,6 +40,7 @@ pub enum Ns {
 /// An item a name can mean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Def {
+    Primitive(Symbol),
     Module(ModuleId),
     Struct(StructId),
     Trait(TraitId),
@@ -451,6 +452,10 @@ impl ItemTree {
                 Def::TypeAlias(a) if !last => {
                     return self.resolve_alias_item(from, a, path, i + 1, ns);
                 }
+                Def::Primitive(name) if !last => {
+                    return self.resolve_assoc(from, ImplTarget::Primitive(name), path, i + 1, ns);
+                }
+                Def::Primitive(name) => return Ok(Resolved::Primitive(name)),
                 def if last => return Ok(Resolved::Def(def)),
                 _ => {
                     let message = format!("expected module, found `{name}`");
@@ -464,6 +469,7 @@ impl ItemTree {
     /// "function `f` is private", as rustc says it.
     fn private_message(&self, binding: Binding, name: Symbol, ns: Ns) -> String {
         let what = match binding.def {
+            Def::Primitive(_) => "builtin type",
             Def::Module(_) => "module",
             Def::Struct(s) if self.structs[s].is_enum() => "enum",
             Def::Struct(s) if ns == Ns::Values && self.structs[s].kind == StructKind::Unit => {
@@ -700,7 +706,10 @@ impl ItemTree {
             && binding.kind != BindingKind::AmbiguousGlob
             && !self.unavailable_c_void_variant(module, binding.def)
         {
-            return Some(Resolved::Def(binding.def));
+            return Some(match binding.def {
+                Def::Primitive(name) => Resolved::Primitive(name),
+                def => Resolved::Def(def),
+            });
         }
         let own = &self.crates[self.modules[module].krate.0 as usize];
         let prelude = self.prelude_for(module);
@@ -708,7 +717,10 @@ impl ItemTree {
             && let Some(binding) = self.def_map.scopes[prelude.index()].ns(ns).get(&name)
             && binding.vis == Visibility::Public
         {
-            return Some(Resolved::Def(binding.def));
+            return Some(match binding.def {
+                Def::Primitive(name) => Resolved::Primitive(name),
+                def => Resolved::Def(def),
+            });
         }
         if ns == Ns::Macros
             && let Some(&(_, id)) = own.macro_use.iter().rev().find(|&&(n, _)| n == name)
@@ -856,6 +868,7 @@ impl ItemTree {
     /// The visibility of `def` itself.
     fn def_vis(&self, def: Def) -> Visibility {
         match def {
+            Def::Primitive(_) => Visibility::Public,
             Def::Module(m) => self.modules[m].vis,
             Def::Struct(s) => self.structs[s].loc.vis,
             Def::Trait(t) => self.traits[t].loc.vis,
@@ -877,6 +890,7 @@ impl ItemTree {
     /// What `def` is called in messages: "struct", "enum", "variant", ...
     pub fn def_kind(&self, def: Def) -> &'static str {
         match def {
+            Def::Primitive(_) => "builtin type",
             Def::Module(_) => "module",
             Def::Struct(s) if self.structs[s].is_enum() => "enum",
             Def::Struct(_) => "struct",
@@ -1101,6 +1115,7 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 }
                 let def = match items.resolve(u.module, &u.path, ns) {
                     Ok(Resolved::Def(def)) => def,
+                    Ok(Resolved::Primitive(name)) if ns == Ns::Types => Def::Primitive(name),
                     Err(ResolveError::Private {
                         resolved: Resolved::Def(def),
                         segment,

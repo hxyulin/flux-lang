@@ -17,6 +17,26 @@ fn inline_asm_contracts_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source) in [
         (
+            "input",
+            r#"fn main(){let x=3u64;unsafe{core::arch::asm!("/*{}*/",in(reg)x)}}"#,
+        ),
+        (
+            "input_expression",
+            r#"fn main(){unsafe{core::arch::asm!("/*{}*/",in(reg)(1u64+2))}}"#,
+        ),
+        (
+            "input_pure",
+            r#"fn main(){unsafe{core::arch::asm!("/*{}*/",in(reg)3u64,options(pure,nomem))}}"#,
+        ),
+        (
+            "input_uninitialized",
+            r#"fn main(){let x:u64;unsafe{core::arch::asm!("/*{}*/",in(reg)x)}}"#,
+        ),
+        (
+            "input_type",
+            r#"fn main(){unsafe{core::arch::asm!("/*{}*/",in(reg)true)}}"#,
+        ),
+        (
             "char_name",
             r#"fn main(){let mut x=0u64;unsafe{core::arch::asm!("/*{'a'}*/",'a'=inout(reg)x)}}"#,
         ),

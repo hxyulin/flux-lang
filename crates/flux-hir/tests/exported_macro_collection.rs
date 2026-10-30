@@ -8,6 +8,16 @@ fn exported_macro_collection_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "later_reexport",
+            "mod consumer { use crate::prelude::*; build!(Generated); } mod prelude { pub use crate::build; } #[macro_export] macro_rules! build { ($name:ident) => { pub struct $name; }; } fn main() { let _ = consumer::Generated; }",
+            true,
+        ),
+        (
+            "later_impl_reexport",
+            "struct S; mod consumer { use crate::prelude::*; impl super::S { methods!(); } } mod prelude { pub use crate::methods; } #[macro_export] macro_rules! methods { () => { pub fn value() -> u32 { 42 } }; } fn main() { assert_eq!(S::value(),42); }",
+            true,
+        ),
+        (
             "later_module",
             "mod debug{crate::entity!(DebugType);}mod entity{#[macro_export]macro_rules! entity{($name:ident)=>{pub struct $name;}}}fn main(){let _=debug::DebugType;}",
             true,

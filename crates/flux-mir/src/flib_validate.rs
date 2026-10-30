@@ -365,6 +365,27 @@ pub(super) fn body_for_owner(
                 StatementKind::Assign(dest, r) => {
                     let dest_ty = place(dest, body, items, sigs)?;
                     match r {
+                        Rvalue::WithAddr(pointer, address) => {
+                            operand(pointer, body, items, sigs)?;
+                            operand(address, body, items, sigs)?;
+                            if body.operand_ty(pointer, sigs) != dest_ty
+                                || !matches!(dest_ty.kind(), TyKind::RawPtr(..))
+                                || body.operand_ty(address, sigs) != Ty::int(flux_ty::IntTy::Usize)
+                            {
+                                return Err(invalid());
+                            }
+                        }
+                        Rvalue::OffsetOf(ty, path) => {
+                            let mut ty = *ty;
+                            if path.is_empty() || dest_ty != Ty::int(flux_ty::IntTy::Usize) {
+                                return Err(invalid());
+                            }
+                            for &index in path {
+                                ty = *fields(ty, None, sigs)?
+                                    .get(index as usize)
+                                    .ok_or_else(invalid)?;
+                            }
+                        }
                         Rvalue::Aggregate(kind, ops) => {
                             for o in ops {
                                 operand(o, body, items, sigs)?;

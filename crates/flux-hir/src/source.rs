@@ -313,6 +313,12 @@ const CORE_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/macros.rs"),
     ),
     ("hint.rs", include_str!("../../../library/core/src/hint.rs")),
+    ("pin.rs", include_str!("../../../library/core/src/pin.rs")),
+    (
+        "future.rs",
+        include_str!("../../../library/core/src/future.rs"),
+    ),
+    ("task.rs", include_str!("../../../library/core/src/task.rs")),
     (
         "error.rs",
         include_str!("../../../library/core/src/error.rs"),

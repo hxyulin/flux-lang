@@ -56,9 +56,9 @@ pub const fn slice_from_raw_parts_mut<T>(data: *mut T, len: usize) -> *mut [T] {
     crate::intrinsics::raw_slice_from_parts_mut(data, len)
 }
 
-/// Whether two pointers are equal: the same address.
-pub fn eq<T>(a: *const T, b: *const T) -> bool {
-    a as usize == b as usize
+/// Whether two pointers have the same address and metadata.
+pub fn eq<T: ?Sized>(a: *const T, b: *const T) -> bool {
+    a == b
 }
 
 /// Hashes a thin pointer's address. Unsized pointees are not supported:
@@ -173,6 +173,13 @@ pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
 }
 
 impl<T: ?Sized> *const T {
+    /// Replaces the data address while retaining pointer metadata.
+    pub fn with_addr(self,address:usize)->Self {
+        crate::intrinsics::ptr_with_addr(self as *const T,address) as *const T
+    }
+    /// Maps the data address while retaining pointer metadata.
+    pub fn map_addr<F:FnOnce(usize)->usize>(self,map:F)->Self {self.with_addr(map(self.addr()))}
+
     /// Whether the pointer is null.
     pub fn is_null(self) -> bool {
         self as *const u8 as usize == 0
@@ -204,6 +211,41 @@ impl<T: ?Sized> *const T {
 }
 
 impl<T> *const T {
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_add(self,count:usize)->*const T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *const u8).add(count) as *const T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_add(self,count:usize)->*const T {
+        (self as *const u8).wrapping_add(count) as *const T
+    }
+
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_sub(self,count:usize)->*const T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *const u8).sub(count) as *const T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_sub(self,count:usize)->*const T {
+        (self as *const u8).wrapping_sub(count) as *const T
+    }
+
+    /// The nonnegative element distance from origin.
+    /// # Safety
+    /// Both pointers must belong to the same allocation, with self at or after
+    /// origin and an isize-sized, whole-element displacement. T must not be ZST.
+    pub unsafe fn offset_from_unsigned(self,origin:*const T)->usize {
+        // SAFETY: the caller supplies the shared allocation and element bounds.
+        let distance=unsafe {self.offset_from(origin)};
+        assert!(distance>=0,"unsigned pointer distance must be nonnegative");
+        distance as usize
+    }
+
     /// The element offset needed to reach `align`, or `usize::MAX` if
     /// impossible. `align` must be a power of two. This checks alignment
     /// only, not allocation bounds or whether memory can be accessed.
@@ -296,6 +338,13 @@ impl<T> *const T {
 }
 
 impl<T: ?Sized> *mut T {
+    /// Replaces the data address while retaining pointer metadata.
+    pub fn with_addr(self,address:usize)->Self {
+        crate::intrinsics::ptr_with_addr(self as *const T,address) as *mut T
+    }
+    /// Maps the data address while retaining pointer metadata.
+    pub fn map_addr<F:FnOnce(usize)->usize>(self,map:F)->Self {self.with_addr(map(self.addr()))}
+
     /// Whether the pointer is null.
     pub fn is_null(self) -> bool {
         self as *const u8 as usize == 0
@@ -336,6 +385,41 @@ impl<T: ?Sized> *mut T {
 }
 
 impl<T> *mut T {
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_add(self,count:usize)->*mut T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *mut u8).add(count) as *mut T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_add(self,count:usize)->*mut T {
+        (self as *mut u8).wrapping_add(count) as *mut T
+    }
+
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_sub(self,count:usize)->*mut T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *mut u8).sub(count) as *mut T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_sub(self,count:usize)->*mut T {
+        (self as *mut u8).wrapping_sub(count) as *mut T
+    }
+
+    /// The nonnegative element distance from origin.
+    /// # Safety
+    /// Both pointers must belong to the same allocation, with self at or after
+    /// origin and an isize-sized, whole-element displacement. T must not be ZST.
+    pub unsafe fn offset_from_unsigned(self,origin:*const T)->usize {
+        // SAFETY: the caller supplies the shared allocation and element bounds.
+        let distance=unsafe {self.offset_from(origin)};
+        assert!(distance>=0,"unsigned pointer distance must be nonnegative");
+        distance as usize
+    }
+
     /// The element offset needed to reach `align`, or `usize::MAX` if
     /// impossible. See the shared pointer method for the contract.
     #[track_caller]
@@ -517,6 +601,20 @@ pub struct NonNull<T: ?Sized> {
 }
 
 impl<T: ?Sized> NonNull<T> {
+    /// Replaces the nonzero data address, retaining pointer metadata.
+    pub fn with_addr(self,address:crate::num::NonZeroUsize)->Self {
+        // SAFETY: the new address is nonzero; validity is required only on access.
+        unsafe {Self::new_unchecked(self.as_ptr().with_addr(address.get()))}
+    }
+    /// Maps the nonzero data address, retaining pointer metadata.
+    pub fn map_addr<F:FnOnce(crate::num::NonZeroUsize)->crate::num::NonZeroUsize>(self,map:F)->Self {self.with_addr(map(self.addr()))}
+
+    /// The nonzero data address, without metadata.
+    pub fn addr(self)->crate::num::NonZeroUsize {
+        // SAFETY: NonNull guarantees its data address is nonzero.
+        unsafe {crate::num::NonZeroUsize::new_unchecked(self.pointer.addr())}
+    }
+
     /// `ptr`, which must not be null.
     pub const unsafe fn new_unchecked(ptr: *mut T) -> NonNull<T> {
         NonNull {
@@ -560,6 +658,60 @@ impl<T: ?Sized> NonNull<T> {
 }
 
 impl<T> NonNull<T> {
+    /// Offsets the pointer by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and stay in the same allocation.
+    pub const unsafe fn byte_add(self,count:usize)->Self {
+        // SAFETY: a valid in-allocation offset preserves non-nullness.
+        unsafe {Self::new_unchecked(self.as_ptr().byte_add(count))}
+    }
+
+    /// Offsets the pointer by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and stay in the same allocation.
+    pub const unsafe fn byte_sub(self,count:usize)->Self {
+        // SAFETY: a valid in-allocation offset preserves non-nullness.
+        unsafe {Self::new_unchecked(self.as_ptr().byte_sub(count))}
+    }
+
+    /// The nonnegative element distance from origin.
+    /// # Safety
+    /// The pointers must share an allocation, self must not precede origin,
+    /// and the displacement must fit isize and whole nonzero-sized elements.
+    pub unsafe fn offset_from_unsigned(self,origin:Self)->usize {
+        // SAFETY: forwarded caller guarantees.
+        unsafe {self.pointer.offset_from_unsigned(origin.pointer)}
+    }
+    /// Replaces the initialized value without dropping the old value.
+    /// # Safety
+    /// The pointer must be valid and aligned for reading and writing T.
+    pub unsafe fn replace(self,value:T)->T {
+        // SAFETY: forwarded caller guarantees.
+        unsafe {replace(self.as_ptr(),value)}
+    }
+    /// Copies count elements, permitting overlap.
+    /// # Safety
+    /// Both ranges must be valid and aligned for count elements.
+    pub unsafe fn copy_to(self,dest:Self,count:usize) {
+        // SAFETY: forwarded caller guarantees.
+        unsafe {copy(self.pointer,dest.as_ptr(),count);}
+    }
+    /// Copies count elements between disjoint ranges.
+    /// # Safety
+    /// Both ranges must be valid, aligned and disjoint for count elements.
+    pub unsafe fn copy_to_nonoverlapping(self,dest:Self,count:usize) {
+        // SAFETY: forwarded caller guarantees.
+        unsafe {copy_nonoverlapping(self.pointer,dest.as_ptr(),count);}
+    }
+    /// Fills count elements with the specified byte pattern.
+    /// # Safety
+    /// The pointer must be valid and aligned for writing count elements. The
+    /// pattern must be a valid T before a resulting element is read.
+    pub unsafe fn write_bytes(self,value:u8,count:usize) {
+        // SAFETY: forwarded caller guarantees.
+        unsafe {write_bytes(self.as_ptr(),value,count);}
+    }
+
     /// A pointer aligned for a `T` that points to nothing: what an empty
     /// collection holds.
     pub const fn dangling() -> NonNull<T> {

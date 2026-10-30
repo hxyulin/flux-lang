@@ -341,7 +341,9 @@ fn evaluate(
                 ty: to,
             })
         }
-        Rvalue::InlineAsm { .. }
+        Rvalue::WithAddr(..)
+        | Rvalue::OffsetOf(..)
+        | Rvalue::InlineAsm { .. }
         | Rvalue::Aggregate(..)
         | Rvalue::Ref { .. }
         | Rvalue::Discriminant(_)

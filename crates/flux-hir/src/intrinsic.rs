@@ -21,6 +21,26 @@ macro_rules! intrinsics {
 }
 
 intrinsics! {
+    PtrWithAddr => "ptr_with_addr",
+    AtomicU16CasRelaxed => "__atomic_u16_cas_relaxed",
+    AtomicU16CasAcquire => "__atomic_u16_cas_acquire",
+    AtomicU16CasRelease => "__atomic_u16_cas_release",
+    AtomicU16CasAcqrel => "__atomic_u16_cas_acqrel",
+    AtomicU16CasSeqcst => "__atomic_u16_cas_seqcst",
+    AtomicU32CasRelaxed => "__atomic_u32_cas_relaxed",
+    AtomicU32CasAcquire => "__atomic_u32_cas_acquire",
+    AtomicU32CasRelease => "__atomic_u32_cas_release",
+    AtomicU32CasAcqrel => "__atomic_u32_cas_acqrel",
+    AtomicU32CasSeqcst => "__atomic_u32_cas_seqcst",
+    AtomicPtrCasRelaxed => "__atomic_ptr_cas_relaxed",
+    AtomicPtrCasAcquire => "__atomic_ptr_cas_acquire",
+    AtomicPtrCasRelease => "__atomic_ptr_cas_release",
+    AtomicPtrCasAcqrel => "__atomic_ptr_cas_acqrel",
+    AtomicPtrCasSeqcst => "__atomic_ptr_cas_seqcst",
+    CoroutineNew => "__coroutine_new",
+    CoroutineAwait => "__coroutine_await",
+    CoroutinePoll => "__coroutine_poll",
+    CoroutineDrop => "__coroutine_drop",
     SizedDispatch => "__sized_dispatch",
     NeonVld1U8 => "__neon_vld1_u8",
     NeonVst1U8 => "__neon_vst1_u8",
@@ -215,6 +235,17 @@ impl Intrinsic {
                 | Self::AtomicPtrStoreRelaxed
                 | Self::AtomicPtrStoreRelease
                 | Self::AtomicPtrStoreSeqcst
+        )
+    }
+}
+
+impl Intrinsic {
+    /// Coroutine operations have generated function bodies rather than local
+    /// expression expansions.
+    pub const fn is_coroutine(self) -> bool {
+        matches!(
+            self,
+            Self::CoroutineNew | Self::CoroutineAwait | Self::CoroutinePoll | Self::CoroutineDrop
         )
     }
 }

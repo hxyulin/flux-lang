@@ -3250,11 +3250,48 @@ impl Builder<'_> {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
+            Expr::Pin(inner) => {
+                self.extending = self.extended_refs.contains(&expr);
+                let place = self.lower_place(*inner);
+                self.extending = false;
+                let reference =
+                    self.temp(Ty::new(TyKind::Ref(Mutability::Mut, self.place_ty(&place))));
+                self.assign(
+                    &reference.into(),
+                    Rvalue::Ref {
+                        raw: false,
+                        mutability: Mutability::Mut,
+                        place,
+                        two_phase: false,
+                    },
+                    range,
+                );
+                let pointer = self.read(reference.into());
+                let TyKind::Adt(pin, _) = self.own_ty(expr).kind() else {
+                    return;
+                };
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Struct(pin.strukt), vec![pointer]),
+                    range,
+                );
+            }
+            Expr::OffsetOf { .. } => {
+                if let Some((ty, fields)) = self.types.offsets.get(expr) {
+                    self.assign(dest, Rvalue::OffsetOf(*ty, fields.clone()), range);
+                }
+            }
             Expr::InlineAsm(asm) => {
                 let mut places = Vec::new();
                 let mut inputs = Vec::new();
                 let mut tys = Vec::new();
-                for &operand in body.lists[asm.operands].iter() {
+                for (&operand, register) in
+                    body.lists[asm.operands].iter().zip(asm.registers.iter())
+                {
+                    if register.input_only() {
+                        inputs.push(self.lower_operand(operand));
+                        continue;
+                    }
                     let place = self.lower_place(operand);
                     let ty = self.place_ty(&place);
                     let snapshot = self.temp(ty);
@@ -3702,14 +3739,24 @@ impl Builder<'_> {
                 Expr::Path(Res::Function(_) | Res::Assoc { .. })
                     if self.types.consts.get(*callee).is_none() =>
                 {
-                    let args = self.body.lists[*args]
-                        .iter()
-                        .map(|&arg| self.lower_operand(arg))
-                        .collect();
                     let Some(&instance) = self.types.calls.get(*callee) else {
                         self.bug("a call of a function not resolved", range);
                         return;
                     };
+                    if self.items.functions[instance.function].intrinsic
+                        == Some(flux_hir::Intrinsic::CoroutineAwait)
+                    {
+                        let argument = self.body.lists[*args][0];
+                        let Expr::Ref { expr: future, .. } = self.body.exprs[argument] else {
+                            unreachable!("await owns a borrowed temporary");
+                        };
+                        self.lower_await(instance, *callee, future, dest, range);
+                        return;
+                    }
+                    let args = self.body.lists[*args]
+                        .iter()
+                        .map(|&arg| self.lower_operand(arg))
+                        .collect();
                     self.record_call_regions(*callee, range);
                     self.call(instance.function, instance.args, args, dest, range);
                 }
@@ -4112,6 +4159,71 @@ impl Builder<'_> {
         self.call_regions.insert(block, tables);
     }
 
+    /// Build both exits before drop elaboration so cancellation uses the same
+    /// initialization flags and partial-move analysis as ordinary scope exit.
+    /// The constant-false fork is a compiler marker: coroutine specialization
+    /// enters its cleanup arm only when the suspended future is destroyed.
+    fn lower_await(
+        &mut self,
+        instance: flux_ty::Instance,
+        callee: ExprId,
+        future: ExprId,
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let future_local = self.temp_for(future);
+        let reference = self.temp(Ty::new(TyKind::Ref(
+            Mutability::Mut,
+            self.locals[future_local].ty,
+        )));
+        self.assign(
+            &reference.into(),
+            Rvalue::Ref {
+                raw: false,
+                mutability: Mutability::Mut,
+                place: future_local.into(),
+                two_phase: false,
+            },
+            range,
+        );
+        // The pending path has no output yet. Keep this result out of scope
+        // cleanup; the ready path immediately moves it into the destination.
+        let output = self.locals.alloc(LocalDecl {
+            ty: self.place_ty(dest),
+            kind: LocalKind::Temp,
+        });
+        self.record_call_regions(callee, range);
+        self.call(
+            instance.function,
+            instance.args,
+            vec![Operand::Move(reference.into())],
+            &output.into(),
+            range,
+        );
+        let cancel = self.new_block();
+        let ready = self.new_block();
+        self.terminate(
+            TerminatorKind::SwitchInt {
+                discr: Operand::Const(Constant::Bool(false)),
+                targets: vec![(1, cancel)],
+                otherwise: ready,
+                variants: None,
+            },
+            range,
+        );
+        self.current = Some(cancel);
+        self.leave_scopes(0, false, range);
+        self.terminate(TerminatorKind::Unreachable, range);
+        self.current = Some(ready);
+        self.drop_place(future_local.into(), range);
+        let block = self.block();
+        self.blocks[block.index()].0.push(Statement {
+            kind: StatementKind::StorageDead(future_local),
+            range,
+        });
+        self.assign(dest, Rvalue::Use(self.read(output.into())), range);
+    }
+
     /// Calls `func` with generic arguments `generic_args`, storing the
     /// result in `dest`.
     fn call(
@@ -4361,7 +4473,7 @@ impl Builder<'_> {
     /// to a tuple, struct or borrow of, as rustc extends them.
     fn extending_refs(&self, expr: ExprId, out: &mut Vec<ExprId>) {
         match &self.body.exprs[expr] {
-            Expr::Ref { expr: inner, .. } => {
+            Expr::Pin(inner) | Expr::Ref { expr: inner, .. } => {
                 out.push(expr);
                 self.extended_operand(*inner, out);
             }

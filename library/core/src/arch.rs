@@ -934,4 +934,59 @@ pub mod aarch64 {
     fn __neon_vget_lane_u64<const LANE: i32>(a: uint64x1_t) -> u64 {
         loop {}
     }
+    // These operations share the same lane-wise mask and wrapping arithmetic
+    // contracts. The wrappers retain the native vector sizes and alignments.
+    macro_rules! unsigned_lanes {
+        ($vector:ident, $lane:ty, $count:expr, $dup:ident, $greater:ident, $equal:ident, $and:ident, $sub:ident, $sum:ident) => {
+            #[target_feature(enable = "neon")]
+            pub fn $dup(value: $lane) -> $vector { $vector([value; $count]) }
+            #[target_feature(enable = "neon")]
+            pub fn $greater(a: $vector, b: $vector) -> $vector {
+                let mut lanes = [0; $count];
+                for i in 0..$count { lanes[i] = if a.0[i] > b.0[i] { <$lane>::MAX } else { 0 }; }
+                $vector(lanes)
+            }
+            #[target_feature(enable = "neon")]
+            pub fn $equal(a: $vector, b: $vector) -> $vector {
+                let mut lanes = [0; $count];
+                for i in 0..$count { lanes[i] = if a.0[i] == b.0[i] { <$lane>::MAX } else { 0 }; }
+                $vector(lanes)
+            }
+            #[target_feature(enable = "neon")]
+            pub fn $and(a: $vector, b: $vector) -> $vector {
+                let mut lanes = [0; $count];
+                for i in 0..$count { lanes[i] = a.0[i] & b.0[i]; }
+                $vector(lanes)
+            }
+            #[target_feature(enable = "neon")]
+            pub fn $sub(a: $vector, b: $vector) -> $vector {
+                let mut lanes = [0; $count];
+                for i in 0..$count { lanes[i] = a.0[i].wrapping_sub(b.0[i]); }
+                $vector(lanes)
+            }
+            #[target_feature(enable = "neon")]
+            pub fn $sum(value: $vector) -> $lane {
+                let mut total: $lane = 0;
+                for i in 0..$count { total = total.wrapping_add(value.0[i]); }
+                total
+            }
+        };
+    }
+    unsigned_lanes!(uint16x8_t, u16, 8, vdupq_n_u16, vcgtq_u16, vceqq_u16, vandq_u16, vsubq_u16, vaddvq_u16);
+    unsigned_lanes!(uint32x4_t, u32, 4, vdupq_n_u32, vcgtq_u32, vceqq_u32, vandq_u32, vsubq_u32, vaddvq_u32);
+    unsigned_lanes!(uint64x2_t, u64, 2, vdupq_n_u64, vcgtq_u64, vceqq_u64, vandq_u64, vsubq_u64, vaddvq_u64);
+
+    /// Reads eight halfwords without requiring pointer alignment.
+    ///
+    /// # Safety
+    /// `pointer` must address sixteen readable initialized bytes.
+    pub unsafe fn vld1q_u16(pointer: *const u16) -> uint16x8_t {
+        let mut lanes = [0u16; 8];
+        for i in 0..8 {
+            // SAFETY: each unaligned halfword lies within the caller's region.
+            lanes[i] = unsafe { crate::ptr::read_unaligned(pointer.add(i)) };
+        }
+        uint16x8_t(lanes)
+    }
+
 }

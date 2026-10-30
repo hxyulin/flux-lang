@@ -744,6 +744,8 @@ pub fn core_drop_fns(items: &ItemTree) -> Vec<FunctionId> {
 /// those a failed check panics through, and what the entry point calls
 /// after `main`, by their `#[lang]` names.
 pub const RUNTIME_LANG_FNS: &[&str] = &[
+    "coroutine_alloc",
+    "coroutine_free",
     "panic_bounds_check",
     "panic_const_div_by_zero",
     "panic_const_rem_by_zero",

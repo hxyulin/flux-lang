@@ -19,4 +19,3 @@ error 148..153: bound modifier `?` can only be applied to `Sized`
 error 210..216: this relaxed bound is not permitted here
 error 246..252: duplicate relaxed `Sized` bounds
 error 298..304: relaxed bounds are not permitted in supertrait bounds
-error 337..343: `?Sized` bounds are not supported yet

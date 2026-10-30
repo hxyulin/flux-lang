@@ -2719,6 +2719,31 @@ impl<'a> Evaluator<'a> {
         wrapping: bool,
     ) -> Result<Value, EvalError> {
         match rvalue {
+            Rvalue::WithAddr(..) => Err(error(
+                range,
+                "pointer address mapping is not supported in constants".into(),
+            )),
+            Rvalue::OffsetOf(ty, fields) => {
+                let mut ty = ty.subst(generics);
+                let mut offset = 0u64;
+                for &field in fields {
+                    ty = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
+                    let layout = self.layout_of(ty, range)?;
+                    if !layout.exact {
+                        return Err(error(range, "field offset requires a known layout".into()));
+                    }
+                    let next = flux_solve::fields(self.sigs, ty)
+                        .and_then(|f| f.get(field as usize))
+                        .copied()
+                        .ok_or_else(|| error(range, "invalid field offset path".into()))?;
+                    offset += layout.field_offset(0, field);
+                    ty = next;
+                }
+                Ok(Value::Int {
+                    bits: offset as u128,
+                    ty: IntTy::Usize,
+                })
+            }
             Rvalue::InlineAsm { .. } => Err(error(
                 range,
                 "inline assembly is not allowed in constants".into(),

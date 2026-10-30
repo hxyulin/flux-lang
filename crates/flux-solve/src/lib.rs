@@ -65,6 +65,15 @@ pub fn maybe_unsized_with(
 ) -> bool {
     let ty = metadata::tail(fields, ty, |id| items.structs[id].is_enum());
     match ty.kind() {
+        TyKind::Alias(alias) => {
+            items.traits[alias.trait_]
+                .types
+                .iter()
+                .any(|t| t.name == alias.name && t.maybe_unsized)
+                && !bounds
+                    .iter()
+                    .any(|b| b.self_ty == ty && trait_requires_sized(items, b.trait_ref.trait_))
+        }
         TyKind::Param(p) => {
             unsized_params.get(p.index as usize) == Some(&true)
                 && !bounds
@@ -112,6 +121,21 @@ pub fn box_pointee(ty: Ty) -> Option<Ty> {
     (Some(adt.strukt) == *owned_box)
         .then(|| args.first().copied())
         .flatten()
+}
+
+/// The owner of a supported pinned method receiver.
+pub fn pin_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return None;
+    };
+    if !is_lang_struct(items, adt.strukt, "pin") {
+        return None;
+    }
+    let pointer = *args.first()?;
+    match pointer.kind() {
+        TyKind::Ref(_, target) => Some(target),
+        _ => box_pointee(pointer),
+    }
 }
 
 /// Whether `strukt` is `core`'s struct with `#[lang = "{lang}"]`.

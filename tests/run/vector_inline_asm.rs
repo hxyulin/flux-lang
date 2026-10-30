@@ -103,6 +103,15 @@ fn main() {
     // SAFETY: all eight bytes remain initialized after the second reversal.
     let final_short: [u8; 8] = unsafe { core::mem::transmute(short) };
     assert_eq!(final_short, bytes);
+    // SAFETY: the assembly copies all initialized vector lanes from an input
+    // register to a tied output, without accessing memory.
+    let mut copied=short;
+    unsafe {
+        asm!("orr {0:v}.8b, {1:v}.8b, {1:v}.8b", inout(vreg)copied, in(vreg)short,
+            options(nomem,nostack,preserves_flags));
+    }
+    let copied_bytes:[u8;8]=unsafe { core::mem::transmute(copied) };
+    assert_eq!(copied_bytes,bytes);
     println!(
         "vector asm {:?} {:?} {:?} {:?} {:?} {:?} {} {}",
         preserved, doubled, shuffled, reversed, wide_result, single_result, scalar, byte

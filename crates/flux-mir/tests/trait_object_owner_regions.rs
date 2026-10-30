@@ -140,6 +140,7 @@ fn object_profile_reconstructs_both_rows() {
 #[test]
 fn unrepresented_object_shapes_stay_explicit() {
     for source in [
+        "struct Holder<'a,T:?Sized+'a>{marker:&'a (),value:Box<T>}fn main(){let marker=();let object:Holder<'_,dyn core::fmt::Display>=Holder{marker:&marker,value:Box::new(7)};drop(object);}",
         "trait Get<'a>{fn get(&self)->&(dyn Fn()->u32+'a);}fn main(){}",
         "trait Node<T>{}trait Get<'a>{fn get(&self)->&(dyn Node<fn(&'a u32)>+'a);}fn main(){}",
         "trait Get<'a>{fn get(&self)->fn(&'a u32);}fn main(){}",

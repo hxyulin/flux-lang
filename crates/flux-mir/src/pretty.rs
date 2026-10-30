@@ -218,6 +218,8 @@ fn body_text(
 
 fn rvalue_text(hir: &Hir, rvalue: &Rvalue) -> String {
     match rvalue {
+        Rvalue::WithAddr(pointer, address) => format!("with_addr({pointer:?}, {address:?})"),
+        Rvalue::OffsetOf(ty, fields) => format!("offset_of({ty}, {fields:?})"),
         Rvalue::InlineAsm {
             template,
             registers,

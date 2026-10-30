@@ -142,6 +142,7 @@ impl Validator<'_> {
     /// its hidden types where its callers have the opaque ones, and an
     /// instance's are revealed.
     fn norm(&self, ty: Ty) -> Ty {
+        let ty = flux_solve::traits::normalize(self.items, self.sigs, self.env, ty);
         let ty = flux_solve::traits::reveal(self.sigs, ty);
         flux_solve::traits::normalize(self.items, self.sigs, self.env, ty)
     }
@@ -180,6 +181,20 @@ impl Validator<'_> {
         let ty = self.place_ty(place);
         let what = || format!("{}: `{place:?} = {rvalue:?}`", at());
         match rvalue {
+            Rvalue::WithAddr(pointer, address) => {
+                assert!(
+                    matches!(self.operand_ty(pointer).kind(), TyKind::RawPtr(..)),
+                    "{}",
+                    what()
+                );
+                self.check(
+                    self.operand_ty(address),
+                    Ty::int(flux_ty::IntTy::Usize),
+                    what,
+                );
+                self.check(ty, self.operand_ty(pointer), what);
+            }
+            Rvalue::OffsetOf(_, _) => self.check(ty, Ty::int(flux_ty::IntTy::Usize), what),
             Rvalue::Use(op) => self.check(ty, self.operand_ty(op), what),
             Rvalue::BinaryOp(op, l, r) => {
                 let (l, r) = (self.operand_ty(l), self.operand_ty(r));
@@ -215,7 +230,9 @@ impl Validator<'_> {
                 let tuple = Ty::tuple(
                     &inputs
                         .iter()
-                        .map(|op| self.operand_ty(op))
+                        .zip(registers.iter())
+                        .filter(|(_, register)| !register.input_only())
+                        .map(|(op, _)| self.operand_ty(op))
                         .collect::<Vec<_>>(),
                 );
                 self.check(ty, tuple, what);

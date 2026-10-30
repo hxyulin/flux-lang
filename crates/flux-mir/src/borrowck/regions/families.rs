@@ -534,7 +534,9 @@ pub(super) fn impl_family_values_match(
             .map(|a| a.bindings.len())
             .sum::<usize>();
         let implicit_sized = sigs.builtins.sized.is_some_and(|sized| {
-            (!declaration.generics.lifetimes.is_empty() || !declaration.generics.params.is_empty())
+            !declaration.maybe_unsized
+                && (!declaration.generics.lifetimes.is_empty()
+                    || !declaration.generics.params.is_empty())
                 && !sigs.traits.get(trait_ref.trait_).is_some_and(|signature| {
                     signature
                         .type_bounds

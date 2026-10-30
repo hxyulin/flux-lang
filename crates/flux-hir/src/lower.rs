@@ -1776,6 +1776,7 @@ struct Ctx<'a> {
     /// Lowering a closure's body, where `break` cannot leave a loop
     /// outside it.
     in_closure: bool,
+    in_async: bool,
     /// Lowering an anonymous constant in this function's signature or
     /// body, whose locals it cannot use (E0435).
     anon_in: Option<FunctionId>,
@@ -1879,6 +1880,7 @@ impl<'a> Ctx<'a> {
             alt_mode: None,
             loops: Vec::new(),
             in_closure: false,
+            in_async: false,
             anon_in: None,
             diagnostics: Vec::new(),
             macro_scope: None,
@@ -2123,7 +2125,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn is_inline_asm(&self, call: ast::MacroExpr<'_>) -> bool {
+    fn is_builtin_macro(&self, call: ast::MacroExpr<'_>, builtin: crate::Builtin) -> bool {
         let Some(path) = call.syntax().children().find_map(ast::Path::cast) else {
             return false;
         };
@@ -2136,11 +2138,11 @@ impl<'a> Ctx<'a> {
         ) {
             Ok(macros::Resolved::Def(id)) => matches!(
                 self.items.macros[id].kind,
-                crate::MacroKind::Builtin(crate::Builtin::Asm)
+                crate::MacroKind::Builtin(found) if found == builtin
             ),
             Ok(macros::Resolved::Local(local)) => matches!(
                 local.def.kind,
-                crate::MacroKind::Builtin(crate::Builtin::Asm)
+                crate::MacroKind::Builtin(found) if found == builtin
             ),
             Err(_) => false,
         }
@@ -2155,7 +2157,9 @@ impl<'a> Ctx<'a> {
             );
             return self.alloc_expr(Expr::Missing, range);
         }
-        let asm = if self.is_inline_asm(m) {
+        let pin = self.is_builtin_macro(m, crate::Builtin::Pin);
+        let offset_of = self.is_builtin_macro(m, crate::Builtin::OffsetOf);
+        let asm = if self.is_builtin_macro(m, crate::Builtin::Asm) {
             match macros::inline_asm::parse_call(m.syntax()) {
                 Ok(asm) => Some(asm),
                 Err((at, message)) => {
@@ -2174,7 +2178,36 @@ impl<'a> Ctx<'a> {
         self.expansion_depth += 1;
         crate::item_tree::body_expansion(1);
         let outer_file = std::mem::replace(&mut self.expansion_file, file);
-        let id = if let Some(asm) = asm {
+        let id = if pin {
+            let value = self.lower_opt(expr, root);
+            self.alloc_expr(Expr::Pin(value), range)
+        } else if offset_of {
+            if let Some(ast::Expr::TupleExpr(tuple)) = expr {
+                let mut parts = tuple.fields();
+                let closure = parts
+                    .next()
+                    .and_then(|e| ast::ClosureExpr::cast(e.syntax()));
+                let ty = closure
+                    .and_then(|c| c.param_list())
+                    .and_then(|p| p.params().next())
+                    .and_then(|p| p.ty());
+                let lowered = self.lower_body_type(ty);
+                let container = self.alloc_type(lowered);
+                let names = parts
+                    .next()
+                    .map(|e| e.syntax().text().to_string())
+                    .unwrap_or_default();
+                let fields = names
+                    .trim()
+                    .trim_matches('"')
+                    .split('.')
+                    .map(|field| Symbol::intern(field.strip_prefix("r#").unwrap_or(field)))
+                    .collect();
+                self.alloc_expr(Expr::OffsetOf { container, fields }, range)
+            } else {
+                self.alloc_expr(Expr::Missing, range)
+            }
+        } else if let Some(asm) = asm {
             if let Some(ast::Expr::TupleExpr(tuple)) = expr {
                 let operands = self.lower_expr_list(tuple.fields());
                 self.alloc_expr(
@@ -2212,7 +2245,10 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let range = m.syntax().text_range();
-        if self.is_inline_asm(m) {
+        if self.is_builtin_macro(m, crate::Builtin::Asm)
+            || self.is_builtin_macro(m, crate::Builtin::OffsetOf)
+            || self.is_builtin_macro(m, crate::Builtin::Pin)
+        {
             let id = self.lower_macro_expr(m, range);
             if is_tail && !semicolon {
                 return Some(id);
@@ -2530,7 +2566,30 @@ impl<'a> Ctx<'a> {
                     None => Expr::Array(self.lower_expr_list(exprs)),
                 }
             }
-            ast::Expr::AwaitExpr(_) => self.unsupported_expr(range, "`.await` expressions"),
+            ast::Expr::AwaitExpr(await_) => {
+                if !self.in_async {
+                    self.error(range, "`await` is only allowed inside async blocks");
+                    return self.alloc_expr(Expr::Missing, range);
+                }
+                let value = self.lower_opt(await_.expr(), syntax);
+                let stmts = self.lists.alloc([]);
+                let value = self.alloc_expr(
+                    Expr::Block {
+                        stmts,
+                        tail: Some(value),
+                        is_unsafe: false,
+                    },
+                    range,
+                );
+                let value = self.alloc_expr(
+                    Expr::Ref {
+                        mutable: true,
+                        expr: value,
+                    },
+                    range,
+                );
+                return self.coroutine_call("coroutine_await", value, range);
+            }
             ast::Expr::ClosureExpr(closure) => return self.lower_closure(closure),
             ast::Expr::FieldExpr(field) => {
                 let base = self.lower_opt(field.expr(), syntax);
@@ -3312,7 +3371,47 @@ impl<'a> Ctx<'a> {
         }
     }
 
+    fn coroutine_call(&mut self, lang: &str, value: ExprId, range: TextRange) -> ExprId {
+        let Some(&function) = self.items.lang_fns.get(&Symbol::intern(lang)) else {
+            self.error(range, "missing coroutine runtime operation");
+            return self.alloc_expr(Expr::Missing, range);
+        };
+        let callee = self.alloc_expr(Expr::Path(Res::Function(function)), range);
+        let args = self.lists.alloc([value]);
+        self.alloc_expr(Expr::Call { callee, args }, range)
+    }
+
     fn lower_block(&mut self, block: ast::BlockExpr<'_>) -> ExprId {
+        if block.async_token().is_some() {
+            let range = block.syntax().text_range();
+            let scope = self.scopes.len();
+            let loops = std::mem::take(&mut self.loops);
+            let in_closure = std::mem::replace(&mut self.in_closure, true);
+            let in_async = std::mem::replace(&mut self.in_async, true);
+            let body = self.lower_block_inner(block);
+            self.scopes.truncate(scope);
+            self.loops = loops;
+            self.in_closure = in_closure;
+            self.in_async = in_async;
+            let params = self.lists.alloc([]);
+            let param_types = self.lists.alloc([]);
+            let closure = self.alloc_expr(
+                Expr::Closure {
+                    params,
+                    param_types,
+                    ret: None,
+                    body,
+                    is_move: block.move_token().is_some(),
+                    is_async: true,
+                },
+                range,
+            );
+            return self.coroutine_call("coroutine_new", closure, range);
+        }
+        self.lower_block_inner(block)
+    }
+
+    fn lower_block_inner(&mut self, block: ast::BlockExpr<'_>) -> ExprId {
         let syntax = block.syntax();
         for attr in block.attrs() {
             if attr.bang_token().is_some()
@@ -3339,12 +3438,10 @@ impl<'a> Ctx<'a> {
             self.loops.push((Some(label), id, true));
             id
         });
-        for token in [block.async_token(), block.move_token()]
-            .into_iter()
-            .flatten()
+        if block.async_token().is_none()
+            && let Some(token) = block.move_token()
         {
-            let what = format!("`{}` blocks", token.text());
-            self.unsupported(token.text_range(), &what);
+            self.unsupported(token.text_range(), "`move` blocks");
         }
         let is_const = block.const_token().is_some() && block.async_token().is_none();
         let (expr_start, binding_start) = (self.exprs.len(), self.bindings.len());
@@ -3963,6 +4060,7 @@ impl<'a> Ctx<'a> {
         let scope = self.scopes.len();
         let loops = std::mem::take(&mut self.loops);
         let in_closure = std::mem::replace(&mut self.in_closure, true);
+        let in_async = std::mem::replace(&mut self.in_async, false);
         let params_start = self.pat_scratch.len();
         let types_start = self.param_type_scratch.len();
         let mut names: Vec<Symbol> = Vec::new();
@@ -4015,6 +4113,7 @@ impl<'a> Ctx<'a> {
         self.scopes.truncate(scope);
         self.loops = loops;
         self.in_closure = in_closure;
+        self.in_async = in_async;
         alloc_expr!(
             self,
             Expr::Closure {
@@ -4025,6 +4124,7 @@ impl<'a> Ctx<'a> {
                 ret,
                 body,
                 is_move: closure.move_token().is_some(),
+                is_async: false,
             },
             range,
         )

@@ -10,7 +10,7 @@ pub const fn forget<T>(t: T) {
 }
 
 /// Whether dropping a `T` runs code: a `Drop` impl of it or of a part.
-pub const fn needs_drop<T>() -> bool {
+pub const fn needs_drop<T: ?Sized>() -> bool {
     crate::intrinsics::needs_drop::<T>()
 }
 
@@ -78,7 +78,7 @@ pub const fn align_of_val<T: ?Sized>(val: &T) -> usize {
 /// A value that is not dropped: dropping a `ManuallyDrop<T>` does
 /// nothing, whatever `T` is.
 #[lang = "manually_drop"]
-pub struct ManuallyDrop<T> {
+pub struct ManuallyDrop<T: ?Sized> {
     pub(crate) value: T,
 }
 
@@ -90,14 +90,14 @@ impl<T: crate::marker::Copy> crate::clone::Clone for ManuallyDrop<T> {
 
 impl<T: crate::marker::Copy> crate::marker::Copy for ManuallyDrop<T> {}
 
-impl<T> crate::ops::Deref for ManuallyDrop<T> {
+impl<T: ?Sized> crate::ops::Deref for ManuallyDrop<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.value
     }
 }
 
-impl<T> crate::ops::DerefMut for ManuallyDrop<T> {
+impl<T: ?Sized> crate::ops::DerefMut for ManuallyDrop<T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut self.value
     }
@@ -255,3 +255,9 @@ pub unsafe fn transmute_copy<Src,Dst>(source:&Src)->Dst {
         result.assume_init()
     }
 }
+
+/// The byte offset of a field path within a type.
+#[macro_export]
+#[rustc_builtin_macro]
+macro_rules! offset_of { ($($tokens:tt)*) => {} }
+pub use offset_of;

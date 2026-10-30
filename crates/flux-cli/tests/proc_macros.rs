@@ -80,10 +80,30 @@ id!(/// retained item docs
 /// retained function docs
 fn documented()->usize{23}
 #[derive(host::Generated)] struct GeneratedItem;
+#[::core::prelude::v1::derive(::core::clone::Clone, ::core::marker::Copy, ::core::fmt::Debug)]
+struct Qualified(u32);
 #[host::generated_attribute] fn generated_attribute_value()->usize{host::generated_identity!(31)}
 type Number=id!(usize);
 fn borrowed<'a>(x:&'a Number)->&'a Number{id!(x)}
+host::identity! { fn anonymous(_: &'_ Number, value: Number) -> Number { value } }
+macro_rules! forwarded_local { ($value:expr) => {{ let generated = $value; host::identity!(generated) }}; }
+mod later_consumer {
+    use super::late_prelude::*;
+    identity! { pub struct Late; }
+    #[crate::late_prelude::docs]
+    #[doc="retained"]
+    pub fn attributed() -> usize { 47 }
+    #[crate::late_prelude::remove]
+    fn erased(_: MissingType) {}
+    impl Late { identity! { pub fn value() -> usize { 29 } } }
+}
+mod late_prelude { pub use host::{identity, docs, remove}; }
 fn main(){
+    let qualified=Qualified(37); assert_eq!(qualified.clone().0,37);
+    assert_eq!(forwarded_local!(17),17);
+    assert_eq!(anonymous(&3,7),7);
+    assert_eq!(later_consumer::Late::value(),29);
+    assert_eq!(later_consumer::attributed(),47);
     assert_eq!(GeneratedItem::generated(),43);assert_eq!(generated_attribute_value(),31);
     let a=host::counter!();let b=host::counter!();assert_ne!(a,b);assert_eq!(a+b,1);
     let value=Item{value:3};assert_eq!(value.clone().value,3);assert_eq!(Item::answer(),42);

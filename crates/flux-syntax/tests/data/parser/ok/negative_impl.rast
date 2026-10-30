@@ -1,0 +1,101 @@
+SOURCE_FILE@0..90
+  STRUCT@0..9
+    STRUCT_KW@0..6 "struct"
+    WHITESPACE@6..7 " "
+    NAME@7..8
+      IDENT@7..8 "S"
+    SEMICOLON@8..9 ";"
+  WHITESPACE@9..10 "\n"
+  IMPL@10..43
+    ATTR@10..23
+      POUND@10..11 "#"
+      L_BRACK@11..12 "["
+      META@12..22
+        PATH@12..15
+          PATH_SEGMENT@12..15
+            NAME_REF@12..15
+              IDENT@12..15 "cfg"
+        TOKEN_TREE@15..22
+          L_PAREN@15..16 "("
+          IDENT@16..19 "any"
+          TOKEN_TREE@19..21
+            L_PAREN@19..20 "("
+            R_PAREN@20..21 ")"
+          R_PAREN@21..22 ")"
+      R_BRACK@22..23 "]"
+    WHITESPACE@23..24 "\n"
+    IMPL_KW@24..28 "impl"
+    WHITESPACE@28..29 " "
+    BANG@29..30 "!"
+    PATH_TYPE@30..34
+      PATH@30..34
+        PATH_SEGMENT@30..34
+          NAME_REF@30..34
+            IDENT@30..34 "Send"
+    WHITESPACE@34..35 " "
+    FOR_KW@35..38 "for"
+    WHITESPACE@38..39 " "
+    PATH_TYPE@39..40
+      PATH@39..40
+        PATH_SEGMENT@39..40
+          NAME_REF@39..40
+            IDENT@39..40 "S"
+    WHITESPACE@40..41 " "
+    ASSOC_ITEM_LIST@41..43
+      L_CURLY@41..42 "{"
+      R_CURLY@42..43 "}"
+  WHITESPACE@43..44 "\n"
+  IMPL@44..89
+    ATTR@44..57
+      POUND@44..45 "#"
+      L_BRACK@45..46 "["
+      META@46..56
+        PATH@46..49
+          PATH_SEGMENT@46..49
+            NAME_REF@46..49
+              IDENT@46..49 "cfg"
+        TOKEN_TREE@49..56
+          L_PAREN@49..50 "("
+          IDENT@50..53 "any"
+          TOKEN_TREE@53..55
+            L_PAREN@53..54 "("
+            R_PAREN@54..55 ")"
+          R_PAREN@55..56 ")"
+      R_BRACK@56..57 "]"
+    WHITESPACE@57..58 "\n"
+    IMPL_KW@58..62 "impl"
+    GENERIC_PARAM_LIST@62..65
+      L_ANGLE@62..63 "<"
+      TYPE_PARAM@63..64
+        NAME@63..64
+          IDENT@63..64 "T"
+      R_ANGLE@64..65 ">"
+    WHITESPACE@65..66 " "
+    BANG@66..67 "!"
+    PATH_TYPE@67..71
+      PATH@67..71
+        PATH_SEGMENT@67..71
+          NAME_REF@67..71
+            IDENT@67..71 "Sync"
+    WHITESPACE@71..72 " "
+    FOR_KW@72..75 "for"
+    WHITESPACE@75..76 " "
+    PATH_TYPE@76..86
+      PATH@76..86
+        PATH_SEGMENT@76..86
+          NAME_REF@76..83
+            IDENT@76..83 "Wrapper"
+          GENERIC_ARG_LIST@83..86
+            L_ANGLE@83..84 "<"
+            TYPE_ARG@84..85
+              PATH_TYPE@84..85
+                PATH@84..85
+                  PATH_SEGMENT@84..85
+                    NAME_REF@84..85
+                      IDENT@84..85 "T"
+            R_ANGLE@85..86 ">"
+    WHITESPACE@86..87 " "
+    ASSOC_ITEM_LIST@87..89
+      L_CURLY@87..88 "{"
+      R_CURLY@88..89 "}"
+  WHITESPACE@89..90 "\n"

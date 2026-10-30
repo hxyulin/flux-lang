@@ -197,6 +197,36 @@ impl<T> [T] {
         if self.len() == 0 { None } else { Some((&self[0], &self[1..])) }
     }
 
+    /// The first N elements, or None when the slice is shorter.
+    pub const fn first_chunk<const N:usize>(&self)->Option<&[T;N]> {
+        if self.len()<N {None} else {
+            // SAFETY: the checked prefix has N initialized elements.
+            unsafe {Some(&*(self.as_ptr() as *const [T;N]))}
+        }
+    }
+    /// The last N elements, or None when the slice is shorter.
+    pub const fn last_chunk<const N:usize>(&self)->Option<&[T;N]> {
+        if self.len()<N {None} else {
+            // SAFETY: the checked suffix has N initialized elements, including
+            // the valid one-past pointer used by an empty suffix.
+            unsafe {Some(&*(self.as_ptr().add(self.len()-N) as *const [T;N]))}
+        }
+    }
+    /// Exclusive access to the first N elements.
+    pub const fn first_chunk_mut<const N:usize>(&mut self)->Option<&mut [T;N]> {
+        if self.len()<N {None} else {
+            // SAFETY: the prefix fits and the slice is exclusively borrowed.
+            unsafe {Some(&mut *(self.as_mut_ptr() as *mut [T;N]))}
+        }
+    }
+    /// Exclusive access to the last N elements.
+    pub const fn last_chunk_mut<const N:usize>(&mut self)->Option<&mut [T;N]> {
+        if self.len()<N {None} else {
+            // SAFETY: the suffix fits and the slice is exclusively borrowed.
+            unsafe {Some(&mut *(self.as_mut_ptr().add(self.len()-N) as *mut [T;N]))}
+        }
+    }
+
     /// The first `N` elements as an array and the remaining slice, or
     /// `None` if fewer than `N` elements remain.
     pub fn split_first_chunk<const N: usize>(&self) -> Option<(&[T; N], &[T])> {
@@ -897,7 +927,7 @@ impl<T, I: SliceIndex<[T]>> IndexMut<I> for [T] {
 #[diagnostic::on_unimplemented(message = "the type `{T}` cannot be indexed by `{Self}`")]
 pub unsafe trait SliceIndex<T: ?Sized>: private_slice_index::Sealed {
     /// An element, or a slice.
-    type Output;
+    type Output: ?Sized;
     /// What it indexes, if it is within the slice.
     fn get(self, slice: &T) -> Option<&Self::Output>;
     /// What it indexes, mutably, if it is within the slice.

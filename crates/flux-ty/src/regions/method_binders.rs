@@ -31,7 +31,15 @@ pub fn method_early_lifetimes(
         constrained_inputs(items, ty, row, &mut inputs)?;
     }
     let mut output = Vec::new();
-    if !resolve::callback_type_lifetimes(&data.ret, &mut output) {
+    if let flux_hir::TypeRef::Opaque(index) = data.ret {
+        let opaque = data.opaques.get(index as usize)?;
+        output.extend(opaque.lifetimes.iter().copied());
+        for bound in &opaque.bounds {
+            if !resolve::callback_path_lifetimes(&bound.path, &mut output) {
+                return None;
+            }
+        }
+    } else if !resolve::callback_type_lifetimes(&data.ret, &mut output) {
         return None;
     }
     let mut written = Vec::new();

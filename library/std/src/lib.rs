@@ -8,7 +8,7 @@ mod macros;
 
 pub use crate::alloc_crate::{alloc, borrow, boxed, fmt, format, prelude, rc, string, vec};
 pub use core::{
-    any, array, ascii, cell, char, clone, cmp, convert, default, error, hint, iter, marker,
+    any, array, ascii, cell, char, clone, cmp, convert, default, error, future, pin, task, hint, iter, marker,
     mem, num, ops, option, panic, ptr, result,
 };
 pub use core::{dbg, eprint, eprintln, print, println, stringify, write};

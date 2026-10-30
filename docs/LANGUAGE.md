@@ -668,7 +668,8 @@ value. A value, parameter or struct argument whose size is unknown is
 E0277, and so is a call or `impl` block that needs a parameter to be
 `Sized` with an unsized type. A struct's last field may not be of an
 unsized parameter's type yet (unsized structs are not supported), and
-`?Sized` on associated types and `impl Trait` is not supported yet.
+`?Sized` on return-position `impl Trait` remains unsupported. Associated types
+and anonymous argument parameters may relax Sized.
 
 Trait objects (`dyn Tr`, `dyn Tr<i32>`, `dyn Iterator<Item = u32>`,
 `dyn Fn(i32) -> i32`) exist behind references and raw pointers (`&dyn
@@ -926,24 +927,26 @@ suppresses niches, is invariant in `T`, and is Send when `T: Send`. Owned
 UnsafeCell borrowing during const evaluation and const accessors remain
 unsupported; represented genuine static addresses retain the earlier static
 borrow support. Structural unsizing preserves slice metadata.
-`core::sync::atomic::{AtomicUsize, Ordering, fence}`, reexported through
-`std::sync::atomic`, provide const construction and runtime load/store,
-fetch_add/fetch_sub, compare_exchange/compare_exchange_weak, exclusive
-get_mut/into_inner and fences. These use native 64-bit atomic operations,
-not ordinary shared loads/stores. All fifteen supported CAS ordering pairs
-are accepted; invalid orders panic at the caller. Weak CAS currently uses
-Keel's strong CAS, which is permitted. `AtomicU32` additionally supports
-const construction, runtime load/store/fetch_add and exclusive get_mut/into_inner
-using native 32-bit storage. `AtomicPtr<T>` supports sized pointees, const
-construction, validated runtime load/store and exclusive get_mut/into_inner.
-Its shared accesses use native pointer atomics; pointers to sized references
-such as `&str` are supported, while atomic fat pointers and pointer CAS/RMW
-are not. Byte and halfword load/store use matching-width instructions;
-`AtomicU8` also provides validated strong/weak compare-exchange. Signed atomic
-widths through 64 bits and `AtomicBool` provide load/store and exclusive accessors.
-These wrappers preserve their underlying byte size and alignment. Other atomic
-APIs, 128-bit atomics, const accessors and `compiler_fence` remain unsupported.
-The target advertises atomic cfgs for 8, 16, 32, 64 and pointer widths, not 128.
+`core::sync::atomic`, reexported through `std::sync::atomic`, provides signed and
+unsigned integer atomics from 8 through 64 bits, machine words, booleans and thin
+pointers. Construction and unsafe `from_ptr` views are const. Runtime operations
+include load/store, exclusive get_mut/into_inner, strong/weak compare-exchange,
+swap and fetch_update. Integer atomics additionally provide wrapping add/sub,
+bitwise and/or/xor/nand, and signed or unsigned min/max. Booleans provide the
+bitwise updates. Pointer CAS retains pointer-typed values; fat pointer atomics
+remain unsupported.
+
+Shared accesses use matching-width native loads/stores and CAS. Existing native
+add/sub paths remain; the additional updates use CAS retry loops. All fifteen
+valid CAS ordering pairs are accepted without weakening either order. Invalid
+orders panic at the caller. Weak CAS uses strong CAS, which is permitted.
+The wrappers retain their byte size and alignment. Native comparisons cover
+adjacent storage, old values, signed comparisons, pointer values, atomic views,
+all valid ordering pairs and a four-thread halfword update loop. Thin raw
+pointers also implement PartialEq and Eq, including inside Result.
+Other atomic APIs, 128-bit atomics, const get_mut/into_inner and compiler_fence
+remain unsupported. The target advertises atomic cfgs for 8, 16, 32, 64 and pointer
+widths, not 128.
 `std::sync::OnceLock<T>` supports sized payloads with `new`, `Default`,
 `get`, `get_or_init` and destruction. `get` does not wait during initialization;
 `get_or_init` spins until one initializer publishes its payload with
@@ -1256,9 +1259,16 @@ only them (E0700, E0597, E0373, as in rustc), and only for as long as
 its `+ 'a` bounds and what its bounds say associated types are
 (`Item = &'a T`, elided lifetimes as in the return type) say. Auto
 trait leakage through the hidden type remains unsupported.
-`impl Trait` in trait methods' return types, nested in an opaque
-type's bounds or in bounds' generic arguments (`T: Iterator<Item = impl
-Copy>`) is not supported yet; elsewhere it is rustc's E0562 ("`impl
+Trait methods support top-level opaque returns, including generic methods,
+default bodies and concrete return-type refinement. Implementations retain the
+promised trait bounds, associated-type equalities and represented lifetime
+contracts. Generic callers keep the output opaque; concrete instances select the
+implementation before revealing its hidden type. Opaque returns nested inside
+another return type in trait methods, and output-equality inputs that carry their
+own region slots, remain unsupported. Explicit outlives promises are checked
+conservatively against the implementation's captured slots.
+`impl Trait` nested in an opaque type's bounds or in bounds' generic arguments
+(`T: Iterator<Item = impl Copy>`) is not supported yet; elsewhere it is rustc's E0562 ("`impl
 Trait` is not allowed in field types", ...), or E0658 in type aliases
 and associated types.
 
@@ -1287,10 +1297,13 @@ receivers and Copy by-value receivers, safe default bodies and method-local type
 parameters with represented region-free trait bounds. It reconstructs signatures,
 region rows, predicates and outlives requirements before admission.
 A generic-method profile additionally admits static methods, Sized by-value
-receivers, method-local lifetimes and `?Sized` type parameters, ordinary
-associated outputs, and method bounds such as `D: Reader<'de>` or
+receivers, unsafe methods, method-local lifetimes and `?Sized` type parameters,
+anonymous argument parameters, Fn-family callback bounds, ordinary associated
+outputs, and method bounds such as `D: Reader<'de>` or
 `V: Visitor<'de, Value = &'de str>`. It reconstructs the full signature,
 owner/local region namespace, bound occurrence rows and projection equalities.
+Type-parameter owner outlives bounds such as `K: 'a` retain the owner's stored
+requirements in every method contract.
 Ordinary associated outputs may carry lifetime-bearing trait bounds and
 associated equalities, such as `type Variant: Access<'de, Error = Self::Error>`.
 Admission reconstructs the output's owner namespace, bound rows and equality
@@ -1692,9 +1705,9 @@ such as `repr`, which can collide with derive helpers. Helper-bearing generated
 derives are not yet supported; cfg, derive and qualified attributes retain their
 ordinary handling. The driver uses rustc-built host dylibs through a matching out-of-process
 toolchain server; the expanded target code still passes Flux's ordinary checks.
-Direct file builds do not discover host artifacts. Unsupported hygiene and token
-representations produce diagnostics rather than silently changing expansion
-semantics. See the [driver contract](../crates/flux-cli/README.md#cargo-backed-source-builds)
+Direct file builds do not discover host artifacts. Input spans retain macro_rules hygiene contexts. Unsupported definition-site
+output hygiene and token representations produce diagnostics rather than silently
+changing expansion semantics. See the [driver contract](../crates/flux-cli/README.md#cargo-backed-source-builds)
 for the exact toolchain and host-process restrictions.
 
 The standalone package driver also supplies local hosts through this same
@@ -1726,3 +1739,91 @@ Ordered maps provide retain, borrowed-key ranges, into_values, last_key_value an
 clear. Ordered sets provide retain, remove, pop_first and clear. Unix paths
 provide file_name, with_file_name and with_extension using their byte component
 semantics. These APIs retain their allocation, ownership and panic contracts.
+
+### Current-pin self-hosting prerequisites
+
+`offset_of!(Type, field.path)` supports sized structs, tuples and unions, including
+packed fields, raw identifiers and generic containers. It checks field privacy and
+uses the instantiated layout in constant evaluation and code generation. Traversing
+references or dereferencing pointers in a field path remains unsupported, as in Rust.
+Offsets in unsized containers remain unsupported.
+
+Argument-position `impl Trait + ?Sized` preserves the anonymous parameter's relaxed
+bound. Associated outputs may declare `?Sized`, including generic associated types.
+Outputs without that declaration must be Sized. Return-position `impl Trait + ?Sized`
+remains unsupported.
+
+The Unix library supplies `fs::read_dir`, owned directory entries, `symlink_metadata`,
+file-type queries, Unix symlink creation and device/inode/change-time metadata queries.
+Darwin additionally supplies recursive directory removal without following symlinks.
+`env::current_exe` returns a canonical executable path. `thread::sleep` resumes after
+signal interruption. Native tests compare directory operations, stat record fields,
+executable discovery and sleeping with rustc on arm64 macOS. Linux ABI branches have
+not been executed in this milestone.
+
+Unsigned AArch64 NEON lane duplication, greater-than/equality masks, bitwise AND,
+wrapping subtraction and wrapping horizontal sums support u16x8, u32x4 and u64x2.
+Halfword loads accept unaligned addresses. These implementations use scalar lane
+operations and do not establish hardware acceleration. `hint::select_unpredictable`
+selects and drops values normally without an optimizer hint.
+
+The embedded `future`, `pin` and `task` modules support manually polled futures,
+Pin receivers, pinned references and Option projections, Poll, Context and raw
+waker callbacks. `pin!` moves a value into temporary storage and extends that
+storage through its enclosing initializer where Rust does. Safe mutable access
+requires Unpin. Replacing a pinned value drops the old value in place.
+
+Async blocks and async move blocks produce futures with stable heap storage.
+Await accepts Future values, preserves live locals, and resumes at the suspended
+await after Pending. Cancellation follows the saved scope-cleanup path, including
+partially moved values and conditional drop flags. Nested futures and borrowed
+outputs retain their capture and output region constraints. These futures are
+conservatively !Send, !Sync and !Unpin. Async functions, async closures and custom
+IntoFuture conversions remain unsupported. This implementation does not establish
+allocation-free async frames or automatic Send/Sync inference.
+
+AArch64 assembly accepts input-only `in(reg)` and `in(vreg)` operands alongside
+tied `inout` operands. Inputs may be expressions and are evaluated once in source
+order without writeback. Scalar and vector transports preserve their bits; pure
+assembly still requires an output. Separate output operands remain unsupported.
+
+
+Slice first/last array windows check bounds, including empty and zero-sized
+windows. Array owning iterators expose only their remaining initialized elements
+through `as_mut_slice`. Raw and NonNull pointers support sized byte offsets and
+unsigned forward distances. Address mapping preserves wide-pointer metadata.
+Raw pointer equality and `ptr::eq` compare the data address and metadata without
+reading the pointee; wide-pointer ordering remains unsupported. `ManuallyDrop`
+accepts unsized payloads, and `needs_drop` handles slices and erased objects.
+Nonzero integers support bitwise OR with the underlying integer and each other.
+
+Uniformly quantified lifetime parameters in explicit auto-trait impls may occur
+inside type arguments. Static specialization, repeated lifetime parameters and
+region-dependent bounds remain outside this admission profile. Nested function
+pointer signatures may capture generic types; nested free lifetimes and function
+item reification with region-bearing type arguments remain unsupported.
+
+
+Generic lifetime trait methods may be unsafe and may put ordinary bounds on
+owner type parameters. Anonymous argument `impl Trait` parameters and Fn-family
+callback bounds retain their inferred parameter and binder tables.
+Type-parameter outlives bounds such as `K: 'a` retain the owner's stored requirements in the method contract. Admission reconstructs the
+written owner bounds and rejects missing or changed metadata. Named lifetime
+relations and type-outlives subjects that need projection region tables remain
+outside this profile.
+
+
+Impl-method `Self` outlives conditions use the impl header's concrete type and
+lifetime rows. Omitted object lifetimes in body annotations and call type
+arguments are inferred; declaration aliases and defaults keep their declaration
+lifetimes. Explicit static bounds and static supertraits remain enforced.
+Opaque return outlives checks materialize stored associated fields with their
+selected output rows, including flattened borrowed iterators.
+
+
+A direct object type argument inherits an explicit lifetime bound from its
+containing type's parameter, including through a type alias. Body inference does
+not erase that default. Multiple containing bounds may be inferred in bodies;
+ambiguous defaults in declarations reject. An elided containing lifetime whose
+shared default row cannot be represented reports an unsupported diagnostic;
+write the object lifetime explicitly in that case.

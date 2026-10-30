@@ -23,9 +23,7 @@ error 134..135: mismatched types: expected `*mut u8`, found `*const u8`
 error 154..160: mismatched types: expected `*const u8`, found `usize`
 error 178..193: mismatched types: expected `*const u8`, found `*mut u16`
 error 209..210: cannot add `*const u8` to `*const u8`
-error 266..272: wide pointer comparisons are not supported yet
 error 282..287: wide pointer comparisons are not supported yet
-error 354..360: wide pointer comparisons are not supported yet
 error 420..426: pointers cannot be reliably compared during const eval
 error 485..490: pointers cannot be reliably compared during const eval
 error 522..558: pointers cannot be reliably compared during const eval

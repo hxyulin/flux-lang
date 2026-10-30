@@ -511,6 +511,24 @@ impl Printer<'_> {
                 self.generic_args(id);
             }
             Expr::Path(Res::Err) => self.out.push_str("<error>"),
+            Expr::Pin(expr) => {
+                self.out.push_str("pin!(");
+                self.expr(*expr);
+                self.out.push(')');
+            }
+            Expr::OffsetOf { container, fields } => {
+                write!(
+                    self.out,
+                    "offset_of!({}, {})",
+                    type_ref(&self.body.types[*container]),
+                    fields
+                        .iter()
+                        .map(|f| f.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".")
+                )
+                .unwrap();
+            }
             Expr::InlineAsm(asm) => {
                 self.out.push_str("asm!(");
                 for (i, &expr) in self.body.lists[asm.operands].iter().enumerate() {
@@ -777,7 +795,11 @@ impl Printer<'_> {
                 ret,
                 body,
                 is_move,
+                is_async,
             } => {
+                if *is_async {
+                    self.out.push_str("async ");
+                }
                 if *is_move {
                     self.out.push_str("move ");
                 }

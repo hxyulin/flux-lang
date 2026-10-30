@@ -6,7 +6,7 @@ use flux_syntax::{SyntaxKind, TokenOrigin};
 use std::sync::Arc;
 
 use crate::macros::builtin::Builtin;
-const BUILTINS: [Builtin; 22] = [
+const BUILTINS: [Builtin; 24] = [
     Builtin::Derive,
     Builtin::Asm,
     Builtin::Assert,
@@ -29,6 +29,8 @@ const BUILTINS: [Builtin; 22] = [
     Builtin::Cfg,
     Builtin::CompileError,
     Builtin::Unsupported,
+    Builtin::OffsetOf,
+    Builtin::Pin,
 ];
 
 impl Encode for TokenOrigin {

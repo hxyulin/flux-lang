@@ -100,3 +100,18 @@ fn conditional_members_match_rustc() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn inactive_negative_impl_is_pruned_before_support_checks() {
+    let source = "struct S; #[cfg(any())] impl !Send for S {} fn main() {}";
+    let (db, _, hir) = flux_hir::lower_text("negative.rs", source);
+    assert!(db.syntax_errors().is_empty(), "{:?}", db.syntax_errors());
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let (db, _, hir) = flux_hir::lower_text("negative.rs", "struct S; impl !Send for S {}");
+    assert!(db.syntax_errors().is_empty());
+    assert!(
+        hir.diagnostics
+            .iter()
+            .any(|d| d.message == "negative impls are not supported yet")
+    );
+}

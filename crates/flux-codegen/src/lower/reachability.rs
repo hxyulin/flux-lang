@@ -733,6 +733,21 @@ impl<'a> Reach<'a> {
             } = &block.terminator.kind
             {
                 self.call(*func, generic_args, runtime);
+                // Polling is introduced only when specializing the saved async
+                // body. Its local non-generic implementations must already be
+                // retained in the library object consumed downstream.
+                if self.items.functions[*func].intrinsic
+                    == Some(flux_hir::Intrinsic::CoroutineAwait)
+                    && let Some(&future) = generic_args.first()
+                    && let Some(&trait_) = self
+                        .items
+                        .lang_traits
+                        .get(&flux_intern::Symbol::intern("future_trait"))
+                    && let Some(poll) = self.items.traits[trait_]
+                        .function(self.items, flux_intern::Symbol::intern("poll"))
+                {
+                    self.call(poll, Ty::list(&[future]), runtime);
+                }
             }
             if runtime && let TerminatorKind::Drop { place, .. } = &block.terminator.kind {
                 self.drop_type(body.place_ty(place, self.sigs));

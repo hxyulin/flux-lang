@@ -461,6 +461,7 @@ impl Trait {
 /// An associated type of a trait: `type Out: Bound;`.
 #[derive(Debug, Clone)]
 pub struct TraitType {
+    pub maybe_unsized: bool,
     pub name: Symbol,
     /// Family-local parameters and predicates, separate from the trait's.
     pub generics: Generics,
@@ -1227,6 +1228,7 @@ pub enum TypeRef {
 /// `impl Tr + 'a + use<'a, T>`, as written.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImplTraitRef {
+    pub maybe_unsized: bool,
     /// The `impl` token's definition-site edition controls implicit captures,
     /// including when a macro expands into a crate of another edition.
     pub edition: flux_syntax::Edition,
@@ -2807,6 +2809,7 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
     let range = it.syntax().text_range();
     let mut bounds = Vec::new();
     let mut lifetimes = Vec::new();
+    let mut maybe_unsized = false;
     let mut captures: Option<Box<[UseCapture]>> = None;
     let mut use_range = TextRange::default();
     // Its name as rustc prints it: the bounds, without `use<..>`.
@@ -2844,7 +2847,28 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
             continue;
         }
         let what = if bound.question_token().is_some() {
-            "`?Sized` bounds"
+            let name = bound
+                .path_type()
+                .and_then(|p| p.path())
+                .and_then(|p| p.segment())
+                .and_then(|s| s.name_ref())
+                .map(|n| n.text());
+            if name == Some("Sized") {
+                if maybe_unsized {
+                    diagnostics.push(Diagnostic::new(
+                        bound_range,
+                        "duplicate relaxed `Sized` bounds",
+                    ));
+                }
+                maybe_unsized = true;
+                names.push(collapse(bound.syntax().text()));
+                continue;
+            }
+            diagnostics.push(Diagnostic::new(
+                bound_range,
+                "bound modifier `?` can only be applied to `Sized`",
+            ));
+            return TypeRef::Error;
         } else if bound.for_token().is_some() {
             let Some(bound_names) = binder_names(bound.generic_param_list(), diagnostics) else {
                 unsupported(diagnostics, bound_range, "higher-ranked bounds");
@@ -2897,6 +2921,7 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
         return TypeRef::Error;
     }
     TypeRef::ImplTrait(Box::new(ImplTraitRef {
+        maybe_unsized,
         edition: it
             .impl_token()
             .expect("impl trait has its keyword")
@@ -3114,7 +3139,7 @@ fn desugar_impl_param(
         default: None,
         synthetic: true,
         kind: ParamKind::Type,
-        maybe_unsized: false,
+        maybe_unsized: it.maybe_unsized,
         may_dangle: false,
     });
     for bound in it.bounds.iter_mut() {
@@ -3154,6 +3179,13 @@ fn collect_opaques(
             return;
         };
         let mut it = *it;
+        if it.maybe_unsized {
+            diagnostics.push(Diagnostic::new(
+                it.range,
+                "`?Sized` return-position `impl Trait` is not supported yet",
+            ));
+            return;
+        }
         for bound in it.bounds.iter_mut() {
             reject_impl_trait_in_path(
                 &mut bound.path,

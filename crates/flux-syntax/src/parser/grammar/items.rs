@@ -411,8 +411,8 @@ fn impl_(p: &mut Parser<'_>, m: Marker) {
     if p.at(T![<]) && !generics::at_qualified_path(p) {
         generics::generic_param_list(p);
     }
-    if p.at(T![!]) {
-        p.err_and_bump("negative impls are not supported");
+    if p.at(T![!]) && matches!(p.nth(1), IDENT | T![::] | T![self] | T![super] | T![crate]) {
+        p.bump(T![!]);
     }
     types::type_(p);
     if p.eat(T![for]) {

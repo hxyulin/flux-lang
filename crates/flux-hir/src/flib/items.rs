@@ -108,6 +108,7 @@ record!(Trait {
     def_range
 });
 record!(TraitType {
+    maybe_unsized,
     name,
     generics,
     bounds,
@@ -277,6 +278,7 @@ record!(AssocBinding {
     ty_range
 });
 record!(ImplTraitRef {
+    maybe_unsized,
     edition,
     bounds,
     lifetimes,
@@ -305,7 +307,7 @@ variants!(UseCapture {0=>Lifetime(value),1=>Param(name,range)});
 variants!(ArrayLenKind {0=>Lit{value,suffix},1=>NegLit{value,suffix},2=>Const(id),3=>Path(path),4=>Bool(value),5=>Char(value),6=>Anon(file,node),7=>Error});
 variants!(TypeRef {0=>Path(path),1=>Tuple(types),2=>Never,3=>Ptr{mutable,pointee},4=>Ref{lifetime,amp,mutable,pointee},5=>Array{elem,len},6=>Slice(ty),7=>Infer,8=>FnPtr{bound_lifetimes,params,ret,is_unsafe,is_c},9=>ImplTrait(value),10=>Dyn(value),11=>ImplParam(index),12=>Opaque(index),13=>Const(value),14=>Error});
 variants!(BindingKind {0=>Item,1=>Import,2=>Glob,3=>AmbiguousGlob});
-variants!(Def {0=>Module(id),1=>Struct(id),2=>Trait(id),3=>Function(id),4=>Const(id),5=>Variant(id,index),6=>TypeAlias(id),7=>Static(id),8=>Macro(id)});
+variants!(Def {0=>Module(id),1=>Struct(id),2=>Trait(id),3=>Function(id),4=>Const(id),5=>Variant(id,index),6=>TypeAlias(id),7=>Static(id),8=>Macro(id),9=>Primitive(name)});
 record!(Binding {
     def,
     vis,
@@ -319,7 +321,7 @@ record!(Scope {
     macros,
     anonymous_traits
 });
-variants!(crate::AsmRegister {0=>Reg,1=>Vreg});
+variants!(crate::AsmRegister {0=>Reg,1=>Vreg,2=>InputReg,3=>InputVreg});
 variants!(crate::AsmTemplatePiece {0=>Text(text),1=>Operand{index,modifier}});
 record!(crate::AsmOptions {
     nomem,

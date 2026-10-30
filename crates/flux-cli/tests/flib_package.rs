@@ -20,14 +20,17 @@ fn package_reuses_fresh_libraries_and_rebuilds_transitive_includes() {
         "Cargo.toml",
         "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\na={path='a'}\n",
     );
-    write("src/main.rs", "fn main() { println!(\"{}\", a::value()); }");
+    write(
+        "src/main.rs",
+        "fn count<S:a::Values>() -> u32 { S::values().sum() } fn main() { let mut data=[3u32,8]; let mapped=a::map_offset(data.as_mut_ptr(),4); assert_eq!(unsafe {*mapped},8); use core::future::Future; let mut future=core::pin::pin!(a::suspended()); let mut cx=core::task::Context::from_waker(core::task::Waker::noop()); assert!(future.as_mut().poll(&mut cx).is_pending()); assert_eq!(future.as_mut().poll(&mut cx),core::task::Poll::Ready(16)); assert_eq!(count::<a::Counter>(), 6); assert_eq!(a::offset::<u64>(), 8); println!(\"{}\", a::value()); }",
+    );
     write(
         "a/Cargo.toml",
         "[package]\nname='a'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nb={path='../b'}\n",
     );
     write(
         "a/src/lib.rs",
-        "pub fn value() -> &'static str { b::VALUE }",
+        "struct Tick(bool); impl core::future::Future for Tick { type Output=u32; fn poll(self:core::pin::Pin<&mut Self>,_: &mut core::task::Context<'_>)->core::task::Poll<u32> { let this=self.get_mut(); if this.0 {this.0=false;core::task::Poll::Pending} else {core::task::Poll::Ready(7)} } } pub fn suspended()->impl core::future::Future<Output=u32> {async {Tick(true).await+9}} pub fn map_offset<T>(pointer:*mut T,bytes:usize)->*mut T {pointer.map_addr(|address|address+bytes)} pub trait Values { fn values() -> impl Iterator<Item=u32>; } pub struct Counter; impl Values for Counter { fn values() -> impl Iterator<Item=u32> { 1..4 } } pub fn value() -> &'static str { b::VALUE } #[repr(C)] pub struct Pair<T> { pub tag: u8, pub value: T } pub fn offset<T>() -> usize { core::mem::offset_of!(Pair<T>, value) }",
     );
     write(
         "b/Cargo.toml",

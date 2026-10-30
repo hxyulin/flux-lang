@@ -277,10 +277,10 @@ impl Builder<'_> {
                 row
             }
             (TypeRef::FnPtr { .. }, TyKind::FnPtr(sig)) => {
-                if sig
-                    .regions
-                    .is_some_and(|r| r.free != 0 || !r.types.is_empty())
-                {
+                // Capture the nested pointer as one type group. Its own
+                // recipe retains generic type regions after substitution.
+                // Written free lifetimes still need binder remapping.
+                if sig.regions.is_some_and(|r| r.free != 0) {
                     self.errors.push((
                         TextRange::default(),
                         "captured regions in nested function pointers are not supported yet".into(),

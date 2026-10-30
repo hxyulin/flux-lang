@@ -144,6 +144,15 @@ pub(super) fn check_inner_attrs(
             }
             continue;
         }
+        // Rust ignores feature gates placed on a module rather than a crate.
+        if !crate_root
+            && attr_name(attr) == Some("feature")
+            && attr
+                .meta()
+                .is_some_and(|m| m.token_tree().is_some() && m.unsafe_token().is_none())
+        {
+            continue;
+        }
         if !(is_core && attr_name(attr).is_some_and(|n| ["no_core", "feature"].contains(&n))) {
             check_attr(attr, diagnostics);
         }
@@ -321,6 +330,16 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         "allow", "warn", "deny", "forbid", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
+    // Rust treats `macro_use` on an import as an unused attribute.
+    if name == Some("macro_use")
+        && bare_attr(attr)
+        && attr
+            .syntax()
+            .parent()
+            .is_some_and(|p| p.kind() == SyntaxKind::USE)
+    {
+        return;
+    }
     // This compiler hint changes diagnostic suggestions, not trait selection.
     if let Some(meta) = attr.meta()
         && meta.unsafe_token().is_none()

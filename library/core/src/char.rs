@@ -93,6 +93,12 @@ pub const unsafe fn from_u32_unchecked(i: u32) -> char {
 }
 
 impl char {
+    /// Whether this scalar is a Unicode control character.
+    pub const fn is_control(self)->bool {
+        let value=self as u32;
+        value<=0x1f || (value>=0x7f && value<=0x9f)
+    }
+
     pub fn is_alphabetic(self) -> bool { crate::char_properties::has_property(self, 1) }
     pub fn is_alphanumeric(self) -> bool { crate::char_properties::has_property(self, 2) }
     pub fn escape_debug(self) -> EscapeDebug {

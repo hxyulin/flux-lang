@@ -7,6 +7,29 @@ fn index(count: &mut usize) -> usize {
 }
 
 fn main() {
+    let source=19u64;
+    let mut total=4u64;
+    let mut float=2.0f64;
+    let source_float=3.5f64;
+    unsafe {
+        asm!("add {total}, {total}, {source}", "fadd {float:d}, {float:d}, {source_float:d}",
+            source=in(reg)source, total=inout(reg)total,
+            source_float=in(vreg)source_float, float=inout(vreg)float,
+            options(nomem,nostack,preserves_flags));
+        asm!("prfm pldl1keep, [{line}]",line=in(reg)&source as *const u64,options(readonly,nostack,preserves_flags));
+    }
+    assert_eq!(total,23);
+    assert_eq!(float,5.5);
+    let mut stored=0u64;
+    unsafe {
+        asm!("str {value}, [{pointer}]",pointer=in(reg)&raw mut stored,value=in(reg)(source+7));
+    }
+    assert_eq!(stored,26);
+    let mut input_calls=0usize;
+    let read=|| unsafe {asm!("/*{0}*/",in(reg)source)};
+    read();read();
+    unsafe {asm!("/*{0}*/",in(reg)index(&mut input_calls));}
+    assert_eq!(input_calls,1);
     let mut x = 11u64;
     let mut y = 7u64;
     unsafe {

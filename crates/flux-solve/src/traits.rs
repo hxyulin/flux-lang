@@ -258,6 +258,10 @@ pub struct SignatureImplProof<'a> {
     pub depth: std::cell::Cell<u32>,
 }
 
+// Structural auto-trait proofs can cross several library containers per field.
+// Keep normalization re-entry and predicate recursion under the same budget.
+const SIGNATURE_RECURSION_LIMIT: usize = 128;
+
 impl SignatureImplProof<'_> {
     fn caller_normalize(
         items: &ItemTree,
@@ -331,7 +335,7 @@ impl SignatureImplProof<'_> {
         if let Some(coinductive) = auto_cycle(self.items, goal, stack) {
             return coinductive;
         }
-        if stack.len() >= 32 {
+        if stack.len() >= SIGNATURE_RECURSION_LIMIT {
             return false;
         }
         if let Some(owner) = declared_alias_bound(self.sigs, goal) {
@@ -358,7 +362,7 @@ impl SignatureImplProof<'_> {
         // Normalizing an associated requirement can re-enter selection with a
         // fresh goal stack. Bound that path as well as membership recursion.
         let depth = self.depth.get();
-        if depth >= 32 {
+        if depth as usize >= SIGNATURE_RECURSION_LIMIT {
             return None;
         }
         self.depth.set(depth + 1);
@@ -368,7 +372,7 @@ impl SignatureImplProof<'_> {
     }
 
     fn select_at(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
-        if stack.len() >= 32 || stack.contains(&goal) {
+        if stack.len() >= SIGNATURE_RECURSION_LIMIT || stack.contains(&goal) {
             return None;
         }
         stack.push(goal);
@@ -1023,7 +1027,7 @@ pub fn instantiate_impl_type(
 /// known: from `env`, the bounds in scope, or from the `impl` block for
 /// its types. The others stay, as types of their own.
 pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty) -> Ty {
-    if !ty.has_aliases() {
+    if !ty.has_aliases() && !ty.has_opaques() {
         return ty;
     }
     let mut normalizer = Normalizer {
@@ -1077,7 +1081,7 @@ struct Normalizer<'a> {
 
 impl Normalizer<'_> {
     fn go(&mut self, ty: Ty, depth: u32) -> Ty {
-        if !ty.has_aliases() || depth > 64 {
+        if (!ty.has_aliases() && !ty.has_opaques()) || depth > 64 {
             return ty;
         }
         if let Some(&done) = self.done.get(&ty) {
@@ -1096,6 +1100,33 @@ impl Normalizer<'_> {
     fn normalize(&mut self, ty: Ty, depth: u32) -> Ty {
         let (items, sigs) = (self.items, self.sigs);
         match ty.kind() {
+            TyKind::Opaque(opaque) => {
+                let args = crate::ty::map_list(opaque.args, |arg| self.go(arg, depth + 1));
+                let opaque = OpaqueTy { args, ..opaque };
+                if !self.caller_only
+                    && matches!(
+                        items.functions[opaque.function].owner,
+                        Some(Owner::Trait(_))
+                    )
+                {
+                    let target = resolve_instance(
+                        items,
+                        sigs,
+                        Instance {
+                            function: opaque.function,
+                            args,
+                        },
+                    );
+                    if target.function != opaque.function
+                        && let Some(signature) = sigs.fns.get(target.function)
+                        && opaque.index == 0
+                        && matches!(sigs.fns[opaque.function].ret.kind(), TyKind::Opaque(_))
+                    {
+                        return self.go(signature.ret.subst(target.args), depth + 1);
+                    }
+                }
+                Ty::opaque(opaque)
+            }
             TyKind::Alias(alias) => {
                 let alias = alias.map_args(|a| self.go(a, depth + 1));
                 let args = alias.args;
@@ -1205,7 +1236,12 @@ pub fn instance_sig(
 /// `ty` with generic arguments `args` substituted and its associated
 /// types normalized: a type of an instance, for code generation.
 pub fn instance_ty(items: &ItemTree, sigs: &Signatures, ty: Ty, args: &[Ty]) -> Ty {
-    normalize(items, sigs, &[], reveal(sigs, ty.subst(args)))
+    normalize(
+        items,
+        sigs,
+        &[],
+        reveal(sigs, normalize(items, sigs, &[], ty.subst(args))),
+    )
 }
 
 /// The `impl` block for `goal` and its generic arguments: the only one
@@ -1590,7 +1626,7 @@ fn holds_at(
     }
     // Outside bodies, a parameter is taken to be sized.
     if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
-        return !sigs.is_unsized(goal.self_ty);
+        return !crate::maybe_unsized(items, sigs, goal.self_ty, &[], env);
     }
     if is_builtin_trait(items, goal.trait_ref.trait_, goal.self_ty) {
         return true;
@@ -1936,6 +1972,9 @@ pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty
     match ty.kind() {
         TyKind::Tuple(elements) => elements.iter().any(|&e| needs_drop(items, sigs, env, e)),
         TyKind::Array(elem, len) => len.as_usize() != Some(0) && needs_drop(items, sigs, env, elem),
+        TyKind::Slice(elem) => needs_drop(items, sigs, env, elem),
+        // The erased concrete type may have a destructor.
+        TyKind::Dynamic(_) => true,
         TyKind::Closure(_, args) => ClosureArgs::split(args)
             .upvar_types()
             .iter()

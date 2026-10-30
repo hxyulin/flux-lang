@@ -27,6 +27,12 @@ pub trait Eq: PartialEq {
     fn assert_receiver_is_total_eq(&self) {}
 }
 
+// Pointer equality includes metadata and never reads the pointee.
+impl<T: ?Sized> PartialEq for *const T { fn eq(&self,other:&Self)->bool {*self==*other} }
+impl<T: ?Sized> Eq for *const T {}
+impl<T: ?Sized> PartialEq for *mut T { fn eq(&self,other:&Self)->bool {*self==*other} }
+impl<T: ?Sized> Eq for *mut T {}
+
 impl PartialEq for i8 { fn eq(&self, other: &i8) -> bool { *self == *other } fn ne(&self, other: &i8) -> bool { *self != *other } }
 impl Eq for i8 {}
 impl PartialEq for i16 { fn eq(&self, other: &i16) -> bool { *self == *other } fn ne(&self, other: &i16) -> bool { *self != *other } }

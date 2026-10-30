@@ -35,6 +35,9 @@ const RECURSION_LIMIT: u32 = 128;
 /// Check each collected specialization rather than relying on a direct call edge.
 fn neon_immediate_error(items: &ItemTree, instance: Instance) -> Option<&'static str> {
     let function = &items.functions[instance.function];
+    if function.intrinsic == Some(flux_hir::Intrinsic::CoroutineAwait) {
+        return Some("await reached code generation outside an async state machine");
+    }
     if !items.is_core(function.loc.module)
         || items.modules[function.loc.module].name.as_str() != "aarch64"
     {
@@ -230,11 +233,18 @@ fn collect_roots(
         }
         let depth = depths[&caller];
         let shim;
-        let (body, caller_args) = match mir.instance_body(&hir.items, caller) {
-            Some(found) => found,
-            None => {
-                shim = builtin_shim(&hir.items, sigs, caller).expect("instances have bodies");
-                (&shim, caller.args)
+        let (body, caller_args) = if let Some(generated) =
+            crate::coroutine::body_of(hir, sigs, mir, caller)
+        {
+            shim = generated;
+            (&shim, &[][..])
+        } else {
+            match mir.instance_body(&hir.items, caller) {
+                Some(found) => found,
+                None => {
+                    shim = builtin_shim(&hir.items, sigs, caller).expect("instances have bodies");
+                    (&shim, caller.args)
+                }
             }
         };
         // A generic wrapper can acquire a vtable tail only at this instance.
@@ -499,7 +509,10 @@ fn collect_roots(
                     }
                 }
 
-                if hir.items.functions[callee.function].intrinsic.is_some() {
+                if hir.items.functions[callee.function]
+                    .intrinsic
+                    .is_some_and(|intrinsic| !intrinsic.is_coroutine())
+                {
                     if let Some((op, _, word)) =
                         atomic_intrinsic(hir.items.functions[callee.function].name.as_str())
                     {
@@ -819,6 +832,11 @@ pub fn body_of<'b>(
     mir: &'b FileMir,
     instance: Instance,
 ) -> Cow<'b, Body> {
+    if let Some(generated) = crate::coroutine::body_of(hir, sigs, mir, instance) {
+        return Cow::Owned(
+            instance_body(hir, sigs, &mir.discriminants, &generated, &[]).into_owned(),
+        );
+    }
     match mir.instance_body(&hir.items, instance) {
         Some((body, args)) => instance_body(hir, sigs, &mir.discriminants, body, args),
         None => {
@@ -1242,6 +1260,9 @@ pub fn expand_intrinsics(
         let Some(intrinsic) = data.intrinsic else {
             continue;
         };
+        if intrinsic.is_coroutine() {
+            continue;
+        }
         if intrinsic == flux_hir::Intrinsic::SizedDispatch {
             // Collection rejects unresolved selectors. Keeping an unexpanded
             // inspection body intact avoids inventing an arbitrary branch.
@@ -1273,6 +1294,17 @@ pub fn expand_intrinsics(
             || atomic_intrinsic(intrinsic.name()).is_some()
         {
             // Code generation's: where the call is.
+            continue;
+        }
+        if intrinsic == flux_hir::Intrinsic::PtrWithAddr {
+            body.blocks[block].statements.push(Statement {
+                kind: StatementKind::Assign(
+                    dest,
+                    Rvalue::WithAddr(args[0].clone(), args[1].clone()),
+                ),
+                range,
+            });
+            body.blocks[block].terminator.kind = goto;
             continue;
         }
         if intrinsic.name() == "unreachable_unchecked" {
@@ -2179,12 +2211,13 @@ fn map_body_types(body: &Body, subst: impl Fn(Ty) -> Ty) -> Body {
                 continue;
             };
             match rvalue {
+                Rvalue::OffsetOf(ty, _) => *ty = subst(*ty),
                 Rvalue::Use(op) | Rvalue::UnaryOp(_, op) => operand(op),
                 Rvalue::Cast(op, ty) => {
                     operand(op);
                     *ty = subst(*ty);
                 }
-                Rvalue::BinaryOp(_, l, r) => {
+                Rvalue::WithAddr(l, r) | Rvalue::BinaryOp(_, l, r) => {
                     operand(l);
                     operand(r);
                 }
@@ -2319,9 +2352,9 @@ pub fn atomic_intrinsic(name: &str) -> Option<(&str, &str, AtomicWord)> {
         && match word {
             AtomicWord::Usize => true,
             AtomicWord::U8 => matches!(op, "load" | "store" | "cas"),
-            AtomicWord::U16 => matches!(op, "load" | "store"),
-            AtomicWord::U32 => matches!(op, "load" | "store" | "add"),
-            AtomicWord::Ptr => matches!(op, "load" | "store"),
+            AtomicWord::U16 => matches!(op, "load" | "store" | "cas"),
+            AtomicWord::U32 => matches!(op, "load" | "store" | "add" | "cas"),
+            AtomicWord::Ptr => matches!(op, "load" | "store" | "cas"),
         };
     valid.then_some((op, order, word))
 }
@@ -2336,9 +2369,11 @@ fn valid_atomic_signature(op: &str, word: AtomicWord, args: &[Ty], sig: &flux_ty
     let word = match word {
         AtomicWord::Usize => Ty::int(flux_ty::IntTy::Usize),
         AtomicWord::U8 if matches!(op, "load" | "store" | "cas") => Ty::int(flux_ty::IntTy::U8),
-        AtomicWord::U16 if matches!(op, "load" | "store") => Ty::int(flux_ty::IntTy::U16),
-        AtomicWord::U32 if matches!(op, "load" | "store" | "add") => Ty::int(flux_ty::IntTy::U32),
-        AtomicWord::Ptr if matches!(op, "load" | "store") => {
+        AtomicWord::U16 if matches!(op, "load" | "store" | "cas") => Ty::int(flux_ty::IntTy::U16),
+        AtomicWord::U32 if matches!(op, "load" | "store" | "add" | "cas") => {
+            Ty::int(flux_ty::IntTy::U32)
+        }
+        AtomicWord::Ptr if matches!(op, "load" | "store" | "cas") => {
             let Some(&ty) = args.first() else {
                 return false;
             };
@@ -2440,13 +2475,15 @@ mod atomic_tests {
                 let sig = flux_ty::FnSig {
                     params: if op == "load" {
                         vec![address]
+                    } else if op == "cas" {
+                        vec![address, ty, ty]
                     } else {
                         vec![address, ty]
                     }
                     .into(),
                     ret: if op == "store" { Ty::UNIT } else { ty },
                 };
-                let valid = supported && matches!(op, "load" | "store");
+                let valid = supported && matches!(op, "load" | "store" | "cas");
                 assert_eq!(
                     valid_atomic_signature(op, AtomicWord::Ptr, &[ty], &sig),
                     valid
@@ -2470,7 +2507,7 @@ mod atomic_tests {
             "__atomic_ptr_load_acqrel",
             "__atomic_ptr_store_acquire",
             "__atomic_ptr_store_acqrel",
-            "__atomic_ptr_cas_seqcst",
+            "__atomic_ptr_cas_release_relaxed",
             "__atomic_ptr_fence_acquire",
             "__atomic_ptr_store_unknown",
         ] {
@@ -2480,7 +2517,18 @@ mod atomic_tests {
 
     #[test]
     fn atomic_bridge_rejects_substitutions_and_invalid_intrinsic_orders() {
-        for width in [flux_ty::IntTy::Usize, flux_ty::IntTy::U32] {
+        for width in [
+            flux_ty::IntTy::Usize,
+            flux_ty::IntTy::U8,
+            flux_ty::IntTy::U16,
+            flux_ty::IntTy::U32,
+        ] {
+            let bridge = match width {
+                flux_ty::IntTy::U8 => AtomicWord::U8,
+                flux_ty::IntTy::U16 => AtomicWord::U16,
+                flux_ty::IntTy::U32 => AtomicWord::U32,
+                _ => AtomicWord::Usize,
+            };
             let word = Ty::int(width);
             for ty in [
                 word,
@@ -2511,34 +2559,17 @@ mod atomic_tests {
                         params: params.into(),
                         ret: if op == "store" { Ty::UNIT } else { ty },
                     };
-                    let supported =
-                        width == flux_ty::IntTy::Usize || matches!(op, "load" | "store" | "add");
+                    let supported = width == flux_ty::IntTy::Usize
+                        || matches!(op, "load" | "store" | "cas")
+                        || width == flux_ty::IntTy::U32 && op == "add";
                     assert_eq!(
-                        valid_atomic_signature(
-                            op,
-                            if width == flux_ty::IntTy::U32 {
-                                AtomicWord::U32
-                            } else {
-                                AtomicWord::Usize
-                            },
-                            &[ty],
-                            &sig
-                        ),
+                        valid_atomic_signature(op, bridge, &[ty], &sig),
                         ty == word && supported
                     );
                     if ty == word && supported {
                         let mut bad = sig.clone();
                         bad.ret = Ty::BOOL;
-                        assert!(!valid_atomic_signature(
-                            op,
-                            if width == flux_ty::IntTy::U32 {
-                                AtomicWord::U32
-                            } else {
-                                AtomicWord::Usize
-                            },
-                            &[ty],
-                            &bad
-                        ));
+                        assert!(!valid_atomic_signature(op, bridge, &[ty], &bad));
                         let mut bad = sig.clone();
                         let mut params = bad.params.to_vec();
                         params[0] = Ty::raw_ptr(
@@ -2550,27 +2581,9 @@ mod atomic_tests {
                             word,
                         );
                         bad.params = params.into();
-                        assert!(!valid_atomic_signature(
-                            op,
-                            if width == flux_ty::IntTy::U32 {
-                                AtomicWord::U32
-                            } else {
-                                AtomicWord::Usize
-                            },
-                            &[ty],
-                            &bad
-                        ));
+                        assert!(!valid_atomic_signature(op, bridge, &[ty], &bad));
                     }
-                    assert!(!valid_atomic_signature(
-                        op,
-                        if width == flux_ty::IntTy::U32 {
-                            AtomicWord::U32
-                        } else {
-                            AtomicWord::Usize
-                        },
-                        &[],
-                        &sig
-                    ));
+                    assert!(!valid_atomic_signature(op, bridge, &[], &sig));
                 }
             }
         }
@@ -2589,7 +2602,7 @@ mod atomic_tests {
             "__atomic_u64_add_relaxed",
             "__atomic_ptr_add_relaxed",
             "__atomic_u32_sub_relaxed",
-            "__atomic_u32_cas_relaxed",
+            "__atomic_u32_cas_unknown",
             "__atomic_u32_fence_acquire",
         ] {
             assert!(atomic_intrinsic(name).is_none(), "{name}");

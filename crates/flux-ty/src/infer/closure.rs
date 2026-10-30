@@ -812,7 +812,14 @@ impl Ctx<'_> {
             }
         }
         // The kind, from how the places are used.
-        let mut kind = ClosureKind::Fn;
+        let mut kind = if matches!(
+            body.exprs[closure.expr],
+            Expr::Closure { is_async: true, .. }
+        ) {
+            ClosureKind::FnOnce
+        } else {
+            ClosureKind::Fn
+        };
         for (_, use_kind, _) in &found {
             let k = match use_kind {
                 UseKind::Move => ClosureKind::FnOnce,
@@ -1213,12 +1220,19 @@ impl Ctx<'_> {
     fn walk(&mut self, expr: ExprId, uses: &mut Uses<'_>) {
         let body = self.body;
         match &body.exprs[expr] {
+            Expr::Pin(inner) => self.consume(*inner, uses),
             Expr::InlineAsm(asm) => {
-                for &operand in body.lists[asm.operands].iter() {
-                    self.borrow(operand, None, uses);
+                for (&operand, register) in
+                    body.lists[asm.operands].iter().zip(asm.registers.iter())
+                {
+                    if register.input_only() {
+                        self.consume(operand, uses);
+                    } else {
+                        self.borrow(operand, None, uses);
+                    }
                 }
             }
-            Expr::Missing | Expr::Literal(_) | Expr::Continue { .. } => {}
+            Expr::OffsetOf { .. } | Expr::Missing | Expr::Literal(_) | Expr::Continue { .. } => {}
             Expr::Path(Res::Local(_)) | Expr::Field { .. }
                 if self.capture_place(expr).is_some() =>
             {
@@ -1822,11 +1836,16 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut FxHashSet<Bindin
     let mut stack = vec![expr];
     while let Some(e) = stack.pop() {
         match &body.exprs[e] {
-            Expr::Missing | Expr::Literal(_) | Expr::Path(_) | Expr::Continue { .. } => {}
+            Expr::OffsetOf { .. }
+            | Expr::Missing
+            | Expr::Literal(_)
+            | Expr::Path(_)
+            | Expr::Continue { .. } => {}
             Expr::Tuple(list) | Expr::Array(list) => {
                 stack.extend(body.lists[*list].iter().copied())
             }
             Expr::InlineAsm(asm) => stack.extend(body.lists[asm.operands].iter().copied()),
+            Expr::Pin(inner) => stack.push(*inner),
             Expr::Repeat { value, .. } => stack.push(*value),
             Expr::Index { base, index } => {
                 stack.push(*base);

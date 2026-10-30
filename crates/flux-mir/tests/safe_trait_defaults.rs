@@ -10,6 +10,9 @@ fn safe_trait_defaults_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-safe-defaults-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let cases = [
+        ("generic_callable","trait R<'a>:Copy{fn get<F:Fn()->u8>(self,f:F)->u8{f()}}fn main(){}".into(),true),
+        ("owner_type_parameter","trait R<'a,T: 'a>{fn get(&self)->u8{7}}fn main(){}".into(),true),
+        ("unsafe_method","trait R<'a>:Copy{unsafe fn get(self)->&'a u8{panic!()}}fn main(){}".into(),true),
         ("generic_default", format!("{PREFIX}fn take<'a,R:Reader<'a>>(r:R)->&'a u8{{r.read_at(0).unwrap()}}fn main(){{let a=[7u8];assert_eq!(*take(a.as_slice()),7);}}"),true),
         ("short_offset",format!("{PREFIX}fn take<'a,R:Reader<'a>>(r:R)->&'a u8{{let mut offset=0;r.read(&mut offset).unwrap()}}fn main(){{let a=[7u8];assert_eq!(*take(a.as_slice()),7);}}"),true),
         ("short_receiver_borrow",format!("{PREFIX}fn take<'a,R:Reader<'a>>(r:&R)->&'a u8{{(*r).read_at(0).unwrap()}}fn main(){{let a=[7u8];assert_eq!(*take(&a.as_slice()),7);}}"),true),
@@ -76,49 +79,34 @@ fn unrepresented_default_method_shapes_stay_gated() {
     let root =
         std::env::temp_dir().join(format!("flux-safe-default-boundary-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    for (name, source) in [
-        (
-            "owner_type_parameter",
-            "trait R<'a,T: 'a>{fn get(&self)->u8{7}}fn main(){}",
-        ),
-        (
-            "unsafe_method",
-            "trait R<'a>:Copy{unsafe fn get(self)->&'a u8{panic!()}}fn main(){}",
-        ),
-        (
-            "function_pointer_signature",
-            "trait R<'a>:Copy{fn get(self,f:fn(&u8)->u8)->u8{f(&7)}}fn main(){}",
-        ),
-        (
-            "generic_callable",
-            "trait R<'a>:Copy{fn get<F:Fn()->u8>(self,f:F)->u8{f()}}fn main(){}",
-        ),
-    ] {
-        let path = root.join(format!("{name}.rs"));
-        std::fs::write(&path, source).unwrap();
-        let oracle = std::process::Command::new("rustc")
-            .args(["--edition=2024", "--emit=metadata"])
-            .arg(&path)
-            .arg("-o")
-            .arg(root.join("oracle.rmeta"))
-            .output()
-            .unwrap();
-        assert!(
-            oracle.status.success(),
-            "{name}: {}",
-            String::from_utf8_lossy(&oracle.stderr)
-        );
-        let (_, _, hir) = flux_hir::lower_text(&path, source);
-        assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
-        let typed = flux_mir::check_file(&hir);
-        assert!(
-            typed
-                .diagnostics
-                .iter()
-                .any(|d| d.message == "lifetime parameters on traits are not supported yet"),
-            "{name}: {:?}",
-            typed.diagnostics
-        );
-    }
+    let (name, source) = (
+        "function_pointer_signature",
+        "trait R<'a>:Copy{fn get(self,f:fn(&u8)->u8)->u8{f(&7)}}fn main(){}",
+    );
+    let path = root.join(format!("{name}.rs"));
+    std::fs::write(&path, source).unwrap();
+    let oracle = std::process::Command::new("rustc")
+        .args(["--edition=2024", "--emit=metadata"])
+        .arg(&path)
+        .arg("-o")
+        .arg(root.join("oracle.rmeta"))
+        .output()
+        .unwrap();
+    assert!(
+        oracle.status.success(),
+        "{name}: {}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    let (_, _, hir) = flux_hir::lower_text(&path, source);
+    assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(
+        typed
+            .diagnostics
+            .iter()
+            .any(|d| d.message == "lifetime parameters on traits are not supported yet"),
+        "{name}: {:?}",
+        typed.diagnostics
+    );
     std::fs::remove_dir_all(root).unwrap();
 }

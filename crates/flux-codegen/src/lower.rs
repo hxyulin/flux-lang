@@ -3062,6 +3062,31 @@ impl Lower<'_, '_, '_> {
     /// The leaves of an rvalue of type `ty`.
     fn rvalue(&mut self, rvalue: &Rvalue, ty: Ty) -> Values {
         match rvalue {
+            Rvalue::WithAddr(pointer, address) => {
+                let mut values = self.operand(pointer);
+                let address = self.scalar(address).expect("address is scalar");
+                // Keep the original pointer as the address calculation's base.
+                // An arbitrary wrapping byte displacement changes only its
+                // address; the remaining metadata leaves stay untouched.
+                let original = self
+                    .b
+                    .ins()
+                    .convert(ConvertOp::PtrToInt, Type::I64, values[0]);
+                let displacement = self.b.ins().isub(address, original);
+                values[0] = self.b.ins().ptradd(values[0], displacement);
+                values
+            }
+            Rvalue::OffsetOf(container, fields) => {
+                let mut ty = *container;
+                let mut offset = 0u64;
+                for &field in fields {
+                    ty = flux_solve::traits::normalize(&self.ctx.hir.items, self.sigs, &[], ty);
+                    offset += self.ctx.layouts.of(ty).field_offset(0, field);
+                    ty = flux_solve::fields(self.sigs, ty).expect("checked field offset type")
+                        [field as usize];
+                }
+                smallvec![self.int_const(offset as u128, IntTy::Usize)]
+            }
             Rvalue::InlineAsm {
                 template,
                 registers,
@@ -3254,7 +3279,13 @@ impl Lower<'_, '_, '_> {
         let mut types = Vec::new();
         let mut transports = Vec::new();
         let mut constraints = Vec::new();
-        for (operand, register) in inputs.iter().zip(registers) {
+        let output_count = registers
+            .iter()
+            .filter(|register| !register.input_only())
+            .count();
+        let mut input_constraints = Vec::new();
+        let mut template_indices = Vec::new();
+        for (input_index, (operand, register)) in inputs.iter().zip(registers).enumerate() {
             let ty = self.body.operand_ty(operand, self.sigs);
             let mut value = self.operand(operand)[0];
             let original = self.b.function().value_type(value);
@@ -3273,14 +3304,14 @@ impl Lower<'_, '_, '_> {
                     value,
                     address_flags(&self.address_align, value, packed),
                 );
-            } else if *register == AsmRegister::Reg && ty.as_float().is_some() {
+            } else if register.class() == AsmRegister::Reg && ty.as_float().is_some() {
                 let int = if ty.as_float() == Some(flux_ty::FloatTy::F32) {
                     Type::I32
                 } else {
                     Type::I64
                 };
                 value = self.b.ins().convert(ConvertOp::Bitcast, int, value);
-            } else if *register == AsmRegister::Vreg
+            } else if register.class() == AsmRegister::Vreg
                 && let Some(int) = ty.as_int()
             {
                 let float = if int.bits() <= 32 {
@@ -3294,16 +3325,24 @@ impl Lower<'_, '_, '_> {
                 }
                 value = self.b.ins().convert(ConvertOp::Bitcast, float, value);
             }
-            types.push(self.b.function().value_type(value));
             arguments.push(value);
-            transports.push((original, widened, vector.then_some(ty)));
-            constraints.push(if *register == AsmRegister::Reg {
-                "=r".to_owned()
+            let class = if register.class() == AsmRegister::Reg {
+                "r"
             } else {
-                "=w".to_owned()
-            });
+                "w"
+            };
+            if register.input_only() {
+                template_indices.push(output_count + input_index);
+                input_constraints.push(class.to_owned());
+            } else {
+                template_indices.push(types.len());
+                input_constraints.push(types.len().to_string());
+                types.push(self.b.function().value_type(value));
+                transports.push((original, widened, vector.then_some(ty)));
+                constraints.push(format!("={class}"));
+            }
         }
-        constraints.extend((0..inputs.len()).map(|i| i.to_string()));
+        constraints.extend(input_constraints);
         if !options.nomem {
             constraints.push("~{memory}".to_owned());
         }
@@ -3318,10 +3357,12 @@ impl Lower<'_, '_, '_> {
                 }
                 AsmTemplatePiece::Operand { index, modifier } => {
                     use std::fmt::Write;
-                    let modifier = modifier.unwrap_or(match registers[*index as usize] {
+                    let modifier = modifier.unwrap_or(match registers[*index as usize].class() {
                         AsmRegister::Reg => 'x',
                         AsmRegister::Vreg => 'v',
+                        _ => unreachable!(),
                     });
+                    let index = template_indices[*index as usize];
                     write!(text, "%{modifier}[{index}]").unwrap();
                 }
             }
@@ -3374,7 +3415,9 @@ impl Lower<'_, '_, '_> {
 
     fn scalar_rvalue(&mut self, rvalue: &Rvalue) -> Option<Value> {
         match rvalue {
-            Rvalue::Use(_)
+            Rvalue::WithAddr(..)
+            | Rvalue::OffsetOf(..)
+            | Rvalue::Use(_)
             | Rvalue::InlineAsm { .. }
             | Rvalue::Aggregate(..)
             | Rvalue::Ref { .. }
@@ -3691,6 +3734,24 @@ impl Lower<'_, '_, '_> {
             let equal = matches!(op, BinOp::Eq | BinOp::Le | BinOp::Ge);
             return Some(self.b.ins().iconst(Type::I8, i64::from(equal)));
         }
+        if matches!(ty.kind(), TyKind::RawPtr(..)) && matches!(op, BinOp::Eq | BinOp::Ne) {
+            let left = self.operand(l);
+            let right = self.operand(r);
+            assert_eq!(left.len(), right.len());
+            let mut equal = self.b.ins().icmp(IntCC::Eq, left[0], right[0]);
+            for (&a, &b) in left.iter().zip(&right).skip(1) {
+                let component = self.b.ins().icmp(IntCC::Eq, a, b);
+                equal = self.b.ins().and(equal, component);
+            }
+            return Some(if op == BinOp::Ne {
+                {
+                    let one = self.b.ins().iconst(Type::I8, 1);
+                    self.b.ins().xor(equal, one)
+                }
+            } else {
+                equal
+            });
+        }
         let a = self.scalar(l)?;
         let b = self.scalar(r)?;
         if ty.as_float().is_some() {
@@ -3970,7 +4031,10 @@ impl Lower<'_, '_, '_> {
                     return;
                 }
                 // Of a trait object: through its vtable.
-                if items.functions[*func].intrinsic.is_some() {
+                if items.functions[*func]
+                    .intrinsic
+                    .is_some_and(|intrinsic| !intrinsic.is_coroutine())
+                {
                     self.dyn_intrinsic(*func, args, dest, *target);
                     return;
                 }

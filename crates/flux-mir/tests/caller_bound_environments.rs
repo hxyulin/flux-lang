@@ -188,7 +188,7 @@ fn caller_bound_environments_match_rustc() {
 }
 
 #[test]
-fn relaxed_family_output_remains_explicitly_unsupported() {
+fn relaxed_family_output_matches_rustc() {
     let source = "trait G{type A<'a>:?Sized where Self:'a;}struct S;impl G for S{type A<'a>=[u8];}fn main(){}";
     let root = std::env::temp_dir().join(format!("flux-relaxed-family-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
@@ -206,13 +206,10 @@ fn relaxed_family_output_remains_explicitly_unsupported() {
         String::from_utf8_lossy(&oracle.stderr)
     );
     let (_, _, hir) = flux_hir::lower_text(&path, source);
-    assert!(
-        hir.diagnostics
-            .iter()
-            .any(|error| error.message.contains("`?Sized` bounds")
-                && error.message.contains("not supported")),
-        "{:?}",
-        hir.diagnostics
-    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
     std::fs::remove_dir_all(root).unwrap();
 }

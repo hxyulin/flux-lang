@@ -58,6 +58,12 @@ fn macro_scope_attributes_match_rustc() {
     for edition in [flux_syntax::Edition::E2015, flux_syntax::Edition::E2024] {
         for (name, source, child, accepted) in [
             (
+                "inert_module_attributes",
+                "mod child { #![feature(rustc_attrs)] #[macro_use] use std::fmt::Debug; }",
+                None,
+                true,
+            ),
+            (
                 "file",
                 "mod child; make!();",
                 Some("#![macro_use] macro_rules! make{()=>{pub struct Made;}}"),

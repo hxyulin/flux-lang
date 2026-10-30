@@ -83,7 +83,7 @@ pub(crate) unsafe fn drop_in_place<T: ?Sized>(ptr: *mut T) {
 
 /// Whether dropping a `T` runs code.
 #[rustc_intrinsic]
-pub(crate) const fn needs_drop<T>() -> bool {
+pub(crate) const fn needs_drop<T: ?Sized>() -> bool {
     loop {}
 }
 
@@ -458,3 +458,38 @@ pub(crate) unsafe fn __atomic_u8_cas_seqcst<T>(p: *mut T, expected: T, new: T) -
 pub(crate) const fn type_id<T: ?Sized + 'static>() -> u128 {
     loop {}
 }
+
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_cas_relaxed<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_cas_acquire<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_cas_release<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_cas_acqrel<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u16_cas_seqcst<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_cas_relaxed<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_cas_acquire<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_cas_release<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_cas_acqrel<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_u32_cas_seqcst<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_cas_relaxed<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_cas_acquire<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_cas_release<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_cas_acqrel<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+#[rustc_intrinsic]
+pub(crate) unsafe fn __atomic_ptr_cas_seqcst<T>(p:*mut T,expected:T,new:T)->T {loop {}}
+
+/// Changes the data address without changing pointer metadata.
+#[rustc_intrinsic]
+pub(crate) fn ptr_with_addr<T:?Sized>(pointer:*const T,address:usize)->*const T {loop {}}

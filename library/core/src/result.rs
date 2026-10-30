@@ -17,6 +17,11 @@ pub enum Result<T, E> {
 use Result::{Err, Ok};
 
 impl<T, E> Result<T, E> {
+    /// Borrows the payload of either variant.
+    pub const fn as_ref(&self)->Result<&T,&E> {match self {Ok(value)=>Ok(value),Err(error)=>Err(error)}}
+    /// Mutably borrows the payload of either variant.
+    pub const fn as_mut(&mut self)->Result<&mut T,&mut E> {match self {Ok(value)=>Ok(value),Err(error)=>Err(error)}}
+
     /// Whether it is `Ok`.
     pub const fn is_ok(&self) -> bool {
         match self {

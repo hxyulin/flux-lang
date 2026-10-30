@@ -34,6 +34,14 @@ macro_rules! nonzero_impl {
                 crate::fmt::Display::fmt(&self.0, f)
             }
         }
+        impl crate::ops::BitOr<$t> for $name {
+            type Output = Self;
+            fn bitor(self, rhs: $t) -> Self { Self(self.0 | rhs) }
+        }
+        impl crate::ops::BitOr for $name {
+            type Output = Self;
+            fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
+        }
         impl From<$name> for $t { fn from(value: $name) -> $t { value.get() } }
         impl crate::convert::TryFrom<$t> for $name {
             type Error = TryFromIntError;

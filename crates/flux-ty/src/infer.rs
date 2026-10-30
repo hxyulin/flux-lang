@@ -37,6 +37,7 @@ pub struct InferenceResult {
     pub binding_types: ArenaMap<Binding, Ty>,
     /// The field each `Field` expression reads, by index.
     pub field_indices: ArenaMap<Expr, u32>,
+    pub offsets: ArenaMap<Expr, (Ty, Box<[u32]>)>,
     /// How many references a `Field` or `Index` expression's base is
     /// dereferenced through first: one for `r.a` with `r: &S`, or `r[0]`
     /// with `r: &[i32]`.
@@ -422,6 +423,7 @@ impl<'a> Ctx<'a> {
             never_coercions: ArenaMap::new(),
             binding_types: ArenaMap::new(),
             field_indices: ArenaMap::new(),
+            offsets: ArenaMap::new(),
             field_derefs: ArenaMap::new(),
             unsized_indices: ArenaMap::new(),
             methods: ArenaMap::new(),
@@ -621,6 +623,7 @@ struct Ctx<'a> {
     never_coercions: ArenaMap<Expr, Ty>,
     binding_types: ArenaMap<Binding, Ty>,
     field_indices: ArenaMap<Expr, u32>,
+    offsets: ArenaMap<Expr, (Ty, Box<[u32]>)>,
     field_derefs: ArenaMap<Expr, u32>,
     unsized_indices: ArenaMap<Expr, ()>,
     methods: ArenaMap<Expr, Method>,
@@ -1447,6 +1450,7 @@ impl Ctx<'_> {
         }
         let mut walker = crate::regions::Walker::new(self.items, self.module, names);
         walker.body = local || argument;
+        walker.infer_objects = local || argument;
         walker.scope = TypeScope {
             self_ty: self.self_ty,
             generics: &self.generics,
@@ -2603,6 +2607,58 @@ impl Ctx<'_> {
     fn infer_expr_inner(&mut self, id: ExprId) -> Ty {
         let body = self.body;
         match &body.exprs[id] {
+            Expr::Pin(expr) => {
+                let ty = self.infer_expr(*expr);
+                let pointer = Ty::new(TyKind::Ref(Mutability::Mut, ty));
+                let Some(&pin) = self.items.lang_enums.get(&Symbol::intern("pin")) else {
+                    return Ty::ERROR;
+                };
+                Ty::adt(pin, self.items.structs[pin].name, &[pointer])
+            }
+            Expr::OffsetOf { container, fields } => {
+                let root = self.resolve_body_type(*container, false, false);
+                let mut ty = root;
+                let mut indices = Vec::new();
+                for &name in fields {
+                    ty = self.normalize(ty, self.range(id));
+                    let found = match ty.kind() {
+                        TyKind::Adt(adt, args) if !self.items.structs[adt.strukt].is_enum() => {
+                            let def = &self.items.structs[adt.strukt];
+                            def.field(name).map(|(i, _)| {
+                                if !self.items.is_visible(def.fields[i].vis, self.module) {
+                                    self.error(
+                                        self.range(id),
+                                        format!("field `{name}` is private"),
+                                    );
+                                }
+                                (i, flux_solve::field_types(self.sigs, adt.strukt, args)[i])
+                            })
+                        }
+                        TyKind::Tuple(elements) => name
+                            .as_str()
+                            .parse::<usize>()
+                            .ok()
+                            .filter(|i| i.to_string() == name.as_str())
+                            .and_then(|i| elements.get(i).map(|&ty| (i, ty))),
+                        _ => None,
+                    };
+                    let Some((index, field_ty)) = found else {
+                        self.error(self.range(id), format!("no field `{name}` on type `{ty}`"));
+                        return Ty::ERROR;
+                    };
+                    indices.push(index as u32);
+                    ty = field_ty;
+                }
+                if self.is_unsized(root) {
+                    self.error(
+                        self.range(id),
+                        "offsets in unsized types are not supported yet",
+                    );
+                    return Ty::ERROR;
+                }
+                self.offsets.insert(id, (root, indices.into_boxed_slice()));
+                Ty::int(IntTy::Usize)
+            }
             Expr::InlineAsm(asm) => {
                 if self.unsafe_depth == 0 {
                     self.error(
@@ -2616,9 +2672,13 @@ impl Ctx<'_> {
                         "inline assembly is not allowed in constants",
                     );
                 }
-                for &operand in body.lists[asm.operands].iter() {
+                for (&operand, register) in
+                    body.lists[asm.operands].iter().zip(asm.registers.iter())
+                {
                     self.infer_expr(operand);
-                    self.check_place(id, operand, false);
+                    if !register.input_only() {
+                        self.check_place(id, operand, false);
+                    }
                 }
                 self.deferred.push(Deferred::InlineAsm { expr: id });
                 Ty::UNIT
@@ -3097,6 +3157,7 @@ impl Ctx<'_> {
                 ret,
                 body: closure_body,
                 is_move,
+                ..
             } => self.infer_closure(
                 id,
                 &self.body.lists[*params],
@@ -4032,9 +4093,12 @@ impl Ctx<'_> {
             structs(ty, &mut found);
         }
         let hidden = found.into_iter().find(|&ty| match ty.kind() {
-            TyKind::Adt(adt, _) => !self
-                .items
-                .is_visible(self.items.structs[adt.strukt].loc.vis, self.module),
+            TyKind::Adt(adt, _) => {
+                !flux_solve::is_lang_struct(self.items, adt.strukt, "coroutine")
+                    && !self
+                        .items
+                        .is_visible(self.items.structs[adt.strukt].loc.vis, self.module)
+            }
             _ => false,
         });
         if let Some(ty) = hidden {
@@ -5211,7 +5275,7 @@ impl Ctx<'_> {
                 flux_hir::AssocItem::Function(f)
                     if items.functions[f].has_self
                         && self_mode(sigs, f) == mode
-                        && !boxed_self(items, sigs, f) =>
+                        && !wrapped_self(items, sigs, f) =>
                 {
                     Some(f)
                 }
@@ -5234,13 +5298,25 @@ impl Ctx<'_> {
         if inherent_found.is_some() {
             return Ok(inherent_found);
         }
-        // A Box<Self> receiver belongs to the pointee's impl, while the
-        // argument consumes the original box without dereferencing it.
+        // Box and Pin receivers belong to their target's impl, while the
+        // argument consumes the original pointer wrapper.
         if mode.is_none()
-            && let Some(pointee) = flux_solve::box_pointee(ty)
+            && let Some(pointee) =
+                flux_solve::box_pointee(ty).or_else(|| flux_solve::pin_pointee(items, ty))
         {
             let pointee = self.shallow(pointee);
-            let boxed = |f: FunctionId| items.functions[f].has_self && boxed_self(items, sigs, f);
+            let pinned = flux_solve::pin_pointee(items, ty).is_some();
+            let boxed = |f: FunctionId| {
+                items.functions[f].has_self
+                    && wrapped_self(items, sigs, f)
+                    && sigs
+                        .fns
+                        .get(f)
+                        .and_then(|sig| sig.params.first())
+                        .is_some_and(|&receiver| {
+                            flux_solve::pin_pointee(items, receiver).is_some() == pinned
+                        })
+            };
             let functions = impl_target(items, pointee)
                 .and_then(|target| items.assoc.get(&(target, name)))
                 .into_iter()
@@ -5282,7 +5358,7 @@ impl Ctx<'_> {
             found.extend(
                 self.trait_items(target, name, true)
                     .into_iter()
-                    .filter(|&(f, _)| self_mode(sigs, f) == mode && !boxed_self(items, sigs, f))
+                    .filter(|&(f, _)| self_mode(sigs, f) == mode && !wrapped_self(items, sigs, f))
                     .map(|(f, t)| (f, t, target, through)),
             );
             // An autoref also admits a by-value method whose Self is
@@ -5295,7 +5371,7 @@ impl Ctx<'_> {
                     self.trait_items(borrowed, name, true)
                         .into_iter()
                         .filter(|&(f, _)| {
-                            self_mode(sigs, f).is_none() && !boxed_self(items, sigs, f)
+                            self_mode(sigs, f).is_none() && !wrapped_self(items, sigs, f)
                         })
                         .map(|(f, t)| (f, t, borrowed, false)),
                 );
@@ -6280,6 +6356,10 @@ impl Ctx<'_> {
                 let ty = self.resolve(ty, &mut reported);
                 self.expr_types.insert(expr, ty);
             }
+            if let Some((ty, fields)) = self.offsets.get(expr).cloned() {
+                let ty = self.resolve(ty, &mut reported);
+                self.offsets.insert(expr, (ty, fields));
+            }
         }
         for (binding, _) in self.body.bindings.iter() {
             if let Some(&ty) = self.binding_types.get(binding) {
@@ -6356,6 +6436,7 @@ impl Ctx<'_> {
                 let mut walker =
                     crate::regions::Walker::new(self.items, self.module, names.clone());
                 walker.body = true;
+                walker.infer_objects = true;
                 walker.self_regions = self
                     .owner_fn
                     .and_then(|f| self.items.impl_of(f))
@@ -6475,6 +6556,7 @@ impl Ctx<'_> {
                 .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
             let mut walker = crate::regions::Walker::new(self.items, self.module, names);
             walker.body = true;
+            walker.infer_objects = true;
             walker.scope = TypeScope {
                 self_ty: self.self_ty,
                 generics: &self.generics,
@@ -6578,6 +6660,7 @@ impl Ctx<'_> {
             expr_types: self.expr_types,
             binding_types: self.binding_types,
             field_indices: self.field_indices,
+            offsets: self.offsets,
             field_derefs: self.field_derefs,
             unsized_indices: self.unsized_indices,
             methods: self.methods,
@@ -6845,6 +6928,10 @@ impl Ctx<'_> {
                 Expr::Ref { expr, .. }
                 | Expr::RawRef { expr, .. }
                 | Expr::Field { expr, .. }
+                | Expr::Unary {
+                    op: UnaryOp::Deref,
+                    operand: expr,
+                }
                 | Expr::Index { base: expr, .. } => {
                     places.insert(expr);
                 }
@@ -7196,11 +7283,12 @@ impl Ctx<'_> {
                             modifier: Some(modifier),
                         } = *piece
                         {
-                            let valid = match asm.registers[index as usize] {
+                            let valid = match asm.registers[index as usize].class() {
                                 flux_hir::AsmRegister::Reg => matches!(modifier, 'w' | 'x'),
                                 flux_hir::AsmRegister::Vreg => {
                                     matches!(modifier, 'v' | 'b' | 'h' | 's' | 'd' | 'q')
                                 }
+                                _ => unreachable!(),
                             };
                             if !valid {
                                 self.error(
@@ -7288,7 +7376,9 @@ impl Ctx<'_> {
                             TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Tuple([]),
                         ) => true,
                         (BinaryOp::Cmp(_), TyKind::RawPtr(_, pointee)) => {
-                            if self.is_unsized(pointee) {
+                            if self.is_unsized(pointee)
+                                && !matches!(op, BinaryOp::Cmp(CmpOp::Eq | CmpOp::Ne))
+                            {
                                 self.error(
                                     self.range(expr),
                                     "wide pointer comparisons are not supported yet",
@@ -7480,14 +7570,17 @@ impl Ctx<'_> {
 }
 
 /// Whether the receiver consumes a box around its impl or trait's Self.
-fn boxed_self(items: &ItemTree, sigs: &Signatures, f: FunctionId) -> bool {
+fn wrapped_self(items: &ItemTree, sigs: &Signatures, f: FunctionId) -> bool {
     let self_ty = match items.functions[f].owner {
         Some(flux_hir::Owner::Impl(imp)) => sigs.impls.get(imp).copied(),
         Some(flux_hir::Owner::Trait(_)) => Some(Ty::param(0, flux_intern::kw::SelfUpper)),
         None => None,
     };
     let receiver = sigs.fns.get(f).and_then(|sig| sig.params.first()).copied();
-    self_ty.is_some() && receiver.and_then(flux_solve::box_pointee) == self_ty
+    self_ty.is_some()
+        && receiver.and_then(|receiver| {
+            flux_solve::box_pointee(receiver).or_else(|| flux_solve::pin_pointee(items, receiver))
+        }) == self_ty
 }
 
 /// How method `f` takes `self`: by value (`None`) or by reference.

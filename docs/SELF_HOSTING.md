@@ -1,22 +1,23 @@
 # Compiling Flux with Flux
 
-Flux can build a stage-1 Flux CLI from the complete compiler source graph using
-a local Keel vector-assembly patch. The resulting compiler runs CLI checks and
-compiles and executes a smoke program in both optimization modes. It has not yet
-rebuilt the complete compiler graph. Cargo and rustc still supply host build
-scripts and procedural macros.
+Flux builds a stage-1 Flux CLI from the complete compiler source graph with the
+current pinned Keel, `103c23de480d76e02267c5a8d5a9d3505bc73231`. No local
+backend override is required. Both compiler optimization modes pass CLI checks
+and compile/run smoke comparisons against rustc. Both stage-1 compilers also
+compile the smoke program with `-O`, with matching output and exit status.
 
-The current git pin is Keel `103c23de480d76e02267c5a8d5a9d3505bc73231`, which
-includes the vector-assembly fixes and needs no local backend override for host
-builds. The stage-1 proof below records the earlier locally patched `f37f0bd`
-snapshot. The new complete backend graph adds bbtree and Verus; its first audit
-initially stopped during discovery of the generated `Structural` host export.
-That catalog blocker is fixed. The guarded backend rerun in
-`out/keel-backend-readiness/31393` reaches frontend admission, with four syntax
-and 339 HIR diagnostics, including negative impls, macro reexports and
-`offset_of!`. Both byte guards are clean. Types, MIR and native execution remain
-gated. The updated Keel IR, assembly-IR and float-folder source comparisons pass
-independently.
+The latest guarded proof is `out/flux-compiler-readiness/18888`. Syntax, HIR,
+type, MIR and code-generation diagnostic reports are empty, and both final
+source-integrity reports are clean. The complete regression suite passes all
+469 targets. The historical locally patched proof below records the older
+`f37f0bd` snapshot.
+
+A complete stage-2 rebuild was attempted through the optimized stage-1 compiler's
+Cargo source driver. Preparation stops at an inactive optional dependency,
+`embedded-io 0.4.0`, before target compilation. Cargo metadata lists the edge,
+but Cargo check does not compile it for the selected features. Stage 2 is not
+established. Cargo and rustc still supply host build scripts and procedural macros.
+The restoration goal remains active while this source-driver boundary is resolved.
 
 ## Executable source graphs
 
@@ -43,7 +44,7 @@ these source graphs.
 | `keel_asm_readiness` | Complete unchanged pinned assembler and its thirteen-package source graph, including object writing/reading and both hashbrown versions. |
 | `keel_backend_readiness`, with `FLUX_BACKEND_ONLY=full` | Complete pinned backend/linker source graph; emits AArch64 and x86 objects and links an AArch64 executable. Explicit ignored audit, with native off/on comparisons and byte guards. |
 | `keel_reduced_suite` | Flux-compiled pinned backend runs 19 selected upstream tests and emits ten executable semantic cases per compiler mode. Explicit ignored audit with byte guards. |
-| `flux_compiler_readiness` | Complete CLI library, binary and 70-package target source graph. Local patched Keel mode builds a working stage-1 compiler off/on; a complete stage-2 rebuild remains untested. |
+| `flux_compiler_readiness` | Complete CLI library, binary and current target source graph. The current pin builds stage 1 off/on; the complete stage-2 Cargo attempt currently stops during optional-dependency preparation. |
 | `keel_ir_readiness` | Complete pinned Keel IR source, layouts, empty-module parsing and verification. |
 | `keel_float_math` | Unchanged pinned Keel floating-point constant folder with the complete Keel IR dependency. |
 | `bumpalo_readiness` | Original bumpalo 3.20.3 with the resolved `collections` and `default` features, including collection ownership and zero-sized drops. |
@@ -72,7 +73,7 @@ cargo test -p flux-cli --test equivalent_readiness
 cargo test -p flux-cli --test crc32fast_readiness
 ```
 
-The typed-AST consumer exercises 135 generated node interfaces, 535 accessors
+The typed-AST consumer exercises 135 generated node interfaces, 536 accessors
 and 82 conversions. It reads the current parser fixtures and compares complete
 observable results, including casts, conversion identity and handwritten
 accessors. A recorded run produced identical 830,745-byte outputs.
@@ -561,3 +562,174 @@ backend, not the unmodified pinned backend.
 The next bootstrap step is to run regressions through the stage-1 compiler and
 use it to rebuild the complete compiler graph. Stage-1 CLI and smoke success do
 not establish stage-2 equivalence or eliminate the rustc/Cargo host tooling.
+
+
+### Current Keel pin: frontend progress
+
+The guarded complete compiler audit in `out/flux-compiler-readiness/43340` uses
+unmodified Keel `103c23de480d76e02267c5a8d5a9d3505bc73231` and its bbtree/Verus
+dependency closure. It reports zero syntax and HIR diagnostics and 83 type
+diagnostics in 178.69 seconds. Both final source-integrity reports are empty.
+MIR and native compilation remain gated; this run does not establish stage 1
+for the current pin.
+
+The remaining type diagnostics include NonNull byte/provenance/copy helpers,
+slice chunks, Result borrowing,
+string/path helpers, unsized bounds and region-admission limits.
+Trait return-position impl Trait now passes native generic/default/borrowed-output
+regressions, contract rejection tests and saved-library reuse. Input-only assembly
+passes scalar/vector native regressions. The embedded future/pin/task modules and
+pin macros resolve. Verus
+macro reexports, generated attributes, preserved input token contexts, anonymous
+lifetimes and underscores now expand. Inactive negative impls parse and are removed
+by cfg; active negative impls remain explicitly unsupported. The maintained graph
+also records flux-codegen's normal dependency on flux-ty-ir.
+
+Focused native regressions cover field offsets (including loaded generic MIR),
+unsigned NEON operations, relaxed anonymous and associated output bounds, imported
+primitive types, directory iteration, symlink metadata, executable paths and sleep.
+Manual Future polling, Pin receivers, pinned arrays and Option projection, waker
+ownership, temporary lifetimes and in-place destruction also match rustc with
+optimization disabled and enabled. Async blocks now use stable heap frames,
+saved suspension states and the checked scope cleanup for each cancellation state.
+Native comparisons cover nested awaits, borrowed outputs, loop resumption,
+conditional and partial moves, pinned local addresses, output ownership and
+cancellation before polling, at either await, and after completion. The round-robin
+consumer polls pinned optional lanes and drops completed futures in place.
+Incremental package tests also reuse a saved library exporting an async future,
+including its private polling implementation, and rebuild it after a transitive
+include changes. Futures remain conservatively !Send, !Sync and !Unpin.
+The restoration goal remains open until the current complete graph builds and the
+resulting compiler is exercised, followed by a complete stage-2 rebuild attempt.
+
+Prerequisite validation on 2026-10-30 passed formatting, workspace clippy with
+warnings denied, all 43 runner unit tests, the complete runner suite (464 targets,
+zero failures), and workspace/example `flux check`. Runner evidence is in
+`out/test-runs/1793335126135327000-63919/results.json`. That regression pass is
+separate from the still-failing complete current-pin compiler audit above.
+
+The trait opaque-return implementation additionally passes seven existing MIR
+opaque/lifetime regression targets (16 tests), the scoped HIR snapshot, workspace
+clippy and the new native/contract tests. These checks follow the 464-target pass;
+the later complete run is recorded below.
+
+After the async implementation, the complete runner covered 466 targets in
+`out/test-runs/1793338201586143000-70593/results.json`: 465 passed and one had
+an obsolete trait-profile rejection-reason assertion. That expectation now names
+the method-generics gate reached by an admitted opaque return; its full 16-test
+target passes on rerun. The unchanged HIR, type-checker and MIR native comparisons
+passed, as did the complete runtime sweep. Formatting, workspace clippy, 43 runner
+unit tests and workspace/example source checks pass. A subsequent source-owner
+fix also passes a native comparison of async panic file, line and column, followed
+by fresh async behavior/safety and incremental-package regressions. This evidence
+still does not establish stage 1 or MIR admission for the complete current graph.
+
+The atomic API tranche removes 116 type diagnostics, leaving 83 in the guarded
+audit. No missing atomic-method diagnostics remain. Integer, boolean and thin
+pointer CAS, updates and unsafe atomic views pass the new native comparison
+with optimization off/on, including a four-thread halfword retry loop. The
+existing byte atomic targets and pointer/32-bit/machine-word codegen targets
+pass, as do the two bridge signature-rejection tests, formatting and workspace
+clippy. The subsequent complete suite passed all 468 targets in
+`out/test-runs/1793341745434010000-79353/results.json`.
+
+
+The pointer/slice audit in `out/flux-compiler-readiness/78236` reports zero syntax,
+zero HIR and 17 type diagnostics, with both source-integrity reports clean. It
+covers address mapping that preserves slice lengths and object vtables, NonNull
+copy/write/replace operations, byte offsets, checked array windows, mutable
+remaining-array-iterator views, Result borrowing, string range replacement,
+control-character classification, directory queries and array-to-set conversion.
+Native comparisons and incremental saved-library address mapping pass in both
+optimization modes. The complete 468-target pass above includes these changes.
+Later unsized-library, pointer-equality and nested-lifetime changes need a new
+complete-graph audit before they establish further progress toward stage 1.
+
+
+The unsized-library follow-up `out/flux-compiler-readiness/41130` has zero syntax
+and HIR diagnostics and three type diagnostics. Both source-integrity reports
+are clean. Native tests now cover unsized ManuallyDrop, slice/object needs_drop,
+wide-pointer equality including metadata, nonzero OR, nested generic callback
+signatures and uniformly quantified nested-lifetime auto impls. The full run in
+`out/test-runs/1793342606397171000-41152/results.json` passed 467 of 468 targets;
+the sole failure expected obsolete wide-equality diagnostics. The scoped snapshot
+was regenerated and reviewed, and its regression passes. Workspace clippy and
+all 43 runner unit tests pass. The later key-view admission and signature-proof
+budget fixes still need a complete current-graph audit.
+
+
+The key-view audit `out/flux-compiler-readiness/4970` leaves one type diagnostic,
+with zero syntax and HIR diagnostics and clean source-integrity reports. Raising
+the bounded signature-proof recursion budget clears both proc-macro resolver
+auto-trait errors; positive deep-wrapper and negative raw-pointer tests cover it.
+The 469-target run in `out/test-runs/1793343433988242000-5122/results.json`
+passes 468 targets. Its sole failure still expected owner type-outlives bounds
+to be rejected. That expectation now exercises an unsupported tuple subject;
+the complete 16-test trait-profile target passes. Native key-view methods,
+borrowed-key defaults, unsafe-call checks, owner bounds and callback captures
+pass off/on, with five invalid borrow/safety cases rejected by both compilers.
+The subsequent callback-bound admission needs a fresh complete-graph audit.
+
+
+The callback follow-up `out/flux-compiler-readiness/57214` reaches zero syntax,
+HIR and type diagnostics. MIR checking reports four lifetime diagnostics:
+flattened borrowed iterator outputs, an impl method's Self: 'static condition,
+body trait-object defaults, and the proc-macro resolver's deep supertrait proof.
+Both source-integrity reports are clean. The complete regression run in
+`out/test-runs/1793343924402353000-57334/results.json` passes all 469 targets.
+This clears the current-pin type barrier, but does not establish stage 1.
+
+Focused fixes for those MIR cases pass the native key-view fixture with both
+optimization modes and its borrow/safety rejection cases. They also pass nine
+related MIR targets (20 tests) and ten region metadata unit tests. Stored
+associated fields of opaque returns now retain their actual output region rows;
+impl Self bounds use the header's type and lifetimes; omitted body object bounds
+are inferred while aliases, defaults, explicit static bounds and static
+supertraits retain their constraints. These changes still need a fresh guarded
+complete-graph audit and complete regression pass.
+
+
+The guarded current-pin audit `out/flux-compiler-readiness/66944` builds stage-1
+Flux in both optimization modes. All syntax, HIR, type, MIR and code-generation
+diagnostic reports are empty. Both generated executables pass help/version and
+compile/run smoke comparisons against the rustc-built reference. The final source
+and parent source integrity reports are clean. This is the first recorded full
+stage-1 proof for Keel `103c23de480d76e02267c5a8d5a9d3505bc73231` without a
+local backend override. The audit completed in 666.05 seconds.
+
+Subsequent validation exposed repeated whole-declaration scans and field-path
+expansion in outlives checking. Field expansion now uses the existing projection
+closure, and the closure query visits only declarations reachable from its input
+type. Leaf queries return their components directly. The complete HIR source
+comparison and the 24 package-driver tests pass after those changes. Named
+containing-type object defaults and alias defaults now retain explicit parameter
+bounds; unsupported elided containing defaults reject explicitly. The complete
+suite and complete compiler audit need rerunning on this follow-up before it
+supersedes the stage-1 evidence above. Stage 2 remains untested.
+
+
+The final guarded follow-up `out/flux-compiler-readiness/18888` passes stage 1
+in both modes with all diagnostic reports empty and clean final source guards.
+The additional optimized-program comparisons are recorded in
+`out/stage1-extra-smoke/results.json`. The full suite was rerun separately from
+the compiler audit and passes all 469 targets in
+`out/test-runs/1793349006676445000-49634/results.json`. Formatting, workspace
+clippy with warnings denied, 43 runner unit tests and workspace/example source
+checks pass. Public Rustdoc generation completes with two pre-existing private
+item-link warnings. An additional strict private-doc check exposes existing link
+issues; it is not a passing validation claim.
+
+Do not run this compiler audit alongside the full regression runner. Its Cargo
+reference build uses the dev profile and replaces `target/debug/flux`, while
+native regressions require the runner's test-profile compiler. Concurrent runs
+caused timeout failures; the isolated full run above is the authoritative result.
+
+The stage-2 command and result are saved in `out/bootstrap-stage2/command.json`
+and `status.json`. The optimized stage-1 compiler was asked to run `cargo build`
+for the complete `flux-cli` package with the locked offline graph. It exits 2
+during preparation with `Cargo did not check target embedded_io` for
+`embedded-io 0.4.0`. All 4,258 inventoried inputs remain unchanged before and
+after the attempt. Postcard enables only `alloc`; its optional embedded-io edges
+are still present in metadata. The Cargo source driver currently traverses every
+normal metadata edge and requires an artifact for it. Selecting the active
+optional dependencies is the next blocker; no stage-2 target artifact was built.

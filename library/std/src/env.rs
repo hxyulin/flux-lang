@@ -112,6 +112,10 @@ pub fn temp_dir() -> crate::path::PathBuf {
 
 pub mod consts {
     #[cfg(target_os = "macos")]
+    pub const DLL_EXTENSION: &str = "dylib";
+    #[cfg(target_os = "linux")]
+    pub const DLL_EXTENSION: &str = "so";
+    #[cfg(target_os = "macos")]
     pub const OS: &str = "macos";
     #[cfg(target_os = "linux")]
     pub const OS: &str = "linux";
@@ -185,4 +189,25 @@ pub fn args_os() -> ArgsOs {
     }
     #[cfg(not(target_os = "macos"))]
     { panic!("command-line argument access is not supported on this target") }
+}
+
+/// Returns the running executable's canonical path.
+pub fn current_exe() -> crate::io::Result<crate::path::PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" { fn _NSGetExecutablePath(buffer: *mut u8, size: *mut u32) -> i32; }
+        let mut size = 256u32;
+        loop {
+            let mut buffer = crate::alloc_crate::vec![0u8; size as usize];
+            // SAFETY: buffer holds size writable bytes; the runtime either
+            // writes a terminated path or reports the required buffer size.
+            if unsafe { _NSGetExecutablePath(buffer.as_mut_ptr(), &mut size) } == 0 {
+                let length = buffer.iter().position(|&b| b == 0).unwrap();
+                buffer.truncate(length);
+                return crate::fs::canonicalize(crate::path::PathBuf::from(OsString { bytes: buffer }));
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    { crate::fs::canonicalize("/proc/self/exe") }
 }

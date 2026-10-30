@@ -104,7 +104,7 @@ fn excluded_declaration_shapes_have_reasons() {
             Reason::MethodGenerics,
         ),
         ("trait T<'a> {fn f(x:impl Copy);}", Reason::MethodGenerics),
-        ("trait T<'a> {fn f()->impl Copy;}", Reason::SignatureType),
+        ("trait T<'a> {fn f()->impl Copy;}", Reason::MethodGenerics),
         (
             "trait T<'a> {async fn f();}",
             Reason::DeclarationDiagnostics,
@@ -353,7 +353,7 @@ fn in_range_but_wrong_binder_and_elided_name_arities_reject() {
 #[test]
 fn unsupported_declarations_keep_the_production_gate() {
     for source in [
-        "trait T<'a,U: 'a> {}",
+        "trait T<'a,U> where (U,): 'a {}",
         "trait T<'a> {fn f(x: fn(&'a i32));}",
         "trait T<'a>: A<'a> {} trait A<'b> {}",
         "trait T<'a>: A {} trait A:B<'static> {} trait B<'b> {}",

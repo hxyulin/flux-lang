@@ -278,12 +278,13 @@ impl Permissions{
     pub fn set_readonly(&mut self,readonly:bool){if readonly{self.mode&=!0o222;}else{self.mode|=0o222;}}
 }
 #[derive(Clone,Debug)]
-pub struct Metadata{mode:u32,len:u64}
+pub struct Metadata{mode:u32,len:u64,pub(crate) native:[u64;32]}
 impl Metadata{
     pub fn len(&self)->u64{self.len}
     pub fn is_file(&self)->bool{self.mode&0xf000==0x8000}
     pub fn is_dir(&self)->bool{self.mode&0xf000==0x4000}
     pub fn permissions(&self)->Permissions{Permissions{mode:self.mode}}
+    pub fn file_type(&self)->FileType{FileType{mode:self.mode}}
 }
 fn metadata_record(storage:&[u64;32])->Metadata{
     let pointer=storage.as_ptr() as *const u8;
@@ -296,7 +297,7 @@ fn metadata_record(storage:&[u64;32])->Metadata{
     #[cfg(all(target_os="linux",target_arch="aarch64"))]
     // SAFETY: native Linux AArch64 stat stores mode at16 and size at48.
     let (mode,len)=unsafe{(*(pointer.add(16) as *const u32),*(pointer.add(48) as *const i64) as u64)};
-    Metadata{mode,len}
+    Metadata{mode,len,native:*storage}
 }
 pub fn metadata<P:AsRef<Path>>(path:P)->Result<Metadata>{
     let name=c_path(path.as_ref())?;let mut storage=[0u64;32];
@@ -338,4 +339,146 @@ pub fn remove_file<P:AsRef<Path>>(path:P)->Result<()>{
     // SAFETY: the NUL-terminated path remains live; unlink never follows a
     // final symlink and does not remove an existing open file description.
     if unsafe{native::unlink(name.as_ptr() as *const core::ffi::c_char)}<0{Err(Error::last_os_error())}else{Ok(())}
+}
+
+/// The kind of a directory entry, without following symbolic links.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FileType { mode: u32 }
+impl FileType {
+    pub fn is_file(&self) -> bool { self.mode & 0xf000 == 0x8000 }
+    pub fn is_dir(&self) -> bool { self.mode & 0xf000 == 0x4000 }
+    pub fn is_symlink(&self) -> bool { self.mode & 0xf000 == 0xa000 }
+}
+
+/// Reads metadata for the link itself rather than its destination.
+pub fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
+    unsafe extern "C" {
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        #[link_name = "lstat$INODE64"]
+        fn link_stat(path: *const u8, storage: *mut u64) -> i32;
+        #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+        #[link_name = "lstat"]
+        fn link_stat(path: *const u8, storage: *mut u64) -> i32;
+    }
+    let path = c_path(path.as_ref())?;
+    let mut storage = [0u64; 32];
+    // SAFETY: aligned storage exceeds the supported native stat records;
+    // path is terminated and remains live throughout the call.
+    if unsafe { link_stat(path.as_ptr(), storage.as_mut_ptr()) } < 0 {
+        return Err(Error::last_os_error());
+    }
+    Ok(metadata_record(&storage))
+}
+
+/// An owned directory entry; it remains usable after its iterator is dropped.
+#[derive(Debug)]
+pub struct DirEntry { path: PathBuf, name: OsString }
+impl DirEntry {
+    pub fn path(&self) -> PathBuf { self.path.clone() }
+    pub fn file_name(&self) -> OsString { self.name.clone() }
+    pub fn metadata(&self) -> Result<Metadata> { symlink_metadata(&self.path) }
+    pub fn file_type(&self) -> Result<FileType> { Ok(self.metadata()?.file_type()) }
+}
+
+unsafe extern "C" {
+    fn opendir(path: *const u8) -> *mut core::ffi::c_void;
+    fn closedir(directory: *mut core::ffi::c_void) -> i32;
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    #[link_name = "readdir$INODE64"]
+    fn directory_entry(directory: *mut core::ffi::c_void) -> *const u8;
+    #[cfg(not(all(target_os = "macos", target_arch = "x86_64")))]
+    #[link_name = "readdir"]
+    fn directory_entry(directory: *mut core::ffi::c_void) -> *const u8;
+    #[cfg(target_os = "macos")]
+    fn __error() -> *mut i32;
+    #[cfg(target_os = "linux")]
+    fn __errno_location() -> *mut i32;
+}
+
+/// A directory stream. Entries copy native names before advancing the stream.
+pub struct ReadDir { directory: *mut core::ffi::c_void, path: PathBuf, done: bool }
+impl Drop for ReadDir {
+    fn drop(&mut self) {
+        // SAFETY: this iterator owns the successful opendir result exclusively.
+        unsafe { closedir(self.directory); }
+    }
+}
+impl core::fmt::Debug for ReadDir {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ReadDir").field("path", &self.path).finish()
+    }
+}
+impl Iterator for ReadDir {
+    type Item = Result<DirEntry>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done { return None; }
+        loop {
+            // SAFETY: libc provides the current thread's writable errno slot.
+            // readdir needs errno cleared to distinguish end-of-stream from error.
+            unsafe {
+                #[cfg(target_os = "macos")]
+                { *__error() = 0; }
+                #[cfg(target_os = "linux")]
+                { *__errno_location() = 0; }
+            }
+            // SAFETY: this iterator owns a live directory stream; the entry
+            // remains readable until the next call on this stream or its drop.
+            let entry = unsafe { directory_entry(self.directory) };
+            if entry.is_null() {
+                let error = Error::last_os_error();
+                self.done = true;
+                return if error.raw_os_error() == Some(0) { None } else { Some(Err(error)) };
+            }
+            // Darwin inode64 and Linux dirent64 both store reclen at byte 16.
+            // Their names start at byte 21 and 19 respectively. Read only the
+            // returned record and copy the name before calling readdir again.
+            #[cfg(target_os = "macos")]
+            let start = 21usize;
+            #[cfg(target_os = "linux")]
+            let start = 19usize;
+            // SAFETY: the native directory record has its fixed header and
+            // d_reclen bytes of readable storage, including the terminated name.
+            let name = unsafe {
+                let length = *(entry.add(16) as *const u16) as usize;
+                let bytes = core::slice::from_raw_parts(entry.add(start), length - start);
+                let end = bytes.iter().position(|&b| b == 0).unwrap();
+                OsString { bytes: bytes[..end].to_vec() }
+            };
+            if name.as_os_str() == crate::ffi::OsStr::new(".") || name.as_os_str() == crate::ffi::OsStr::new("..") { continue; }
+            return Some(Ok(DirEntry { path: self.path.join(&name), name }));
+        }
+    }
+}
+
+/// Opens a directory for iteration, retaining non-Unicode entry names.
+pub fn read_dir<P: AsRef<Path>>(path: P) -> Result<ReadDir> {
+    let path = path.as_ref();
+    let name = c_path(path)?;
+    // SAFETY: name is terminated and remains live for the synchronous open.
+    let directory = unsafe { opendir(name.as_ptr()) };
+    if directory.is_null() { return Err(Error::last_os_error()); }
+    Ok(ReadDir { directory, path: path.to_path_buf(), done: false })
+}
+
+/// Creates a symbolic link; the destination need not exist.
+pub(crate) fn symlink(original: &Path, link: &Path) -> Result<()> {
+    unsafe extern "C" { fn symlink(original: *const u8, link: *const u8) -> i32; }
+    let original = c_path(original)?;
+    let link = c_path(link)?;
+    // SAFETY: both byte paths are terminated and retained throughout the call.
+    if unsafe { symlink(original.as_ptr(), link.as_ptr()) } < 0 { Err(Error::last_os_error()) } else { Ok(()) }
+}
+
+/// Removes a directory tree without traversing symbolic links.
+#[cfg(target_os = "macos")]
+pub fn remove_dir_all<P: AsRef<Path>>(path: P) -> Result<()> {
+    let path = path.as_ref();
+    let kind = symlink_metadata(path)?.file_type();
+    if kind.is_symlink() { return remove_file(path); }
+    if !kind.is_dir() { return Err(Error::from_raw_os_error(20)); }
+    unsafe extern "C" { fn removefile(path: *const u8, state: *mut core::ffi::c_void, flags: u32) -> i32; }
+    let name = c_path(path)?;
+    // SAFETY: name is terminated. Darwin's recursive removal uses physical
+    // traversal; no callback/state is supplied and symbolic links are not followed.
+    if unsafe { removefile(name.as_ptr(), core::ptr::null_mut(), 1) } < 0 { Err(Error::last_os_error()) } else { Ok(()) }
 }

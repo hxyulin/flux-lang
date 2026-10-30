@@ -8,10 +8,8 @@
 /// What `*v` is, when it is read.
 #[lang = "deref"]
 pub trait Deref {
-    /// What a value dereferences to: `[T]`, `str` and trait objects may
-    /// be (`?Sized` in rustc; flux does not check associated types'
-    /// sizes).
-    type Target;
+    /// What a value dereferences to, including slices, str and trait objects.
+    type Target: ?Sized;
 
     fn deref(&self) -> &Self::Target;
 }

@@ -64,6 +64,22 @@ impl fmt::Display for FromUtf8Error {
 impl core::error::Error for FromUtf8Error {}
 
 impl String {
+    /// Replaces a byte range whose endpoints are UTF-8 character boundaries.
+    #[track_caller]
+    pub fn replace_range<R:core::ops::RangeBounds<usize>>(&mut self,range:R,replacement:&str) {
+        use core::ops::Bound::{Included,Excluded,Unbounded};
+        let start=match range.start_bound() {Included(&n)=>n,Excluded(&n)=>n.checked_add(1).expect("range start overflow"),Unbounded=>0};
+        let end=match range.end_bound() {Included(&n)=>n.checked_add(1).expect("range end overflow"),Excluded(&n)=>n,Unbounded=>self.len()};
+        assert!(start<=end && end<=self.len(),"string range out of bounds");
+        assert!(self.is_char_boundary(start) && self.is_char_boundary(end),"string range is not on a character boundary");
+        let capacity=(self.len()-(end-start)).checked_add(replacement.len()).expect("capacity overflow");
+        let mut result=Self::with_capacity(capacity);
+        result.push_str(&self[..start]);
+        result.push_str(replacement);
+        result.push_str(&self[end..]);
+        *self=result;
+    }
+
     pub fn into_boxed_str(self) -> crate::boxed::Box<str> {
         let bytes = self.into_bytes().into_boxed_slice();
         // SAFETY: String owns valid UTF-8, and str and [u8] have identical

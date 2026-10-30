@@ -9,6 +9,26 @@ fn family_types_and_constants_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "relaxed_output",
+            "trait P { type A<T: ?Sized>: ?Sized; } struct S; impl P for S { type A<T: ?Sized> = T; } fn main() { let _: &<S as P>::A<str> = \"text\"; }",
+            true,
+        ),
+        (
+            "ordinary_relaxed_output",
+            "trait P { type A: ?Sized; } struct S; impl P for S { type A = str; } fn main() { let _: &<S as P>::A = \"text\"; }",
+            true,
+        ),
+        (
+            "ordinary_implicit_sized_output",
+            "trait P { type A; } struct S; impl P for S { type A = str; } fn main() {}",
+            false,
+        ),
+        (
+            "abstract_relaxed_output_is_not_sized",
+            "trait P { type A: ?Sized; } fn sized<T>() {} fn f<T:P>() { sized::<T::A>(); } fn main() {}",
+            false,
+        ),
+        (
             "type_family",
             "trait P{type A<T>;}struct S;impl P for S{type A<T>=(T,);}fn main(){let _: <S as P>::A<u32>=(7,);}",
             true,

@@ -85,6 +85,8 @@ impl Path {
     }
     pub fn ancestors(&self) -> Ancestors<'_> { Ancestors { next: Some(self) } }
     /// Returns false for any metadata lookup error.
+    /// Whether metadata describes a directory, following symlinks.
+    pub fn is_dir(&self)->bool {match crate::fs::metadata(self) {Ok(metadata)=>metadata.is_dir(),Err(_)=>false}}
     pub fn exists(&self) -> bool { crate::fs::metadata(self).is_ok() }
     /// Distinguishes missing paths from other metadata lookup failures.
     pub fn try_exists(&self) -> crate::io::Result<bool> {
@@ -397,3 +399,5 @@ impl<'a> Iterator for Ancestors<'a> {
     }
 }
 impl core::iter::FusedIterator for Ancestors<'_> {}
+
+impl From<&String> for PathBuf {fn from(value:&String)->Self {Self::from(value.as_str())}}

@@ -202,6 +202,16 @@ impl Decode for StatementKind {
 impl Encode for Rvalue {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         e.nested(|e| match self {
+            Self::WithAddr(pointer, address) => {
+                14u8.encode(e)?;
+                pointer.encode(e)?;
+                address.encode(e)
+            }
+            Self::OffsetOf(ty, fields) => {
+                13u8.encode(e)?;
+                ty.encode(e)?;
+                fields.encode(e)
+            }
             Self::Use(v0) => {
                 0u8.encode(e)?;
                 v0.encode(e)?;
@@ -299,6 +309,8 @@ impl Encode for Rvalue {
 impl Decode for Rvalue {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
         d.nested(|d| match u8::decode(d)? {
+            14 => Ok(Self::WithAddr(Decode::decode(d)?, Decode::decode(d)?)),
+            13 => Ok(Self::OffsetOf(Decode::decode(d)?, Decode::decode(d)?)),
             0 => Ok(Self::Use(Decode::decode(d)?)),
             1 => Ok(Self::InlineAsm {
                 template: Decode::decode(d)?,
@@ -1222,12 +1234,13 @@ fn validate_body_indices(body: &Body) -> Result<(), Error> {
                 StatementKind::Assign(p, r) => {
                     place(p)?;
                     match r {
+                        Rvalue::OffsetOf(..) => {}
                         Rvalue::Use(o)
                         | Rvalue::UnaryOp(_, o)
                         | Rvalue::Cast(o, _)
                         | Rvalue::Repeat(o, _)
                         | Rvalue::Unsize(o, _) => operand(o)?,
-                        Rvalue::BinaryOp(_, a, b) => {
+                        Rvalue::WithAddr(a, b) | Rvalue::BinaryOp(_, a, b) => {
                             operand(a)?;
                             operand(b)?;
                         }
@@ -1637,6 +1650,69 @@ mod boundary_tests {
         let body = mir.bodies[id].clone();
         boundary::body(&body, &hir.items, &typed.sigs, true).unwrap();
         (body, hir.items, typed.sigs)
+    }
+
+    #[test]
+    fn address_mapping_round_trips_and_rejects_invalid_operand_shapes() {
+        let (_, _, hir) = flux_hir::lower_text(
+            "mapping.rs",
+            "fn probe(pointer:*const [u8],address:usize)->*const [u8]{pointer.with_addr(address)}",
+        );
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let owner = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "probe")
+            .unwrap()
+            .0;
+        let (items, sigs) = (hir.items, typed.sigs);
+        let mut body = minimal_body();
+        body.owner = Some(owner);
+        let pointer_ty = Ty::raw_ptr(
+            flux_ty::Mutability::Not,
+            Ty::slice(Ty::int(flux_ty::IntTy::U8)),
+        );
+        body.locals[Body::RETURN].ty = pointer_ty;
+        let pointer = body.locals.alloc(LocalDecl {
+            ty: pointer_ty,
+            kind: LocalKind::Param,
+        });
+        let address = body.locals.alloc(LocalDecl {
+            ty: Ty::int(flux_ty::IntTy::Usize),
+            kind: LocalKind::Param,
+        });
+        body.param_count = 2;
+        body.blocks[Body::entry()].statements.push(Statement {
+            kind: StatementKind::Assign(
+                Body::RETURN.into(),
+                Rvalue::WithAddr(Operand::Copy(pointer.into()), Operand::Copy(address.into())),
+            ),
+            range: TextRange::default(),
+        });
+        boundary::body(&body, &items, &sigs, true).unwrap();
+        assert!(crate::validate::validate(&items, &sigs, &[], &body).is_empty());
+        let mut encoded = Encoder::new();
+        body.encode(&mut encoded).unwrap();
+        let bytes = encoded.into_bytes();
+        let mut decoder = Decoder::new(&bytes);
+        let decoded = Body::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+        boundary::body(&decoded, &items, &sigs, true).unwrap();
+        assert_eq!(body.blocks[Body::entry()], decoded.blocks[Body::entry()]);
+        let mut bad = decoded.clone();
+        bad.locals[address].ty = Ty::BOOL;
+        assert!(boundary::body(&bad, &items, &sigs, true).is_err());
+        let mut bad = decoded.clone();
+        bad.locals[pointer].ty = Ty::int(flux_ty::IntTy::Usize);
+        assert!(boundary::body(&bad, &items, &sigs, true).is_err());
+        let mut bad = decoded;
+        bad.locals[Body::RETURN].ty = Ty::raw_ptr(
+            flux_ty::Mutability::Mut,
+            Ty::slice(Ty::int(flux_ty::IntTy::U8)),
+        );
+        assert!(boundary::body(&bad, &items, &sigs, true).is_err());
     }
 
     #[test]

@@ -12,16 +12,6 @@ pub(super) struct Codec<'a> {
 }
 impl<'a> Codec<'a> {
     pub fn new(input: &'a ProcMacroInput) -> Result<Self, String> {
-        if input
-            .tokens
-            .iter()
-            .chain(input.attributes.iter().flatten())
-            .any(|t| t.origin.ctxt != 0)
-        {
-            return Err(
-                "proc-macro inputs with non-root macro_rules hygiene are not supported yet".into(),
-            );
-        }
         let edition = match input.source.edition {
             flux_syntax::Edition::E2015 => 0,
             flux_syntax::Edition::E2018 => 1,
@@ -176,7 +166,9 @@ impl<'a> Codec<'a> {
                 let i = (tree.ident.len() / 3) as u32;
                 tree.ident.extend([span, name, u32::from(raw)]);
                 children.push(i << 2 | 3);
-            } else if t.kind == SyntaxKind::IDENT || t.kind.is_keyword() {
+            } else if matches!(t.kind, SyntaxKind::IDENT | SyntaxKind::UNDERSCORE)
+                || t.kind.is_keyword()
+            {
                 let raw = t.text.starts_with("r#");
                 let name = intern(tree, t.text.trim_start_matches("r#"));
                 let i = (tree.ident.len() / 3) as u32;
@@ -253,7 +245,8 @@ impl<'a> Codec<'a> {
             if let Some(previous) = joined.last_mut()
                 && previous.text == "'"
                 && previous.joint
-                && (token.kind == SyntaxKind::IDENT || token.kind.is_keyword())
+                && (matches!(token.kind, SyntaxKind::IDENT | SyntaxKind::UNDERSCORE)
+                    || token.kind.is_keyword())
             {
                 if previous.origin.ctxt != token.origin.ctxt {
                     return Err("lifetimes with mixed token hygiene are not supported yet".into());

@@ -65,8 +65,8 @@ not a portable Rust proc-macro ABI. Host export/helper declarations must appear
 literally in their source root under the active cfg. Profile-dependent host export
 declarations (`panic`/`debug_assertions`) are rejected because the helper metadata
 reader uses target cfg rather than the host build profile. Generated declarations,
-non-root macro_rules input hygiene, definition-site output hygiene and nested
-invisible delimiter groups remain explicit errors. Macros writing to stdout
+definition-site output hygiene and nested invisible delimiter groups remain
+explicit errors. Input tokens retain their macro_rules contexts through span anchors. Macros writing to stdout
 corrupt the server's protocol and fail; use stderr for logging. Host failures do
 not restart a process with reset state. Expansions have a 60-second deadline,
 a 32 MiB response limit, and token/depth limits.

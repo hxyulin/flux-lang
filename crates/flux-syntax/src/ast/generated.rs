@@ -1285,7 +1285,7 @@ impl<'t> AstNode<'t> for IfExpr<'t> {
 
 /// ```text
 /// Impl =
-///   Attr* Visibility? 'unsafe'? 'impl' GenericParamList?
+///   Attr* Visibility? 'unsafe'? 'impl' GenericParamList? '!'?
 ///   (trait_ty:Type 'for')? self_ty:Type WhereClause? AssocItemList
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1308,6 +1308,9 @@ impl<'t> Impl<'t> {
     }
     pub fn generic_param_list(self) -> Option<GenericParamList<'t>> {
         support::child(self.syntax)
+    }
+    pub fn bang_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, BANG)
     }
     pub fn for_token(self) -> Option<SyntaxToken<'t>> {
         support::token(self.syntax, FOR_KW)

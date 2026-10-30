@@ -143,6 +143,9 @@ pub(crate) struct Walker<'a> {
     pub selected_inputs: Vec<(crate::AliasTy, Box<[Region]>)>,
     /// Local annotations cannot yet map associated projections' written lifetimes.
     pub body: bool,
+    /// Omitted object bounds in expression type spellings are inferred.
+    /// Alias declarations and generic defaults keep their declaration defaults.
+    pub infer_objects: bool,
     pub elided: Elided,
     /// The lifetime parameters elided lifetimes made, after `names`.
     pub fresh: Vec<TextRange>,
@@ -181,6 +184,7 @@ impl<'a> Walker<'a> {
             signatures: None,
             selected_inputs: Vec::new(),
             body: false,
+            infer_objects: false,
             elided: Elided::Is(Region::Erased),
             fresh: Vec::new(),
             opaque_captures: Vec::new(),
@@ -327,7 +331,11 @@ impl<'a> Walker<'a> {
                     Some(l) => self.named(l),
                     None if self.elision_only => Region::Erased,
                     None if object_has_static_self(self.items, object.trait_) => Region::Static,
-                    None => enclosing.unwrap_or(Region::Static),
+                    None => enclosing.unwrap_or(if self.infer_objects {
+                        Region::Erased
+                    } else {
+                        Region::Static
+                    }),
                 };
                 out.push(r);
                 if let Some(written) = d.bounds.iter().find(|bound| {
@@ -370,7 +378,11 @@ impl<'a> Walker<'a> {
                 } else if object_has_static_self(self.items, object.trait_) {
                     Region::Static
                 } else {
-                    enclosing.unwrap_or(Region::Static)
+                    enclosing.unwrap_or(if self.infer_objects {
+                        Region::Erased
+                    } else {
+                        Region::Static
+                    })
                 });
                 self.object_arguments(path, object, out);
             }
@@ -627,7 +639,14 @@ impl<'a> Walker<'a> {
                     for (i, &t) in types.iter().enumerate() {
                         let mut regions = Vec::new();
                         if let Some(written) = args.and_then(|a| a.types.get(i)) {
-                            self.walk(written, t, &mut regions);
+                            self.type_argument_regions(
+                                written,
+                                t,
+                                &def.generics,
+                                i,
+                                &lifetimes,
+                                &mut regions,
+                            );
                         } else if let Some((written, range)) =
                             def.generics.params.get(i).and_then(|p| p.default.as_ref())
                             && !def.generics.params[i].is_const()
@@ -650,6 +669,58 @@ impl<'a> Walker<'a> {
             Resolved::Def(Def::TypeAlias(id)) => self.alias(path, id, ty, out),
             _ => self.check_args(path),
         }
+    }
+
+    /// A direct object argument inherits an explicit bound on the containing
+    /// type's parameter. This is distinct from inference in an unbounded Box.
+    fn type_argument_regions(
+        &mut self,
+        written: &TypeRef,
+        ty: Ty,
+        generics: &flux_hir::Generics,
+        index: usize,
+        lifetimes: &[Region],
+        out: &mut Vec<Region>,
+    ) {
+        let previous = self.ref_region.take();
+        if let TypeRef::Dyn(object) = written
+            && object.lifetime.is_none()
+            && let Some(parameter) = generics.params.get(index)
+        {
+            let mut bounds = Vec::new();
+            for bound in &generics.type_outlives {
+                if matches!(&bound.ty,TypeRef::Path(path) if path.as_name()==Some(parameter.name))
+                    && !bounds
+                        .iter()
+                        .any(|l: &LifetimeRef| l.name == bound.lifetime.name)
+                {
+                    bounds.push(bound.lifetime);
+                }
+            }
+            if bounds.iter().any(|bound| bound.is_static()) {
+                self.ref_region = Some(Region::Static);
+            } else if let [bound] = bounds.as_slice() {
+                let region = generics
+                    .lifetimes
+                    .iter()
+                    .position(|l| l.name == bound.name)
+                    .and_then(|i| lifetimes.get(i))
+                    .copied()
+                    .unwrap_or(Region::Erased);
+                if region == Region::Erased {
+                    self.errors.push((
+                        object.range,
+                        "inferred containing-type object lifetimes are not supported yet".into(),
+                    ));
+                }
+                self.ref_region = Some(region);
+            } else if !bounds.is_empty() && !self.infer_objects {
+                self.errors
+                    .push((object.range, "ambiguous object lifetime bound".into()));
+            }
+        }
+        self.walk(written, ty, out);
+        self.ref_region = previous;
     }
 
     fn add_projection_bounds(&mut self, generics: &Generics) {
@@ -954,7 +1025,7 @@ impl<'a> Walker<'a> {
                         &mut Vec::new(),
                     )
                 });
-                self.walk(written, t, &mut regions);
+                self.type_argument_regions(written, t, &def.generics, i, &lifetimes, &mut regions);
             } else if !param.is_const()
                 && let Some((written, range)) = &param.default
             {
@@ -1608,11 +1679,12 @@ fn outlives_params<R: Copy>(sigs: &Signatures, ty: Ty, r: R, out: &mut Vec<Outli
     }
 }
 
-/// Abstract types whose stored values must outlive a reference to `ty`.
-/// ADT fields can contain projections absent from their generic arguments,
-/// such as `Cow<B>`'s `B::Owned`. Include those components in both implied
-/// assumptions and obligations, using the same storage traversal.
-pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
+/// Declarations whose stored fields can expose an associated-type projection.
+/// Generic arguments supply their own requirements independently of this set.
+pub fn outlives_structs_with_projections(
+    sigs: &Signatures,
+    ty: Ty,
+) -> rustc_hash::FxHashSet<flux_hir::StructId> {
     // Generic arguments already account for every stored type parameter.
     // Field expansion adds information only when it can expose a projection.
     // Find that nominal closure without instantiating recursive declarations.
@@ -1651,7 +1723,16 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
     let mut parents: rustc_hash::FxHashMap<flux_hir::StructId, Vec<flux_hir::StructId>> =
         Default::default();
     let mut pending = Vec::new();
-    for (id, fields) in sigs.structs.iter() {
+    let mut reachable = Vec::new();
+    dependencies(ty, &mut reachable, &mut false);
+    let mut visited = rustc_hash::FxHashSet::default();
+    while let Some(id) = reachable.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let Some(fields) = sigs.structs.get(id) else {
+            continue;
+        };
         let mut children = Vec::new();
         let mut projection = false;
         for &field in *fields {
@@ -1661,6 +1742,7 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
             pending.push(id);
         }
         for child in children {
+            reachable.push(child);
             parents.entry(child).or_default().push(id);
         }
     }
@@ -1673,6 +1755,32 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
             }
         }
     }
+    projected
+}
+
+/// Abstract types whose stored values must outlive a reference to `ty`.
+/// ADT fields can contain projections absent from their generic arguments,
+/// such as `Cow<B>`'s `B::Owned`. Include those components in both implied
+/// assumptions and obligations, using the same storage traversal.
+pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
+    // Leaf queries cannot expose nominal fields. Hidden-field traversal issues
+    // many of these; do not rebuild the complete declaration graph for each one.
+    match ty.kind() {
+        TyKind::Param(_) | TyKind::Alias(_) => return vec![ty],
+        TyKind::Int(_)
+        | TyKind::Float(_)
+        | TyKind::Bool
+        | TyKind::Char
+        | TyKind::Str
+        | TyKind::Never
+        | TyKind::CStr
+        | TyKind::Infer(_)
+        | TyKind::Value(_)
+        | TyKind::Error
+        | TyKind::Tuple([]) => return Vec::new(),
+        _ => {}
+    }
+    let projected = outlives_structs_with_projections(sigs, ty);
     fn visit(
         sigs: &Signatures,
         projected: &rustc_hash::FxHashSet<flux_hir::StructId>,

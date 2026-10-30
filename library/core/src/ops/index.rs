@@ -7,9 +7,8 @@
 #[lang = "index"]
 #[diagnostic::on_unimplemented(message = "the type `{Self}` cannot be indexed by `{Idx}`")]
 pub trait Index<Idx> {
-    /// What indexing gives: `[T]` for a slice indexed by a range (`?Sized`
-    /// in rustc, which flux does not check).
-    type Output;
+    /// What indexing gives, including a slice when indexed by a range.
+    type Output: ?Sized;
 
     fn index(&self, index: Idx) -> &Self::Output;
 }

@@ -68,10 +68,11 @@ impl ItemTree {
             expanding_types: false,
             macro_paths: Vec::new(),
             collected_imports: rustc_hash::FxHashSet::default(),
-            pending_root_macros: Vec::new(),
+            pending_items: Vec::new(),
             pending_body_macros: Vec::new(),
         };
         collector.collect_crate(root, name, is_core, dependencies);
+        collector.collect_pending_items(from);
         collector.collect_pending_body_macros(from);
         collector.expand_derives();
         collector.make_ctors();
@@ -106,15 +107,19 @@ struct MacroPathCheck {
     range: TextRange,
 }
 
-/// A path-scoped export can be declared in a module collected later. Keep
-/// the invocation's textual environment while waiting for that item namespace.
-struct PendingRootMacro {
-    name: Symbol,
+/// A macro import can refer to a module collected later. Keep its original
+/// textual scope and associated owner while waiting for the item namespace.
+enum PendingItemKind {
+    Macro(Option<(ImplId, bool)>),
+    Attribute,
+}
+struct PendingItem {
+    kind: PendingItemKind,
     ctx: Ctx,
     node: NodeId,
     scope: Option<MacroScopeId>,
     depth: u32,
-    diagnostic: Diagnostic,
+    diagnostic: Option<Diagnostic>,
 }
 
 /// An expression macro may import an export from a module collected later.
@@ -128,7 +133,7 @@ struct PendingBodyMacro {
 }
 
 struct Collector<'a> {
-    pending_root_macros: Vec<PendingRootMacro>,
+    pending_items: Vec<PendingItem>,
     pending_body_macros: Vec<PendingBodyMacro>,
     collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
     macro_paths: Vec<MacroPathCheck>,
@@ -259,7 +264,6 @@ impl Collector<'_> {
         } else {
             self.collect_file(module, root);
         }
-        self.collect_pending_root_macros();
     }
 
     fn record_macro_path(&mut self, ctx: Ctx, path: ast::Path<'_>, expected: MacroId) {
@@ -341,6 +345,42 @@ impl Collector<'_> {
             let start = self.items.diagnostics.len();
             let shared = self.db.shared(ctx.file);
             if item_enabled(shared.parse.tree().node(node), &mut self.items.diagnostics) {
+                let syntax = shared.parse.tree().node(node);
+                let unresolved_attribute = self.db.has_proc_macros()
+                    && crate::cfg::Attrs::new(syntax.children().filter_map(ast::Attr::cast))
+                        .iter()
+                        .any(|attr| {
+                            if self.is_derive_attr(ctx, attr) {
+                                return false;
+                            }
+                            let Some(path) = attr
+                                .meta()
+                                .and_then(|meta| meta.path())
+                                .filter(|path| path.qualifier().is_some())
+                            else {
+                                return false;
+                            };
+                            let mut errors = Vec::new();
+                            check_attr(attr, &mut errors);
+                            if errors.is_empty() {
+                                return false;
+                            }
+                            let mut tokens = Vec::new();
+                            macros::tt::tokens_of(path.syntax(), &mut tokens);
+                            self.proc_path(ctx, &tokens).is_none()
+                        });
+                if unresolved_attribute {
+                    self.pending_items.push(PendingItem {
+                        kind: PendingItemKind::Attribute,
+                        ctx,
+                        node,
+                        scope: self.macro_scope,
+                        depth: self.expansion_depth,
+                        diagnostic: None,
+                    });
+                    self.tag(start, ctx.file);
+                    continue;
+                }
                 if self.collect_proc_item(ctx, node) {
                     self.tag(start, ctx.file);
                     continue;
@@ -607,33 +647,14 @@ impl Collector<'_> {
             Ok(macros::Resolved::Def(id)) => id,
             Ok(macros::Resolved::Local(_)) => unreachable!("no local macros here"),
             Err(d) => {
-                let current = self.items.modules[ctx.module].krate;
-                let root_call = lower_path(path, &mut Vec::new()).is_some_and(|p| {
-                    p.segments.len() == 1
-                        && match p.anchor {
-                            PathAnchor::Crate => true,
-                            PathAnchor::DefinitionCrate(krate) => krate == current,
-                            PathAnchor::Plain | PathAnchor::SelfModule => self.items.modules
-                                [self.items.named_module(ctx.module)]
-                            .parent
-                            .is_none(),
-                            _ => false,
-                        }
+                self.pending_items.push(PendingItem {
+                    kind: PendingItemKind::Macro(None),
+                    ctx,
+                    node: node.id(),
+                    scope: self.macro_scope,
+                    depth: self.expansion_depth,
+                    diagnostic: Some(d),
                 });
-                if root_call {
-                    self.pending_root_macros.push(PendingRootMacro {
-                        name: lower_path(path, &mut Vec::new())
-                            .expect("root macro path")
-                            .segments[0],
-                        ctx,
-                        node: node.id(),
-                        scope: self.macro_scope,
-                        depth: self.expansion_depth,
-                        diagnostic: d,
-                    });
-                } else {
-                    self.items.diagnostics.push(d);
-                }
                 return;
             }
         };
@@ -714,21 +735,41 @@ impl Collector<'_> {
         self.expansion_depth -= 1;
     }
 
-    /// Exported macros have item scope throughout their crate. Retry only
-    /// root-path calls against exports; ordinary macros keep textual order.
-    fn collect_pending_root_macros(&mut self) {
+    /// Imports have item scope even through modules collected later. Retry
+    /// pending calls against completed namespaces with their original textual scope.
+    fn collect_pending_items(&mut self, from: super::ItemCounts) {
+        let base_map = std::mem::take(&mut self.items.def_map);
         let saved_scope = self.macro_scope;
         let saved_depth = self.expansion_depth;
-        while !self.pending_root_macros.is_empty() {
-            let pending = std::mem::take(&mut self.pending_root_macros);
+        while !self.pending_items.is_empty() {
+            self.items.def_map = base_map.clone();
+            let diagnostics = std::mem::take(&mut self.items.diagnostics);
+            let imports = self.items.macro_imports.clone();
+            crate::def_map::resolve_namespaces(self.items, from);
+            self.items.diagnostics = diagnostics;
+            self.items.macro_imports = imports;
+            let pending = std::mem::take(&mut self.pending_items);
             let mut unresolved = Vec::new();
             let mut progress = false;
             for call in pending {
                 let shared = self.db.shared(call.ctx.file);
-                let mc = ast::MacroCall::cast(shared.parse.tree().node(call.node))
-                    .expect("pending macro call");
-                let krate = self.items.modules[call.ctx.module].krate;
-                let resolved = self.items.exported_macros.get(&(krate, call.name)).copied();
+                let node = shared.parse.tree().node(call.node);
+                self.macro_scope = call.scope;
+                let resolved = match call.kind {
+                    PendingItemKind::Attribute => crate::cfg::Attrs::new(node.children().filter_map(ast::Attr::cast)).iter().find_map(|attr| {
+                        let path = attr.meta()?.path()?;
+                        let mut tokens = Vec::new();
+                        macros::tt::tokens_of(path.syntax(), &mut tokens);
+                        self.proc_path(call.ctx, &tokens).filter(|&id| matches!(&self.items.macros[id].kind, macros::MacroKind::ProcMacro(host) if host.kind == crate::ProcMacroKind::Attribute))
+                    }),
+                    PendingItemKind::Macro(_) => {
+                        let mc = ast::MacroCall::cast(node).expect("pending macro call");
+                        mc.path().and_then(|path| match macros::resolve::<()>(self.items, path, &[], call.scope, call.ctx.module).ok()? {
+                            macros::Resolved::Def(id) => Some(id),
+                            macros::Resolved::Local(_) => None,
+                        })
+                    }
+                };
                 match resolved {
                     Some(def) => {
                         progress = true;
@@ -736,7 +777,19 @@ impl Collector<'_> {
                         self.expansion_depth = call.depth;
                         let _file = TypesFile::enter(call.ctx.file);
                         let start = self.items.diagnostics.len();
-                        self.collect_resolved_macro_call(call.ctx, mc, def);
+                        match call.kind {
+                            PendingItemKind::Macro(owner) => {
+                                let mc = ast::MacroCall::cast(node).expect("pending macro call");
+                                if let Some((owner, is_trait_impl)) = owner {
+                                    self.collect_impl_macro(call.ctx, owner, mc, is_trait_impl);
+                                } else {
+                                    self.collect_resolved_macro_call(call.ctx, mc, def);
+                                }
+                            }
+                            PendingItemKind::Attribute => {
+                                self.collect_proc_item(call.ctx, call.node);
+                            }
+                        }
                         self.tag(start, call.ctx.file);
                     }
                     None => unresolved.push(call),
@@ -745,13 +798,21 @@ impl Collector<'_> {
             if !progress {
                 for call in unresolved {
                     let start = self.items.diagnostics.len();
-                    self.items.diagnostics.push(call.diagnostic);
+                    if let Some(diagnostic) = call.diagnostic {
+                        self.items.diagnostics.push(diagnostic);
+                    } else {
+                        self.macro_scope = call.scope;
+                        self.expansion_depth = call.depth;
+                        self.collect_item_expanding_types(call.ctx, call.node);
+                        self.collect_anon_consts(call.ctx, call.node);
+                    }
                     self.tag(start, call.ctx.file);
                 }
                 break;
             }
-            self.pending_root_macros.extend(unresolved);
+            self.pending_items.extend(unresolved);
         }
+        self.items.def_map = base_map;
         self.macro_scope = saved_scope;
         self.expansion_depth = saved_depth;
     }
@@ -1003,16 +1064,24 @@ impl Collector<'_> {
             ));
         }
         let mut bounds = Vec::new();
+        let mut relaxed = Vec::new();
         let mut lifetime_bounds = Vec::new();
         if let Some(list) = t.type_bound_list() {
             lower_bounds(
                 list,
                 &mut bounds,
                 Some(&mut lifetime_bounds),
-                Relaxed::Unsupported,
+                Relaxed::Collect(&mut relaxed),
                 diagnostics,
             );
         }
+        if relaxed.len() > 1 {
+            diagnostics.push(Diagnostic::new(
+                relaxed[1],
+                "duplicate relaxed `Sized` bounds",
+            ));
+        }
+        let maybe_unsized = !relaxed.is_empty();
         for bound in &mut bounds {
             reject_impl_trait_in_path(&mut bound.path, IN_BOUNDS, diagnostics);
         }
@@ -1027,6 +1096,7 @@ impl Collector<'_> {
             return;
         }
         data.types.push(TraitType {
+            maybe_unsized,
             name,
             generics,
             bounds: bounds.into(),
@@ -1631,6 +1701,13 @@ impl Collector<'_> {
             [FileId::CORE_ROOT, FileId::alloc_root(), FileId::std_root()].contains(&file);
         let diagnostics = &mut self.items.diagnostics;
         check_attrs(imp.attrs(), diagnostics);
+        if let Some(bang) = imp.bang_token() {
+            diagnostics.push(Diagnostic::new(
+                bang.text_range(),
+                "negative impls are not supported yet",
+            ));
+            return;
+        }
         let range = imp.syntax().text_range();
         if let Some(vis) = imp.visibility() {
             diagnostics.push(Diagnostic::new(
@@ -1793,7 +1870,14 @@ impl Collector<'_> {
             Ok(macros::Resolved::Def(id)) => id,
             Ok(macros::Resolved::Local(_)) => unreachable!(),
             Err(error) => {
-                self.items.diagnostics.push(error);
+                self.pending_items.push(PendingItem {
+                    kind: PendingItemKind::Macro(Some((owner, is_trait_impl))),
+                    ctx,
+                    node: call.syntax().id(),
+                    scope: self.macro_scope,
+                    depth: self.expansion_depth,
+                    diagnostic: Some(error),
+                });
                 return;
             }
         };
@@ -2207,13 +2291,14 @@ impl Collector<'_> {
         if in_extern_block {
             let site = ImplTraitSite::NotAllowed("`extern fn` return types");
             reject_impl_trait(&mut ret, site, diagnostics);
-        } else if in_trait_or_trait_impl {
-            let site = ImplTraitSite::Unsupported(
-                "`impl Trait` types in the return types of trait methods",
-            );
-            reject_impl_trait(&mut ret, site, diagnostics);
         } else {
             collect_opaques(&mut ret, &mut opaques, diagnostics);
+            if in_trait_or_trait_impl && !opaques.is_empty() && !matches!(ret, TypeRef::Opaque(_)) {
+                diagnostics.push(Diagnostic::new(
+                    ret_range,
+                    "nested return-position `impl Trait` in trait methods is not supported yet",
+                ));
+            }
         }
         let has_body = f.body().is_some();
         if matches!(owner, Some(Owner::Impl(_))) && !has_body {

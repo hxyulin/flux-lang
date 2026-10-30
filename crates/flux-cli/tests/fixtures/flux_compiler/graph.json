@@ -1365,6 +1365,10 @@
           "index": 26
         },
         {
+          "name": "flux_ty_ir",
+          "index": 24
+        },
+        {
           "name": "keel_asm",
           "index": 38
         },

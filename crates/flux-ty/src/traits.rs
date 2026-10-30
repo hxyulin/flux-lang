@@ -576,8 +576,8 @@ pub fn check_impls(
             // impls to uniformly quantified lifetimes until both solvers
             // can enforce their region-dependent applicability.
             match sigs.impls.get(id).map(|ty| ty.kind()) {
-                Some(TyKind::Adt(adt, _)) => {
-                    let lifetimes = items.structs[adt.strukt].generics.lifetimes.len();
+                Some(TyKind::Adt(..)) => {
+                    let lifetimes = crate::regions::slots(items, sigs.impls[id]);
                     let regular_lifetimes = sigs.regions.impls.get(id).is_some_and(|r| {
                         // Named and elided header lifetimes are both universal.
                         // Accept a permutation of distinct binder parameters;
@@ -1078,7 +1078,7 @@ fn check_type_bounds(
     }
     let t = normalize(items, sigs, projections, t);
     let parameters = flux_solve::unsized_params(items, Some(Owner::Impl(imp)), &ty.generics);
-    if (!ty.generics.params.is_empty() || !ty.generics.lifetimes.is_empty())
+    if declaration.is_some_and(|declaration| !declaration.maybe_unsized)
         && flux_solve::maybe_unsized(items, sigs, t, &parameters, &env)
     {
         error(ty.ty_range, "associated type output must be sized".into());
@@ -1303,6 +1303,50 @@ fn check_method(
     let declared = sigs.fn_predicates.get(required).map_or(&[][..], |p| p);
     env.extend(declared.iter().map(|p| norm_predicate(p.subst(&args))));
     let env = elaborate(sigs, &env);
+    // A trait's opaque result is an output family. Its implementation may
+    // refine the concrete type, but must retain every promised bound and
+    // associated output equality.
+    if let TyKind::Opaque(opaque) = sigs[required].ret.subst(&args).kind() {
+        let replace = |ty: Ty| {
+            ty.map_opaques(&mut |found| {
+                if found == opaque {
+                    sig.ret
+                } else {
+                    Ty::opaque(found)
+                }
+            })
+        };
+        for bound in flux_solve::traits::opaque_bounds(sigs, opaque) {
+            let bound = Predicate {
+                self_ty: replace(bound.self_ty),
+                trait_ref: crate::TraitRef {
+                    args: crate::ty::map_list(bound.trait_ref.args, replace),
+                    ..bound.trait_ref
+                },
+            };
+            if !holds(items, sigs, &env, norm_predicate(bound)) {
+                error(
+                    ret_range,
+                    "return type does not satisfy trait method bounds".to_owned(),
+                );
+            }
+        }
+        for projection in flux_solve::traits::opaque_projections(sigs, opaque) {
+            let actual = normalize(
+                items,
+                sigs,
+                projections,
+                Ty::alias(projection.alias.map_args(replace)),
+            );
+            let expected = normalize(items, sigs, projections, replace(projection.ty));
+            if !flux_solve::fn_regions::same_shape(actual, expected) {
+                error(
+                    ret_range,
+                    "return type has an incompatible associated type for trait method".to_owned(),
+                );
+            }
+        }
+    }
     for (written, &p) in function.generics.predicates.iter().zip(own) {
         if !holds(items, sigs, &env, norm_predicate(p)) {
             error(

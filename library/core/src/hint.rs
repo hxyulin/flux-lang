@@ -19,3 +19,8 @@ pub fn spin_loop() {}
 pub const unsafe fn unreachable_unchecked() -> ! {
     loop {}
 }
+
+/// Selects a value without promising which condition is more likely.
+pub fn select_unpredictable<T>(condition: bool, if_true: T, if_false: T) -> T {
+    if condition { if_true } else { if_false }
+}

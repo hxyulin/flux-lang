@@ -157,7 +157,7 @@ Variant =
   Attr* Visibility? Name (RecordFieldList | TupleFieldList)? ('=' Expr)?
 
 Impl =
-  Attr* Visibility? 'unsafe'? 'impl' GenericParamList?
+  Attr* Visibility? 'unsafe'? 'impl' GenericParamList? '!'?
   (trait_ty:Type 'for')? self_ty:Type WhereClause? AssocItemList
 
 Trait =

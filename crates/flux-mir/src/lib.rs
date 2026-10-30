@@ -40,6 +40,7 @@ mod alignment;
 mod bitset;
 pub mod borrowck;
 mod build;
+mod coroutine;
 pub mod drops;
 pub mod eval;
 pub mod flib;
@@ -559,9 +560,14 @@ pub enum StatementKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rvalue {
+    /// Replaces a raw pointer data address, retaining all metadata.
+    WithAddr(Operand, Operand),
+    /// A field path offset, evaluated after substituting generic arguments.
+    OffsetOf(Ty, Box<[u32]>),
     Use(Operand),
-    /// Opaque always-returning assembly. One tied output per input, returned
-    /// as a tuple. Even unused results must retain this side effect.
+    /// Opaque always-returning assembly. Tied outputs are returned as a tuple
+    /// in operand order. Input-only operands have no result or writeback.
+    /// Even unused results must retain this side effect.
     InlineAsm {
         template: Box<[flux_hir::AsmTemplatePiece]>,
         registers: Box<[flux_hir::AsmRegister]>,
@@ -1101,10 +1107,11 @@ impl Rvalue {
             | Self::Cast(op, _)
             | Self::Repeat(op, _)
             | Self::Unsize(op, _) => ([Some(op), None, None], &[]),
-            Self::BinaryOp(_, l, r) => ([Some(l), Some(r), None], &[]),
+            Self::WithAddr(l, r) | Self::BinaryOp(_, l, r) => ([Some(l), Some(r), None], &[]),
             Self::Subslice { slice, start, end } => ([Some(slice), Some(start), Some(end)], &[]),
             Self::Aggregate(_, ops) | Self::InlineAsm { inputs: ops, .. } => ([None; 3], ops),
-            Self::Ref { .. }
+            Self::OffsetOf(..)
+            | Self::Ref { .. }
             | Self::Discriminant(_)
             | Self::DiscriminantForDrop(_)
             | Self::Len { .. } => ([None; 3], &[]),

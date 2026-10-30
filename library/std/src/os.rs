@@ -36,6 +36,53 @@ pub mod unix {
         }
     }
     pub mod fs {
+        pub fn symlink<P: AsRef<crate::path::Path>, Q: AsRef<crate::path::Path>>(original: P, link: Q) -> crate::io::Result<()> {
+            crate::fs::symlink(original.as_ref(), link.as_ref())
+        }
+        pub trait MetadataExt {
+            fn dev(&self) -> u64;
+            fn ino(&self) -> u64;
+            fn mtime(&self) -> i64;
+            fn mtime_nsec(&self) -> i64;
+            fn ctime(&self) -> i64;
+            fn ctime_nsec(&self) -> i64;
+        }
+        impl MetadataExt for crate::fs::Metadata {
+            fn dev(&self) -> u64 {
+                #[cfg(target_os = "macos")]
+                { self.native[0] as u32 as u64 }
+                #[cfg(target_os = "linux")]
+                { self.native[0] }
+            }
+            fn ino(&self) -> u64 { self.native[1] }
+            fn mtime(&self) -> i64 {
+                #[cfg(target_os = "macos")]
+                { self.native[6] as i64 }
+                #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+                { self.native[11] as i64 }
+                #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+                { self.native[11] as i64 }
+            }
+            fn mtime_nsec(&self) -> i64 {
+                #[cfg(target_os = "macos")]
+                { self.native[7] as i64 }
+                #[cfg(target_os = "linux")]
+                { self.native[12] as i64 }
+            }
+            fn ctime(&self) -> i64 {
+                #[cfg(target_os = "macos")]
+                { self.native[8] as i64 }
+                #[cfg(target_os = "linux")]
+                { self.native[13] as i64 }
+            }
+            fn ctime_nsec(&self) -> i64 {
+                #[cfg(target_os = "macos")]
+                { self.native[9] as i64 }
+                #[cfg(target_os = "linux")]
+                { self.native[14] as i64 }
+            }
+        }
+
         pub trait PermissionsExt {
             fn mode(&self) -> u32;
             fn set_mode(&mut self, mode: u32);

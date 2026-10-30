@@ -370,7 +370,7 @@ pub(crate) fn safe_method_profile(
     method_profile(items, diagnostics, sigs, trait_, false)
 }
 
-/// Generic safe methods may name ordinary associated outputs and lifetime-bearing
+/// Generic methods may name ordinary associated outputs and lifetime-bearing
 /// method bounds when their complete occurrence tables can be reconstructed.
 pub(crate) fn generic_method_profile(
     items: &ItemTree,
@@ -426,7 +426,10 @@ fn method_profile(
             name: Some(data.generics.lifetimes[0].name),
             range: data.generics.lifetimes[0].range,
         }]
-        || !owner.outlives.is_empty()
+        || (!projected && !owner.outlives.is_empty())
+        || (projected
+            && super::resolve::trait_outlives_contract(items, sigs, trait_).as_deref()
+                != Some(owner.outlives.as_ref()))
         || (!projected && !owner.families.is_empty())
     {
         return Err(fail(None, TraitProfileReason::OwnerMetadata));
@@ -506,7 +509,7 @@ fn method_profile(
             return Err(bad(TraitProfileReason::OwnerMetadata));
         }
         if (!projected && !function.has_self)
-            || function.is_unsafe
+            || (!projected && function.is_unsafe)
             || function.is_extern
             || function.is_const
             || function.is_variadic
@@ -535,8 +538,28 @@ fn method_profile(
             .iter()
             .map(|parameter| parameter.name)
             .collect();
+        let synthetic = |index: u32| {
+            projected
+                && (index as usize)
+                    .checked_sub(1 + data.generics.params.len())
+                    .and_then(|index| function.generics.params.get(index))
+                    .is_some_and(|parameter| parameter.synthetic)
+        };
         for predicate in &function.generics.predicates {
-            if !matches!(&predicate.ty,TypeRef::Path(path) if path.as_name().is_some_and(|name|own_names.contains(&name)))
+            let callback = projected
+                && items
+                    .resolve_trait(function.loc.module, &predicate.bound)
+                    .0
+                    .is_some_and(|id| crate::fn_trait_kind(items, id).is_some());
+            let subject = match &predicate.ty {
+                TypeRef::Path(path) => path.as_name().is_some_and(|name| {
+                    own_names.contains(&name)
+                        || (projected && data.generics.params.iter().any(|p| p.name == name))
+                }),
+                TypeRef::ImplParam(index) => synthetic(*index),
+                _ => false,
+            };
+            if !subject
                 || predicate.bound.path.qself.is_some()
                 || predicate.bound.path.args.iter().flatten().any(|arguments| {
                     (!projected && !arguments.lifetimes.is_empty())
@@ -545,8 +568,8 @@ fn method_profile(
                                 || binding.args.is_some()
                                 || !written_type(&binding.ty, false)
                         })
-                        || arguments.parenthesized
-                        || !arguments.types.iter().all(|ty| written_type(ty, true))
+                        || (arguments.parenthesized && !callback)
+                        || !arguments.types.iter().all(|ty| written_type(ty, !callback))
                 })
                 || items
                     .resolve_trait(function.loc.module, &predicate.bound)
@@ -557,7 +580,10 @@ fn method_profile(
             }
         }
         if !written_type(&function.ret, false)
-            || function.params.iter().any(|p| !written_type(&p.ty, false))
+            || function.params.iter().any(|p| {
+                !written_type(&p.ty, false)
+                    && !matches!(p.ty,TypeRef::ImplParam(index) if synthetic(index))
+            })
         {
             return Err(bad(TraitProfileReason::SignatureType));
         }
@@ -887,11 +913,18 @@ fn region_free_edges(
         .trait_predicates
         .get(id)
         .ok_or(fail(TraitProfileReason::MissingMetadata))?;
-    // TraitRegions has no predicate/projection region tables. Check that none
-    // are needed; absent tables cannot stand for unrepresented regions.
+    // TraitRegions has no predicate/projection region tables. Root type-parameter
+    // outlives bounds have their own reconstructible table; other edges must
+    // remain region-free. Missing tables cannot stand for represented regions.
+    let represented_outlives = associated
+        && t.generics.outlives.is_empty()
+        && t.generics.type_outlives.iter().all(|bound| {
+            matches!(&bound.ty, TypeRef::Path(path) if path.as_name().is_some_and(|name|t.generics.params.iter().any(|p|p.name==name)))
+        })
+        && super::resolve::trait_outlives_contract(items,sigs,id).as_deref() == Some(regions.outlives.as_ref());
     if !t.generics.outlives.is_empty()
-        || !t.generics.type_outlives.is_empty()
-        || !regions.outlives.is_empty()
+        || (!represented_outlives
+            && (!t.generics.type_outlives.is_empty() || !regions.outlives.is_empty()))
         || (!associated && !sig.implied.is_empty())
         || (!associated
             && sigs
@@ -1123,7 +1156,8 @@ pub(crate) fn family_method_profile(
             return false;
         }
         let implicit_sized = sigs.builtins.sized.filter(|sized| {
-            (!family.generics.lifetimes.is_empty() || !family.generics.params.is_empty())
+            !family.maybe_unsized
+                && (!family.generics.lifetimes.is_empty() || !family.generics.params.is_empty())
                 && !sigs.traits.get(id).is_some_and(|signature| {
                     signature
                         .type_bounds
@@ -1429,6 +1463,31 @@ mod tests {
                 "corruption {corruption}"
             );
         }
+    }
+
+    #[test]
+    fn generic_method_profile_retains_owner_type_outlives() {
+        let source = "trait Keys<'a,K:'a>:Copy{fn len(self)->usize;unsafe fn get(self,index:usize)->&'a K;fn slice(self)->Self;fn find<Q:Ord+?Sized>(self,key:&Q)->usize where K:core::borrow::Borrow<Q>{0}fn search(self,compare:impl Fn(&K)->core::cmp::Ordering)->usize{0}}";
+        let (_, file, hir) = flux_hir::lower_text("keys-profile.rs", source);
+        let (sigs, diagnostics) = crate::signatures(&hir.items);
+        let (owner, _) = hir
+            .items
+            .traits
+            .iter()
+            .find(|(_, t)| t.loc.file == file)
+            .unwrap();
+        assert_eq!(
+            generic_method_profile(&hir.items, &[], &sigs, owner),
+            Ok(())
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let mut bad = sigs.clone();
+        bad.regions.traits.get_mut(owner).unwrap().outlives = Box::default();
+        assert!(generic_method_profile(&hir.items, &[], &bad, owner).is_err());
+        let callback = *hir.items.traits[owner].functions.last().unwrap();
+        let mut bad = sigs.clone();
+        bad.regions.fns.get_mut(callback).unwrap().bound_traits = Box::default();
+        assert!(generic_method_profile(&hir.items, &[], &bad, owner).is_err());
     }
 
     #[test]

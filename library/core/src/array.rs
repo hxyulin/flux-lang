@@ -148,6 +148,13 @@ pub struct IntoIter<T, const N: usize> {
 }
 
 impl<T, const N: usize> IntoIter<T, N> {
+    /// Exclusive access to elements not yielded by this iterator.
+    pub fn as_mut_slice(&mut self)->&mut [T] {
+        // SAFETY: exactly start..end remains initialized; the iterator is
+        // exclusively borrowed, so these elements cannot also be yielded.
+        unsafe {crate::slice::from_raw_parts_mut((self.data.as_mut_ptr() as *mut T).add(self.start),self.end-self.start)}
+    }
+
     /// The elements not given yet.
     pub fn as_slice(&self) -> &[T] {
         // SAFETY: only start..end is initialized; all other slots may have

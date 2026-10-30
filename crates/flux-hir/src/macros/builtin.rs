@@ -19,6 +19,8 @@ use super::tt::{Tok, pretty};
 pub enum Builtin {
     Derive,
     Asm,
+    OffsetOf,
+    Pin,
     Assert,
     Panic,
     Unreachable,
@@ -47,6 +49,8 @@ impl Builtin {
         match name {
             "derive" => Builtin::Derive,
             "asm" => Builtin::Asm,
+            "offset_of" => Builtin::OffsetOf,
+            "pin" => Builtin::Pin,
             "assert" => Builtin::Assert,
             "panic" => Builtin::Panic,
             "unreachable" => Builtin::Unreachable,
@@ -238,6 +242,59 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
                 out.extend(expr);
                 cx.quote(",", &mut out);
             }
+            cx.quote(")", &mut out);
+        }
+        Builtin::Pin => {
+            let args = split_exprs(cx, cx.toks, false)?;
+            if args.args.len() != 1 {
+                return Err((cx.call, "expected one expression".into()));
+            }
+            cx.quote("{", &mut out);
+            out.extend_from_slice(args.args[0].1);
+            cx.quote("}", &mut out);
+        }
+        Builtin::OffsetOf => {
+            let mut input = parser::Input::default();
+            for token in cx.toks {
+                input.push(token.kind, token.is_union_keyword());
+                if token.joint {
+                    input.set_last_joint();
+                }
+            }
+            let n = parser::fragment_len(&input, 0, Fragment::Type)
+                .filter(|&n| n > 0)
+                .ok_or((cx.call, "expected a type".into()))?;
+            if cx.toks.get(n).is_none_or(|t| t.kind != T![,]) {
+                return Err((cx.call, "expected `,`".into()));
+            }
+            let fields = &cx.toks[n + 1..];
+            let fields = if fields.last().is_some_and(|t| t.kind == T![,]) {
+                &fields[..fields.len() - 1]
+            } else {
+                fields
+            };
+            if fields.is_empty()
+                || fields.len() % 2 == 0
+                || fields.iter().enumerate().any(|(i, t)| {
+                    if i % 2 == 1 {
+                        t.kind != T![.]
+                    } else {
+                        !(matches!(t.kind, SyntaxKind::IDENT | SyntaxKind::INT_NUMBER)
+                            || t.kind == SyntaxKind::FLOAT_NUMBER
+                                && t.text
+                                    .as_str()
+                                    .bytes()
+                                    .all(|b| b.is_ascii_digit() || b == b'.'))
+                    }
+                })
+            {
+                return Err((cx.call, "expected a field path".into()));
+            }
+            cx.quote("(|_: ", &mut out);
+            out.extend_from_slice(&cx.toks[..n]);
+            cx.quote("| (),", &mut out);
+            let names = fields.iter().map(|t| t.text.as_str()).collect::<String>();
+            out.push(cx.string(&names, cx.origin()));
             cx.quote(")", &mut out);
         }
         Builtin::Assert => assert(cx, &mut out)?,

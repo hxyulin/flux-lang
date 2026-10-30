@@ -78,6 +78,8 @@ type Slots = SmallVec<[Var; 4]>;
 
 /// `'static`, always the first.
 const STATIC: Var = 0;
+// Declaration proofs cross the same nested containers as signature proofs.
+const DECLARATION_RECURSION_LIMIT: u32 = 128;
 
 #[derive(Clone, Copy)]
 enum UniversalRelationMode {
@@ -446,15 +448,85 @@ pub(crate) fn impl_method_matches(
     let theirs = cx.instantiate_sig(trait_sig.ret, &tr.ret, &mut map_t, &args, &arg_vars);
     let required_ret = cx.normalize(trait_sig.ret.subst(&args));
     match (mine, theirs) {
-        (Some(mine), Some(theirs)) => cx.relate_types(
-            ty,
-            &mine,
-            required_ret,
-            &theirs,
-            Variance::Covariant,
-            Category::Boring,
-            range,
-        ),
+        (Some(mine), Some(theirs)) => {
+            if let TyKind::Opaque(required) = trait_sig.ret.subst(&args).kind() {
+                // Compare the promised output rows rather than treating the
+                // trait and implementation's independent capture lists as
+                // the same opaque identity.
+                let Some(mut goals) = cx.opaque_bound_goals(required, &theirs) else {
+                    return false;
+                };
+                let mut available = header_goals.clone();
+                if let TyKind::Opaque(actual) = selected.ret.ty.kind() {
+                    let Some(bounds) = cx.opaque_bound_goals(actual, &mine) else {
+                        return false;
+                    };
+                    available.extend(bounds);
+                }
+                for goal in &mut goals {
+                    goal.predicate.self_ty = selected.ret.ty;
+                    goal.vars[0] = mine.clone();
+                    if !cx.impl_prove_super(goal, &available, 0) {
+                        return false;
+                    }
+                }
+                for projection in flux_solve::traits::opaque_projections(sigs, required) {
+                    let Some(expected) =
+                        cx.opaque_projection(required, projection.alias, &theirs, &[])
+                    else {
+                        return false;
+                    };
+                    let alias = projection.alias.map_args(|arg| {
+                        if arg == Ty::opaque(required) {
+                            selected.ret.ty
+                        } else {
+                            arg
+                        }
+                    });
+                    // The bound's non-self type arguments retain their exact
+                    // substituted rows. Inputs beyond self need represented
+                    // rows; do not invent them for a lifetime-bearing type.
+                    let mut rows = vec![mine.clone()];
+                    for &argument in alias.args.iter().skip(1) {
+                        if cx.slots(argument) != 0 {
+                            return false;
+                        }
+                        rows.push(Vec::new());
+                    }
+                    let Some(actual) = cx.normalize_regions(alias, &rows, 0) else {
+                        return false;
+                    };
+                    if actual.len() != expected.len() {
+                        return false;
+                    }
+                    for (actual, expected) in actual.into_iter().zip(expected) {
+                        cx.outlives(actual, expected, Category::Boring, range);
+                        cx.outlives(expected, actual, Category::Boring, range);
+                    }
+                }
+                let Some(decl) = tr.opaques.get(required.index as usize) else {
+                    return false;
+                };
+                for &bound in &decl.outlives {
+                    let Some(bound) = map_trait(bound) else {
+                        return false;
+                    };
+                    for &capture in &mine {
+                        cx.outlives(capture, bound, Category::Boring, range);
+                    }
+                }
+            } else {
+                cx.relate_types(
+                    ty,
+                    &mine,
+                    required_ret,
+                    &theirs,
+                    Variance::Covariant,
+                    Category::Boring,
+                    range,
+                );
+            }
+        }
         _ => return false,
     }
     // What the method assumes must follow.
@@ -1129,7 +1201,7 @@ impl<'a> Cx<'a> {
         env: &[ImplRegionGoal],
         depth: u32,
     ) -> bool {
-        if depth > 32 {
+        if depth > DECLARATION_RECURSION_LIMIT {
             return false;
         }
         let ty = if args.is_empty() { ty } else { ty.subst(args) };
@@ -1204,7 +1276,7 @@ impl<'a> Cx<'a> {
         env: &[ImplRegionGoal],
         depth: u32,
     ) -> bool {
-        if depth > 32 {
+        if depth > DECLARATION_RECURSION_LIMIT {
             return false;
         }
         if self.impl_aliases_known(ty, args) {
@@ -1549,7 +1621,7 @@ impl<'a> Cx<'a> {
         depth: u32,
         projection_inputs: Option<&[ImplRegionGoal]>,
     ) -> bool {
-        if depth > 32 {
+        if depth > DECLARATION_RECURSION_LIMIT {
             return false;
         }
         if out.iter().any(|g| {
@@ -1828,7 +1900,7 @@ impl<'a> Cx<'a> {
         env: &[ImplRegionGoal],
         depth: u32,
     ) -> bool {
-        if depth > 32 {
+        if depth > DECLARATION_RECURSION_LIMIT {
             return false;
         }
         let range = TextRange::default();
@@ -2631,7 +2703,7 @@ impl<'a> Cx<'a> {
             };
             self.hidden_projections(h);
             for &b in &h.outlives {
-                self.type_outlives(h.ty, b, h.range);
+                self.hidden_type_outlives(h.ty, &h.vars, b, h.range);
             }
             for &v in &h.vars {
                 if !h.outlives.is_empty() {
@@ -4483,7 +4555,7 @@ impl<'a> Cx<'a> {
                     );
                 }
             }
-            Rvalue::Use(op) | Rvalue::Cast(op, _) => {
+            Rvalue::WithAddr(op, _) | Rvalue::Use(op) | Rvalue::Cast(op, _) => {
                 if let TyKind::FnPtr(target) = dest_ty.kind()
                     && target.regions.is_some()
                 {
@@ -4939,7 +5011,8 @@ impl<'a> Cx<'a> {
             Rvalue::Aggregate(kind, ops) => {
                 self.aggregate(*kind, ops, dest_ty, &dest_vars, category, range)
             }
-            Rvalue::BinaryOp(..)
+            Rvalue::OffsetOf(..)
+            | Rvalue::BinaryOp(..)
             | Rvalue::UnaryOp(..)
             | Rvalue::Discriminant(_)
             | Rvalue::DiscriminantForDrop(_)
@@ -7262,6 +7335,88 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Materialize stored associated fields while the hidden value's rows are
+    /// available. A bare associated type cannot recover its output lifetimes.
+    fn hidden_type_outlives(&mut self, ty: Ty, vars: &[Var], bound: Var, range: TextRange) {
+        let hidden_ty = ty;
+        let mut pending = vec![(ty, vars.to_vec(), Vec::<flux_hir::StructId>::new())];
+        let mut seen = FxHashSet::default();
+        let mut projected = None;
+        while let Some((ty, vars, mut active)) = pending.pop() {
+            if !seen.insert((ty, vars.clone(), active.clone())) {
+                continue;
+            }
+            if vars.len() != self.slots(ty) as usize {
+                self.type_outlives(ty, bound, range);
+                continue;
+            }
+            for &var in &vars {
+                self.outlives(var, bound, Category::OpaqueType, range);
+            }
+            let (children, mut at): (Vec<Ty>, usize) = match ty.kind() {
+                TyKind::Adt(adt, args) => (
+                    args.to_vec(),
+                    self.items.structs[adt.strukt].generics.lifetimes.len(),
+                ),
+                TyKind::Tuple(types) => (types.to_vec(), 0),
+                TyKind::Ref(_, inner) => (vec![inner], 1),
+                TyKind::RawPtr(_, inner) | TyKind::Array(inner, _) | TyKind::Slice(inner) => {
+                    (vec![inner], 0)
+                }
+                TyKind::Closure(_, args) => (vec![flux_ty::ClosureArgs::split(args).upvars], 0),
+                TyKind::FnPtr(signature) => signature
+                    .regions
+                    .map_or((Vec::new(), 0), |r| (r.types.to_vec(), r.free as usize)),
+                _ => {
+                    self.type_outlives(ty, bound, range);
+                    continue;
+                }
+            };
+            for child in children {
+                let end = at + self.slots(child) as usize;
+                let Some(row) = vars.get(at..end) else {
+                    self.type_outlives(ty, bound, range);
+                    break;
+                };
+                pending.push((child, row.to_vec(), active.clone()));
+                at = end;
+            }
+            let TyKind::Adt(adt, _) = ty.kind() else {
+                continue;
+            };
+            // Generic arguments remain obligations on recursive paths. Expanding
+            // the same declaration's fields again would grow recursive containers.
+            if active.contains(&adt.strukt)
+                || !projected
+                    .get_or_insert_with(|| {
+                        flux_ty::regions::outlives_structs_with_projections(self.sigs, hidden_ty)
+                    })
+                    .contains(&adt.strukt)
+            {
+                continue;
+            }
+            active.push(adt.strukt);
+            let variants = self
+                .sigs
+                .variant_starts
+                .get(adt.strukt)
+                .map_or(1, |v| v.len().saturating_sub(1));
+            for variant in 0..variants {
+                let fields = flux_solve::variant_fields(self.sigs, ty, variant as u32)
+                    .map_or(0, |f| f.len());
+                for field in 0..fields {
+                    let (field_ty, field_vars) =
+                        self.field_regions(ty, &vars, Some(variant as u32), field as u32);
+                    if field_ty == Ty::ERROR {
+                        self.type_outlives(ty, bound, range);
+                    } else {
+                        pending.push((field_ty, field_vars.to_vec(), active.clone()));
+                    }
+                }
+            }
+        }
+    }
+
     /// `T: b` for the parameters and associated types in `ty`.
     fn type_outlives(&mut self, ty: Ty, b: Var, range: TextRange) {
         let mut pending = flux_ty::regions::outlives_type_components(self.sigs, ty);
@@ -7596,6 +7751,14 @@ impl<'a> Cx<'a> {
                 for &t in list {
                     self.closures_in(t, vars, next, out);
                 }
+            }
+            TyKind::Adt(adt, _)
+                if flux_solve::is_lang_struct(self.items, adt.strukt, "coroutine") =>
+            {
+                // The closure is the future's private body, not a callback
+                // independently passed to Pin or Future consumers. Its checked
+                // output flows through the represented Future::Output type.
+                *next += self.slots(ty) as usize;
             }
             TyKind::Adt(adt, list) => {
                 *next += self.items.structs[adt.strukt].generics.lifetimes.len();

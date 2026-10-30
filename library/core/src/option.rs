@@ -550,3 +550,27 @@ impl<'a, T> crate::iter::ExactSizeIterator for IterMut<'a, T> {}
 impl<T> crate::iter::FusedIterator for IntoIter<T> {}
 impl<'a, T> crate::iter::FusedIterator for Iter<'a, T> {}
 impl<'a, T> crate::iter::FusedIterator for IterMut<'a, T> {}
+
+impl<T> Option<T> {
+    /// Projects a pinned optional value without moving the contained value.
+    pub fn as_pin_ref(self: crate::pin::Pin<&Self>) -> Option<crate::pin::Pin<&T>> {
+        match self.get_ref() {
+            Some(value) => {
+                // SAFETY: Option's contained value remains pinned with its owner.
+                Some(unsafe { crate::pin::Pin::new_unchecked(value) })
+            }
+            None => None,
+        }
+    }
+    /// Projects an exclusive pin without moving the contained value.
+    pub fn as_pin_mut(self: crate::pin::Pin<&mut Self>) -> Option<crate::pin::Pin<&mut T>> {
+        // SAFETY: matching the reference never moves or replaces the option.
+        match unsafe { self.get_unchecked_mut() } {
+            Some(value) => {
+                // SAFETY: the field remains in the original pinned option.
+                Some(unsafe { crate::pin::Pin::new_unchecked(value) })
+            }
+            None => None,
+        }
+    }
+}

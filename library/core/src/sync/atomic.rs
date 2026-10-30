@@ -22,6 +22,87 @@ pub enum Ordering {
 }
 use self::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 
+// Join the two Rust CAS orders without weakening either on Keel's
+// single-order instruction. All fifteen valid pairs are accepted.
+#[track_caller]
+fn cas_order(success:Ordering,failure:Ordering)->Ordering {
+    match failure {
+        Release=>panic("there is no such thing as a release failure ordering"),
+        AcqRel=>panic("there is no such thing as an acquire-release failure ordering"),
+        SeqCst=>SeqCst,
+        Relaxed=>success,
+        Acquire=>match success {Relaxed|Acquire=>Acquire,Release|AcqRel=>AcqRel,SeqCst=>SeqCst},
+    }
+}
+macro_rules! native_cas {
+    ($scalar:ty,$relaxed:ident,$acquire:ident,$release:ident,$acqrel:ident,$seqcst:ident)=>{
+        #[track_caller]
+        pub fn compare_exchange(&self,current:$scalar,new:$scalar,success:Ordering,failure:Ordering)->Result<$scalar,$scalar> {
+            // SAFETY: this type owns initialized and naturally aligned storage;
+            // the intrinsic accesses exactly that width and returns the old value.
+            let old=unsafe {match cas_order(success,failure) {
+                Relaxed=>intrinsics::$relaxed(self.value.get(),current,new),
+                Acquire=>intrinsics::$acquire(self.value.get(),current,new),
+                Release=>intrinsics::$release(self.value.get(),current,new),
+                AcqRel=>intrinsics::$acqrel(self.value.get(),current,new),
+                SeqCst=>intrinsics::$seqcst(self.value.get(),current,new),
+            }};
+            if old==current {Ok(old)} else {Err(old)}
+        }
+        #[track_caller]
+        pub fn compare_exchange_weak(&self,current:$scalar,new:$scalar,success:Ordering,failure:Ordering)->Result<$scalar,$scalar> {
+            self.compare_exchange(current,new,success,failure)
+        }
+    };
+}
+macro_rules! atomic_updates {
+    ($scalar:ty)=>{
+        #[track_caller]
+        pub fn fetch_update<F>(&self,set_order:Ordering,fetch_order:Ordering,mut update:F)->Result<$scalar,$scalar>
+        where F:FnMut($scalar)->Option<$scalar> {
+            let mut old=self.load(fetch_order);
+            loop {
+                let Some(new)=update(old) else {return Err(old);};
+                match self.compare_exchange_weak(old,new,set_order,fetch_order) {
+                    Ok(previous)=>return Ok(previous),Err(observed)=>old=observed,
+                }
+            }
+        }
+        #[track_caller]
+        pub fn swap(&self,value:$scalar,order:Ordering)->$scalar {
+            match self.fetch_update(order,Relaxed,|_|Some(value)) {Ok(old)|Err(old)=>old}
+        }
+    };
+}
+macro_rules! atomic_integer_ops {
+    ($scalar:ty)=>{
+        #[track_caller]
+        pub fn fetch_and(&self,value:$scalar,order:Ordering)->$scalar {
+            match self.fetch_update(order,Relaxed,|old|Some(old & value)) {Ok(old)|Err(old)=>old}
+        }
+        #[track_caller]
+        pub fn fetch_or(&self,value:$scalar,order:Ordering)->$scalar {
+            match self.fetch_update(order,Relaxed,|old|Some(old | value)) {Ok(old)|Err(old)=>old}
+        }
+        #[track_caller]
+        pub fn fetch_xor(&self,value:$scalar,order:Ordering)->$scalar {
+            match self.fetch_update(order,Relaxed,|old|Some(old ^ value)) {Ok(old)|Err(old)=>old}
+        }
+        #[track_caller]
+        pub fn fetch_nand(&self,value:$scalar,order:Ordering)->$scalar {
+            match self.fetch_update(order,Relaxed,|old|Some(!(old & value))) {Ok(old)|Err(old)=>old}
+        }
+        #[track_caller]
+        pub fn fetch_max(&self,value:$scalar,order:Ordering)->$scalar {
+            match self.fetch_update(order,Relaxed,|old|Some(if old>value {old} else {value})) {Ok(old)|Err(old)=>old}
+        }
+        #[track_caller]
+        pub fn fetch_min(&self,value:$scalar,order:Ordering)->$scalar {
+            match self.fetch_update(order,Relaxed,|old|Some(if old<value {old} else {value})) {Ok(old)|Err(old)=>old}
+        }
+    };
+}
+
 /// A naturally aligned, sized atomic machine word (64 bits on Flux targets).
 /// Shared accesses use only native atomic operations; exclusive access may
 /// use `get_mut` or `into_inner`. No wider or overlapping access is permitted.
@@ -35,6 +116,15 @@ pub struct AtomicUsize {
 unsafe impl Sync for AtomicUsize {}
 
 impl AtomicUsize {
+    /// # Safety
+    /// The pointer must be valid and aligned for Self for the returned lifetime.
+    /// Shared accesses must use compatible atomic operations for that lifetime.
+    pub const unsafe fn from_ptr<'a>(pointer:*mut usize)->&'a Self {
+        // SAFETY: the caller supplies layout, lifetime and access guarantees.
+        unsafe {&*(pointer as *const Self)}
+    }
+    atomic_updates!(usize);
+    atomic_integer_ops!(usize);
     /// Initializes private storage; subsequent shared accesses are atomic.
     pub const fn new(value: usize) -> AtomicUsize {
         AtomicUsize {
@@ -124,17 +214,7 @@ impl AtomicUsize {
     ) -> Result<usize, usize> {
         // Keel has one order: join both Rust orders without weakening either.
         // Validate failure before mapping; all fifteen remaining pairs are valid.
-        let order = match failure {
-            Release => panic("there is no such thing as a release failure ordering"),
-            AcqRel => panic("there is no such thing as an acquire-release failure ordering"),
-            SeqCst => SeqCst,
-            Relaxed => success,
-            Acquire => match success {
-                Relaxed | Acquire => Acquire,
-                Release | AcqRel => AcqRel,
-                SeqCst => SeqCst,
-            },
-        };
+        let order = cas_order(success,failure);
         // SAFETY: aligned, live atomic storage. Pinned Keel CAS is strong and
         // returns the old scalar on BOTH paths, not a boolean or tuple.
         let old = unsafe {
@@ -169,6 +249,15 @@ pub struct AtomicU64 {
 }
 
 impl AtomicU64 {
+    /// # Safety
+    /// The pointer must be valid and aligned for Self for the returned lifetime.
+    /// Shared accesses must use compatible atomic operations for that lifetime.
+    pub const unsafe fn from_ptr<'a>(pointer:*mut u64)->&'a Self {
+        // SAFETY: the caller supplies layout, lifetime and access guarantees.
+        unsafe {&*(pointer as *const Self)}
+    }
+    atomic_updates!(u64);
+    atomic_integer_ops!(u64);
     pub const fn new(value: u64) -> Self {
         Self { value: AtomicUsize::new(value as usize) }
     }
@@ -222,6 +311,18 @@ pub struct AtomicU32 {
 unsafe impl Sync for AtomicU32 {}
 
 impl AtomicU32 {
+    /// # Safety
+    /// The pointer must be valid and aligned for Self for the returned lifetime.
+    /// Shared accesses must use compatible atomic operations for that lifetime.
+    pub const unsafe fn from_ptr<'a>(pointer:*mut u32)->&'a Self {
+        // SAFETY: the caller supplies layout, lifetime and access guarantees.
+        unsafe {&*(pointer as *const Self)}
+    }
+    atomic_updates!(u32);
+    atomic_integer_ops!(u32);
+    native_cas!(u32,__atomic_u32_cas_relaxed,__atomic_u32_cas_acquire,__atomic_u32_cas_release,__atomic_u32_cas_acqrel,__atomic_u32_cas_seqcst);
+    #[track_caller]
+    pub fn fetch_sub(&self,value:u32,order:Ordering)->u32 {match self.fetch_update(order,Relaxed,|old|Some(old.wrapping_sub(value))) {Ok(old)|Err(old)=>old}}
     /// Initializes private storage; subsequent shared accesses are atomic.
     pub const fn new(value: u32) -> AtomicU32 {
         AtomicU32 {
@@ -291,6 +392,19 @@ pub struct AtomicU8 { value: UnsafeCell<u8> }
 // SAFETY: every shared storage access uses a native byte atomic instruction.
 unsafe impl Sync for AtomicU8 {}
 impl AtomicU8 {
+    /// # Safety
+    /// The pointer must be valid and aligned for Self for the returned lifetime.
+    /// Shared accesses must use compatible atomic operations for that lifetime.
+    pub const unsafe fn from_ptr<'a>(pointer:*mut u8)->&'a Self {
+        // SAFETY: the caller supplies layout, lifetime and access guarantees.
+        unsafe {&*(pointer as *const Self)}
+    }
+    atomic_updates!(u8);
+    atomic_integer_ops!(u8);
+    #[track_caller]
+    pub fn fetch_add(&self,value:u8,order:Ordering)->u8 {match self.fetch_update(order,Relaxed,|old|Some(old.wrapping_add(value))) {Ok(old)|Err(old)=>old}}
+    #[track_caller]
+    pub fn fetch_sub(&self,value:u8,order:Ordering)->u8 {match self.fetch_update(order,Relaxed,|old|Some(old.wrapping_sub(value))) {Ok(old)|Err(old)=>old}}
     pub const fn new(value:u8)->Self{Self{value:UnsafeCell::new(value)}}
     pub fn get_mut(&mut self)->&mut u8{self.value.get_mut()}
     pub fn into_inner(self)->u8{self.value.into_inner()}
@@ -330,17 +444,7 @@ impl AtomicU8 {
     ) -> Result<u8, u8> {
         // Keel has one order: join both Rust orders without weakening either.
         // Validate failure before mapping; all fifteen remaining pairs are valid.
-        let order = match failure {
-            Release => panic("there is no such thing as a release failure ordering"),
-            AcqRel => panic("there is no such thing as an acquire-release failure ordering"),
-            SeqCst => SeqCst,
-            Relaxed => success,
-            Acquire => match success {
-                Relaxed | Acquire => Acquire,
-                Release | AcqRel => AcqRel,
-                SeqCst => SeqCst,
-            },
-        };
+        let order = cas_order(success,failure);
         // SAFETY: aligned, live atomic storage. Pinned Keel CAS is strong and
         // returns the old scalar on BOTH paths, not a boolean or tuple.
         let old = unsafe {
@@ -379,6 +483,20 @@ pub struct AtomicU16 { value: UnsafeCell<u16> }
 // SAFETY: every shared storage access uses a native halfword atomic instruction.
 unsafe impl Sync for AtomicU16 {}
 impl AtomicU16 {
+    /// # Safety
+    /// The pointer must be valid and aligned for Self for the returned lifetime.
+    /// Shared accesses must use compatible atomic operations for that lifetime.
+    pub const unsafe fn from_ptr<'a>(pointer:*mut u16)->&'a Self {
+        // SAFETY: the caller supplies layout, lifetime and access guarantees.
+        unsafe {&*(pointer as *const Self)}
+    }
+    atomic_updates!(u16);
+    atomic_integer_ops!(u16);
+    native_cas!(u16,__atomic_u16_cas_relaxed,__atomic_u16_cas_acquire,__atomic_u16_cas_release,__atomic_u16_cas_acqrel,__atomic_u16_cas_seqcst);
+    #[track_caller]
+    pub fn fetch_add(&self,value:u16,order:Ordering)->u16 {match self.fetch_update(order,Relaxed,|old|Some(old.wrapping_add(value))) {Ok(old)|Err(old)=>old}}
+    #[track_caller]
+    pub fn fetch_sub(&self,value:u16,order:Ordering)->u16 {match self.fetch_update(order,Relaxed,|old|Some(old.wrapping_sub(value))) {Ok(old)|Err(old)=>old}}
     pub const fn new(value:u16)->Self{Self{value:UnsafeCell::new(value)}}
     pub fn get_mut(&mut self)->&mut u16{self.value.get_mut()}
     pub fn into_inner(self)->u16{self.value.into_inner()}
@@ -442,6 +560,14 @@ unsafe impl<T> Sync for AtomicPtr<T> {}
 unsafe impl<T> Send for AtomicPtr<T> {}
 
 impl<T> AtomicPtr<T> {
+    /// # Safety
+    /// The pointer must remain valid, aligned and accessed atomically for 'a.
+    pub const unsafe fn from_ptr<'a>(pointer:*mut *mut T)->&'a Self {
+        // SAFETY: the caller supplies the allocation and atomic-access contract.
+        unsafe {&*(pointer as *const Self)}
+    }
+    atomic_updates!(*mut T);
+    native_cas!(*mut T,__atomic_ptr_cas_relaxed,__atomic_ptr_cas_acquire,__atomic_ptr_cas_release,__atomic_ptr_cas_acqrel,__atomic_ptr_cas_seqcst);
     /// Initializes private storage; subsequent shared accesses are atomic.
     pub const fn new(value: *mut T) -> AtomicPtr<T> {
         AtomicPtr {
@@ -497,6 +623,26 @@ macro_rules! signed_atomic {
         #[repr(C, align($alignment))]
         pub struct $name { value: $storage }
         impl $name {
+            /// # Safety
+            /// The storage must be valid, aligned and accessed atomically for 'a.
+            pub const unsafe fn from_ptr<'a>(pointer:*mut $signed)->&'a Self {
+                // SAFETY: the caller supplies compatible storage and its lifetime.
+                unsafe {&*(pointer as *const Self)}
+            }
+            atomic_updates!($signed);
+            atomic_integer_ops!($signed);
+            #[track_caller]
+            pub fn compare_exchange(&self,current:$signed,new:$signed,success:Ordering,failure:Ordering)->Result<$signed,$signed> {
+                match self.value.compare_exchange(current as $unsigned,new as $unsigned,success,failure) {Ok(old)=>Ok(old as $signed),Err(old)=>Err(old as $signed)}
+            }
+            #[track_caller]
+            pub fn compare_exchange_weak(&self,current:$signed,new:$signed,success:Ordering,failure:Ordering)->Result<$signed,$signed> {
+                self.compare_exchange(current,new,success,failure)
+            }
+            #[track_caller]
+            pub fn fetch_add(&self,value:$signed,order:Ordering)->$signed {match self.fetch_update(order,Relaxed,|old|Some(old.wrapping_add(value))) {Ok(old)|Err(old)=>old}}
+            #[track_caller]
+            pub fn fetch_sub(&self,value:$signed,order:Ordering)->$signed {match self.fetch_update(order,Relaxed,|old|Some(old.wrapping_sub(value))) {Ok(old)|Err(old)=>old}}
             pub const fn new(value:$signed)->Self { Self { value:$storage::new(value as $unsigned) } }
             pub fn get_mut(&mut self)->&mut $signed {
                 // SAFETY: signed/unsigned types have identical size/alignment
@@ -526,6 +672,29 @@ signed_atomic!(AtomicIsize,isize,usize,AtomicUsize,8);
 #[repr(C,align(1))]
 pub struct AtomicBool { value:AtomicU8 }
 impl AtomicBool {
+    /// # Safety
+    /// The pointer must be valid and aligned for Self for the returned lifetime.
+    /// Shared accesses must use compatible atomic operations for that lifetime.
+    pub const unsafe fn from_ptr<'a>(pointer:*mut bool)->&'a Self {
+        // SAFETY: the caller supplies layout, lifetime and access guarantees.
+        unsafe {&*(pointer as *const Self)}
+    }
+    #[track_caller]
+    pub fn fetch_nand(&self,value:bool,order:Ordering)->bool {match self.fetch_update(order,Relaxed,|old|Some(!(old & value))) {Ok(old)|Err(old)=>old}}
+    #[track_caller]
+    pub fn fetch_xor(&self,value:bool,order:Ordering)->bool {match self.fetch_update(order,Relaxed,|old|Some(old ^ value)) {Ok(old)|Err(old)=>old}}
+    #[track_caller]
+    pub fn fetch_or(&self,value:bool,order:Ordering)->bool {match self.fetch_update(order,Relaxed,|old|Some(old | value)) {Ok(old)|Err(old)=>old}}
+    #[track_caller]
+    pub fn fetch_and(&self,value:bool,order:Ordering)->bool {match self.fetch_update(order,Relaxed,|old|Some(old & value)) {Ok(old)|Err(old)=>old}}
+    atomic_updates!(bool);
+    #[track_caller]
+    pub fn compare_exchange(&self,current:bool,new:bool,success:Ordering,failure:Ordering)->Result<bool,bool> {
+        match self.value.compare_exchange(current as u8,new as u8,success,failure) {Ok(old)=>Ok(old!=0),Err(old)=>Err(old!=0)}
+    }
+    #[track_caller]
+    pub fn compare_exchange_weak(&self,current:bool,new:bool,success:Ordering,failure:Ordering)->Result<bool,bool> {self.compare_exchange(current,new,success,failure)}
+
     pub const fn new(value:bool)->Self { Self { value:AtomicU8::new(value as u8) } }
     pub fn get_mut(&mut self)->&mut bool {
         // SAFETY: only bool constructors/stores initialize this private byte,

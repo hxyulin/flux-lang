@@ -127,7 +127,7 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                     "assembly operands cannot follow options".into(),
                 ));
             }
-            if kind != "inout" {
+            if kind != "inout" && kind != "in" {
                 return Err((
                     tokens[at].range(),
                     format!("assembly operand `{kind}` is not supported yet"),
@@ -157,7 +157,15 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                 .filter(|&n| n > 0)
                 .ok_or((range, "expected an assembly operand expression".into()))?;
             expressions.push(tokens[at..at + n].to_vec());
-            registers.push(register);
+            registers.push(if kind == "in" {
+                match register {
+                    AsmRegister::Reg => AsmRegister::InputReg,
+                    AsmRegister::Vreg => AsmRegister::InputVreg,
+                    _ => unreachable!(),
+                }
+            } else {
+                register
+            });
             if name.is_none() && names.iter().any(Option::is_some) {
                 return Err((
                     tokens[at].range(),
@@ -192,7 +200,7 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
             "`pure` assembly requires `nomem` or `readonly`".into(),
         ));
     }
-    if options.pure && expressions.is_empty() {
+    if options.pure && registers.iter().all(|register| register.input_only()) {
         return Err((range, "`pure` assembly requires an output".into()));
     }
     let template = template(&text, &names, range)?;

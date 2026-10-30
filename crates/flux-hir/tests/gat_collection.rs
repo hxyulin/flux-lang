@@ -179,15 +179,18 @@ fn associated_family_syntax_matches_rustc_at_the_hir_boundary() {
 }
 
 #[test]
-fn unrepresented_family_shapes_keep_explicit_hir_gates() {
+fn relaxed_family_outputs_keep_size_metadata() {
     let (_, _, hir) = flux_hir::lower_text("gat-gate.rs", "trait A{type Item<'a>:?Sized;}");
-    assert!(
-        hir.diagnostics
-            .iter()
-            .any(|d| d.message == "`?Sized` bounds are not supported yet"),
-        "{:?}",
-        hir.diagnostics
-    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let family = &hir
+        .items
+        .traits
+        .iter()
+        .find(|(_, t)| t.name.as_str() == "A")
+        .unwrap()
+        .1
+        .types[0];
+    assert!(family.maybe_unsized);
 }
 
 #[test]

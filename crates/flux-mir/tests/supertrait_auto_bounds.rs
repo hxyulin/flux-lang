@@ -18,6 +18,21 @@ fn structural_auto_supertraits_match_rustc() {
             true,
         ),
         (
+            "nested_lifetime_auto_impl",
+            "struct Borrow<'a>(&'a i32);struct W<B,T>(B,T);unsafe impl<T:Send>Send for W<Borrow<'_>,T>{}trait Typed:Send{}impl<'a,T:Send>Typed for W<Borrow<'a>,T>{}",
+            true,
+        ),
+        (
+            "nested_lifetime_auto_impl_bound",
+            "struct Borrow<'a>(&'a i32);struct W<B,T>(B,T);unsafe impl<T:Send>Send for W<Borrow<'_>,T>{}trait Typed:Send{}impl<'a,T>Typed for W<Borrow<'a>,T>{}",
+            false,
+        ),
+        (
+            "permuted_nested_lifetimes",
+            "struct Borrow<'a,'b>(&'a i32,&'b i32);struct W<'a,B>(&'a i32,B);unsafe impl<'a,'b,'c>Send for W<'c,Borrow<'b,'a>>{}trait Typed:Send{}impl<'a,'b,'c>Typed for W<'a,Borrow<'b,'c>>{}",
+            true,
+        ),
+        (
             "phantom_send",
             "struct W<T>(core::marker::PhantomData<T>);trait Typed:Send{}impl<T:Send>Typed for W<T>{}",
             true,
@@ -142,4 +157,23 @@ fn lifetime_auto_impl_boundary_is_preserved() {
         "{:?}",
         typed.diagnostics
     );
+}
+
+#[test]
+fn deep_auto_trait_signature_proof() {
+    for (leaf, accepted) in [("u32", true), ("*const ()", false)] {
+        let mut source = format!("struct Layer0({leaf});");
+        for i in 1..45 {
+            source.push_str(&format!("struct Layer{i}(Layer{});", i - 1));
+        }
+        source.push_str("trait Transfer:Send+Sync{}impl Transfer for Layer44{}fn main(){}");
+        let (_, _, hir) = flux_hir::lower_text("deep_auto.rs", &source);
+        let (_, errors) = flux_ty::signatures_checked(&hir.items, true, None);
+        assert_eq!(errors.is_empty(), accepted, "{errors:?}");
+        if accepted {
+            let typed = flux_mir::check_file(&hir);
+            let mir = flux_mir::build_file(&hir, &typed);
+            assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        }
+    }
 }
