@@ -1,4 +1,5 @@
 //! Main-thread and worker TLS exit lifecycle, compared with rustc.
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod support;
 
 use std::path::Path;

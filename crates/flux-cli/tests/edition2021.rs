@@ -93,6 +93,7 @@ impl Drop for Fixture {
     }
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn success(output: &Output) {
     assert!(
         output.status.success(),

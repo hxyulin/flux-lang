@@ -242,7 +242,17 @@ tests use it.
 Graph tests keep their dependencies, cfg and assertions explicit. Audit parents
 check original source bytes even when their worker fails or times out.
 
-This needs arm64 macOS, where flux can link executables so far. Write
+The complete runtime sweep currently needs arm64 macOS. Native x86-64 Linux
+has focused executable and package coverage:
+
+```sh
+cargo test -p flux-cli --test linux_native --test package --test flib_package
+```
+
+Linux links through Keel using installed glibc startup files discovered by `cc`.
+The bounded runtime still lacks Linux argument capture, process spawning,
+channels and recursive directory removal. x86-64 macOS and Rosetta execution
+are not supported targets. Write
 programs so rustc cannot fold them at compile time (pass values through
 function parameters), or its overflow lints reject them.
 

@@ -1,4 +1,6 @@
 //! Assembly remains opaque even when every register output is unused.
+#![cfg(target_arch = "aarch64")]
+
 #[test]
 fn tied_asm_effects_survive_optimization() {
     let source = r#"

@@ -13,15 +13,17 @@ use crate::sync::atomic::{AtomicUsize, Ordering};
 unsafe extern "C" {
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
     fn pthread_self() -> usize;
-    fn pthread_threadid_np(thread: usize, id: *mut u64) -> i32;
+
 }
 #[cfg(target_os = "macos")]
 unsafe extern "C" {
+    fn pthread_threadid_np(thread: usize, id: *mut u64) -> i32;
     fn __error() -> *mut i32;
 }
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
     fn __errno_location() -> *mut i32;
+    fn gettid() -> i32;
 }
 
 struct OutputLock {
@@ -276,11 +278,16 @@ pub fn _eprint(args: Arguments<'_>) {
 /// with message `msg`: the thread is always `main`.
 pub(crate) fn print_panic(msg: Arguments<'_>, location: &Location<'_>) {
     let _guard = lock_stderr();
-    let mut tid = 0u64;
-    // SAFETY: the live local receives this pthread's Darwin thread identifier.
-    unsafe {
-        pthread_threadid_np(0, &mut tid);
-    }
+    #[cfg(target_os = "macos")]
+    let tid = {
+        let mut tid = 0u64;
+        // SAFETY: the live local receives this pthread's Darwin thread identifier.
+        unsafe { pthread_threadid_np(0, &mut tid); }
+        tid
+    };
+    #[cfg(target_os = "linux")]
+    // SAFETY: gettid takes no arguments and returns the calling Linux thread ID.
+    let tid = unsafe { gettid() as u64 };
     let _ = fmt::write(
         &mut Stderr,
         format_args!("\nthread 'main' ({tid}) panicked at {location}:\n{msg}\n"),

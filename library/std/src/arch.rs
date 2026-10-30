@@ -1,5 +1,6 @@
 //! Architecture intrinsics and bounded runtime feature detection.
 
+#[cfg(target_arch = "aarch64")]
 pub use core::arch::*;
 pub use crate::__is_aarch64_feature_detected as is_aarch64_feature_detected;
 

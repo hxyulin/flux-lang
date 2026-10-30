@@ -119,7 +119,10 @@ fn success(output: &Output) {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn offline_build_run_and_always_rebuild() {
     let fixture = Fixture::new();
     success(&fixture.run("build", &[]));
@@ -342,7 +345,10 @@ fn malformed_manifest_fields_fail_before_compilation() {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn selecting_an_inferred_binary_and_existing_file_commands() {
     let fixture = Fixture::new();
     fixture.write("src/bin/second.rs", "fn main() { println!(\"second\"); }");
@@ -392,7 +398,10 @@ fn cargo_home_and_ancestor_configuration_are_checked() {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn source_dependencies_preserve_crate_identity_and_rebuild() {
     let fixture = Fixture::new();
     fixture.write("leaf/Cargo.toml", "[package]\nname='leaf-package'\nversion='0.1.0'\nedition='2024'\n[lib]\nname='actual_leaf'\npath='code/root.rs'\n");
@@ -628,6 +637,7 @@ fn no_std_path_library_can_opt_in_to_alloc_or_std() {
     assert_eq!(output.stdout, b"library 3\napp [3, 5, 7]\n");
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn copy_source_package(source: &std::path::Path, target: &std::path::Path) {
     std::fs::create_dir_all(target).unwrap();
     for entry in std::fs::read_dir(source).unwrap() {

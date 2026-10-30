@@ -282,3 +282,18 @@ fn user_library_keeps_unused_exports_in_its_live_text_section() {
         );
     }
 }
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn linux_native_link_preserves_output_on_failure() {
+    let directory = std::env::temp_dir().join(format!("flux-linux-link-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let output = directory.join("program");
+    std::fs::write(&output, b"previous executable").unwrap();
+    let error =
+        flux_codegen::link_executable(b"invalid ELF", Target::X86_64LinuxGnu, &output).unwrap_err();
+    assert_eq!(error.stage(), flux_codegen::Stage::Link);
+    assert_eq!(std::fs::read(&output).unwrap(), b"previous executable");
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
+    std::fs::remove_dir_all(directory).unwrap();
+}

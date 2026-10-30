@@ -1,7 +1,8 @@
 //! Code generation through keel, entirely in-process: MIR to keel IR
 //! ([`lower_module`]), keel IR to a native object ([`compile_object`]),
 //! and the object to an executable with keel's own linker
-//! ([`link_executable`]). No C compiler or system linker is involved.
+//! ([`link_executable`]). Linux uses the C driver to locate installed runtime
+//! objects and libraries; linking stays in-process.
 //!
 //! Each MIR local becomes a keel variable and keel's `FunctionBuilder`
 //! constructs SSA form, so MIR's many temporaries cost nothing. `bool` is
@@ -14,6 +15,7 @@
 
 mod error;
 pub use error::{Error, Stage};
+mod linux;
 mod lower;
 
 use std::path::{Path, PathBuf};
@@ -144,12 +146,12 @@ pub struct ObjectInput<'a> {
     pub bytes: &'a [u8],
 }
 
-/// Links native objects and requested system libraries into a signed executable.
+/// Links native objects and requested system libraries into a native executable.
 ///
 /// The caller supplies the executable object and each dependency object exactly
 /// once. Inputs are object bytes, not `.flib` archives; artifact resolution and
 /// dependency deduplication happen before this call. Returns linker warnings.
-/// Only arm64 macOS executable linking is currently supported.
+/// Supports native arm64 macOS and x86-64 Linux executable linking.
 ///
 /// # Errors
 ///
@@ -198,10 +200,7 @@ pub fn link_objects(
                 .map_err(|message| Error::message(Stage::Write, message))?;
             Ok(executable.warnings)
         }
-        Target::X86_64LinuxGnu => Err(Error::message(
-            Stage::Link,
-            "linking for x86-64 Linux is not supported yet",
-        )),
+        Target::X86_64LinuxGnu => linux::link(objects, output, libraries),
         Target::Aarch64LinuxGnu => Err(Error::message(
             Stage::Link,
             "linking for AArch64 Linux is not supported yet",

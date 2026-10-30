@@ -332,9 +332,19 @@ pub fn graph_hashes(items: &ItemTree) -> Result<Vec<(flux_hir::CrateId, [u8; 32]
 pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let path = executable.with_file_name(NAME);
-    if !path
-        .components()
-        .any(|part| part.as_os_str() == "target" || part.as_os_str() == "out")
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // Linux current_exe resolves symlinks. A local target directory may itself
+    // point to a build cache, so compare its canonical path as well.
+    let local_output = ["target", "out"].iter().any(|name| {
+        repository
+            .join(name)
+            .canonicalize()
+            .is_ok_and(|root| path.starts_with(root))
+    });
+    if !local_output
+        && !path
+            .components()
+            .any(|part| part.as_os_str() == "target" || part.as_os_str() == "out")
     {
         return Err("build-builtins requires an executable under target/ or out/".into());
     }

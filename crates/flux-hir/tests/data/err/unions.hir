@@ -1,4 +1,4 @@
-union Bits<T> where T: Copy { byte: T, word: u64, neon: [u64; 2] }
+union Bits<T> where T: Copy { byte: T, word: u64, enabled: [u64; 2] }
 
 impl<T> $crate0::marker::Copy for Bits<T> where T: Copy, T: $crate0::marker::Copy;
 
@@ -7,7 +7,7 @@ impl<T> $crate0::clone::Clone for Bits<T> where T: Copy, T: $crate0::clone::Clon
 fn main() -> () {}
 
 fn <Bits<T> as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
-    Bits { byte: Clone::clone((&self@0.byte)), word: Clone::clone((&self@0.word)), neon: Clone::clone((&self@0.neon)) }
+    Bits { byte: Clone::clone((&self@0.byte)), word: Clone::clone((&self@0.word)), enabled: Clone::clone((&self@0.enabled)) }
 }
 
-error 0..289: generic unions are not supported yet
+error 0..231: generic unions are not supported yet

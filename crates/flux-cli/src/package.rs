@@ -67,8 +67,11 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     let (plan, compiled) = {
         let mut timings = build::Timings::new(options.timings, "package compile scoped elapsed");
         let plan = plan(options, &mut timings)?;
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err("package builds support only arm64 macOS hosts".into());
+        if !cfg!(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        )) {
+            return Err("package builds support only arm64 macOS and x86-64 Linux hosts".into());
         }
         std::fs::create_dir_all(plan.output.parent().unwrap())
             .map_err(|e| format!("cannot create output directory: {e}"))?;

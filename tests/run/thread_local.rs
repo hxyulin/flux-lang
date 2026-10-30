@@ -18,9 +18,13 @@ impl Drop for Guard {
         DROPPED.fetch_add(1, Ordering::SeqCst);
     }
 }
+#[cfg(target_os = "macos")]
+type NativeThread = *mut u8;
+#[cfg(target_os = "linux")]
+type NativeThread = usize;
 unsafe extern "C" {
-    fn pthread_create(thread: *mut *mut u8, attr: *const u8, callback: extern "C" fn(*mut u8) -> *mut u8, arg: *mut u8) -> i32;
-    fn pthread_join(thread: *mut u8, result: *mut *mut u8) -> i32;
+    fn pthread_create(thread: *mut NativeThread, attr: *const u8, callback: extern "C" fn(*mut u8) -> *mut u8, arg: *mut u8) -> i32;
+    fn pthread_join(thread: NativeThread, result: *mut *mut u8) -> i32;
 }
 extern "C" fn worker(arg: *mut u8) -> *mut u8 {
     NUMBERS.with_borrow(|numbers| assert!(numbers.is_empty()));
@@ -44,7 +48,10 @@ fn local_declaration() {
 fn main() {
     NUMBERS.with_borrow_mut(|numbers| numbers.push(42));
     VALUE.with(|v| v.set(37));
+    #[cfg(target_os = "macos")]
     let mut threads = [std::ptr::null_mut(); 8];
+    #[cfg(target_os = "linux")]
+    let mut threads = [0usize; 8];
     for thread in &mut threads {
         // SAFETY: the callback borrows no caller data and accesses only atomic or TLS storage.
         assert_eq!(unsafe { pthread_create(thread, std::ptr::null(), worker, std::ptr::null_mut()) }, 0);

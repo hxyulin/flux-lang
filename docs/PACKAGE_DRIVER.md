@@ -1,6 +1,7 @@
 # Package builds with local source dependencies
 
-On arm64 macOS, Flux can build a restricted Cargo package:
+On arm64 macOS and x86-64 Linux, Flux can build a restricted Cargo package:
+Linux requires an installed glibc C toolchain for runtime-file discovery.
 
 ```sh
 flux package build --manifest-path /path/to/Cargo.toml [--bin NAME] [-O] [--timings]

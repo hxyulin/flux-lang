@@ -62,7 +62,10 @@ impl Case {
         assert_eq!(mir.diagnostics.is_empty(), accepts, "{:?}", mir.diagnostics);
         accepts.then_some((hir, typed, mir))
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     fn runtime(&self, source: &str, edition: Edition) -> Vec<u8> {
         let (hir, typed, mir) = self.check(source, edition, true).unwrap();
         let rustc = self.0.join("rustc");
@@ -104,7 +107,10 @@ fn success(output: Output) -> Output {
     );
     output
 }
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn compare_native(
     root: &Path,
     hir: &flux_hir::Hir,
@@ -119,7 +125,7 @@ fn compare_native(
         flux_codegen::OptimizationTier::None
     };
     let mut module = flux_codegen::lower_module(hir, typed, mir).unwrap();
-    let target = flux_codegen::Target::Aarch64AppleDarwin;
+    let target = flux_codegen::Target::host().unwrap();
     let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
     let path = root.join(format!("flux-{optimized}"));
     flux_codegen::link_executable(&object, target, &path).unwrap();
@@ -140,11 +146,17 @@ fn identifiers_and_contextual_dyn_match_rustc() {
     let names = r#"struct dyn(u32);fn async()->u32{1}fn await()->u32{2}fn try()->u32{3}fn main(){let value=dyn(4);println!("{}",async()+await()+try()+value.0);}"#;
     case.check(names, Edition::E2015, true);
     case.check(names, Edition::E2018, false);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     assert_eq!(case.runtime(names, Edition::E2015), b"10\n");
     let object = "trait Value{fn value(&self)->u32;}impl Value for u32{fn value(&self)->u32{*self}}fn read(value:&dyn Value)->u32{value.value()}fn main(){println!(\"{}\",read(&7));}";
     case.check(object, Edition::E2015, true);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     assert_eq!(case.runtime(object, Edition::E2015), b"7\n");
     let path = "mod dyn{pub struct Value;}fn take(_:dyn::Value){}fn main(){take(dyn::Value);}";
     case.check(path, Edition::E2015, true);
@@ -157,12 +169,18 @@ fn bare_traits_and_root_imports_are_edition_sensitive() {
     let bare = "trait Value{fn value(&self)->u32;}impl Value for u32{fn value(&self)->u32{*self}}fn id<'a>(value:&'a Value)->&'a Value{value}fn main(){println!(\"{}\",id(&9).value());}";
     for edition in [Edition::E2015, Edition::E2018] {
         case.check(bare, edition, true);
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         assert_eq!(case.runtime(bare, edition), b"9\n");
     }
     case.check(bare, Edition::E2021, false);
     let rooted = "mod source{pub fn value()->u32{11}}mod inside{mod source{pub fn value()->u32{22}}use source::value;pub fn run()->u32{value()}}fn main(){println!(\"{}\",inside::run());}";
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     {
         assert_eq!(case.runtime(rooted, Edition::E2015), b"11\n");
         assert_eq!(case.runtime(rooted, Edition::E2018), b"22\n");
@@ -193,7 +211,10 @@ fn shared_legacy_semantics_and_macro_imports() {
     let case = Case::new();
     let source = r#"macro_rules! route{($e:expr)=>{1};(_)=>{2};(const $e:expr)=>{3};}macro_rules! pats{($($p:pat)|+)=>{{let mut n=0;$(let _=stringify!($p);n+=1;)+n}};}fn main(){let values=[String::from("first"),String::from("second")];let mut iter=values.into_iter();let first:&String=iter.next().unwrap();println!("{} {} {} {} {}",first,values[1],route!(_),route!(const{3}),pats!(A|B));if false{panic!("literal {missing}");}}"#;
     case.check(source, Edition::E2015, true);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     assert_eq!(
         case.runtime(source, Edition::E2015),
         b"first second 2 3 2\n"
@@ -215,7 +236,10 @@ fn shared_legacy_semantics_and_macro_imports() {
         Edition::E2015,
         true,
     );
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     {
         let source = include_str!("fixtures/edition2021/if_let_drop_order.rs");
         assert_eq!(
@@ -359,7 +383,10 @@ fn external_crates_and_mixed_edition_macro_tokens() {
             "{source}: {:?}",
             mir.diagnostics
         );
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         if accepts {
             let output = success(Command::new(&reference).output().unwrap());
             assert_eq!(output.stdout, expected.as_bytes());

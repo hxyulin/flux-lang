@@ -62,7 +62,10 @@ impl Case {
         assert_eq!(mir.diagnostics.is_empty(), accepts, "{:?}", mir.diagnostics);
         accepts.then_some((hir, typed, mir))
     }
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     fn runtime(&self, source: &str, edition: Edition) -> Vec<u8> {
         let (hir, typed, mir) = self.check(source, edition, true).unwrap();
         let rustc = self.0.join("rustc");
@@ -104,7 +107,10 @@ fn success(output: Output) -> Output {
     );
     output
 }
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn compare_native(
     root: &Path,
     hir: &flux_hir::Hir,
@@ -119,7 +125,7 @@ fn compare_native(
         flux_codegen::OptimizationTier::None
     };
     let mut module = flux_codegen::lower_module(hir, typed, mir).unwrap();
-    let target = flux_codegen::Target::Aarch64AppleDarwin;
+    let target = flux_codegen::Target::host().unwrap();
     let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
     let path = root.join(format!("flux-{optimized}"));
     flux_codegen::link_executable(&object, target, &path).unwrap();
@@ -146,7 +152,10 @@ fn array_method_compatibility_and_owned_ufcs() {
     case.check(custom, Edition::E2024, false);
     let owned = r#"fn first<I:IntoIterator>(v:I)->I::Item{v.into_iter().next().unwrap()}fn main(){let s=first([String::from("owned")]);let mut i=IntoIterator::into_iter([String::from("ufcs")]);let x:String=i.next().unwrap();println!("{} {}",s,x);for s in [String::from("for")] {println!("{}",s);}}"#;
     case.check(owned, Edition::E2018, true);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     {
         assert_eq!(case.runtime(borrowed, Edition::E2018), b"a b\n");
         assert_eq!(case.runtime(owned, Edition::E2018), b"owned ufcs\nfor\n");
@@ -165,7 +174,10 @@ fn main(){println!("{} {} {} {}",patterns!(A|B),route!(_),route!(const {4}),gen(
 "#;
     case.check(legacy, Edition::E2018, true);
     case.check(legacy, Edition::E2024, false);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     assert_eq!(case.runtime(legacy, Edition::E2018), b"2 2 3 17\n");
 }
 
@@ -183,7 +195,10 @@ fn old_prelude_and_match_ergonomics() {
     let source = r#"use std::convert::TryInto;use std::iter::FromIterator;static mut VALUE:u32=3;fn main(){let [ref x]=&[5u32];let [mut y]=&[7u32];y+=1;let z:u8=9u16.try_into().unwrap();let v=Vec::from_iter([1u32,2]);println!("{} {} {} {} {}",x,y,z,v.len(),unsafe{*(&VALUE)});}"#;
     case.check(source, Edition::E2018, true);
     case.check(source, Edition::E2024, false);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     assert_eq!(case.runtime(source, Edition::E2018), b"5 8 9 2 3\n");
 }
 
@@ -193,7 +208,10 @@ fn closure_capture_and_temporary_drop_scopes_differ() {
     let capture = r#"fn main(){let pair=(String::from("first"),String::from("second"));let f=||pair.0.len();drop(pair.1);println!("{}",f());}"#;
     case.check(capture, Edition::E2018, false);
     case.check(capture, Edition::E2024, true);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     {
         for (index,source) in [
             include_str!("fixtures/edition2021/drop_order.rs"),
@@ -280,7 +298,10 @@ fn macro_token_editions_cross_crate_boundaries() {
         assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
         let mir = flux_mir::build_file(&hir, &typed);
         assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         {
             let output = success(Command::new(executable).output().unwrap());
             assert_eq!(output.stdout, expected.as_bytes());
@@ -292,7 +313,10 @@ fn macro_token_editions_cross_crate_boundaries() {
 }
 
 #[test]
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 fn legacy_temporaries_survive_enclosing_expression_and_early_exit() {
     let case = Case::new();
     for source in [
@@ -312,7 +336,10 @@ fn old_edition_rejects_2024_let_chains() {
     let source = "fn main(){if let Some(x)=Some(2) && x>0 {println!(\"{}\",x);}}";
     case.check(source, Edition::E2018, false);
     case.check(source, Edition::E2024, true);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     case.runtime(
         "fn take<T>(_:T){}fn main(){if false{take(loop{});}println!(\"done\");}",
         Edition::E2018,
@@ -336,7 +363,10 @@ fn main() {
 "#;
     for edition in [Edition::E2018, Edition::E2021, Edition::E2024] {
         case.check(source, edition, true);
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         assert_eq!(case.runtime(source, edition), b"12 true\n");
     }
 }
@@ -347,18 +377,27 @@ fn boxed_slice_into_iter_respects_edition_2024_boundary() {
     let borrowed = r#"fn main(){let values:Box<[String]>=vec![String::from("first"),String::from("second")].into_boxed_slice();let mut iter=values.into_iter();let first:&String=iter.next().unwrap();println!("{} {}",first,values[1]);}"#;
     for edition in [Edition::E2018, Edition::E2021] {
         case.check(borrowed, edition, true);
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         assert_eq!(case.runtime(borrowed, edition), b"first second\n");
     }
     case.check(borrowed, Edition::E2024, false);
     let owned = r#"fn main(){let values:Box<[String]>=vec![String::from("owned")].into_boxed_slice();let mut iter=IntoIterator::into_iter(values);let value:String=iter.next().unwrap();println!("{}",value);for value in vec![String::from("loop")].into_boxed_slice(){let value:String=value;println!("{}",value);}}"#;
     for edition in [Edition::E2018, Edition::E2021, Edition::E2024] {
         case.check(owned, edition, true);
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
         assert_eq!(case.runtime(owned, edition), b"owned\nloop\n");
     }
     let modern = r#"fn main(){let values:Box<[String]>=vec![String::from("modern")].into_boxed_slice();let value:String=values.into_iter().next().unwrap();println!("{}",value);}"#;
     case.check(modern, Edition::E2024, true);
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64")
+    ))]
     assert_eq!(case.runtime(modern, Edition::E2024), b"modern\n");
 }

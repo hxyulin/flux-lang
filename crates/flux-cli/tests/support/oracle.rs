@@ -16,7 +16,11 @@ pub fn compare_fixture(name: &str) {
     if !super::cases::selected(name) {
         return;
     }
-    if std::env::var_os("FLUX_TEST_NATIVE_SWEEP").is_some() {
+    // The exhaustive sweep currently runs only on arm64 macOS. Linux keeps
+    // its focused comparisons even when a complete test plan selects the sweep.
+    if cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        && std::env::var_os("FLUX_TEST_NATIVE_SWEEP").is_some()
+    {
         eprintln!("native comparison owned by tests/run: {name}");
         return;
     }

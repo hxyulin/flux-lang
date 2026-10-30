@@ -4,10 +4,10 @@
 union Bits<T: Copy> {
     byte: T,
     word: u64,
-    #[cfg(target_arch = "aarch64")]
-    neon: [u64; 2],
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
-    sse2: [u8; 16],
+    #[cfg(all())]
+    enabled: [u64; 2],
+    #[cfg(any())]
+    disabled: [u8; 16],
 }
 
 fn main() {}

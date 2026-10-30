@@ -520,8 +520,11 @@ crate configuration and source dependency inputs can be extended independently
 of that driver. Linking rustc-built Rust libraries is not a substitute for
 compiling the required sources.
 
-The backend emits arm64 macOS and x86-64 Linux objects; executable linking is
-currently implemented for arm64 macOS. A rustc-built backend can help diagnose
+The backend emits and links native arm64 macOS and x86-64 Linux executables.
+Linux uses Keel's ELF linker with installed glibc startup objects and shared
+libraries located through `cc`. Linux package builds are supported; the Cargo
+source driver remains gated to arm64 macOS. Linux self-hosting still needs
+command-line argument capture, process spawning and channels. A rustc-built backend can help diagnose
 frontend milestones, but leaves part of the compiler built by rustc. The final
 source closure includes Keel and its required build outputs.
 

@@ -1,4 +1,5 @@
 //! Unchanged equivalent 1.0.3 in its original edition 2015, with a modern consumer.
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod support;
 
 use std::path::Path;

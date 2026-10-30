@@ -35,6 +35,7 @@ fn function_address_casts_match_rustc() {
             "unsafe fn f(){}fn main(){let _=f as usize;}",
             true,
         ),
+        #[cfg(target_arch = "aarch64")]
         (
             "feature",
             "#[target_feature(enable=\"neon\")]fn f(){}fn main(){let _=f as usize;}",
@@ -73,6 +74,7 @@ fn function_address_casts_match_rustc() {
             "fn main(){let _=core::mem::transmute::<u32,u32> as usize;}",
             false,
         ),
+        #[cfg(target_arch = "aarch64")]
         (
             "no_safe_call",
             "#[target_feature(enable=\"sha2\")]fn f(){}fn main(){let _=f as usize;f();}",

@@ -1,4 +1,5 @@
 //! Eight-byte NEON and bit reinterpretation match the native Rust implementation.
+#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[path = "../../../tests/support/cases.rs"]
 #[allow(dead_code, reason = "oracle uses case selection only")]
 mod case_filter;

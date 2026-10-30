@@ -6,7 +6,10 @@ use std::process::Command;
 mod scratch;
 use scratch::Scratch;
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 #[test]
 fn package_reuses_fresh_libraries_and_rebuilds_transitive_includes() {
     use std::os::unix::fs::MetadataExt;
