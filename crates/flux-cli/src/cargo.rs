@@ -59,6 +59,8 @@ struct Package {
     version: String,
     manifest_path: PathBuf,
     targets: Vec<Target>,
+    dependencies: Vec<Dependency>,
+    features: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     description: Option<String>,
     #[serde(default)]
@@ -94,6 +96,15 @@ struct Edge {
 #[derive(Deserialize)]
 struct DepKind {
     kind: Option<String>,
+    target: Option<String>,
+}
+#[derive(Deserialize)]
+struct Dependency {
+    name: String,
+    rename: Option<String>,
+    optional: bool,
+    kind: Option<String>,
+    target: Option<String>,
 }
 #[derive(Default, Deserialize, Serialize, PartialEq, Eq)]
 struct Script {
@@ -487,6 +498,15 @@ fn visit(
         .iter()
         .find(|n| n.id == id)
         .ok_or("missing resolved package")?;
+    let features = artifacts
+        .get(&(id.to_owned(), target.src_path.clone()))
+        .ok_or_else(|| format!("Cargo did not check target {} for {id}", target.name))?
+        .clone();
+    if features.iter().collect::<BTreeSet<_>>() != node.features.iter().collect::<BTreeSet<_>>() {
+        return Err(format!(
+            "resolved metadata and target features differ for {id}; unit-level graph support is required"
+        ));
+    }
     let mut dependencies = Vec::new();
     let mut proc_macros = Vec::new();
     for edge in &node.deps {
@@ -512,6 +532,38 @@ fn visit(
                     dependency.name
                 )
             })?;
+        let declarations = package
+            .dependencies
+            .iter()
+            .filter(|decl| {
+                decl.name == dependency.name
+                    && decl
+                        .rename
+                        .as_deref()
+                        .unwrap_or(&library.name)
+                        .replace('-', "_")
+                        == edge.name
+                    && edge.dep_kinds.iter().any(|kind| {
+                        kind.kind.is_none() && decl.kind.is_none() && kind.target == decl.target
+                    })
+            })
+            .collect::<Vec<_>>();
+        if declarations.is_empty() {
+            return Err(format!(
+                "missing dependency declaration for {} in {id}",
+                edge.name
+            ));
+        }
+        if !declarations.iter().any(|decl| {
+            !decl.optional
+                || optional_dependency_enabled(
+                    package,
+                    &features,
+                    decl.rename.as_deref().unwrap_or(&decl.name),
+                )
+        }) {
+            continue;
+        }
         if library.kind.iter().any(|k| k == "proc-macro") {
             proc_macros.push((edge.name.clone(), edge.pkg.clone()));
             continue;
@@ -531,15 +583,6 @@ fn visit(
         active.remove(id);
         let index = visit(id, library, metadata, artifacts, plan, visited, active)?;
         dependencies.push((library.name.clone(), index));
-    }
-    let features = artifacts
-        .get(&(id.to_owned(), target.src_path.clone()))
-        .ok_or_else(|| format!("Cargo did not check target {} for {id}", target.name))?
-        .clone();
-    if features.iter().collect::<BTreeSet<_>>() != node.features.iter().collect::<BTreeSet<_>>() {
-        return Err(format!(
-            "resolved metadata and target features differ for {id}; unit-level graph support is required"
-        ));
     }
     let mut environment = BTreeMap::from([
         (
@@ -618,6 +661,18 @@ fn visit(
     visited.insert(id.into(), index);
     active.remove(id);
     Ok(index)
+}
+fn optional_dependency_enabled(package: &Package, features: &[String], name: &str) -> bool {
+    // Metadata can retain weak `dep?/feature` edges that Cargo did not build.
+    // Cargo expands implicit optional features to `dep:name` in this table.
+    features.iter().any(|feature| {
+        package.features.get(feature).is_some_and(|values| {
+            values.iter().any(|value| {
+                value.strip_prefix("dep:") == Some(name)
+                    || value.split_once('/').is_some_and(|(dep, _)| dep == name)
+            })
+        })
+    })
 }
 fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
     match value {

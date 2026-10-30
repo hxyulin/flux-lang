@@ -36,6 +36,13 @@ build-script cfgs, rustc-env entries, and separate OUT_DIR values. Rustc target
 artifacts are never linked into the Flux executable. Cargo check is a preparation
 step, not evidence that Flux can compile that graph.
 
+Metadata can retain optional dependency edges mentioned by weak feature
+forwarding (`dependency?/feature`) even when Cargo does not build them. The
+driver follows an optional edge only when the checked target's enabled features
+activate that dependency. A proc macro used by a build script does not activate
+an optional target dependency on that macro. Missing required target artifacts
+and metadata/target feature differences still fail preparation.
+
 Preparation writes `target/flux/cargo-plan.json`, or `--plan <file>`. Version 2
 records source identities and dependency aliases, environments, cfgs, host
 proc-macro artifact paths, build-script linker directives, and blockers. The

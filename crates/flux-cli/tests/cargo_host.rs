@@ -23,13 +23,13 @@ fn isolated_build_inputs_and_host_macros() {
         "Cargo.toml",
         r#"
 [workspace]
-members=["app","left","right","macros"]
+members=["app","left","right","macros","optional"]
 resolver="3"
 "#,
     );
     for (name, value) in [("left", 17), ("right", 41), ("app", 7)] {
         let deps = if name == "app" {
-            "[[bin]]\nname=\"app-tool\"\npath=\"src/main.rs\"\n[dependencies]\na={package=\"left\",path=\"../left\"}\nb={package=\"right\",path=\"../right\"}\nmacros={path=\"../macros\",optional=true}\n[build-dependencies]\nmacros={path=\"../macros\"}\n[features]\nmacros=[\"dep:macros\"]\n"
+            "[[bin]]\nname=\"app-tool\"\npath=\"src/main.rs\"\n[dependencies]\na={package=\"left\",path=\"../left\"}\nb={package=\"right\",path=\"../right\"}\nmacros={path=\"../macros\",optional=true}\nmaybe-lib={package=\"optional\",path=\"../optional\",optional=true}\n[build-dependencies]\nmacros={path=\"../macros\"}\n[features]\nmacros=[\"dep:macros\"]\ndefault=[\"alloc\"]\nalloc=[\"maybe-lib?/alloc\"]\noptional=[\"nested\"]\nnested=[\"dep:maybe-lib\"]\nstrong=[\"maybe-lib/alloc\"]\n"
         } else {
             ""
         };
@@ -72,6 +72,16 @@ pub fn value()->usize{{assert_eq!(nested::NAME,"{name}"); assert_eq!(env!("CARGO
             ),
         );
     }
+    write(
+        &root,
+        "optional/Cargo.toml",
+        "[package]\nname=\"optional\"\nversion=\"0.1.0\"\nedition=\"2024\"\n[lib]\nname=\"different_lib_name\"\n[features]\nalloc=[]\n",
+    );
+    write(
+        &root,
+        "optional/src/lib.rs",
+        "pub fn value()->usize { 99 }\n",
+    );
     let script = root.join("app/build.rs");
     let source = std::fs::read_to_string(&script).unwrap().replace(
         "fn main() {",
@@ -113,6 +123,7 @@ fn main(){
     assert_eq!(env!("CARGO_PKG_VERSION_PRE"),"rc.2");
     assert_eq!(a::value()+b::value()+app::value()+GENERATED,72);
     #[cfg(feature="macros")] assert_eq!(Derived::answer(),42);
+    #[cfg(any(feature="optional", feature="strong"))] assert_eq!(maybe_lib::value(),99);
     println!("cargo host inputs 72");
 }
 "#,
@@ -139,6 +150,16 @@ fn main(){
         }
         let output = run(&mut command, &root, &format!("build-{optimized}"));
         support::oracle::success(&output, "Flux Cargo source build");
+        let prepared: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
+        let sources = prepared["sources"].as_array().unwrap();
+        assert!(sources.iter().all(|s| s["name"] != "different_lib_name"));
+        assert!(
+            sources
+                .iter()
+                .all(|s| s["proc_macros"].as_array().unwrap().is_empty()),
+            "a build dependency must not enable an optional target proc macro"
+        );
         let actual = run(
             &mut Command::new(root.join("target/flux/app-tool")),
             &root,
@@ -146,6 +167,45 @@ fn main(){
         );
         support::oracle::success(&actual, "Flux native");
         assert_eq!(actual.stdout, b"cargo host inputs 72\n");
+    }
+    for feature in ["optional", "strong"] {
+        let output = run(
+            Command::new(env!("CARGO_BIN_EXE_flux"))
+                .args(["cargo", "build", "--offline", "--manifest-path"])
+                .arg(&manifest)
+                .args(["-p", "app", "--features", feature, "--plan"])
+                .arg(&plan),
+            &root,
+            &format!("build-{feature}"),
+        );
+        support::oracle::success(&output, "enabled optional dependency");
+        let prepared: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&plan).unwrap()).unwrap();
+        assert!(prepared["sources"].as_array().unwrap().iter().any(|s| {
+            s["name"] == "different_lib_name"
+                && s["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f == "alloc")
+        }));
+        let actual = run(
+            &mut Command::new(root.join("target/flux/app-tool")),
+            &root,
+            &format!("run-{feature}"),
+        );
+        support::oracle::success(&actual, "optional dependency execution");
+        assert_eq!(actual.stdout, b"cargo host inputs 72\n");
+        let reference = run(
+            Command::new("cargo")
+                .args(["run", "--offline", "--locked", "--quiet", "--manifest-path"])
+                .arg(&manifest)
+                .args(["-p", "app", "--features", feature]),
+            &root,
+            &format!("rustc-{feature}"),
+        );
+        support::oracle::success(&reference, "rustc optional dependency reference");
+        assert_eq!(actual.stdout, reference.stdout);
     }
     let output = run(
         Command::new(env!("CARGO_BIN_EXE_flux"))

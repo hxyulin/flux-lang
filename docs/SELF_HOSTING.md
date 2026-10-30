@@ -6,18 +6,20 @@ backend override is required. Both compiler optimization modes pass CLI checks
 and compile/run smoke comparisons against rustc. Both stage-1 compilers also
 compile the smoke program with `-O`, with matching output and exit status.
 
-The latest guarded proof is `out/flux-compiler-readiness/18888`. Syntax, HIR,
+The latest guarded proof is `out/flux-compiler-readiness/81431`. Syntax, HIR,
 type, MIR and code-generation diagnostic reports are empty, and both final
 source-integrity reports are clean. The complete regression suite passes all
 469 targets. The historical locally patched proof below records the older
 `f37f0bd` snapshot.
 
-A complete stage-2 rebuild was attempted through the optimized stage-1 compiler's
-Cargo source driver. Preparation stops at an inactive optional dependency,
-`embedded-io 0.4.0`, before target compilation. Cargo metadata lists the edge,
-but Cargo check does not compile it for the selected features. Stage 2 is not
-established. Cargo and rustc still supply host build scripts and procedural macros.
-The restoration goal remains active while this source-driver boundary is resolved.
+A complete stage-2 rebuild was retried through the updated optimized stage-1
+compiler's Cargo source driver. Preparation succeeds with 72 source crates and
+5 host proc macros. Its plan exactly matches the rustc-built driver's plan and
+excludes Postcard's inactive optional `embedded-io` dependencies. The rebuild
+then reaches its 30-minute limit without compiler diagnostics or a stage-2
+executable. All inventoried inputs remain unchanged. Stage 2 is not established;
+compilation time and memory use need investigation. Cargo and rustc still supply
+host build scripts and procedural macros.
 
 ## Executable source graphs
 
@@ -730,6 +732,48 @@ for the complete `flux-cli` package with the locked offline graph. It exits 2
 during preparation with `Cargo did not check target embedded_io` for
 `embedded-io 0.4.0`. All 4,258 inventoried inputs remain unchanged before and
 after the attempt. Postcard enables only `alloc`; its optional embedded-io edges
-are still present in metadata. The Cargo source driver currently traverses every
-normal metadata edge and requires an artifact for it. Selecting the active
-optional dependencies is the next blocker; no stage-2 target artifact was built.
+are still present in metadata. The Cargo source driver then traversed every
+normal metadata edge and required an artifact for it. No stage-2 target artifact
+was built by that attempt.
+
+The subsequent Cargo driver fix selects optional edges from the checked
+target's enabled features and the package feature definitions. `dep:name` and
+`name/feature` activate the dependency; `name?/feature` does not. A two-crate
+reproducer confirms that metadata retains the weak edge while Cargo check emits
+no artifact for it. The native `cargo_host` regression covers weak forwarding,
+nested and explicit activation, renamed libraries, and an optional target proc
+macro also used by a build script. The updated driver prepares the repository
+successfully with 72 source crates and 5 host proc macros; the plan is saved as
+`out/optional-dependency-investigation/flux-plan.json`. This is preparation
+evidence only. The stage-1 binaries from that audit predate this driver fix;
+the fresh stage-1 build and stage-2 retry are recorded below.
+
+## Optional-dependency fix verification
+
+The fresh guarded audit in `out/flux-compiler-readiness/81431` builds stage 1
+with optimization disabled and enabled in 256.55 seconds. Both executables pass
+CLI and native smoke comparisons. All syntax, HIR, type, MIR and code-generation
+diagnostic reports contain zero diagnostics. Both source-integrity reports are
+empty.
+
+Both stage-1 compilers also build and run the `cargo_host` dependency fixture
+with optional dependencies disabled, enabled through a nested feature, enabled
+through strong feature forwarding, and with an optional target proc macro
+also used by a build script. All eight cases pass and produce the expected
+native output. The results are saved in
+`out/bootstrap-stage2-optional/stage1-cargo-fixture-results.json` and
+`stage1-unoptimized-cargo-fixture-results.json`.
+
+The full stage-2 retry is recorded in `out/bootstrap-stage2-optional/`.
+`plan-comparison.json` confirms that the self-built and rustc-built drivers
+produce identical preparation plans. `status.json` records the 1,800-second
+timeout, no preparation blockers and no stage-2 executable. No target compiler
+diagnostics were emitted before timeout. All 4,258 inventoried inputs remain
+unchanged. A process observation at 29 minutes records approximately 12 GiB of
+resident memory. This attempt verifies the optional-dependency fix through the
+self-built driver, but does not establish stage-2 self-hosting.
+
+The unchanged production fix also passed the complete 469-target regression
+suite in `out/test-runs/1793350466552616000-33436/results.json`, workspace clippy
+with warnings denied, formatting, 43 runner unit tests and workspace/example
+source checks before this guarded retry.
