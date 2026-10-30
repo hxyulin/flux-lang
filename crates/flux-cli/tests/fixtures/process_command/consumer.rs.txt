@@ -4,6 +4,14 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::process::ExitStatusExt;
 use std::io::{Read,Write};
 use std::process::{Command,Stdio};
+#[cfg(target_os="linux")]
+fn current_signal_mask() -> [u64;16] {
+    unsafe extern "C" { fn pthread_sigmask(how:i32,set:*const u64,old:*mut u64)->i32; }
+    let mut mask=[0u64;16];
+    // SAFETY: a null set queries only; glibc writes within the aligned sigset_t.
+    assert_eq!(unsafe{pthread_sigmask(0,std::ptr::null(),mask.as_mut_ptr())},0);
+    mask
+}
 fn main(){
     let mut ordered=std::collections::BTreeMap::new();
     for bytes in [b"z".as_slice(),b"a",b"\xff",b"b"]{ordered.insert(OsString::from_vec(bytes.to_vec()),bytes.len());}
@@ -25,7 +33,9 @@ fn main(){
     let status=Command::new(&child).arg("exit").status().unwrap();assert_eq!(status.code(),Some(7));assert_eq!(status.signal(),None);println!("status {status} {:?}",status);
     let mut process=Command::new(&child).arg("sleep").spawn().unwrap();assert!(process.id()>0);assert!(process.try_wait().unwrap().is_none());process.kill().unwrap();let status=process.wait().unwrap();assert_eq!(status.signal(),Some(9));assert!(status.code().is_none());assert_eq!(process.wait().unwrap(),status);assert!(process.kill().is_ok());println!("killed {status}");
     let mut process=Command::new(&child).arg("echo").stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();let status=process.wait().unwrap();assert!(status.success());
-    let mut process=Command::new(&child).arg("exit").stdin(Stdio::piped()).spawn().unwrap();let mut input=process.stdin.take().unwrap();let _=process.wait().unwrap();assert_eq!(input.write(b"broken").unwrap_err().kind(),std::io::ErrorKind::BrokenPipe);
+    let mut process=Command::new(&child).arg("exit").stdin(Stdio::piped()).spawn().unwrap();let mut input=process.stdin.take().unwrap();let _=process.wait().unwrap();#[cfg(target_os="linux")] let mask_before=current_signal_mask();
+    assert_eq!(input.write(b"broken").unwrap_err().kind(),std::io::ErrorKind::BrokenPipe);
+    #[cfg(target_os="linux")] assert_eq!(current_signal_mask(),mask_before);
     let status=Command::new(&child).arg("sigpipe").stdout(input).status().unwrap();assert_eq!(status.signal(),Some(13));
     let out=Command::new(&child).args(["report","array"]).output().unwrap();assert!(out.status.success());
     let arguments=vec!["report".to_owned(),"vector".to_owned()];let out=Command::new(&child).args(&arguments).output().unwrap();assert!(out.status.success());
@@ -42,8 +52,12 @@ fn main(){
     let file=std::fs::File::open("/dev/null").unwrap();assert_eq!(file.as_raw_fd(),before);
     for raw in [0,7<<8,9,9|128,0x137f,0x117f,128,0x100137f,-1] {let status=std::process::ExitStatus::from_raw(raw);println!("raw {raw} {:?} {:?} {} {:?} {}",status.code(),status.signal(),status.core_dumped(),status.stopped_signal(),status.continued());assert_eq!(status.into_raw(),raw);}
     assert_eq!(Command::new(root.join("denied/child")).spawn().unwrap_err().raw_os_error(),Some(20));
+    #[cfg(target_os="linux")] assert!(std::process::ExitStatus::from_raw(0xffff).continued());
     assert_eq!(Command::new("").spawn().unwrap_err().raw_os_error(),Some(2));
     match Command::new(root.join("bad-format")).output(){Ok(output)=>println!("format {:?}",output.status.code()),Err(error)=>println!("format error {:?}",error.raw_os_error())}
-    let script=Command::new("./script").current_dir(&root).arg("hello").output().unwrap();assert!(script.status.success());assert_eq!(script.stdout,b"./script|hello\n");
+    #[cfg(target_os="macos")]
+    { let script=Command::new("./script").current_dir(&root).arg("hello").output().unwrap();assert!(script.status.success());assert_eq!(script.stdout,b"./script|hello\n"); }
+    #[cfg(target_os="linux")]
+    assert_eq!(Command::new("./script").current_dir(&root).arg("hello").output().unwrap_err().raw_os_error(),Some(8));
     println!("process complete");
 }

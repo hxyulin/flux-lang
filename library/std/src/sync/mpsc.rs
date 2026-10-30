@@ -1,5 +1,4 @@
-//! Native blocking multiple-producer, single-consumer channels on macOS.
-//! Other native targets require their own verified pthread object layouts.
+//! Native blocking channels on macOS and glibc x86-64 Linux.
 use crate::alloc_crate::{boxed::Box, collections::VecDeque, sync::Arc};
 use crate::time::{Duration, Instant};
 use core::cell::{Cell, UnsafeCell};
@@ -20,11 +19,16 @@ unsafe extern "C" {
     fn pthread_cond_init(cond: *mut u64, attr: *const u8) -> i32;
     fn pthread_cond_destroy(cond: *mut u64) -> i32;
     fn pthread_cond_wait(cond: *mut u64, mutex: *mut u64) -> i32;
+    #[cfg(target_os = "macos")]
     fn pthread_cond_timedwait_relative_np(
         cond: *mut u64,
         mutex: *mut u64,
         time: *const Timespec,
     ) -> i32;
+    #[cfg(target_os = "linux")]
+    fn pthread_cond_clockwait(cond: *mut u64, mutex: *mut u64, clock: i32, time: *const Timespec) -> i32;
+    #[cfg(target_os = "linux")]
+    fn clock_gettime(clock: i32, time: *mut Timespec) -> i32;
     fn pthread_cond_broadcast(cond: *mut u64) -> i32;
     fn abort() -> !;
 }
@@ -36,17 +40,21 @@ fn check(result: i32) {
     }
 }
 
-// Darwin's LP64 pthread objects have an eight-byte signature followed by
-// 56 mutex / 40 condition bytes, with eight-byte alignment (SDK pthread_types.h).
+// Darwin mutexes are 64 bytes; glibc x86-64 mutexes are 40. Both condition
+// variables are 48 bytes, aligned to eight (native pthread_types headers).
 // The box pins initialized objects throughout every native wait and lock.
+#[cfg(target_os = "macos")]
+const MUTEX_WORDS: usize = 8;
+#[cfg(target_os = "linux")]
+const MUTEX_WORDS: usize = 5;
 struct Native {
-    mutex: UnsafeCell<[u64; 8]>,
+    mutex: UnsafeCell<[u64; MUTEX_WORDS]>,
     condition: UnsafeCell<[u64; 6]>,
 }
 impl Native {
     fn new() -> Box<Self> {
         let native = Box::new(Self {
-            mutex: UnsafeCell::new([0; 8]),
+            mutex: UnsafeCell::new([0; MUTEX_WORDS]),
             condition: UnsafeCell::new([0; 6]),
         });
         // SAFETY: both pointers name aligned, exclusive, uninitialized native
@@ -134,18 +142,29 @@ impl<T> Guard<'_, T> {
         unsafe {
             if let Some(time) = timeout {
                 let secs = core::cmp::min(time.as_secs(), 86_400) as i64;
-                let time = Timespec {
+                let relative = Timespec {
                     secs,
                     nanos: time.subsec_nanos() as i64,
                 };
+                #[cfg(target_os = "macos")]
                 let result = pthread_cond_timedwait_relative_np(
                     native.condition.get() as *mut u64,
                     native.mutex.get() as *mut u64,
-                    &time,
+                    &relative,
                 );
-                if result != 60 {
-                    check(result);
-                } // Darwin ETIMEDOUT.
+                #[cfg(target_os = "linux")]
+                let result = {
+                    let mut now = Timespec { secs: 0, nanos: 0 };
+                    check(clock_gettime(1, &mut now)); // CLOCK_MONOTONIC.
+                    let nanos = now.nanos + relative.nanos;
+                    let deadline = Timespec { secs: now.secs + relative.secs + nanos / 1_000_000_000, nanos: nanos % 1_000_000_000 };
+                    pthread_cond_clockwait(native.condition.get() as *mut u64, native.mutex.get() as *mut u64, 1, &deadline)
+                };
+                #[cfg(target_os = "macos")]
+                let timed_out = 60;
+                #[cfg(target_os = "linux")]
+                let timed_out = 110;
+                if result != timed_out { check(result); }
             } else {
                 check(pthread_cond_wait(
                     native.condition.get() as *mut u64,

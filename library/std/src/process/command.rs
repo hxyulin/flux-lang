@@ -1,4 +1,4 @@
-//! Native Darwin process creation with owned pipe endpoints.
+//! Native Unix process creation with owned pipe endpoints.
 use crate::alloc_crate::collections::BTreeMap;
 use crate::alloc_crate::vec::Vec;
 use crate::ffi::{CString, OsStr, OsString};
@@ -9,24 +9,71 @@ use core::ffi::{c_char, c_void};
 
 mod native {
     use super::{c_char, c_void};
+    #[cfg(target_os = "macos")]
+    pub type SpawnActions = *mut c_void;
+    #[cfg(target_os = "linux")]
+    pub type SpawnActions = [u64; 10];
+    #[cfg(target_os = "macos")]
+    pub type SpawnAttributes = *mut c_void;
+    #[cfg(target_os = "linux")]
+    pub type SpawnAttributes = [u64; 42];
+    #[cfg(target_os = "macos")]
+    pub type SignalSet = u32;
+    #[cfg(target_os = "linux")]
+    pub type SignalSet = [u64; 16];
+    #[cfg(target_os = "macos")]
+    type PollCount = u32;
+    #[cfg(target_os = "linux")]
+    type PollCount = usize;
+    #[cfg(target_os = "macos")]
+    pub const DUPLICATE_CLOEXEC: i32 = 67;
+    #[cfg(target_os = "linux")]
+    pub const DUPLICATE_CLOEXEC: i32 = 1030;
+    // glibc x86-64 ABI: actions 80/8, attributes 336/8, sigset_t 128/8.
+    // These opaque records are initialized and destroyed only by libc.
+    pub fn empty_actions() -> SpawnActions {
+        #[cfg(target_os = "macos")] { core::ptr::null_mut() }
+        #[cfg(target_os = "linux")] { [0; 10] }
+    }
+    pub fn empty_attributes() -> SpawnAttributes {
+        #[cfg(target_os = "macos")] { core::ptr::null_mut() }
+        #[cfg(target_os = "linux")] { [0; 42] }
+    }
     #[repr(C)]
     pub struct PollFd { pub fd: i32, pub events: i16, pub revents: i16 }
+    #[cfg(target_os = "linux")]
+    #[repr(C)]
+    pub struct Timespec { pub secs: i64, pub nanos: i64 }
     unsafe extern "C" {
+        #[cfg(target_os = "macos")]
         pub fn pipe(descriptors: *mut i32) -> i32;
+        #[cfg(target_os = "linux")]
+        pub fn pipe2(descriptors: *mut i32, flags: i32) -> i32;
         pub fn fcntl(descriptor: i32, command: i32, ...) -> i32;
-        pub fn poll(descriptors: *mut PollFd, count: u32, timeout: i32) -> i32;
+        pub fn poll(descriptors: *mut PollFd, count: PollCount, timeout: i32) -> i32;
         pub fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
         pub fn kill(pid: i32, signal: i32) -> i32;
-        pub fn posix_spawn(pid: *mut i32, path: *const c_char, actions: *const *mut c_void, attributes: *const *mut c_void, arguments: *const *mut c_char, environment: *const *mut c_char) -> i32;
-        pub fn posix_spawn_file_actions_init(actions: *mut *mut c_void) -> i32;
-        pub fn posix_spawn_file_actions_destroy(actions: *mut *mut c_void) -> i32;
-        pub fn posix_spawn_file_actions_adddup2(actions: *mut *mut c_void, source: i32, target: i32) -> i32;
-        pub fn posix_spawn_file_actions_addinherit_np(actions: *mut *mut c_void, descriptor: i32) -> i32;
-        pub fn posix_spawn_file_actions_addchdir_np(actions: *mut *mut c_void, path: *const c_char) -> i32;
-        pub fn posix_spawnattr_init(attributes: *mut *mut c_void) -> i32;
-        pub fn posix_spawnattr_destroy(attributes: *mut *mut c_void) -> i32;
-        pub fn posix_spawnattr_setflags(attributes: *mut *mut c_void, flags: i16) -> i32;
-        pub fn posix_spawnattr_setsigdefault(attributes: *mut *mut c_void, signals: *const u32) -> i32;
+        pub fn posix_spawn(pid: *mut i32, path: *const c_char, actions: *const SpawnActions, attributes: *const SpawnAttributes, arguments: *const *mut c_char, environment: *const *mut c_char) -> i32;
+        pub fn posix_spawn_file_actions_init(actions: *mut SpawnActions) -> i32;
+        pub fn posix_spawn_file_actions_destroy(actions: *mut SpawnActions) -> i32;
+        pub fn posix_spawn_file_actions_adddup2(actions: *mut SpawnActions, source: i32, target: i32) -> i32;
+        #[cfg(target_os = "macos")]
+        pub fn posix_spawn_file_actions_addinherit_np(actions: *mut SpawnActions, descriptor: i32) -> i32;
+        pub fn posix_spawn_file_actions_addchdir_np(actions: *mut SpawnActions, path: *const c_char) -> i32;
+        pub fn posix_spawnattr_init(attributes: *mut SpawnAttributes) -> i32;
+        pub fn posix_spawnattr_destroy(attributes: *mut SpawnAttributes) -> i32;
+        pub fn posix_spawnattr_setflags(attributes: *mut SpawnAttributes, flags: i16) -> i32;
+        pub fn posix_spawnattr_setsigdefault(attributes: *mut SpawnAttributes, signals: *const SignalSet) -> i32;
+        #[cfg(target_os = "linux")]
+        pub fn sigemptyset(set: *mut SignalSet) -> i32;
+        #[cfg(target_os = "linux")]
+        pub fn sigaddset(set: *mut SignalSet, signal: i32) -> i32;
+        #[cfg(target_os = "linux")]
+        pub fn pthread_sigmask(how: i32, set: *const SignalSet, old: *mut SignalSet) -> i32;
+        #[cfg(target_os = "linux")]
+        pub fn sigpending(set: *mut SignalSet) -> i32;
+        #[cfg(target_os = "linux")]
+        pub fn sigtimedwait(set: *const SignalSet, info: *mut c_void, time: *const Timespec) -> i32;
     }
 }
 fn error_code(code: i32) -> io::Result<()> { if code == 0 { Ok(()) } else { Err(Error::from_raw_os_error(code)) } }
@@ -39,7 +86,7 @@ fn c_string(value: &OsStr) -> io::Result<CString> {
 pub struct ExitStatus(i32);
 impl ExitStatus {
     pub fn success(&self) -> bool { self.0 == 0 }
-    pub fn code(&self) -> Option<i32> { if self.0 & 0x7f == 0 { Some((self.0 >> 8) & 0xff) } else { None } }
+    pub fn code(&self) -> Option<i32> { if self.0 & 0x7f == 0 { Some((self.0 >> 8) as u8 as i32) } else { None } }
 }
 impl core::fmt::Debug for ExitStatus {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { write!(f, "ExitStatus(unix_wait_status({}))", self.0) }
@@ -59,7 +106,10 @@ impl core::fmt::Display for ExitStatus {
     }
 }
 fn signal_name(signal: i32) -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
     let names = ["", "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE", "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGURG", "SIGSTOP", "SIGTSTP", "SIGCONT", "SIGCHLD", "SIGTTIN", "SIGTTOU", "SIGIO", "SIGXCPU", "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGINFO", "SIGUSR1", "SIGUSR2"];
+    #[cfg(target_os = "linux")]
+    let names = ["", "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGBUS", "SIGFPE", "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGSTKFLT", "SIGCHLD", "SIGCONT", "SIGSTOP", "SIGTSTP", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXCPU", "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGIO", "SIGPWR", "SIGSYS"];
     if signal > 0 { names.get(signal as usize).copied() } else { None }
 }
 mod sealed {
@@ -80,8 +130,18 @@ impl ExitStatusExt for ExitStatus {
     fn into_raw(self) -> i32 { self.0 }
     fn signal(&self) -> Option<i32> { let signal = self.0 & 0x7f; if signal != 0 && signal != 0x7f { Some(signal) } else { None } }
     fn core_dumped(&self) -> bool { self.signal().is_some() && self.0 & 0x80 != 0 }
-    fn stopped_signal(&self) -> Option<i32> { if self.0 & 0x7f == 0x7f && !self.continued() { Some(self.0 >> 8) } else { None } }
-    fn continued(&self) -> bool { self.0 & 0x7f == 0x7f && self.0 >> 8 == 0x13 }
+    fn stopped_signal(&self) -> Option<i32> {
+        #[cfg(target_os = "macos")]
+        { if self.0 & 0x7f == 0x7f && !self.continued() { Some(self.0 >> 8) } else { None } }
+        #[cfg(target_os = "linux")]
+        { if self.0 & 0xff == 0x7f { Some((self.0 >> 8) & 0xff) } else { None } }
+    }
+    fn continued(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        { self.0 & 0x7f == 0x7f && self.0 >> 8 == 0x13 }
+        #[cfg(target_os = "linux")]
+        { self.0 == 0xffff }
+    }
 }
 
 /// The collected output and termination status of a child.
@@ -112,21 +172,67 @@ pub struct ChildStderr { file: File }
 impl From<ChildStdin> for Stdio { fn from(pipe: ChildStdin) -> Self { Self::from(pipe.file) } }
 impl From<ChildStdout> for Stdio { fn from(pipe: ChildStdout) -> Self { Self::from(pipe.file) } }
 impl From<ChildStderr> for Stdio { fn from(pipe: ChildStderr) -> Self { Self::from(pipe.file) } }
+#[cfg(target_os = "linux")]
+fn sigpipe_set() -> io::Result<native::SignalSet> {
+    let mut signals = [0u64; 16];
+    // SAFETY: signals is aligned storage for glibc's 128-byte sigset_t.
+    unsafe {
+        if native::sigemptyset(&mut signals) < 0 || native::sigaddset(&mut signals, 13) < 0 {
+            return Err(Error::last_os_error());
+        }
+    }
+    Ok(signals)
+}
+
+#[cfg(target_os = "linux")]
+fn write_pipe(file: &mut File, bytes: &[u8]) -> io::Result<usize> {
+    let signals = sigpipe_set()?;
+    let mut previous = [0u64; 16];
+    // SAFETY: block SIGPIPE only on this thread and retain its original mask.
+    unsafe { error_code(native::pthread_sigmask(0, &signals, &mut previous))?; }
+    let result = (|| {
+        let mut pending = [0u64; 16];
+        // SAFETY: pending has the complete native sigset_t layout.
+        if unsafe { native::sigpending(&mut pending) } < 0 { return Err(Error::last_os_error()); }
+        let was_pending = pending[0] & (1 << 12) != 0;
+        let result = file.write(bytes);
+        if !was_pending && result.as_ref().is_err_and(|error| error.kind() == ErrorKind::BrokenPipe) {
+            let zero = native::Timespec { secs: 0, nanos: 0 };
+            loop {
+                // SAFETY: consume only a newly pending SIGPIPE while blocked.
+                // A zero timeout also handles inherited SIG_IGN (no pending signal).
+                let signal = unsafe { native::sigtimedwait(&signals, core::ptr::null_mut(), &zero) };
+                if signal >= 0 || Error::last_os_error().kind() != ErrorKind::Interrupted { break; }
+            }
+        }
+        result
+    })();
+    // SAFETY: restore this thread's exact pre-write mask on both success and error.
+    unsafe { error_code(native::pthread_sigmask(2, &previous, core::ptr::null_mut()))?; }
+    result
+}
+
 impl Write for ChildStdin {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let descriptor = self.file.raw_fd();
-        // SAFETY: Darwin's descriptor-local flags suppress SIGPIPE only for
-        // this exclusive write. Restore the flag before an endpoint can be
-        // transferred to another child's stdout, which must retain SIGPIPE.
-        let previous = unsafe { native::fcntl(descriptor, 74) };
-        if previous < 0 { return Err(Error::last_os_error()); }
-        // SAFETY: descriptor remains live and exclusively owned by this handle.
-        if unsafe { native::fcntl(descriptor, 73, 1i32) } < 0 { return Err(Error::last_os_error()); }
-        let result = self.file.write(bytes);
-        // SAFETY: this restores the exact original descriptor-local policy.
-        if unsafe { native::fcntl(descriptor, 73, previous) } < 0 && result.is_ok() { return Err(Error::last_os_error()); }
-        result
+        #[cfg(target_os = "macos")]
+        {
+            let descriptor = self.file.raw_fd();
+            // SAFETY: Darwin's descriptor-local flags suppress SIGPIPE only for
+            // this exclusive write. Restore the flag before an endpoint can be
+            // transferred to another child's stdout, which must retain SIGPIPE.
+            let previous = unsafe { native::fcntl(descriptor, 74) };
+            if previous < 0 { return Err(Error::last_os_error()); }
+            // SAFETY: descriptor remains live and exclusively owned by this handle.
+            if unsafe { native::fcntl(descriptor, 73, 1i32) } < 0 { return Err(Error::last_os_error()); }
+            let result = self.file.write(bytes);
+            // SAFETY: this restores the exact original descriptor-local policy.
+            if unsafe { native::fcntl(descriptor, 73, previous) } < 0 && result.is_ok() { return Err(Error::last_os_error()); }
+            result
+        }
+        #[cfg(target_os = "linux")]
+        { write_pipe(&mut self.file, bytes) }
     }
+
     fn flush(&mut self) -> io::Result<()> { self.file.flush() }
 }
 impl Read for ChildStdout { fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> { self.file.read(bytes) } }
@@ -277,6 +383,7 @@ impl Command {
             // SAFETY: all opaque state was initialized by libc, each pointer
             // list is NUL-terminated, and all strings/FD owners outlive spawn.
             let mut code = unsafe { native::posix_spawn(&mut pid, program.as_bytes_with_nul().as_ptr() as *const c_char, &actions.0, &attributes.0, argument_pointers.as_ptr(), environment_pointers.as_ptr()) };
+            #[cfg(target_os = "macos")]
             if code == 8 {
                 // execvp's ENOEXEC fallback runs a readable script through sh.
                 // Preserve all arguments after argv[0], including the trailing NUL.
@@ -301,7 +408,7 @@ impl Command {
 fn normalize_file(file: File) -> io::Result<File> {
     // SAFETY: F_DUPFD_CLOEXEC atomically creates a distinct owned descriptor
     // above the standard streams, with close-on-exec set from its creation.
-    let descriptor = unsafe { native::fcntl(file.raw_fd(), 67, 3i32) };
+    let descriptor = unsafe { native::fcntl(file.raw_fd(), native::DUPLICATE_CLOEXEC, 3i32) };
     if descriptor < 0 { Err(Error::last_os_error()) } else {
         // SAFETY: successful fcntl transferred a new unique descriptor to us.
         Ok(unsafe { File::from_raw_fd_unchecked(descriptor) })
@@ -310,7 +417,12 @@ fn normalize_file(file: File) -> io::Result<File> {
 fn pipe_pair() -> io::Result<(File, File)> {
     let mut descriptors = [-1i32; 2];
     // SAFETY: pipe writes two owned descriptors into the supplied storage.
-    if unsafe { native::pipe(descriptors.as_mut_ptr()) } != 0 { return Err(Error::last_os_error()); }
+    #[cfg(target_os = "macos")]
+    let result = unsafe { native::pipe(descriptors.as_mut_ptr()) };
+    #[cfg(target_os = "linux")]
+    // SAFETY: exactly two writable slots; O_CLOEXEC avoids inheritance races.
+    let result = unsafe { native::pipe2(descriptors.as_mut_ptr(), 0x80000) };
+    if result != 0 { return Err(Error::last_os_error()); }
     // SAFETY: pipe succeeded and returned two distinct owned descriptors.
     let read = unsafe { File::from_raw_fd_unchecked(descriptors[0]) };
     // SAFETY: the second descriptor is separately owned and has not been wrapped.
@@ -331,11 +443,11 @@ fn prepare_stream(stream: Option<&Stdio>, capture: bool, output: bool) -> io::Re
         }
     }
 }
-struct Actions(*mut c_void);
+struct Actions(native::SpawnActions);
 impl Actions {
     fn new() -> io::Result<Self> {
-        let mut value = core::ptr::null_mut();
-        // SAFETY: libc initializes an opaque file-action object in this slot.
+        let mut value = native::empty_actions();
+        // SAFETY: libc initializes an aligned native file-action object in this storage.
         unsafe { error_code(native::posix_spawn_file_actions_init(&mut value))?; }
         Ok(Self(value))
     }
@@ -345,7 +457,13 @@ impl Actions {
     }
     fn inherit(&mut self, descriptor: i32) -> io::Result<()> {
         // SAFETY: the caller checked that this inherited standard FD is open.
-        unsafe { error_code(native::posix_spawn_file_actions_addinherit_np(&mut self.0, descriptor)) }
+        unsafe {
+            #[cfg(target_os = "macos")]
+            { error_code(native::posix_spawn_file_actions_addinherit_np(&mut self.0, descriptor)) }
+            // POSIX dup2(fd, fd) in spawn actions also clears FD_CLOEXEC.
+            #[cfg(target_os = "linux")]
+            { error_code(native::posix_spawn_file_actions_adddup2(&mut self.0, descriptor, descriptor)) }
+        }
     }
     fn chdir(&mut self, directory: &CString) -> io::Result<()> {
         // SAFETY: the action object is initialized and directory retains its NUL.
@@ -358,20 +476,28 @@ impl Drop for Actions {
         unsafe { native::posix_spawn_file_actions_destroy(&mut self.0); }
     }
 }
-struct Attributes(*mut c_void);
+struct Attributes(native::SpawnAttributes);
 impl Attributes {
     fn new() -> io::Result<Self> {
-        let mut value = core::ptr::null_mut();
-        // SAFETY: libc initializes an opaque spawn-attribute object in this slot.
+        let mut value = native::empty_attributes();
+        // SAFETY: libc initializes an aligned native spawn-attribute object here.
         unsafe { error_code(native::posix_spawnattr_init(&mut value))?; }
         let mut result = Self(value);
-        // SAFETY: the opaque object is live. Darwin sigset_t is a u32 bitset;
-        // bit 12 resets SIGPIPE(13) in the child. CLOEXEC_DEFAULT closes all
-        // descriptors not explicitly retained by the file actions.
+        #[cfg(target_os = "macos")]
+        // SAFETY: the live attribute object receives Darwin's SIGPIPE bitset
+        // and CLOEXEC_DEFAULT policy, retaining only explicit file actions.
         unsafe {
             let signals = 1u32 << 12;
             error_code(native::posix_spawnattr_setsigdefault(&mut result.0, &signals))?;
             error_code(native::posix_spawnattr_setflags(&mut result.0, 0x4000 | 0x0004))?;
+        }
+        #[cfg(target_os = "linux")]
+        // SAFETY: libc receives its initialized sigset_t and attribute storage.
+        // Reset inherited SIGPIPE disposition; owned file descriptors use CLOEXEC.
+        unsafe {
+            let signals = sigpipe_set()?;
+            error_code(native::posix_spawnattr_setsigdefault(&mut result.0, &signals))?;
+            error_code(native::posix_spawnattr_setflags(&mut result.0, 0x0004))?;
         }
         Ok(result)
     }

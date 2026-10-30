@@ -4,6 +4,7 @@
   <a href="rust-toolchain.toml"><img alt="Rust stable" src="https://img.shields.io/badge/Rust-stable-dea584?logo=rust"></a>
   <a href="Cargo.toml"><img alt="Rust edition 2024" src="https://img.shields.io/badge/edition-2024-dea584"></a>
   <a href="docs/SELF_HOSTING.md"><img alt="Target arm64 macOS" src="https://img.shields.io/badge/target-arm64%20macOS-lightgrey?logo=apple"></a>
+  <a href="docs/SELF_HOSTING.md"><img alt="Target x86-64 Linux" src="https://img.shields.io/badge/target-x86--64%20Linux-lightgrey?logo=linux"></a>
   <a href="https://github.com/hxyulin/keel/commit/103c23de480d76e02267c5a8d5a9d3505bc73231"><img alt="Keel 103c23de" src="https://img.shields.io/badge/Keel-103c23de-6e56cf"></a>
   <a href="#size"><img alt="About 520k lines of compiler source" src="https://img.shields.io/badge/source-~520k%20lines-informational"></a>
   <a href="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml/badge.svg?branch=main"></a>
@@ -18,8 +19,8 @@
 </p>
 
 flux compiles Rust source to native executables through
-[Keel](https://github.com/hxyulin/keel), its own compiler backend, with no
-LLVM and no rustc in the build. It accepts only programs that are also valid
+[Keel](https://github.com/hxyulin/keel), its own compiler backend, without
+LLVM in its code-generation path. It accepts only programs that are also valid
 Rust, so `rustc` serves as the test oracle: every program flux compiles must
 produce the same output and exit status under both. flux exists to learn how
 Rust's toolchain works, to measure where its costs come from, and to
@@ -30,29 +31,32 @@ stress-test Keel with Rust-shaped code.
 | Language | Edition 2024, with bounded 2015, 2018 and 2021 modes; generics, traits, trait objects, closures, `impl Trait`, unions and `macro_rules!` |
 | Checking | Type inference, trait solving, a borrow checker, constant evaluation and rustc's overflow lints |
 | Libraries | Its own `core`, `alloc` and a bounded `std`, written in flux, including threads, atomics, `OnceLock` and collections |
-| Real crates | Unchanged sources of hashbrown, smallvec, typenum, bumpalo, memchr, crc32fast and more, matched against rustc |
+| Real crates | Unchanged sources of hashbrown, smallvec, typenum, bumpalo, memchr, crc32fast and more, matched against rustc on arm64 macOS |
 | Builds | One `.flib` artifact per crate, a prebuilt built-in library, local Cargo packages and procedural macros |
-| Backend | Keel objects for arm64 macOS and x86-64 Linux, linked into executables on arm64 macOS |
+| Backend | Native executables on arm64 macOS and x86-64 Linux, linked in-process with Keel |
 
-Not supported yet: `async`, unwinding (panics abort), and most of the
+Not supported yet: unwinding (panics abort), and most of the
 registry and feature resolution that Cargo does. The
 [language reference](docs/LANGUAGE.md) lists every restriction.
 
 ## Self-hosting
 
-flux has compiled itself. A stage-1 build loaded the complete compiler: the
-CLI library and binary across 70 package identities, Keel included. The
-resulting compiler matched rustc's build on its help and version output,
-then compiled and ran a smoke program at both optimization levels. That run
-used Keel `f37f0bd` with two vector-assembly fixes applied locally. Both
-fixes are in the pinned Keel `103c23de`.
+On arm64 macOS, flux has built both stage 1 and stage 2 from the complete
+compiler source graph, including pinned Keel `103c23de`, bbtree and Verus.
+Stage 1 is built by a rustc-built Flux; stage 2 is built by stage 1.
 
-The pinned Keel has since grown, adding the bbtree and Verus dependencies.
-That larger backend graph does not yet pass flux's front end, so stage 1 has
-not been repeated on the unmodified pin. A stage-2 rebuild, flux compiling
-itself with a flux-built compiler, is untested. Cargo and rustc still build
-host build scripts and procedural macros. Details and every audited source
-graph are in [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
+Stage 2 was built with and without `-O`. Both passed help/version and native
+compilation checks. Optimized stage 2 passed six compile/run comparisons
+across both output optimization modes, followed by 45 benchmark comparisons
+against rustc's output. The audited source inputs stayed unchanged.
+
+x86-64 Linux supports native executable and local package builds, including
+library artifact reuse. Process spawning, owned pipes and channels have native
+Linux comparisons. Linux self-hosting still needs x86 intrinsics and feature
+handling, argument capture and recursive directory removal. x86-64 macOS and Rosetta are not
+supported targets. Cargo and rustc still build host build scripts and procedural
+macros. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the audited graph,
+verification scope and remaining blockers.
 
 ## Size
 
@@ -67,7 +71,7 @@ Counted with `tokei` on 2026-10-30, Rust only, vendored code excluded.
 | flux tests | 134k |
 | Keel tests, suite and tools | 172k |
 
-`tests/run` holds 475 programs that both rustc and flux compile and run.
+`tests/run` holds 491 programs that both rustc and flux compile and run.
 
 ## Compile time
 
@@ -92,7 +96,9 @@ edits are several times slower than Cargo's.
 
 ## Quickstart
 
-flux builds with stable Rust. Linking executables needs arm64 macOS.
+flux builds with stable Rust. Native executable linking supports arm64 macOS
+and x86-64 Linux. Linux needs an installed glibc C toolchain: `cc` locates the
+startup objects and shared libraries, and Keel performs the link in-process.
 
 <details>
 <summary><strong>Build flux and compile a program</strong></summary>

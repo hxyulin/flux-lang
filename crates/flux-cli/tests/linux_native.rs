@@ -12,6 +12,7 @@ fn x86_64_programs_match_rustc() {
         "monotonic_time",
         "backend_system_time",
         "unix_file_io",
+        "process_pipes",
         "scoped_threads",
         "thread_local",
     ] {

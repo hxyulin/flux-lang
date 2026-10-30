@@ -247,11 +247,12 @@ has focused executable and package coverage:
 
 ```sh
 cargo test -p flux-cli --test linux_native --test package --test flib_package
+cargo test -p flux-cli --test process_command --test mpsc_channels
 ```
 
 Linux links through Keel using installed glibc startup files discovered by `cc`.
-The bounded runtime still lacks Linux argument capture, process spawning,
-channels and recursive directory removal. x86-64 macOS and Rosetta execution
+Process spawning, owned pipes and channels have native Linux comparison tests.
+The bounded runtime still lacks Linux argument capture and recursive directory removal. x86-64 macOS and Rosetta execution
 are not supported targets. Write
 programs so rustc cannot fold them at compile time (pass values through
 function parameters), or its overflow lints reject them.

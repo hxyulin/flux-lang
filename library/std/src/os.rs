@@ -1,6 +1,6 @@
 //! Unix descriptor ownership and filesystem permission extensions.
 pub mod unix {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     pub mod process { pub use crate::process::command::ExitStatusExt; }
     pub mod ffi {
         mod private {

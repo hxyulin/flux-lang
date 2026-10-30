@@ -13,7 +13,7 @@ where the backend supplies an error type. Keel optimization errors remain stored
 as structured values; its linker currently supplies only text.
 
 Native x86-64 Linux linking uses Keel's ELF linker. `cc` must locate the installed
-`crt1.o`, `crti.o`, `crtbegin.o`, `crtend.o`, `crtn.o`, `libgcc.a`, glibc, libm
+`crt1.o`, `crti.o`, `crtbegin.o`, `crtend.o`, `crtn.o`, `libgcc.a`, glibc, libm, libpthread
 and ELF loader. The embedded runtime uses `gettid` (glibc 2.30 or newer).
 The driver never invokes a system linker. Requested dynamic libraries use the
 same lookup; GNU library scripts are rejected by Keel, so libc and libm use

@@ -1758,8 +1758,17 @@ file-type queries, Unix symlink creation and device/inode/change-time metadata q
 Darwin additionally supplies recursive directory removal without following symlinks.
 `env::current_exe` returns a canonical executable path. `thread::sleep` resumes after
 signal interruption. Native tests compare directory operations, stat record fields,
-executable discovery and sleeping with rustc on arm64 macOS. Linux ABI branches have
-not been executed in this milestone.
+executable discovery and sleeping with rustc on arm64 macOS. Focused x86-64
+Linux comparisons cover file I/O and clocks; recursive removal remains Darwin-only.
+
+The bounded `process::Command` interface supports spawning, inherited/explicit
+environments, working directories, owned stdio pipes, simultaneous stdout/stderr
+capture, exit status and Unix signals on arm64 macOS and glibc x86-64 Linux.
+Linux reports ENOEXEC for executable files without a shebang; Darwin supports
+its shell fallback. Pipe writes preserve the parent's SIGPIPE policy and children
+restore SIGPIPE's default disposition. Channels support unbounded, bounded and
+rendezvous sends, disconnects and monotonic receive timeouts on both hosts.
+Linux uses the installed glibc pthread ABI and requires glibc 2.30 or newer.
 
 Unsigned AArch64 NEON lane duplication, greater-than/equality masks, bitwise AND,
 wrapping subtraction and wrapping horizontal sums support u16x8, u32x4 and u64x2.

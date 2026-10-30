@@ -8,18 +8,35 @@ compile the smoke program with `-O`, with matching output and exit status.
 
 The latest guarded proof is `out/flux-compiler-readiness/81431`. Syntax, HIR,
 type, MIR and code-generation diagnostic reports are empty, and both final
-source-integrity reports are clean. The complete regression suite passes all
-469 targets. The historical locally patched proof below records the older
+source-integrity reports are clean. That regression run covered 469 targets. The later process/channel runtime
+changes passed all 470 targets on both arm64 macOS and x86-64 Linux. The historical locally patched proof below records the older
 `f37f0bd` snapshot.
 
-A complete stage-2 rebuild was retried through the updated optimized stage-1
-compiler's Cargo source driver. Preparation succeeds with 72 source crates and
-5 host proc macros. Its plan exactly matches the rustc-built driver's plan and
-excludes Postcard's inactive optional `embedded-io` dependencies. The rebuild
-then reaches its 30-minute limit without compiler diagnostics or a stage-2
-executable. All inventoried inputs remain unchanged. Stage 2 is not established;
-compilation time and memory use need investigation. Cargo and rustc still supply
-host build scripts and procedural macros.
+Stage 2 is verified on arm64 macOS for the historical source graph above.
+The unoptimized build in `out/bootstrap-stage2-unlimited` passed help/version
+and three native compile/run comparisons. The optimized build in
+`out/bootstrap-stage2-optimized` rebuilt all 72 source crates with five host
+proc macros in 1,038.96 seconds. It passed help/version, six native comparisons
+covering both output optimization modes, and 45 timed compile/run comparisons.
+All 4,258 inventoried inputs remained unchanged. Those sources were restored
+into a private workspace for the optimized run; this does not certify later
+source changes or Linux self-hosting.
+
+Optimized stage 2 compiles the three benchmark programs in essentially the
+same time as the stock-Keel stage 1. The experimental inlining-budget change
+used to generate the faster stage-1 artifact is not part of the pinned target
+source graph. These timings compare Flux executables built by different
+compilers, not Flux's compilation speed against rustc itself.
+
+The Linux source-build attempt prepared 71 source crates and five host proc
+macros, with no dependency-plan blockers. A diagnostic bypass of the Cargo
+host gate exposed missing x86 intrinsics, feature attributes and detection,
+inline assembly, and Linux runtime APIs. No Linux self-built compiler was
+produced. After the process and channel port, a source-guarded retry still
+prepared the same 71 crates and five host proc macros. Process/channel import
+and host Send/Sync errors are gone; x86 intrinsic/feature handling and
+`remove_dir_all` remain compile-time blockers. Argument capture remains a
+runtime gap. Cargo and rustc still supply host build scripts and procedural macros.
 
 ## Executable source graphs
 
@@ -524,7 +541,10 @@ The backend emits and links native arm64 macOS and x86-64 Linux executables.
 Linux uses Keel's ELF linker with installed glibc startup objects and shared
 libraries located through `cc`. Linux package builds are supported; the Cargo
 source driver remains gated to arm64 macOS. Linux self-hosting still needs
-command-line argument capture, process spawning and channels. A rustc-built backend can help diagnose
+command-line argument capture and recursive directory removal, plus x86
+intrinsics and feature handling. Process spawning, owned pipes and channels
+have native comparison coverage on glibc x86-64 Linux. A rustc-built backend
+can help diagnose
 frontend milestones, but leaves part of the compiler built by rustc. The final
 source closure includes Keel and its required build outputs.
 

@@ -1,5 +1,8 @@
-//! Darwin child process and pipe ownership contracts match native Rust.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+//! Unix child process and pipe ownership contracts match native Rust.
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 mod support;
 use std::path::Path;
 use std::process::{Command, Output};

@@ -56,7 +56,11 @@ mod native {
             "crtbegin.o".to_owned(),
         ];
         let startup = names.len();
-        names.extend(["libc.so.6".into(), "libm.so.6".into()]);
+        names.extend([
+            "libc.so.6".into(),
+            "libm.so.6".into(),
+            "libpthread.so.0".into(),
+        ]);
         for name in libraries {
             let name = name.as_str();
             let file = match name {
