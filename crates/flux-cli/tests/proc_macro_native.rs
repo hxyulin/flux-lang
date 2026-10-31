@@ -271,3 +271,25 @@ pub fn once(input: TokenStream) -> TokenStream {
         std::fs::remove_file(fixture.0.join("macro-counter")).unwrap();
     }
 }
+
+#[test]
+fn native_availability_and_literal_constructors() {
+    let fixture = Fixture::new();
+    fixture.write("macros/src/lib.rs", r#"
+use proc_macro::{TokenStream,Literal,Span};
+#[proc_macro] pub fn answer(_:TokenStream)->TokenStream {
+    assert!(proc_macro::is_available());
+    assert!(!std::thread::spawn(proc_macro::is_available).join().unwrap());
+    assert!(Span::call_site().source_text().is_none());
+    let c = std::ffi::CStr::from_bytes_with_nul(b"hello\xff\0").unwrap();
+    format!("({}, {}, {})",Literal::byte_character(255),Literal::c_string(c),Literal::byte_string(b"a\0b")).parse().unwrap()
+}
+"#);
+    fixture.write(
+        "src/main.rs",
+        "fn main(){let(a,b,c)=macros::answer!();println!(\"{a} {:?} {:?}\",b.to_bytes(),c);}",
+    );
+    let expected = success(fixture.run(false));
+    let actual = success(fixture.run(true));
+    assert_eq!(actual.stdout, expected.stdout);
+}

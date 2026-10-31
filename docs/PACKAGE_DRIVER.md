@@ -108,7 +108,12 @@ proc-macro dependencies used by those libraries or the macro root.
 The host-side `flux-proc-macro` crate supplies the replacement `proc_macro`
 token API. It is not a HIR dependency. Tokens preserve punctuation spacing,
 source spans, lifetimes and transparent groups across a bounded binary file
-protocol. Identifier constructors use Unicode XID classes and NFC. Advanced
+protocol. Identifier constructors use Unicode XID classes and NFC.
+`proc_macro::is_available()` reports the invocation context on the current
+thread; it is false on threads spawned by the macro. `Span::source_text()`
+returns `None` because the protocol carries ranges without source text.
+`Literal::byte_character`, `byte_string` and `c_string` preserve literal bytes;
+C strings support Unicode, escaped controls and non-UTF-8 bytes. Advanced
 span hygiene operations remain unsupported. CLI semantic commands reject
 non-NFC physical source identifiers until semantic name interning normalizes
 them consistently; string and documentation contents remain unchanged.

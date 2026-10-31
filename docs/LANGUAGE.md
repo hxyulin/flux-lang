@@ -306,13 +306,29 @@ for): `starts_with`, `ends_with`, `contains`, `find`, `rfind`,
 parts are rustc's, overlapping `&str` matches included; as in rustc,
 `trim_matches` and the iterators' back ends take only the patterns of
 single characters (not a `&str`).
-`char::is_alphabetic` and `is_alphanumeric` use complete generated Unicode
-property tables. `char::UNICODE_VERSION` is available through the char module.
+`char::is_alphabetic`, `is_alphanumeric`, `is_lowercase` and `is_uppercase`
+use complete generated Unicode property tables. `char::UNICODE_VERSION` is available through the char module.
 The generation check uses the selected Rust toolchain; native comparisons cover
 every Unicode scalar. `str::to_lowercase` uses complete Unicode 17 lowercase
 mappings and contextual final sigma; ASCII conversion preserves non-ASCII UTF-8.
+`char::to_lowercase` and `to_uppercase` return cloneable, double-ended,
+exact-size iterators over context-free Unicode mappings. One scalar can expand
+to several; char casing does not apply whole-string final sigma. The mapping
+generator checks all Unicode scalars against pinned Rust Unicode 17 data.
 Other Unicode case conversion APIs remain unsupported. Programs print with `println!` and the other
 printing macros (below), or through C.
+
+Discard assignments (`_ = expression`) evaluate the right-hand side without
+moving a named place. Values created on the right are dropped at the end of
+the assignment. General tuple/struct destructuring assignment remains outside
+the subset. Record-pattern fields may use `cfg` and `cfg_attr`; disabled fields
+are removed before binding and duplicate-field checks.
+
+`extern crate self as alias` names the current crate, including inside nested
+modules. Documentation comments become `doc` attributes before both declarative
+and procedural macro matching. Format macros can obtain their format string
+from nested macros such as `concat!` and `stringify!`; remaining argument
+expressions retain ordinary expansion and evaluation.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
 shared references, tuples and arrays of `Copy` types, structs that
@@ -949,6 +965,13 @@ pointers also implement PartialEq and Eq, including inside Result.
 Other atomic APIs, 128-bit atomics, const get_mut/into_inner and compiler_fence
 remain unsupported. The target advertises atomic cfgs for 8, 16, 32, 64 and pointer
 widths, not 128.
+`std::sync::Once` supports `new`, `is_completed`, `call_once` and
+`call_once_force`. It shares OnceLock's spin-waiting initialization and
+reentrant-deadlock behavior. Poisoning and force recovery are checked with the
+actual implementation under a host unwinding runtime; Flux panics still abort.
+`std::thread::current().id()` returns a stable, process-unique `ThreadId`,
+including for externally created threads. IDs are not reused after thread exit.
+The current thread handle supports cloning and identity queries, not parking.
 `std::sync::OnceLock<T>` supports sized payloads with `new`, `Default`,
 `get`, `get_or_init` and destruction. `get` does not wait during initialization;
 `get_or_init` spins until one initializer publishes its payload with

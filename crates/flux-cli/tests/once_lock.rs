@@ -201,3 +201,47 @@ fn sequential_oracle_in_both_modes() {
         assert_eq!(results[0], results[1]);
     }
 }
+
+#[test]
+fn once_host_poisoning_and_force_recovery() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let scratch = support::scratch::Scratch::new(std::env::temp_dir().join("flux-once-host"));
+    let file = scratch.path().join("main.rs");
+    std::fs::write(
+        &file,
+        format!(
+            r#"
+use std::sync::OnceLock;
+#[path={:?}] mod implementation;
+use implementation::Once;
+fn main() {{
+    let once=Once::new();
+    assert!(std::panic::catch_unwind(||once.call_once(||panic!("initialization failed"))).is_err());
+    assert!(!once.is_completed());
+    assert!(std::panic::catch_unwind(||once.call_once(||panic!("must remain poisoned"))).is_err());
+    once.call_once_force(|state|assert!(state.is_poisoned()));
+    assert!(once.is_completed());
+    once.call_once(||panic!("must not run twice"));
+}}
+"#,
+            root.join("library/std/src/sync/once.rs")
+        ),
+    )
+    .unwrap();
+    let binary = scratch.path().join("host");
+    let output = bounded(
+        scratch.path(),
+        "compile-once",
+        Command::new("rustc")
+            .args(["--edition=2024"])
+            .arg(&file)
+            .arg("-o")
+            .arg(&binary),
+    );
+    support::oracle::success(&output, "compile Once implementation");
+    let output = bounded(scratch.path(), "run-once", &mut Command::new(binary));
+    support::oracle::success(&output, "Once poison recovery");
+}

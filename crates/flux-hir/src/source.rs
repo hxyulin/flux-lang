@@ -171,6 +171,10 @@ const STD_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/std/src/thread.rs"),
     ),
     (
+        "sync/once.rs",
+        include_str!("../../../library/std/src/sync/once.rs"),
+    ),
+    (
         "sync/once_lock.rs",
         include_str!("../../../library/std/src/sync/once_lock.rs"),
     ),
@@ -347,6 +351,14 @@ const CORE_FILES: &[(&str, &str)] = &[
     (
         "arch/x86_64.rs",
         include_str!("../../../library/core/src/arch/x86_64.rs"),
+    ),
+    (
+        "char/case.rs",
+        include_str!("../../../library/core/src/char/case.rs"),
+    ),
+    (
+        "char/case_data.rs",
+        include_str!("../../../library/core/src/char/case_data.rs"),
     ),
     ("char.rs", include_str!("../../../library/core/src/char.rs")),
     ("ffi.rs", include_str!("../../../library/core/src/ffi.rs")),

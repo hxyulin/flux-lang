@@ -92,6 +92,7 @@ pub fn build_host(
 {transformed}
 extern crate proc_macro as __flux_proc_macro;
 fn main() {{
+    __flux_proc_macro::__flux_enter_host();
     let result = std::panic::catch_unwind(|| -> Result<(), String> {{
         let args: Vec<_> = std::env::args_os().collect();
         if args.len()!=5 {{return Err("expected macro name and protocol paths".into());}}

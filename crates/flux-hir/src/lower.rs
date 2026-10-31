@@ -2563,6 +2563,26 @@ impl<'a> Ctx<'a> {
                 }
             }
             ast::Expr::BinExpr(bin) => {
+                if bin.op_kind() == Some(BinaryOp::Assign(None))
+                    && matches!(bin.lhs(), Some(ast::Expr::UnderscoreExpr(_)))
+                {
+                    let rhs = self.lower_opt(bin.rhs(), syntax);
+                    let pat = self.alloc_pat(Pat::Wild, range);
+                    return alloc_expr!(
+                        self,
+                        Expr::Block {
+                            stmts: self.lists.alloc([Stmt::Let {
+                                pat,
+                                ty: None,
+                                init: Some(rhs),
+                                else_branch: None
+                            }]),
+                            tail: None,
+                            is_unsafe: false,
+                        },
+                        range
+                    );
+                }
                 let lhs = self.lower_opt(bin.lhs(), syntax);
                 let rhs = self.lower_opt(bin.rhs(), syntax);
                 match (bin.op_kind(), bin.op()) {
@@ -5523,6 +5543,9 @@ impl<'a> Ctx<'a> {
                 }
             }
             for field in list.fields() {
+                if !crate::item_tree::item_enabled(field.syntax(), &mut self.diagnostics) {
+                    continue;
+                }
                 check_attrs(field.attrs(), &mut self.diagnostics);
                 let (name, name_range) = match (field.name_ref(), field.pat()) {
                     (Some(name), _) => (name.text(), name.syntax().text_range()),

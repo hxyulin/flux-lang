@@ -38,10 +38,10 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
 }
 
 pub(crate) fn tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
-    tokens_filtered(node, skip, false, out);
+    tokens_filtered(node, skip, out);
 }
 pub(crate) fn proc_tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
-    tokens_filtered(node, skip, true, out);
+    tokens_filtered(node, skip, out);
 }
 fn doc_comment(text: &str) -> Option<(bool, String)> {
     let inner = text.starts_with("//!") || text.starts_with("/*!");
@@ -61,13 +61,13 @@ fn doc_comment(text: &str) -> Option<(bool, String)> {
         text.replace("\r\n", "\n").trim_end_matches('\r').to_owned(),
     ))
 }
-fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], docs: bool, out: &mut Vec<Tok>) {
+fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
     let tree = node.tree();
     let mut tokens = node
         .tokens()
         .filter(|t| {
             (!t.kind().is_trivia()
-                || (docs && t.kind() == SyntaxKind::COMMENT && doc_comment(t.text()).is_some()))
+                || (t.kind() == SyntaxKind::COMMENT && doc_comment(t.text()).is_some()))
                 && !skip.iter().any(|range| {
                     range.start() <= t.raw_range().start() && t.raw_range().end() <= range.end()
                 })

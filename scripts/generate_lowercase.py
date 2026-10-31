@@ -61,6 +61,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--source", type=Path)
+    parser.add_argument("--char-data", action="store_true", help="generate core char case mappings")
     args = parser.parse_args()
     source = args.source
     if source is None:
@@ -82,6 +83,8 @@ fn main(){
  for point in 0..=0x10ffffu32 { if let Some(c)=char::from_u32(point) {
   let lower=data::conversions::to_lower(c);
   if point>=128 && lower!=[c,'\\0','\\0'] { println!("L {} {} {} {}",point,lower[0] as u32,lower[1] as u32,lower[2] as u32); }
+  let upper=data::conversions::to_upper(c);
+  if point>=128 && upper!=[c,'\\0','\\0'] { println!("U {} {} {} {}",point,upper[0] as u32,upper[1] as u32,upper[2] as u32); }
   let cased=c.is_ascii_alphabetic() || (point>=170 && (data::lowercase::lookup(c)||data::uppercase::lookup(c)||data::lt::lookup(c)));
   if cased { println!("C {}",point); }
   let ignorable=if c.is_ascii(){matches!(c,'\\''|'.'|':'|'^'|'`')}else{data::case_ignorable::lookup(c)};
@@ -91,13 +94,51 @@ fn main(){
 '''.replace("SOURCE", '"' + str(source.resolve()) + '"'))
         subprocess.run(["rustc", "--edition=2024", "-Awarnings", "-O", str(driver), "-o", str(executable)], check=True)
         lines = subprocess.check_output([str(executable)], text=True).splitlines()
+    if args.char_data:
+        output = ["//! Generated Unicode 17.0.0 char mappings. Regenerate with scripts/generate_lowercase.py --char-data.",
+                  "//! Derived from Rust core/src/unicode/unicode_data.rs (Apache-2.0 OR MIT).",
+                  f"//! Source SHA-256: {SOURCE_SHA256}", ""]
+        for kind, name in [("L", "LOWER"), ("U", "UPPER")]:
+            mapping = {}
+            for line in lines:
+                values = line.split()
+                if values[0] == kind:
+                    point, *mapped = map(int, values[1:])
+                    mapping[point] = tuple(value for value in mapped if value)
+            rows = simple_ranges(mapping)
+            multi = {point: values for point, values in mapping.items() if len(values) > 1}
+            starts = [row[0] for row in rows]
+            for point in range(0x110000):
+                if 0xd800 <= point <= 0xdfff:
+                    continue
+                actual = (point,)
+                row = find(rows, starts, point)
+                if row and (point-row[0]) % row[2] == 0:
+                    actual = (row[3]+point-row[0],)
+                assert multi.get(point, actual) == mapping.get(point, (point,)), hex(point)
+            output.append(f"pub(super) static {name}: [(u32, u32, u32, u32); {len(rows)}] = [")
+            output += [f"    (0x{a:x}, 0x{b:x}, {stride}, 0x{mapped:x})," for a,b,stride,mapped in rows]
+            output += ["];", f"pub(super) static {name}_MULTI: [(u32, [u32; 3]); {len(multi)}] = ["]
+            for point, values in sorted(multi.items()):
+                padded = list(values) + [0] * (3-len(values))
+                output.append(f"    (0x{point:x}, [{', '.join(hex(v) for v in padded)}]),")
+            output += ["];", ""]
+        path = ROOT / "library/core/src/char/case_data.rs"
+        text = "\n".join(output)
+        if args.check:
+            assert path.read_text() == text, "char case data is stale"
+        else:
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(text)
+        print("verified lower/upper mappings for all 1,112,064 Unicode scalars")
+        return
     mapping, cased, ignorable = {}, set(), set()
     for line in lines:
         kind, *values = line.split()
         values = list(map(int, values))
         if kind == "L":
             mapping[values[0]] = tuple(v for v in values[1:] if v)
-        else:
+        elif kind in ("C", "I"):
             (cased if kind == "C" else ignorable).add(values[0])
     ranges = simple_ranges(mapping)
     multi = {c: v for c, v in mapping.items() if len(v) > 1}
@@ -127,11 +168,16 @@ fn main(){
         f"pub(super) static SIMPLE: [(u32, u32, u32, u32); {len(ranges)}] = [",
     ]
     output += [f"    (0x{a:x}, 0x{b:x}, {stride}, 0x{mapped:x})," for a, b, stride, mapped in ranges]
-    output += ["];", "", f"pub(super) static MULTI: [(char, &str); {len(multi)}] = ["]
+    output += ["];", ""]
+    multi_rows = []
     for point, mapped in sorted(multi.items()):
         text = "".join("\\u{" + f"{c:x}" + "}" for c in mapped)
-        output.append(f"    ('\\u{{{point:x}}}', \"{text}\"),")
-    output += ["];", ""]
+        multi_rows.append(f"('\\u{{{point:x}}}', \"{text}\")")
+    declaration = f"pub(super) static MULTI: [(char, &str); {len(multi)}] = "
+    if len(multi_rows) == 1:
+        output += [declaration + "[" + multi_rows[0] + "];", ""]
+    else:
+        output += [declaration + "["] + ["    " + row + "," for row in multi_rows] + ["];", ""]
     for name, rows in [("CASED", cased_ranges), ("CASE_IGNORABLE", ignorable_ranges)]:
         output += [f"pub(super) static {name}: [(u32, u32); {len(rows)}] = ["]
         output += [f"    (0x{a:x}, 0x{b:x})," for a, b in rows]

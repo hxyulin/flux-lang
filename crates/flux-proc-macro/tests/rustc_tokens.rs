@@ -161,3 +161,92 @@ pub fn probe(input:TokenStream)->TokenStream {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+#[test]
+fn literal_constructor_spellings_match_rustc() {
+    let fixture =
+        Fixture(std::env::temp_dir().join(format!("flux-literal-oracle-{}", std::process::id())));
+    std::fs::create_dir_all(&fixture.0).unwrap();
+    let library = fixture.0.join(if cfg!(target_os = "macos") {
+        "libconstruct.dylib"
+    } else {
+        "libconstruct.so"
+    });
+    let body = r#"
+fn spellings() -> String {
+    let mut result=String::new();
+    for byte in 0..=255u8 {result.push_str(&format!("{:?}\n",Literal::byte_character(byte).to_string()));}
+    let bytes:Vec<u8>=(0..=255).collect();
+    result.push_str(&format!("{:?}\n",Literal::byte_string(&bytes).to_string()));
+    for bytes in [b"\0".as_slice(), b"'\"\\\n\t\r\x01\x7f\0", "café\u{301}\u{85}\0".as_bytes(), b"\xff\xf0\x9f\x98\x80\xc3\xa9\xe2\x82\0"] {
+        let value=std::ffi::CStr::from_bytes_with_nul(bytes).unwrap();
+        result.push_str(&format!("{:?}\n",Literal::c_string(value).to_string()));
+    }
+    result
+}
+"#;
+    std::fs::write(fixture.0.join("construct.rs"), format!("extern crate proc_macro; use proc_macro::{{Literal,TokenStream,TokenTree}};\n{body}\n#[proc_macro] pub fn construct(_:TokenStream)->TokenStream{{assert!(proc_macro::is_available()); TokenTree::Literal(Literal::string(&spellings())).into()}}\n")).unwrap();
+    checked(
+        Command::new("rustc")
+            .args([
+                "--edition=2024",
+                "--crate-type=proc-macro",
+                "--crate-name=construct",
+            ])
+            .arg(fixture.0.join("construct.rs"))
+            .arg("-o")
+            .arg(&library)
+            .output()
+            .unwrap(),
+    );
+    std::fs::write(
+        fixture.0.join("main.rs"),
+        "fn main(){print!(\"{}\",construct::construct!());}",
+    )
+    .unwrap();
+    let binary = fixture.0.join("reference");
+    checked(
+        Command::new("rustc")
+            .arg("--edition=2024")
+            .arg(fixture.0.join("main.rs"))
+            .arg("--extern")
+            .arg(format!("construct={}", library.display()))
+            .arg("-o")
+            .arg(&binary)
+            .output()
+            .unwrap(),
+    );
+    let expected = checked(Command::new(&binary).output().unwrap()).stdout;
+    // Use the same inputs against the native token API in an ordinary process.
+    let mut actual = String::new();
+    for byte in 0..=255u8 {
+        writeln!(
+            actual,
+            "{:?}",
+            flux_proc_macro::Literal::byte_character(byte).to_string()
+        )
+        .unwrap();
+    }
+    let bytes: Vec<u8> = (0..=255).collect();
+    writeln!(
+        actual,
+        "{:?}",
+        flux_proc_macro::Literal::byte_string(&bytes).to_string()
+    )
+    .unwrap();
+    for bytes in [
+        b"\0".as_slice(),
+        b"'\"\\\n\t\r\x01\x7f\0",
+        "café\u{301}\u{85}\0".as_bytes(),
+        b"\xff\xf0\x9f\x98\x80\xc3\xa9\xe2\x82\0",
+    ] {
+        let value = std::ffi::CStr::from_bytes_with_nul(bytes).unwrap();
+        writeln!(
+            actual,
+            "{:?}",
+            flux_proc_macro::Literal::c_string(value).to_string()
+        )
+        .unwrap();
+    }
+    assert_eq!(actual.as_bytes(), expected);
+}

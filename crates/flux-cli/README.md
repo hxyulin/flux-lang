@@ -245,9 +245,16 @@ A macro graph with a library dependency and generated configuration has built an
 run with both Cargo and rustc trapped, including use by a build script and by the
 target. Native token construction and all three macro kinds have regression
 coverage. The compiler's real clap_derive/syn/quote/proc-macro2 host graph still
-fails with language/library diagnostics. Its blockers include Unicode char
-casing, `std::sync::Once`, span/token APIs and generic type checking. It has not
-completed a rustc-free self-hosting build. The standalone `flux package` route
+fails with language/library diagnostics. The latest arm64 macOS audit reports
+45 diagnostics, compared with 1,553 before the token/library/source fixes.
+Dependency source bytes remained unchanged and both Cargo and rustc were trapped.
+Quote and heck have no diagnostics in this graph; that does not independently
+verify their code generation or execution. Remaining blockers include syn's
+trait lifetimes, region-bearing aliases in function pointers, generic
+`Parser::Output` normalization, and proc-macro2's `catch_unwind` use. Span hygiene
+operations such as mixed-site contexts also remain unsupported at runtime.
+It has not completed a rustc-free self-hosting build. The audit and diagnostic
+frequencies are in `out/proc-macro-api-audit/result.json`. The standalone `flux package` route
 still restricts Flux-compiled macro hosts to dependency-free crates.
 
 Validation on arm64 macOS includes the complete 480-target suite, workspace

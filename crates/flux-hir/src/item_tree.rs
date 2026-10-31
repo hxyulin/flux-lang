@@ -1897,6 +1897,7 @@ pub(crate) fn cfg_position(p: SyntaxNode<'_>) -> bool {
                 | SyntaxKind::LET_STMT
                 | SyntaxKind::EXPR_STMT
                 | SyntaxKind::MATCH_ARM
+                | SyntaxKind::RECORD_PAT_FIELD
                 | SyntaxKind::RECORD_EXPR_FIELD
                 | SyntaxKind::RECORD_FIELD
                 | SyntaxKind::TUPLE_FIELD

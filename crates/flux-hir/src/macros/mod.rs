@@ -686,17 +686,26 @@ fn expand_at_depth(
             }
         }
         &MacroKind::Builtin(builtin) => {
-            let eager;
-            let inner = if matches!(
+            let format_first = matches!(
                 builtin,
-                Builtin::Concat
-                    | Builtin::Include
-                    | Builtin::IncludeStr
-                    | Builtin::IncludeBytes
-                    | Builtin::Env
-                    | Builtin::OptionEnv
-            ) {
-                eager = eager_arguments(inner, site, diagnostics, depth + 1)?;
+                Builtin::FormatArgs | Builtin::ConstFormatArgs | Builtin::FormatArgsNl
+            );
+            let capture_format_variables = !format_first
+                || inner
+                    .first()
+                    .is_some_and(|token| token.kind == SyntaxKind::STRING);
+            let eager;
+            let inner = if format_first
+                || matches!(
+                    builtin,
+                    Builtin::Concat
+                        | Builtin::Include
+                        | Builtin::IncludeStr
+                        | Builtin::IncludeBytes
+                        | Builtin::Env
+                        | Builtin::OptionEnv
+                ) {
+                eager = eager_arguments(inner, site, diagnostics, depth + 1, format_first)?;
                 &eager[..]
             } else {
                 inner
@@ -763,6 +772,7 @@ fn expand_at_depth(
                 .map_or(site.items.edition(site.module), |t| t.edition());
             let cx = BuiltinCx {
                 name: def.name,
+                capture_format_variables,
                 environment: site.items.crates[site.krate.0 as usize]
                     .environment
                     .as_deref(),
@@ -900,6 +910,7 @@ fn eager_arguments(
     site: &CallSite<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: u32,
+    only_first: bool,
 ) -> Option<Vec<Tok>> {
     let mut input = flux_syntax::parser::Input::default();
     for t in toks {
@@ -968,13 +979,17 @@ fn eager_arguments(
                     ));
                     return None;
                 }
-                tokens = eager_arguments(&tokens, site, diagnostics, depth + 1)?;
+                tokens = eager_arguments(&tokens, site, diagnostics, depth + 1, false)?;
             }
             out.extend(tokens);
         } else {
             out.extend_from_slice(arg);
         }
         pos += n;
+        if only_first {
+            out.extend_from_slice(&toks[pos..]);
+            return Some(out);
+        }
         if pos < toks.len() {
             if toks[pos].kind != T![,] {
                 out.extend_from_slice(&toks[pos..]);

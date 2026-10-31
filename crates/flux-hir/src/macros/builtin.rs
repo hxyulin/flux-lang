@@ -80,6 +80,8 @@ type RecordEnvironment<'a> = dyn Fn(&str, Option<&str>) -> Result<(), String> + 
 /// What a built-in macro needs to know about its call.
 pub(crate) struct BuiltinCx<'a> {
     pub name: Symbol,
+    /// Implicit captures require a literal written directly in the format input.
+    pub capture_format_variables: bool,
     pub environment: Option<&'a std::collections::BTreeMap<String, String>>,
     pub track_environment: &'a RecordEnvironment<'a>,
     pub edition: flux_syntax::Edition,
@@ -1116,6 +1118,15 @@ fn format_args(
                     cx.range_of(e),
                     "positional arguments cannot follow named arguments".into(),
                 ));
+            }
+        }
+    }
+    if !cx.capture_format_variables {
+        for (argument, range) in &format.refs {
+            if let ArgRef::Name(name) = argument
+                && !named.iter().any(|(candidate, _, _)| candidate == name)
+            {
+                return Err((*range, format!("there is no argument named `{name}`")));
             }
         }
     }

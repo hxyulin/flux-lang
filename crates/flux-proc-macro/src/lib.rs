@@ -11,6 +11,21 @@ use std::str::FromStr;
 mod unicode;
 mod unicode_data;
 
+std::thread_local! {
+    static HOST_AVAILABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread is executing a Flux procedural macro host.
+pub fn is_available() -> bool {
+    HOST_AVAILABLE.with(|available| available.get())
+}
+
+/// Enters the invocation context on the host runner's thread.
+#[doc(hidden)]
+pub fn __flux_enter_host() {
+    HOST_AVAILABLE.with(|available| available.set(true));
+}
+
 /// A source byte range carried through macro expansion.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Span {
@@ -48,6 +63,10 @@ impl Span {
             self.start.min(other.start),
             self.end.max(other.end),
         ))
+    }
+    /// Source text is unavailable in the byte-range-only wire protocol.
+    pub fn source_text(&self) -> Option<String> {
+        None
     }
     pub fn resolved_at(self, _: Self) -> Self {
         panic!("procedural macro span resolution is not supported yet")
@@ -196,12 +215,49 @@ impl Literal {
     pub fn character(value: char) -> Self {
         Self::new(format!("{value:?}"))
     }
+    /// Constructs a byte character literal, including non-ASCII byte values.
+    pub fn byte_character(value: u8) -> Self {
+        let mut text = String::from("b'");
+        escape_byte(&mut text, value, b'\'');
+        text.push('\'');
+        Self::new(text)
+    }
     pub fn byte_string(value: &[u8]) -> Self {
         let mut text = String::from("b\"");
         for &byte in value {
-            for ch in std::ascii::escape_default(byte) {
-                text.push(ch as char);
+            escape_byte(&mut text, byte, b'"');
+        }
+        text.push('"');
+        Self::new(text)
+    }
+    /// Constructs a C string literal without its terminating nul byte.
+    pub fn c_string(value: &std::ffi::CStr) -> Self {
+        let mut text = String::from("c\"");
+        let mut bytes = value.to_bytes();
+        while !bytes.is_empty() {
+            let (valid, invalid) = match std::str::from_utf8(bytes) {
+                Ok(text) => (text.len(), 0),
+                Err(error) => (
+                    error.valid_up_to(),
+                    error
+                        .error_len()
+                        .unwrap_or(bytes.len() - error.valid_up_to()),
+                ),
+            };
+            for ch in std::str::from_utf8(&bytes[..valid])
+                .expect("validated UTF-8 prefix")
+                .chars()
+            {
+                if ch == '\'' {
+                    text.push(ch);
+                } else {
+                    text.extend(ch.escape_debug());
+                }
             }
+            for &byte in &bytes[valid..valid + invalid] {
+                escape_byte(&mut text, byte, b'"');
+            }
+            bytes = &bytes[valid + invalid..];
         }
         text.push('"');
         Self::new(text)
@@ -229,6 +285,16 @@ impl Literal {
         self.span = span;
     }
 }
+fn escape_byte(text: &mut String, byte: u8, quote: u8) {
+    if byte == 0 {
+        text.push_str("\\0");
+    } else if (byte == b'\'' || byte == b'"') && byte != quote {
+        text.push(byte as char);
+    } else {
+        text.extend(std::ascii::escape_default(byte).map(char::from));
+    }
+}
+
 macro_rules! integers {
     ($($suffixed:ident $unsuffixed:ident $ty:ty),* $(,)?) => { impl Literal { $(
         pub fn $suffixed(value: $ty) -> Self { Self::new(format!("{}{}",value,stringify!($ty))) }

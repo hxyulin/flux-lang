@@ -7,6 +7,9 @@ use crate::convert::From;
 use crate::iter::Step;
 use crate::option::Option::{self, None, Some};
 
+mod case;
+pub use self::case::{ToLowercase, ToUppercase};
+
 /// The highest Unicode scalar value. Prefer the associated constant `char::MAX`.
 #[deprecated(note = "use the char::MAX associated constant instead")]
 pub const MAX: char = '\u{10ffff}';
@@ -99,6 +102,10 @@ impl char {
         value<=0x1f || (value>=0x7f && value<=0x9f)
     }
 
+    pub fn is_lowercase(self) -> bool { crate::char_properties::has_case_property(self, 4) }
+    pub fn is_uppercase(self) -> bool { crate::char_properties::has_case_property(self, 8) }
+    pub fn to_lowercase(self) -> ToLowercase { case::lower(self) }
+    pub fn to_uppercase(self) -> ToUppercase { case::upper(self) }
     pub fn is_alphabetic(self) -> bool { crate::char_properties::has_property(self, 1) }
     pub fn is_alphanumeric(self) -> bool { crate::char_properties::has_property(self, 2) }
     pub fn escape_debug(self) -> EscapeDebug {

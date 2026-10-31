@@ -65,6 +65,7 @@ pub(crate) fn build_host_graph(
 {}
 extern crate proc_macro as __flux_proc_macro;
 fn __flux_macro_run() -> Result<(), String> {{
+    __flux_proc_macro::__flux_enter_host();
     let name = std::env::var("FLUX_PROC_MACRO_NAME").map_err(|e| e.to_string())?;
     let attribute_path = std::env::var("FLUX_PROC_MACRO_ATTRIBUTE").map_err(|e| e.to_string())?;
     let input_path = std::env::var("FLUX_PROC_MACRO_INPUT").map_err(|e| e.to_string())?;

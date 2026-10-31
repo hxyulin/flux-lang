@@ -3213,22 +3213,35 @@ impl Collector<'_> {
             },
             None => name,
         };
+        if name == kw::SelfLower && e.rename().is_none() {
+            self.items.diagnostics.push(Diagnostic::new(
+                range,
+                "`extern crate self;` requires renaming",
+            ));
+            return;
+        }
         let own = &self.items.crates[krate.0 as usize];
-        let target = own
-            .dependencies
-            .iter()
-            .find(|(alias, _)| *alias == name)
-            .map(|(_, target)| *target)
-            .or_else(|| {
-                self.items
-                    .crates
-                    .iter()
-                    .enumerate()
-                    .find(|(i, c)| {
-                        (*i as u32) < krate.0 && c.name == name && (c.is_core || name == sym::std)
-                    })
-                    .map(|(i, _)| CrateId(i as u32))
-            });
+        let target = if name == kw::SelfLower {
+            Some(krate)
+        } else {
+            None
+        }
+        .or_else(|| {
+            own.dependencies
+                .iter()
+                .find(|(alias, _)| *alias == name)
+                .map(|(_, target)| *target)
+        })
+        .or_else(|| {
+            self.items
+                .crates
+                .iter()
+                .enumerate()
+                .find(|(i, c)| {
+                    (*i as u32) < krate.0 && c.name == name && (c.is_core || name == sym::std)
+                })
+                .map(|(i, _)| CrateId(i as u32))
+        });
         let Some(target) = target else {
             self.items.diagnostics.push(Diagnostic::new(
                 range,
@@ -3236,7 +3249,9 @@ impl Collector<'_> {
             ));
             return;
         };
-        self.items.load_extern(krate, target);
+        if target != krate {
+            self.items.load_extern(krate, target);
+        }
         let attrs = crate::cfg::Attrs::new(e.attrs());
         for attr in attrs.iter() {
             if attr_name(attr) == Some("macro_use") {

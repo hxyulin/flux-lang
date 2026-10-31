@@ -1,0 +1,7 @@
+fn main() -> () {
+    {
+        _print(<missing>);
+    };
+}
+
+error 39..53: there is no argument named `X`

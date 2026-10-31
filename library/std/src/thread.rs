@@ -39,3 +39,25 @@ pub fn sleep(duration: crate::time::Duration) {
         }
     }
 }
+
+/// A process-unique thread identity that is not reused after a thread exits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ThreadId(usize);
+
+/// The currently supported thread handle operations identify the thread.
+#[derive(Clone, Debug)]
+pub struct Thread { id: ThreadId }
+impl Thread { pub fn id(&self) -> ThreadId { self.id } }
+
+static NEXT_THREAD_ID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
+crate::thread_local! {
+    static CURRENT_THREAD_ID: ThreadId = ThreadId(NEXT_THREAD_ID.fetch_update(
+        core::sync::atomic::Ordering::Relaxed,
+        core::sync::atomic::Ordering::Relaxed,
+        |id| id.checked_add(1),
+    ).expect("thread id space exhausted"));
+}
+/// Returns a handle identifying the caller, including externally created threads.
+pub fn current() -> Thread {
+    Thread { id: CURRENT_THREAD_ID.with(|id| *id) }
+}

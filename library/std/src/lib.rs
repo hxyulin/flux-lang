@@ -35,6 +35,7 @@ pub mod sync {
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     pub mod mpsc;
     mod once_lock;
+    mod once;
     mod lazy_lock;
     mod mutex;
     mod rwlock;
@@ -44,6 +45,7 @@ pub mod sync {
     pub use self::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
     pub use self::poison::{LockResult, PoisonError};
     pub use self::once_lock::OnceLock;
+    pub use self::once::{Once, OnceState};
     pub use crate::alloc_crate::sync::{Arc, Weak};
     pub use core::sync::atomic;
 }
