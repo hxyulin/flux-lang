@@ -654,6 +654,9 @@ fn flux_compiler(root: &Path) {
         let mut module = lowered.expect("compiler codegen blockers");
         let target = flux_codegen::Target::Aarch64AppleDarwin;
         let object = flux_codegen::compile_object(&mut module, target, tier).unwrap();
+        if std::env::var_os("FLUX_COMPILER_SAVE_OBJECTS").is_some() {
+            std::fs::write(root.join(format!("flux-{label}.o")), &object).unwrap();
+        }
         let executable = root.join(format!("flux-{label}"));
         flux_codegen::link_executable_with_libraries(
             &object,

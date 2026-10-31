@@ -889,6 +889,22 @@ with warnings denied, formatting, 43 runner unit tests and workspace/example
 source checks before this guarded retry.
 
 
+## Profiling generated compilers
+
+Set `FLUX_COMPILER_SAVE_OBJECTS=1` when running `flux_compiler_readiness` to save
+`flux-unoptimized.o` and `flux-optimized.o` beside the generated executables.
+The objects retain local function symbols that the linked executables omit.
+On arm64 macOS, process samples can be mapped through those symbol offsets and
+the executable's text-section address. Match the sampled executable's text
+bytes to the saved object build before reusing an address map.
+
+When comparing compiler speed, use identical source graphs and program
+optimization options. Force `FLUX_BUILTINS_SOURCE=1` on both compilers to avoid
+comparing staged built-ins against source-library compilation. Flux currently
+enables debug assertions, so enable them in an optimized rustc-built reference
+as well. The generated compiler uses Flux's runtime libraries; that comparison
+includes library implementation differences as well as generated instructions.
+
 ## Linux backend capability boundary
 
 Keel `a078986c` supplies 512-bit vector IR and typed SHA-256 and VPCLMUL
