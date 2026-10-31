@@ -85,7 +85,7 @@ fn scope_lifetime_and_send_contracts_match_rustc() {
             String::from_utf8_lossy(&reference.stderr)
         );
         let actual = bounded(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("mir")
                 .arg(&path),
             &directory,
@@ -127,7 +127,7 @@ fn real_scoped_workers_match_rustc() {
     assert_eq!(expected.stdout, b"scoped 4 5 6 17\n");
     for optimized in [false, true] {
         let executable = directory.join(format!("flux-{optimized}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             command.arg("-O");

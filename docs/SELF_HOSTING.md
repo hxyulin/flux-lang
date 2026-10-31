@@ -10,7 +10,7 @@ only those library additions and their regression tests into a private source
 snapshot. It excludes the separate compiler profiling changes.
 
 Both generations rebuilt 72 source crates with five host procedural macros,
-using `flux cargo build --offline -O`. Stage 1 took 200.81 seconds; stage 2 took
+using `flux build --offline -O`. Stage 1 took 200.81 seconds; stage 2 took
 about 1,220.18 seconds. Stage 2 completed without a generation timeout.
 The test-runner interruption left the compiler running; a replacement runner
 captured its successful exit through a Darwin process-exit event. The stage-2
@@ -47,7 +47,7 @@ the existing constant evaluator. Dependency sources and Keel were not patched.
 The separate compiler profiling changes are excluded.
 
 Both stages rebuilt 71 source crates with five host procedural macros using
-`flux cargo build --offline -O`. Stage 1 took 332.93 seconds and stage 2 took
+`flux build --offline -O`. Stage 1 took 332.93 seconds and stage 2 took
 1,998.76 seconds, without a generation timeout. Both passed help/version checks;
 stage 1 also passed a smoke comparison in both output optimization modes.
 
@@ -344,8 +344,8 @@ does not yet build the complete Flux executable. The full graph now has zero
 syntax/HIR diagnostics and reaches type checking with 2,485 diagnostics, including
 cascades from associated array lengths, missing pointer APIs, union field support
 and remaining serialization trait/projection contracts. Full-graph MIR/codegen
-remain gated. `flux cargo prepare` records Cargo build-script
-outputs and host proc-macro artifacts, and `flux cargo build` compiles supported
+remain gated. `flux prepare` records Cargo build-script
+outputs and host proc-macro artifacts, and `flux build` compiles supported
 binary source graphs. Function-like, attribute and derive proc macros now expand through the matching
 rustc toolchain server. The full backend audit includes the actual serde_derive
 host dylib and checks its expanded target source. Host-only syn/quote dependencies
@@ -616,7 +616,7 @@ bounded; it is not a general byte-memory evaluator. Scoped and unscoped Rust
 thread creation use pthreads. Worker panics abort; unwinding remains outside the
 runtime subset.
 
-`flux build` compiles one root and its modules with embedded core, alloc and
+`fluxc build` compiles one root and its modules with embedded core, alloc and
 bounded std. The separate restricted [package driver](PACKAGE_DRIVER.md) accepts
 some offline local path graphs. Expanding registry/git resolution, feature
 resolution, package artifacts and serialized metadata is deferred. Explicit
@@ -716,7 +716,7 @@ resulting compiler is exercised, followed by a complete stage-2 rebuild attempt.
 
 Prerequisite validation on 2026-10-30 passed formatting, workspace clippy with
 warnings denied, all 43 runner unit tests, the complete runner suite (464 targets,
-zero failures), and workspace/example `flux check`. Runner evidence is in
+zero failures), and workspace/example `fluxc check`. Runner evidence is in
 `out/test-runs/1793335126135327000-63919/results.json`. That regression pass is
 separate from the still-failing complete current-pin compiler audit above.
 

@@ -153,7 +153,7 @@ fn immediate_boundaries_match_rustc() {
             format!("use core::arch::aarch64::*;fn main(){{unsafe{{{body}}}}}"),
         )
         .unwrap();
-        for compiler in ["rustc", env!("CARGO_BIN_EXE_flux")] {
+        for compiler in ["rustc", env!("CARGO_BIN_EXE_fluxc")] {
             let mut command = Command::new(compiler);
             if compiler == "rustc" {
                 command.arg("--edition=2024");

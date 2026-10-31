@@ -80,7 +80,7 @@ fn unicode_lowercase_matches_rustc_off_and_on() {
     support::oracle::success(&expected, "unicode lowercase Rust run");
     for optimized in [false, true] {
         let executable = root.join(format!("flux-{optimized}"));
-        let mut build = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut build = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         build.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             build.arg("-O");

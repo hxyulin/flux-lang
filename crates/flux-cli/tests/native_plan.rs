@@ -24,7 +24,7 @@ impl Fixture {
         assert!(sysroot.status.success());
         let rustc = Path::new(String::from_utf8_lossy(&sysroot.stdout).trim()).join("bin/rustc");
         let output = Command::new(env!("CARGO_BIN_EXE_flux"))
-            .args(["cargo", "plan", "--manifest-path"])
+            .args(["plan", "--manifest-path"])
             .arg(self.0.join("Cargo.toml"))
             .arg("--plan")
             .arg(self.0.join("plan.json"))

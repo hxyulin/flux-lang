@@ -106,7 +106,7 @@ fn namespace_candidates_match_rustc() {
             .unwrap();
         for optimized in [false, true] {
             let output = root.join(format!("{name}-{optimized}"));
-            let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             command.arg("build").arg(&path).arg("-o").arg(&output);
             if optimized {
                 command.arg("-O");

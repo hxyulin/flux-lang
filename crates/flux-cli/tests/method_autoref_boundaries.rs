@@ -80,7 +80,7 @@ fn autoref_rejections_match_rustc() {
             rustc_diagnostics.contains(expected),
             "{name}: {rustc_diagnostics}"
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .current_dir(&root)
             .arg("mir")
             .arg(&file)
@@ -110,7 +110,7 @@ fn bound_priority_source_matches_rustc() {
         "{}",
         String::from_utf8_lossy(&rustc.stderr)
     );
-    let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .current_dir(&root)
         .arg("mir")
         .arg(&source)

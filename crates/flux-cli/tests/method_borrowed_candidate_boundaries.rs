@@ -74,7 +74,7 @@ fn borrowed_candidate_oracles() {
             .arg(dir.join(format!("{name}.rmeta")))
             .output()
             .unwrap();
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .current_dir(&root)
             .arg("mir")
             .arg(&file)

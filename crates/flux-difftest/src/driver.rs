@@ -29,7 +29,7 @@ impl Tools {
             Some(p) => PathBuf::from(p),
             None => {
                 let me = std::env::current_exe().map_err(|e| e.to_string())?;
-                me.with_file_name("flux")
+                me.with_file_name("fluxc")
             }
         };
         if !flux.exists() {

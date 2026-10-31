@@ -93,7 +93,7 @@ fn compile_only_contracts() {
                     .arg(dir.join(format!("{name}.rmeta")));
                 c
             } else {
-                let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 c.arg("mir");
                 c
             };
@@ -170,7 +170,7 @@ fn sequential_oracle_in_both_modes() {
                 ]);
                 c
             } else {
-                let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 c.arg("build");
                 c
             };

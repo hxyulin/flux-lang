@@ -99,8 +99,8 @@ reentrancy/unwind, and native off/on comparisons. The first refreshed core audit
 diagnostics. These include constant trait objects, collection APIs, and inference
 cases. MIR and Flux native execution remain gated. Both source byte guards pass.
 
-`flux cargo prepare` now creates a Cargo-backed host-input plan, including actual
-build-script outputs and proc-macro dylibs. `flux cargo build` compiles supported
+`flux prepare` now creates a Cargo-backed host-input plan, including actual
+build-script outputs and proc-macro dylibs. `flux build` compiles supported
 binary source graphs with Flux. Macro execution uses the reviewed matching toolchain bridge. Both Serialize and
 Deserialize expand the actual serde_derive dylib in focused tests; the backend
 audit also loads its real host exports.

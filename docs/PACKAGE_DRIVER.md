@@ -90,7 +90,7 @@ shadowing cannot silently select the wrong macro.
 The standalone package driver builds local macro hosts without asking Cargo
 to compile them. These hosts use the same HIR `ProcMacroExpander` interface,
 macro namespace, helper handling and expansion paths as Cargo-built macros.
-The Cargo-backed `flux cargo` driver retains its toolchain-server behavior.
+The Cargo-backed `flux build --cargo` driver retains its toolchain-server behavior.
 
 The default local host compiler is rustc, invoked directly. To compile a
 dependency-free macro host and its token runtime with Flux and Keel, use:
@@ -156,7 +156,7 @@ claimed. Flux does not read or change `Cargo.lock`; local path manifests define
 the graph. A failed build does not run a previously built executable. A package
 run inherits the invoking working directory and environment, forwards arguments after
 `--`, and returns the program's exit status (128 plus signal on Unix).
-Existing `flux build FILE` and `flux run FILE` retain their behavior.
+Existing `fluxc build FILE` and `fluxc run FILE` retain their behavior.
 
 Validate with `cargo test --offline -p flux-cli --test package`. The tests
 block Cargo and rustc with rejecting executables on `PATH`; arm64 macOS tests

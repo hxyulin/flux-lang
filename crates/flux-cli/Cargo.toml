@@ -12,6 +12,10 @@ publish = false
 name = "flux"
 path = "src/main.rs"
 
+[[bin]]
+name = "fluxc"
+path = "src/fluxc.rs"
+
 [dependencies]
 flux-codegen.workspace = true
 flux-hir.workspace = true

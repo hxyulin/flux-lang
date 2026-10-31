@@ -17,7 +17,7 @@ fn library_output_contains_checked_metadata_and_one_object() {
     std::fs::write(&source,"pub fn double(x: u32) -> u32 { x * 2 } pub fn identity<T>(x: T) -> T { x } pub const fn add(x: u32) -> u32 { x + 1 }").unwrap();
     let output = scratch.path().join("a.flib");
     let result = flib_support::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .args(["build", "--crate-type", "lib", "--crate-name", "a"])
             .arg(&source)
             .arg("-o")
@@ -34,7 +34,7 @@ fn library_output_contains_checked_metadata_and_one_object() {
     assert!(archive.object.as_ref().is_some_and(|o| !o.is_empty()));
     let metadata = scratch.path().join("check.flib");
     let result = flib_support::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .args(["build", "--crate-type", "lib", "--metadata-only"])
             .arg(&source)
             .arg("-o")
@@ -51,7 +51,7 @@ fn library_output_contains_checked_metadata_and_one_object() {
     std::fs::write(&source, "pub fn identity<T>(x: T) -> T { x }").unwrap();
     let generic = scratch.path().join("generic.flib");
     let result = flib_support::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .args(["build", "--crate-type", "lib"])
             .arg(&source)
             .arg("-o")
@@ -77,7 +77,7 @@ fn erroneous_library_does_not_write_an_artifact() {
     std::fs::write(&source, "pub fn bad() -> u32 { true }").unwrap();
     let output = scratch.path().join("bad.flib");
     let result = flib_support::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .args(["build", "--crate-type", "lib"])
             .arg(&source)
             .arg("-o")
@@ -130,7 +130,7 @@ fn metadata_only_dependencies_support_checking_and_reject_native_linking() {
         ],
     ] {
         let output = flib_support::run(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .current_dir(s.path())
                 .args(args),
             "metadata-check",
@@ -145,7 +145,7 @@ fn metadata_only_dependencies_support_checking_and_reject_native_linking() {
         }
     }
     let output = flib_support::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .current_dir(s.path())
             .args(["build", "main.rs", "--extern", "a=a.flib", "-o", "program"]),
         "metadata-link-rejection",

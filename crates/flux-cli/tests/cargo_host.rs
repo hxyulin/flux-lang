@@ -144,7 +144,7 @@ fn main(){
     for optimized in [false, true] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
         command
-            .args(["cargo", "build", "--offline", "--manifest-path"])
+            .args(["build", "--cargo", "--offline", "--manifest-path"])
             .arg(&manifest)
             .args(["-p", "app", "--plan"])
             .arg(&plan);
@@ -174,7 +174,7 @@ fn main(){
     for feature in ["optional", "strong"] {
         let output = run(
             Command::new(env!("CARGO_BIN_EXE_flux"))
-                .args(["cargo", "build", "--offline", "--manifest-path"])
+                .args(["build", "--cargo", "--offline", "--manifest-path"])
                 .arg(&manifest)
                 .args(["-p", "app", "--features", feature, "--plan"])
                 .arg(&plan),
@@ -212,7 +212,7 @@ fn main(){
     }
     let output = run(
         Command::new(env!("CARGO_BIN_EXE_flux"))
-            .args(["cargo", "prepare", "--offline", "--manifest-path"])
+            .args(["prepare", "--cargo", "--offline", "--manifest-path"])
             .arg(&manifest)
             .args(["-p", "app", "--features", "macros", "--plan"])
             .arg(&plan),
@@ -235,7 +235,7 @@ fn main(){
     assert!(Path::new(macros[0]["artifact"].as_str().unwrap()).is_file());
     let output = run(
         Command::new(env!("CARGO_BIN_EXE_flux"))
-            .args(["cargo", "build", "--offline", "--manifest-path"])
+            .args(["build", "--cargo", "--offline", "--manifest-path"])
             .arg(&manifest)
             .args(["-p", "app", "--features", "macros", "--plan"])
             .arg(&plan),

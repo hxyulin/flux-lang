@@ -57,7 +57,7 @@ impl Fixture {
     fn run(&self, action: &str, label: &str, args: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
         command
-            .args(["cargo", action, "--native", "--manifest-path"])
+            .args([action, "--manifest-path"])
             .arg(self.root.join("Cargo.toml"))
             .args(["-p", "app", "--plan"])
             .arg(self.root.join(format!("{label}.json")))

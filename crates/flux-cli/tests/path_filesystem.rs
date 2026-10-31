@@ -62,7 +62,7 @@ fn paths_and_physical_files_match_rustc() {
     );
     for optimized in [false, true] {
         let executable = root.join(format!("flux-{optimized}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             command.arg("-O");

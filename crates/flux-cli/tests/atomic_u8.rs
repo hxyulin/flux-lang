@@ -73,7 +73,7 @@ fn invalid_byte_atomic_orderings_panic() {
                 command.args(["--edition=2024", "-C", "panic=abort"]);
                 command
             } else {
-                let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 command.arg("build");
                 if mode == "flux-opt" {
                     command.arg("-O");

@@ -172,7 +172,7 @@ fn package_library_target_writes_a_reusable_fluxlib() {
     .unwrap();
     std::fs::remove_file(s.path().join("src/lib.rs")).unwrap();
     let output = flib_support::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .current_dir(s.path())
             .args([
                 "build",
@@ -248,7 +248,7 @@ fn package_versions_and_manifests_distinguish_the_same_source() {
         );
         root.join(directory).join("target/flux/deps/library.flib")
     };
-    let compiler = flux_hir::flib::digest(&std::fs::read(env!("CARGO_BIN_EXE_flux")).unwrap());
+    let compiler = flux_hir::flib::digest(&std::fs::read(env!("CARGO_BIN_EXE_fluxc")).unwrap());
     let hash = |bytes: &[u8]| {
         use flux_hir::flib::{Decode, Decoder};
         let archive = flux_cli::flib::Archive::decode(bytes).unwrap();
@@ -310,7 +310,7 @@ fn main() {
     std::fs::remove_file(root.join("shared.rs")).unwrap();
     let executable = root.join("consumer");
     let output = flib_support::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .current_dir(root)
             .args([
                 "build",

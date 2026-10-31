@@ -76,7 +76,7 @@ fn main() {
     for optimized in [false, true] {
         // Build each library independently so both object emission modes retain the roots.
         std::fs::write(directory.join("a.rs"), library).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.current_dir(&directory).args([
             "build",
             "a.rs",
@@ -90,7 +90,7 @@ fn main() {
         }
         successful(&mut command, "flux-library");
         std::fs::remove_file(directory.join("a.rs")).unwrap();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command
             .current_dir(&directory)
             .args(["build", "b.rs", "--extern", "a=a.flib", "-o", "program"]);

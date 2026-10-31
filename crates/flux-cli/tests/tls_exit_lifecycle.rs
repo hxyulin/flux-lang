@@ -59,7 +59,7 @@ fn compare_exit(name: &str, stdout: &[u8]) {
     assert_eq!(expected.stdout, stdout);
     for optimized in [false, true] {
         let executable = root.join(format!("flux-{optimized}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             command.arg("-O");
@@ -126,7 +126,7 @@ fn recursive_initialization_still_aborts() {
     assert!(expected.stdout.is_empty());
     for optimized in [false, true] {
         let executable = root.join(format!("flux-{optimized}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             command.arg("-O");

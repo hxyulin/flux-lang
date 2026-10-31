@@ -43,7 +43,7 @@ fn float_math_matches_rustc_off_and_on() {
         );
         for optimize in [false, true] {
             let executable = dir.join(if optimize { "flux-opt" } else { "flux" });
-            let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             command.arg("build").arg(&source).arg("-o").arg(&executable);
             if optimize {
                 command.arg("-O");
@@ -170,7 +170,7 @@ fn math_availability_and_const_rules_match_rustc() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&source)
             .output()
@@ -281,7 +281,7 @@ fn nearest_even_ignores_ambient_rounding_modes() {
     .unwrap();
     for optimize in [false, true] {
         let executable = dir.join(format!("flux-{optimize}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimize {
             command.arg("-O");

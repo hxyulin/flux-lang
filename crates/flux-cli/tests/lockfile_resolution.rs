@@ -139,7 +139,7 @@ impl Fixture {
         .unwrap();
         let output = support::process::run(
             Command::new(env!("CARGO_BIN_EXE_flux"))
-                .args(["cargo", "generate-lockfile", "--manifest-path"])
+                .args(["generate-lockfile", "--manifest-path"])
                 .arg(self.root.join("Cargo.toml"))
                 .args([
                     "--index-url",
@@ -541,7 +541,7 @@ fn git_branches_tags_and_offline_refs_match_cargo() {
     );
     let output = support::process::run(
         Command::new(env!("CARGO_BIN_EXE_flux"))
-            .args(["cargo", "plan", "--manifest-path"])
+            .args(["plan", "--manifest-path"])
             .arg(f.root.join("Cargo.toml"))
             .arg("--plan")
             .arg(f.root.join("plan.json"))
@@ -580,7 +580,7 @@ fn resolve_fetch_and_build_without_existing_lockfile_or_cargo() {
     .unwrap();
     let mut fetch = Command::new(env!("CARGO_BIN_EXE_flux"));
     fetch
-        .args(["cargo", "fetch", "--locked", "--manifest-path"])
+        .args(["fetch", "--locked", "--manifest-path"])
         .arg(f.root.join("Cargo.toml"))
         .args([
             "--download-base",
@@ -598,7 +598,7 @@ fn resolve_fetch_and_build_without_existing_lockfile_or_cargo() {
     )) {
         let output = support::process::run(
             Command::new(env!("CARGO_BIN_EXE_flux"))
-                .args(["cargo", "build", "--native", "--offline", "--manifest-path"])
+                .args(["build", "--offline", "--manifest-path"])
                 .arg(f.root.join("Cargo.toml"))
                 .env("CARGO_HOME", f.root.join("cache"))
                 .env("PATH", path)

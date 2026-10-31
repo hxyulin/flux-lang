@@ -394,7 +394,7 @@ under `OUT_DIR`. Included syntax retains physical source locations. Items
 produced in impls and function blocks enter the ordinary item scopes. Virtual
 source inclusion and calls first discovered after body-item collection remain
 explicitly unsupported. This loads supplied generated output; Flux does not
-run build scripts or resolve packages internally. The `flux cargo` adapter
+run build scripts or resolve packages internally. The `flux build --cargo` adapter
 uses Cargo/rustc for host preparation and passes supplied source-graph inputs.
 `SourceDb::set_crate_env` provides isolated per-crate `env!`/`option_env!` values,
 including separate OUT_DIR paths; an explicit empty environment hides process
@@ -563,7 +563,7 @@ a generic block, it has a value per type. As in rustc, one that code
 without generic parameters names is evaluated, and its errors (such as
 overflow) reported, whether that code is used or not; one that generic
 code names is evaluated for the instances `main` reaches, so its errors
-are reported only by `flux build`, as rustc reports them only in a full
+are reported only by `fluxc build`, as rustc reports them only in a full
 build.
 
 `core::ops::Deref` and `DerefMut` make a type dereference as a

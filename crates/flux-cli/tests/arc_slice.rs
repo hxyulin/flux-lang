@@ -93,7 +93,7 @@ fn slice_ownership_bounds() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&file)
             .output()
@@ -203,7 +203,7 @@ fn erased_layout_contract_and_overflow() {
                     c.args(["--edition=2024", "-C", "panic=abort"]);
                     c
                 } else {
-                    let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                    let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                     c.arg("build");
                     c
                 };

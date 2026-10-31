@@ -11,6 +11,11 @@ mod native;
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Command {
+    /// Build or run a restricted standalone package.
+    Package {
+        #[command(subcommand)]
+        command: crate::package::Command,
+    },
     /// Plan locked dependencies from local manifests and caches, without Cargo.
     Plan(Options),
     /// Fetch exact locked registry and git sources without Cargo.
@@ -42,9 +47,9 @@ pub(crate) struct Options {
     no_default_features: bool,
     #[arg(long)]
     offline: bool,
-    /// Prepare host tools directly with rustc, without invoking Cargo.
+    /// Use Cargo for host preparation instead of the native package pipeline.
     #[arg(long)]
-    pub(crate) native: bool,
+    pub(crate) cargo: bool,
     /// Write a versioned plan here (default: target/flux/{native,cargo}-plan.json).
     #[arg(long)]
     plan: Option<PathBuf>,
@@ -175,6 +180,9 @@ struct Plan {
 }
 
 pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
+    if let Command::Package { command } = command {
+        return crate::package::execute(command);
+    }
     if let Command::GenerateLockfile(options) = command {
         return native::generate_lockfile(options);
     }
@@ -187,7 +195,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     let (Command::Prepare(options) | Command::Build { options, .. }) = command else {
         unreachable!("native planning returned above")
     };
-    if options.native {
+    if !options.cargo {
         let optimize = match command {
             Command::Build { optimize, .. } => Some(*optimize),
             _ => None,

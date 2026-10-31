@@ -56,7 +56,7 @@ fn unsupported_aggregate_volatile_layouts_fail_explicitly() {
         .completed();
         support::oracle::success(&output, name);
         let output = support::process::run(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("build")
                 .arg(&source)
                 .arg("-o")

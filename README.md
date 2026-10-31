@@ -18,7 +18,8 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-flux compiles Rust source to native executables through
+`fluxc` compiles Rust source files; `flux` manages package builds and dependencies.
+Install both binaries together. Flux compiles Rust source to native executables through
 [Keel](https://github.com/hxyulin/keel), its own compiler backend, without
 LLVM in its code-generation path. It accepts only programs that are also valid
 Rust, so `rustc` serves as the test oracle: every program flux compiles must
@@ -60,7 +61,7 @@ CPU detection have native Linux comparison coverage. Argument capture, recursive
 bounded integer inline assembly also run on Linux. x86-64 macOS and
 Rosetta are not supported targets. The audited stage 2 proofs used Cargo and
 rustc for host build scripts and procedural macros. Native offline builds now
-prepare those host tools directly with rustc through `flux cargo build --native`;
+prepare those host tools directly with rustc through `flux build`;
 see [native source builds](crates/flux-cli/README.md#native-source-builds). See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the audited graph,
 verification scope and remaining blockers.
 
@@ -113,14 +114,14 @@ startup objects and shared libraries, and Keel performs the link in-process.
 git clone https://github.com/hxyulin/flux-lang.git
 cd flux-lang
 cargo build
-target/debug/flux build-builtins   # prebuild the built-in library (optional)
+target/debug/fluxc build-builtins   # prebuild the built-in library (optional)
 ```
 
 ```sh
-target/debug/flux run tests/run/fib.rs        # compile and run a program
-target/debug/flux build tests/run/fib.rs -O   # write an optimized executable
-target/debug/flux mir tests/run/fib.rs        # print its MIR
-target/debug/flux check examples/*.rs         # report syntax errors
+target/debug/fluxc run tests/run/fib.rs        # compile and run a program
+target/debug/fluxc build tests/run/fib.rs -O   # write an optimized executable
+target/debug/fluxc mir tests/run/fib.rs        # print its MIR
+target/debug/fluxc check examples/*.rs         # report syntax errors
 target/debug/flux package build --manifest-path path/to/Cargo.toml
 ```
 

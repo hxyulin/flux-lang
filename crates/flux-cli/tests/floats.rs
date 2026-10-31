@@ -149,7 +149,7 @@ fn float_acceptance_matches_rustc() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&source)
             .output()
@@ -238,7 +238,7 @@ assert_eq!(callback(local).to_bits(),10.75f64.to_bits());println!("{} {}",x.a.to
     );
     for optimize in [false, true] {
         let executable = dir.join(format!("flux-{optimize}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimize {
             command.arg("-O");

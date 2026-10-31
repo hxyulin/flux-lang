@@ -125,7 +125,7 @@ fn btree_map_entry_borrow_contracts_match_rustc() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&reference.stderr)
         );
-        let output = std::process::Command::new(env!("CARGO_BIN_EXE_flux"))
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&path)
             .output()

@@ -1,8 +1,8 @@
 # Fluxlib separate compilation
 
-Status: implementation in progress on `feat/flib`. `flux build --crate-type lib`
+Status: implementation in progress on `feat/flib`. `fluxc build --crate-type lib`
 writes checked metadata and one native object. `--metadata-only` omits the object.
-`flux build --extern alias=path.flib` compiles against decoded dependencies without
+`fluxc build --extern alias=path.flib` compiles against decoded dependencies without
 reading their sources. Package builds write libraries under `target/flux/deps`
 and reuse exact input snapshots. `flux package build --lib` writes the root
 library there too. Proc-macro exports retain checked host descriptors and use
@@ -222,14 +222,14 @@ Link each dependency object once, in addition to downstream monomorphizations.
 
 ## Staged built-in suite
 
-`flux build-builtins` eagerly checks every built-in function and constant, then
+`fluxc build-builtins` eagerly checks every built-in function and constant, then
 writes one trusted `flux-builtins.flib` beside the executable under `target/` or
 `out/`. It contains the interleaved `core`, `alloc` and `std` prefix, complete
 source records, signatures and checked MIR. Ordinary user artifacts cannot load
 compiler-owned roles. There is no build script or first-run cache creation.
 
 The default suite holds metadata. Each program emits the built-in functions it
-reaches at its requested optimization tier. `build-builtins --native-object`
+reaches at its requested optimization tier. `build-builtins-object`
 also stores one object containing all non-generic definitions; `-O` selects its
 Full tier. A consumer uses that object only at the same tier, otherwise it uses
 the MIR. `FLUX_BUILTINS_MIR_ONLY=1` disables native suite objects for comparison.
@@ -242,7 +242,7 @@ nanosecond modification and change times. Matching stat fields avoid hashing
 the executable again. Any mismatch requires the full content hash; copying the
 compiler can still accept the suite, while a dirty rebuild rejects it. Missing
 or stale suites select source mode for the process. Corrupt matching suites
-name the artifact and instruct the user to run `flux build-builtins` again.
+name the artifact and instruct the user to run `fluxc build-builtins` again.
 Staging validates an existing matching suite without rebuilding it. New contents
 are written to a temporary file in the same directory and renamed into place.
 Before writing, staging decodes the new payload with every check, including
@@ -371,7 +371,7 @@ identity caches; clones inside one compilation share the cache.
 
 ## Built-in suite plan
 
-After the user/provider/package gates pass, an explicit `flux build-builtins`
+After the user/provider/package gates pass, an explicit `fluxc build-builtins`
 staging command will write `flux-builtins.flib` beside the built compiler under
 `target/<profile>`. There is no `build.rs` and no first-run creation. The staged
 suite will contain the compiler-owned `core`, `alloc` and `std` prefix in its
@@ -381,7 +381,7 @@ loader. The source path and suite path use the same suite/core-role identity.
 
 CLI startup will select a matching suite or source mode for the whole invocation.
 Missing and build-mismatched suites use source mode; a corrupt matching suite
-will report its path and request `flux build-builtins` again. Staging uses an
+will report its path and request `fluxc build-builtins` again. Staging uses an
 atomic replacement in the same directory. A source override keeps native source
 coverage in the runner. In-process tests retain the per-process library cache.
 

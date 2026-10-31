@@ -42,7 +42,7 @@ fn invalid_alignment_panics_like_rustc() {
             assert!(String::from_utf8_lossy(&expected.stderr).contains(message));
             for optimize in [false, true] {
                 let executable = dir.join("flux");
-                let mut compiler = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut compiler = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 compiler.arg("build").arg(&file).arg("-o").arg(&executable);
                 if optimize {
                     compiler.arg("-O");
@@ -94,7 +94,7 @@ fn const_and_unsized_boundaries_match_rustc() {
             .output()
             .unwrap();
         assert!(!rustc.status.success());
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&file)
             .output()
@@ -139,7 +139,7 @@ fn unchanged_dropless_has_no_align_offset_error() {
         "{}",
         String::from_utf8_lossy(&rustc.stderr)
     );
-    let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("mir")
         .arg(&file)
         .output()

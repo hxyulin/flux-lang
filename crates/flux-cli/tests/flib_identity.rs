@@ -88,7 +88,7 @@ fn crate_identity_uses_dependency_aliases_and_hashes_instead_of_arena_offsets() 
 
 #[test]
 fn built_executable_identity_hashes_all_bytes() {
-    let path = std::path::Path::new(env!("CARGO_BIN_EXE_flux"));
+    let path = std::path::Path::new(env!("CARGO_BIN_EXE_fluxc"));
     let started = std::time::Instant::now();
     let mut bytes = std::fs::read(path).unwrap();
     let expected = flux_hir::flib::digest(&bytes);

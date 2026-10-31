@@ -75,7 +75,7 @@ fn main_results_match_rustc() {
             .unwrap();
         for optimized in [false, true] {
             let output = root.join(format!("{name}-{optimized}"));
-            let mut cmd = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             cmd.arg("build").arg(&input).arg("-o").arg(&output);
             if optimized {
                 cmd.arg("-O");

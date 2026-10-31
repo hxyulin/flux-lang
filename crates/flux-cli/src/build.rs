@@ -150,7 +150,7 @@ fn compile_inner(
         options,
         sources,
     } = request;
-    let suite = flux_cli::builtins::active();
+    let suite = crate::builtins::active();
     // `core`'s files are parsed with the database.
     let (mut db, root) = timings.time("database + root load/parse", || {
         let mut db = suite.map_or_else(SourceDb::new, |s| s.db.fork());
@@ -229,7 +229,7 @@ fn compile_inner(
         }
     });
     let mut errors = db.syntax_errors();
-    errors.extend(flux_cli::identifiers::diagnostics(&db));
+    errors.extend(crate::identifiers::diagnostics(&db));
     errors.extend(hir.diagnostics.iter().cloned());
     errors.extend(typed.diagnostics.iter().cloned());
     if let Some(d) = flux_ty::check_main(&hir.items, &typed.sigs) {
@@ -263,7 +263,7 @@ fn compile_inner(
                 .ok_or("flux can only compile for arm64 macOS and x86-64 Linux hosts")?;
             let builtin_object = suite.is_some_and(|s| s.use_object(options.optimize));
             let hashes = if builtin_object {
-                flux_cli::builtins::graph_hashes(&hir.items)?
+                crate::builtins::graph_hashes(&hir.items)?
             } else {
                 Vec::new()
             };

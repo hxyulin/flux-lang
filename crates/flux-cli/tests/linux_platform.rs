@@ -40,7 +40,7 @@ fn main() {
     .unwrap();
     for optimized in [false, true] {
         let binary = root.join(format!("flux-{optimized}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&binary);
         if optimized {
             command.arg("-O");
@@ -173,7 +173,7 @@ fn x86_register_contracts_match_rustc() {
     ] {
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
-        for compiler in ["rustc", env!("CARGO_BIN_EXE_flux")] {
+        for compiler in ["rustc", env!("CARGO_BIN_EXE_fluxc")] {
             let mut command = Command::new(compiler);
             if compiler == "rustc" {
                 command.arg("--edition=2024");

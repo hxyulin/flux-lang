@@ -6,7 +6,7 @@ default:
 # Debug build of flux.
 build:
     cargo build
-    target/debug/flux build-builtins
+    target/debug/fluxc build-builtins
 
 # Compile selected compiler modules with rustc and flux and compare execution.
 selfhost-subset:
@@ -18,7 +18,7 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     python3 -m unittest discover -s scripts -p 'test_*.py'
     python3 scripts/test.py all
-    cargo run -q -p flux-cli -- check examples/*.rs $(find crates -name '*.rs' -not -path '*/tests/data/*')
+    cargo run -q -p flux-cli --bin fluxc -- check examples/*.rs $(find crates -name '*.rs' -not -path '*/tests/data/*')
 
 # Run a named test group; use --target, --case or --filter for a narrower selection.
 test group="all" *args:
@@ -61,23 +61,23 @@ miri:
 
 # Print the syntax tree of a file.
 parse file:
-    cargo run -q -p flux-cli -- parse "{{file}}"
+    cargo run -q -p flux-cli --bin fluxc -- parse "{{file}}"
 
 # Print the HIR of a file: items and lowered function bodies.
 hir file:
-    cargo run -q -p flux-cli -- hir "{{file}}"
+    cargo run -q -p flux-cli --bin fluxc -- hir "{{file}}"
 
 # Type-check a file and print its MIR.
 mir file:
-    cargo run -q -p flux-cli -- mir "{{file}}"
+    cargo run -q -p flux-cli --bin fluxc -- mir "{{file}}"
 
 # Compile a program with flux and run it.
 run file:
-    cargo run -q -p flux-cli -- run "{{file}}"
+    cargo run -q -p flux-cli --bin fluxc -- run "{{file}}"
 
 # Print the tokens of a file.
 lex file:
-    cargo run -q -p flux-cli -- lex "{{file}}"
+    cargo run -q -p flux-cli --bin fluxc -- lex "{{file}}"
 
 # Differential testing: generate N programs, compile them with rustc and flux, compare. Usage: just difftest 2000 [--reduce] [--weight name=N]
 difftest n="1000" *args:

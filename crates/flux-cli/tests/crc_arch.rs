@@ -116,7 +116,7 @@ fn crc_contexts_match_rustc() {
         }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
-        for compiler in ["rustc", env!("CARGO_BIN_EXE_flux")] {
+        for compiler in ["rustc", env!("CARGO_BIN_EXE_fluxc")] {
             let mut command = Command::new(compiler);
             if compiler == "rustc" {
                 command.arg("--edition=2024");
@@ -167,7 +167,7 @@ fn safe_target_feature_obeys_call_metadata() {
     .completed();
     support::oracle::success(&reference, "Rust supports safe target-feature functions");
     let output = support::process::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("build")
             .arg(&source)
             .arg("-o")

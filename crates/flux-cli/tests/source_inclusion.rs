@@ -30,7 +30,7 @@ impl Case {
             }
             cmd
         } else {
-            let mut cmd = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             cmd.arg(if mode == "check" { "mir" } else { "build" });
             cmd
         };
@@ -299,7 +299,7 @@ fn actual_keel_selector_include_and_generated_table() {
     let patterns = std::fs::read_to_string(&generated).unwrap();
     // The complete original selector source must reach its generated helper.
     // Other selector dependencies are outside this focused source-loading probe.
-    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("hir")
         .arg(keel.join("crates/keel-codegen/src/select.rs"))
         .env("OUT_DIR", generated.parent().unwrap())

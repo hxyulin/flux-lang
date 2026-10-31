@@ -108,7 +108,7 @@ fn reference_conversions_preserve_boundaries() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&file)
             .output()
@@ -151,7 +151,7 @@ fn unchanged_dropless_source_clears_non_null_gaps() {
         "{}",
         String::from_utf8_lossy(&rustc.stderr)
     );
-    let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("mir")
         .arg(&source)
         .output()

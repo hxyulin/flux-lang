@@ -34,7 +34,7 @@ fn compare_runtime(name: &str, expected: &[u8]) {
                 ]);
                 c
             } else {
-                let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 c.arg("build");
                 c
             };
@@ -235,7 +235,7 @@ fn ownership_and_marker_contracts_match_rustc() {
                     .arg(dir.join(format!("{name}.rmeta")));
                 c
             } else {
-                let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 c.arg("mir");
                 c
             };

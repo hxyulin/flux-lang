@@ -69,7 +69,7 @@ fn forced_source_libraries_match_rustc_for_identity_panics_and_const_generics() 
         );
         for optimized in [false, true] {
             let executable = scratch.path().join(format!("{fixture}-flux-{optimized}"));
-            let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             command
                 .current_dir(&repository)
                 .env("FLUX_BUILTINS_SOURCE", "1")

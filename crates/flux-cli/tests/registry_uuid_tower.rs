@@ -103,7 +103,7 @@ tower-layer = "=0.3.3"
             let plan = root.join(format!("plan-{optimized}.json"));
             let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
             command
-                .args(["cargo", "build", "--offline", "--manifest-path"])
+                .args(["build", "--cargo", "--offline", "--manifest-path"])
                 .arg(&manifest)
                 .arg("--plan")
                 .arg(&plan);

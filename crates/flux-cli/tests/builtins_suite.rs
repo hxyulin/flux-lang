@@ -28,7 +28,7 @@ impl Staged {
             .unwrap();
         let scratch = Scratch::new(repository.join("out/builtins-suite-tests"));
         let executable = scratch.path().join("flux");
-        std::fs::copy(env!("CARGO_BIN_EXE_flux"), &executable).unwrap();
+        std::fs::copy(env!("CARGO_BIN_EXE_fluxc"), &executable).unwrap();
         let suite = executable.with_file_name("flux-builtins.flib");
         let staged = Self {
             scratch,

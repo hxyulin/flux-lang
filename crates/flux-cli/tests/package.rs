@@ -357,14 +357,14 @@ fn selecting_an_inferred_binary_and_existing_file_commands() {
     assert_eq!(output.stdout, b"second\n");
     assert!(fixture.0.join("target/flux/second").exists());
     assert!(!fixture.0.join("target/flux/probe-bin").exists());
-    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .current_dir(&fixture.0)
         .args(["build", "src/main.rs", "-o", "legacy-output"])
         .output()
         .unwrap();
     success(&output);
     assert!(fixture.0.join("legacy-output").exists());
-    let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .current_dir(&fixture.0)
         .args(["run", "src/main.rs"])
         .output()
@@ -1049,7 +1049,7 @@ fn package_timings_cover_compilation_and_exclude_program_execution() {
 fn single_file_timings_survive_source_load_failure() {
     let fixture = Fixture::new();
     for timed in [false, true] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(fixture.0.join("missing.rs"));
         if timed {
             command.arg("--timings");
@@ -1074,7 +1074,7 @@ fn single_file_timings_survive_lowering_and_link_failures() {
     // Use an associated constant so evaluation happens at compile time.
     fixture.write("src/main.rs", "trait Tr { const N: u8; const BAD: u8 = Self::N * 100; } struct S; impl Tr for S { const N: u8 = 100; } fn get<T: Tr>() -> u8 { T::BAD } fn main() { let _ = get::<S>(); }");
     let compile = || {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command
             .arg("build")
             .arg(fixture.0.join("src/main.rs"))

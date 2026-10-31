@@ -33,7 +33,7 @@ fn oracle(name: &str, body: &str, rust_accepts: bool, flux_accepts: bool) {
         "rustc {name}: {}",
         String::from_utf8_lossy(&rustc.stderr)
     );
-    let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("mir")
         .arg(&file)
         .output()

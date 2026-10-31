@@ -24,8 +24,8 @@ fn zero_chunk_size_panics() {
         .unwrap();
         for (label, compiler, optimized) in [
             ("rustc", "rustc", false),
-            ("flux", env!("CARGO_BIN_EXE_flux"), false),
-            ("flux-opt", env!("CARGO_BIN_EXE_flux"), true),
+            ("flux", env!("CARGO_BIN_EXE_fluxc"), false),
+            ("flux-opt", env!("CARGO_BIN_EXE_fluxc"), true),
         ] {
             let executable = root.join(format!("{label}-{method}"));
             let mut command = Command::new(compiler);

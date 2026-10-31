@@ -422,7 +422,7 @@ impl Planner {
         let package = &self.lock.package[id];
         cached_source(&self.home, package)?.ok_or_else(|| {
             format!(
-                "offline source missing for {} {}; run `flux cargo fetch --locked` first",
+                "offline source missing for {} {}; run `flux fetch --locked` first",
                 package.name, package.version
             )
         })

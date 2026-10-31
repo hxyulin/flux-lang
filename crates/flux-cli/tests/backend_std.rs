@@ -55,7 +55,7 @@ fn once_cell_contracts() {
                     .arg(root.join(format!("{name}.rmeta")));
                 c
             } else {
-                let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 c.arg("mir");
                 c
             };
@@ -177,7 +177,7 @@ fn main() {
             c.arg("--edition=2024");
             c
         } else {
-            let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             c.arg("build");
             c
         };
@@ -234,7 +234,7 @@ fn main(){
             c.arg("--edition=2024");
             c
         } else {
-            let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             c.arg("build");
             c
         };

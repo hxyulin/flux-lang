@@ -13,7 +13,7 @@ fn scratch() -> Scratch {
 impl Scratch {
     fn command(&self, args: &[&str]) {
         let output = flib_support::run(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .current_dir(self.path())
                 .args(args),
             "driver",

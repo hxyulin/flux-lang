@@ -162,7 +162,7 @@ fn collection_ownership_and_marker_contracts_match_rustc() {
             String::from_utf8_lossy(&output.stderr)
         );
         let output = support::process::run(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("mir")
                 .arg(&source),
             &directory,

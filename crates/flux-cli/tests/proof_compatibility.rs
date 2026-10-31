@@ -209,7 +209,7 @@ fn cli_reports_invalid_proof_without_panicking() {
     )
     .unwrap();
     let output = support::process::run(
-        Command::new(env!("CARGO_BIN_EXE_flux"))
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(path),
         &dir,

@@ -8,7 +8,7 @@ use std::process::Command;
 
 fn compile(path: &Path, output: &Path, flux: bool, optimized: bool) -> std::process::Output {
     let mut command = Command::new(if flux {
-        env!("CARGO_BIN_EXE_flux")
+        env!("CARGO_BIN_EXE_fluxc")
     } else {
         "rustc"
     });

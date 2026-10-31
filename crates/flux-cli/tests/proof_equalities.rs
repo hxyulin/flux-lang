@@ -129,7 +129,7 @@ fn projection_proof_equalities_match_rustc() {
                 typed.diagnostics
             );
         }
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .current_dir(&root)
             .arg("mir")
             .arg(&file)

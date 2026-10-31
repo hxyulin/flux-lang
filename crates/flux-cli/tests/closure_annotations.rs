@@ -126,7 +126,7 @@ fn named_closure_parameters_match_rustc() {
             String::from_utf8_lossy(&expected.stderr)
         );
         let actual = bounded(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("mir")
                 .arg(&path),
             &root,
@@ -177,7 +177,7 @@ fn callable_alias_regions_keep_an_explicit_metadata_boundary() {
             String::from_utf8_lossy(&expected.stderr)
         );
         let actual = bounded(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("mir")
                 .arg(&path),
             &root,
@@ -223,7 +223,7 @@ fn named_closure_annotations_execute_like_rustc() {
     assert_eq!(expected.stdout, b"borrowed static 7\n");
     for optimized in [false, true] {
         let executable = root.join(format!("flux-{optimized}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             command.arg("-O");

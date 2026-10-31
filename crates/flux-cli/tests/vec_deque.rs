@@ -35,7 +35,7 @@ fn ring_matches_rustc() {
     success(&expected);
     for optimized in [false, true] {
         let executable = root.join(format!("flux-{optimized}"));
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         cmd.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             cmd.arg("-O");

@@ -35,7 +35,7 @@ fn dst_wrappers_match_rustc_off_and_on() {
         assert!(expected.status.success());
         for optimize in [false, true] {
             let executable = dir.join(if optimize { "flux-opt" } else { "flux" });
-            let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             command.arg("build").arg(&source).arg("-o").arg(&executable);
             if optimize {
                 command.arg("-O");
@@ -221,7 +221,7 @@ fn dst_wrapper_acceptance_matches_rustc() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&source)
             .output()
@@ -263,7 +263,7 @@ fn wrapped_trait_objects_fail_explicitly() {
             "{}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&source)
             .output()

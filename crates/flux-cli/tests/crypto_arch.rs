@@ -41,7 +41,7 @@ fn crypto_lanes_match_rustc_off_and_on() {
     support::oracle::success(&expected, "Rust SHA instruction oracle");
     for optimize in [false, true] {
         let target = root.join(format!("flux-{optimize}"));
-        let mut build = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut build = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         build.arg("build").arg(&source).arg("-o").arg(&target);
         if optimize {
             build.arg("-O");
@@ -379,7 +379,7 @@ fn target_feature_contracts_match_rustc() {
             String::from_utf8_lossy(&expected.stderr)
         );
         let actual = support::process::run(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("build")
                 .arg(&path)
                 .arg("-o")
@@ -479,7 +479,7 @@ fn unchanged_sha2_compressors_match_rustc() {
     support::oracle::success(&expected, "original SHA source reference");
     for optimize in [false, true] {
         let target = root.join(format!("flux-{optimize}"));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&target);
         if optimize {
             command.arg("-O");

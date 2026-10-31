@@ -33,7 +33,7 @@ fn compare_executables(file: &Path, dir: &Path, name: &str, panic: Option<&str>)
                 ]);
                 c
             } else {
-                let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                 c.arg("build");
                 c
             };
@@ -310,7 +310,7 @@ fn ownership_bounds_and_borrows_are_compile_only() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&file)
             .output()
@@ -411,7 +411,7 @@ fn unchanged_shared_slice_source_matches_rustc() {
             "{}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&file)
             .output()
@@ -500,7 +500,7 @@ fn iterator_projection_boundaries_are_compile_only() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&rustc.stderr)
         );
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&file)
             .output()
@@ -547,7 +547,7 @@ fn iterator_projection_boundaries_are_compile_only() {
             .status
             .success()
     );
-    let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("mir")
         .arg(&file)
         .output()
@@ -565,7 +565,7 @@ fn iterator_projection_boundaries_are_compile_only() {
             .status
             .success()
     );
-    let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+    let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
         .arg("mir")
         .arg(file)
         .output()
@@ -679,7 +679,7 @@ fn checked_counter_limits_abort_without_wrapping() {
                     c.args(["--edition=2024", "-C", "panic=abort"]);
                     c
                 } else {
-                    let mut c = Command::new(env!("CARGO_BIN_EXE_flux"));
+                    let mut c = Command::new(env!("CARGO_BIN_EXE_fluxc"));
                     c.arg("build");
                     c
                 };

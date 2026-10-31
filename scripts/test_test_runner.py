@@ -375,8 +375,8 @@ class Planning(unittest.TestCase):
         target = runner.Target("flux-cli", "sample", "test", "/fixture/tests/sample.rs", "cli-id")
         messages = [
             {"reason": "compiler-artifact", "package_id": "cli-id", "profile": {"test": False},
-             "target": {"name": "flux", "kind": ["bin"], "src_path": str(runner.ROOT / "crates/flux-cli/src/main.rs")},
-             "executable": "/fixture/target/debug/flux"},
+             "target": {"name": "fluxc", "kind": ["bin"], "src_path": str(runner.ROOT / "crates/flux-cli/src/fluxc.rs")},
+             "executable": "/fixture/target/debug/fluxc"},
             {"reason": "compiler-artifact", "package_id": "cli-id", "profile": {"test": True},
              "target": {"name": "sample", "kind": ["test"], "src_path": target.source},
              "executable": "/fixture/target/debug/deps/sample"},
@@ -387,7 +387,7 @@ class Planning(unittest.TestCase):
                 patch.object(runner, "stage_builtins") as stage:
             directory = Path(temporary)
             runner.build("cargo", [target], directory)
-            stage.assert_called_once_with(Path("/fixture/target/debug/flux"), directory)
+            stage.assert_called_once_with(Path("/fixture/target/debug/fluxc"), directory)
 
     def test_staging_failure_stops_the_plan_and_keeps_its_log(self):
         result = SimpleNamespace(stdout="eager built-in failure", returncode=2)
@@ -395,7 +395,7 @@ class Planning(unittest.TestCase):
                 patch.object(runner.subprocess, "run", return_value=result):
             directory = Path(temporary)
             with self.assertRaisesRegex(RuntimeError, "built-in staging failed"):
-                runner.stage_builtins(Path("/fixture/target/debug/flux"), directory)
+                runner.stage_builtins(Path("/fixture/target/debug/fluxc"), directory)
             self.assertEqual((directory / "builtins.log").read_text(), result.stdout)
 
     def test_component_without_cli_builds_its_staging_compiler(self):
@@ -406,12 +406,12 @@ class Planning(unittest.TestCase):
         result = SimpleNamespace(stdout=json.dumps(message), returncode=0)
         with tempfile.TemporaryDirectory() as temporary, \
                 patch.object(runner.subprocess, "run", return_value=result), \
-                patch.object(runner, "build_compiler", return_value=Path("/fixture/target/debug/flux")) as compiler, \
+                patch.object(runner, "build_compiler", return_value=Path("/fixture/target/debug/fluxc")) as compiler, \
                 patch.object(runner, "stage_builtins") as stage:
             directory = Path(temporary)
             runner.build("cargo", [target], directory, require_compiler=True)
             compiler.assert_called_once_with("cargo", directory)
-            stage.assert_called_once_with(Path("/fixture/target/debug/flux"), directory)
+            stage.assert_called_once_with(Path("/fixture/target/debug/fluxc"), directory)
 
     def test_shared_source_file_still_has_distinct_package_artifacts(self):
         first = runner.Target("first", "shared", "test", "/shared/tests/shared.rs", "first-id")

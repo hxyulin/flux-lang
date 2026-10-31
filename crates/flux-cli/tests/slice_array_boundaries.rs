@@ -62,7 +62,7 @@ fn slice_array_rejections_match_rustc() {
             .unwrap();
         assert!(!rustc.status.success(), "rustc accepted {name}");
         assert!(String::from_utf8_lossy(&rustc.stderr).contains(expected));
-        let flux = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let flux = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .current_dir(&root)
             .arg("mir")
             .arg(&file)

@@ -55,7 +55,7 @@ impl Fixture {
     fn fetch(&self, label: &str, args: &[&str]) -> Output {
         let output = support::process::run(
             self.command()
-                .args(["cargo", "fetch", "--locked", "--manifest-path"])
+                .args(["fetch", "--locked", "--manifest-path"])
                 .arg(self.0.join("Cargo.toml"))
                 .args([
                     "--download-base",
@@ -175,7 +175,7 @@ fn registry_fetch_offline_reuse_and_cargo_free_build() {
     )) {
         let built = support::process::run(
             f.command()
-                .args(["cargo", "build", "--native", "--offline", "--manifest-path"])
+                .args(["build", "--offline", "--manifest-path"])
                 .arg(f.0.join("Cargo.toml")),
             &f.0,
             "native-build",
@@ -346,7 +346,7 @@ fn exact_git_commit_workspace_and_offline_checkout() {
     let plan = f.0.join("plan.json");
     let output = support::process::run(
         f.command()
-            .args(["cargo", "plan", "--manifest-path"])
+            .args(["plan", "--manifest-path"])
             .arg(f.0.join("Cargo.toml"))
             .arg("--plan")
             .arg(&plan),
@@ -420,7 +420,7 @@ fn http_redirects_and_interrupted_downloads() {
         });
         let output = support::process::run(
             f.command()
-                .args(["cargo", "fetch", "--locked", "--manifest-path"])
+                .args(["fetch", "--locked", "--manifest-path"])
                 .arg(f.0.join("Cargo.toml"))
                 .args(["--download-base", &format!("http://{address}")]),
             &f.0,
@@ -517,7 +517,7 @@ fn invalid_identities_and_corrupt_cached_archives_fail() {
     f.lock(&checksum);
     let output = support::process::run(
         f.command()
-            .args(["cargo", "fetch", "--manifest-path"])
+            .args(["fetch", "--manifest-path"])
             .arg(f.0.join("Cargo.toml")),
         &f.0,
         "require-locked",

@@ -52,7 +52,7 @@ they do not provide a frontend, crate loader or metadata translator.
 See [Cargo environment variables](https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-reads).
 
 Use a dedicated `flux-rustc` executable for `RUSTC`, rather than trying to
-put `flux build` plus arguments into that variable. A wrapper variant must
+put `fluxc build` plus arguments into that variable. A wrapper variant must
 explicitly consume the compiler-path argument; a replacement compiler does
 not receive that extra argument. Replacing only workspace compilation
 still leaves rustc-built dependencies that Flux cannot currently import.
@@ -384,7 +384,7 @@ work, which is not claimed by the implemented subset:
 - Extract current build logic into a reusable typed `CompileRequest` with
   root path, explicit crate name, edition, target, configuration, mode and
   output paths; return diagnostics, loaded files and produced artifacts.
-  Preserve `flux build FILE` as a convenience caller.
+  Preserve `fluxc build FILE` as a convenience caller.
 - Add `CompilationConfig` and thread it into HIR/cfg evaluation. Validate
   requested settings against what is implemented; do not silently inherit
   arbitrary Cargo release/debug behavior. Scope cached library state by

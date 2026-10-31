@@ -107,7 +107,7 @@ fn process_commands_match_rustc() {
     success(&closed_expected);
     for optimized in [false, true] {
         let executable = root.join(format!("flux-{optimized}"));
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         cmd.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             cmd.arg("-O");
@@ -125,7 +125,7 @@ fn process_commands_match_rustc() {
         assert_eq!(actual.stdout, expected.stdout);
         assert_eq!(actual.stderr, expected.stderr);
         let closed = root.join(format!("closed-flux-{optimized}"));
-        let mut build = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut build = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         build
             .arg("build")
             .arg(&closed_source)

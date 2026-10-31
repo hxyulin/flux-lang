@@ -16,7 +16,7 @@ reports are useful contributions.
 git clone https://github.com/hxyulin/flux-lang.git
 cd flux-lang
 cargo build
-target/debug/flux build-builtins
+target/debug/fluxc build-builtins
 just check
 ```
 
@@ -58,7 +58,7 @@ Use `FLUX_BUILTINS_SOURCE=1` to force source mode, or
 ## Validate a change
 
 ```sh
-just check                 # formatting, clippy, tests, flux check on the workspace
+just check                 # formatting, clippy, tests, fluxc check on the workspace
 just snapshots             # rewrite parser snapshots after an intended change
 just sourcegen             # regenerate the typed AST from flux.ungram
 just corpus <dir>          # parse a directory of Rust, report panics and common errors

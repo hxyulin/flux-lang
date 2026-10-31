@@ -46,7 +46,7 @@ fn slice_align_to_boundaries_match_rustc() {
         }
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();
-        for compiler in ["rustc", env!("CARGO_BIN_EXE_flux")] {
+        for compiler in ["rustc", env!("CARGO_BIN_EXE_fluxc")] {
             let mut command = Command::new(compiler);
             if compiler == "rustc" {
                 command.arg("--edition=2024");

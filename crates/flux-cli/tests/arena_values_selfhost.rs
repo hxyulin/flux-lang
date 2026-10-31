@@ -36,7 +36,7 @@ fn main() {
         for optimized in [false, true] {
             let exe = dir.join(format!("values-{flux}-{optimized}"));
             let mut command = Command::new(if flux {
-                env!("CARGO_BIN_EXE_flux")
+                env!("CARGO_BIN_EXE_fluxc")
             } else {
                 "rustc"
             });

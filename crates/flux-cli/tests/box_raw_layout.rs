@@ -38,7 +38,7 @@ fn box_raw_layout_matches_rustc_off_and_on() {
     );
     for optimize in [false, true] {
         let executable = dir.join(if optimize { "flux-opt" } else { "flux" });
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimize {
             command.arg("-O");
@@ -156,7 +156,7 @@ fn raw_layout_stable_api_matches_rustc() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&oracle.stderr)
         );
-        let actual = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let actual = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("mir")
             .arg(&path)
             .output()

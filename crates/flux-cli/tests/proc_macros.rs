@@ -174,7 +174,7 @@ fn native_macros_match_rustc() {
     for optimize in [false, true] {
         let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
         command
-            .args(["cargo", "build", "--offline", "--manifest-path"])
+            .args(["build", "--cargo", "--offline", "--manifest-path"])
             .arg(&manifest)
             .args(["-p", "app"]);
         if optimize {

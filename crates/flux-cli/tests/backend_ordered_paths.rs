@@ -54,7 +54,7 @@ fn ordered_range_and_path_failure_contracts() {
         std::fs::write(&source, format!("use std::collections::{{BTreeMap,BTreeSet}};use std::ops::Bound::{{Included,Unbounded}};{body}")).unwrap();
         for flux in [false, true] {
             let mut command = Command::new(if flux {
-                env!("CARGO_BIN_EXE_flux")
+                env!("CARGO_BIN_EXE_fluxc")
             } else {
                 "rustc"
             });
@@ -110,7 +110,7 @@ fn ordered_range_and_path_failure_contracts() {
         for flux in [false, true] {
             let executable = directory.join(format!("{name}-{flux}"));
             let mut compile = Command::new(if flux {
-                env!("CARGO_BIN_EXE_flux")
+                env!("CARGO_BIN_EXE_fluxc")
             } else {
                 "rustc"
             });

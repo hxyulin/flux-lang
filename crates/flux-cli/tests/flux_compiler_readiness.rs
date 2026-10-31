@@ -427,7 +427,7 @@ fn audit(root: &Path) {
         let executable = messages
             .iter()
             .find_map(|m| {
-                (m["reason"] == "compiler-artifact" && m["target"]["name"] == "flux")
+                (m["reason"] == "compiler-artifact" && m["target"]["name"] == "fluxc")
                     .then(|| m["executable"].as_str())
                     .flatten()
             })
@@ -583,7 +583,7 @@ fn flux_compiler(root: &Path) {
     let cli = &packages[cli_index];
     let binary = db
         .load_with_edition(
-            &Path::new(cli["root"].as_str().unwrap()).with_file_name("main.rs"),
+            &Path::new(cli["root"].as_str().unwrap()).with_file_name("fluxc.rs"),
             Edition::E2024,
         )
         .unwrap();
@@ -593,7 +593,7 @@ fn flux_compiler(root: &Path) {
         .iter()
         .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
         .collect();
-    binary_env.insert("CARGO_CRATE_NAME".into(), "flux".into());
+    binary_env.insert("CARGO_CRATE_NAME".into(), "fluxc".into());
     db.set_crate_env(binary, binary_env).unwrap();
     db.set_crate_cfg(
         binary,
@@ -610,7 +610,7 @@ fn flux_compiler(root: &Path) {
     dependencies.push((Symbol::intern("flux_cli"), indices[&cli_index]));
     sources.push(SourceCrate {
         root: binary,
-        name: Symbol::intern("flux"),
+        name: Symbol::intern("fluxc"),
         dependencies,
     });
     phase(root, &format!("{label}-syntax-hir"));

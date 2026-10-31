@@ -302,7 +302,7 @@ fn compare_program(root: &Path, dir: &Path, program: &Path) -> Vec<String> {
     for optimize in [false, true] {
         let suffix = if optimize { "-O" } else { "" };
         let executable = dir.join(format!("{name}-flux{suffix}"));
-        let mut flux = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut flux = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         flux.current_dir(root)
             .arg("build")
             .arg(program)

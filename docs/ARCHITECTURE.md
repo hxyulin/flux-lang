@@ -4,7 +4,7 @@ flux is a Cargo workspace:
 
 | Crate | Role |
 | --- | --- |
-| [`flux-cli`](../crates/flux-cli/src/main.rs) | The `flux` binary: files, arguments, diagnostics, exit codes |
+| [`flux-cli`](../crates/flux-cli/src/lib.rs) | Shared driver library, `fluxc` compiler and `flux` package manager |
 | [`flux-syntax`](../crates/flux-syntax/src/lib.rs) | Source text to lossless syntax trees, and the typed AST over them |
 | [`flux-sourcegen`](../crates/flux-sourcegen/src/lib.rs) | Generates the typed AST from [`flux.ungram`](../crates/flux-syntax/flux.ungram) |
 | [`flux-hir`](../crates/flux-hir/src/lib.rs) | Item tree and HIR: function bodies with names resolved |
@@ -814,7 +814,7 @@ at the discriminant it started from. Then the values of each enum are
 checked for E0370 and E0081, and kept in `FileMir::discriminants` for
 code generation and MIR dumps.
 Those that generic code names are evaluated by code generation for the
-instances it builds, so their errors come from `flux build` only, as
+instances it builds, so their errors come from `fluxc build` only, as
 rustc reports them only in a full build; more than 128 constants deep
 is rustc's "queries overflow the depth limit!".
 
@@ -1137,7 +1137,7 @@ passed to keel's ELF linker.
 
 ### Compilation timings
 
-`flux build/run` and `flux package build/run` accept `--timings`. Reports go
+`fluxc build/run` and `flux package build/run` accept `--timings`. Reports go
 to stderr, including reached scopes on ordinary failures. Disabled timing
 performs no clock reads or phase-record allocations.
 
@@ -1214,7 +1214,7 @@ runtime's lang functions and the trait methods those call. In a release
 build on the same machine, its first compilation in a process takes
 500 to 600 ms, nearly all of it that work. Each later one, as in the
 test suites, copies what it reaches and takes about 15 ms: 5 ms of type
-checking and 8 ms of MIR. A single `flux build` still does the
+checking and 8 ms of MIR. A single `fluxc build` still does the
 libraries' work once.
 
 ## Testing

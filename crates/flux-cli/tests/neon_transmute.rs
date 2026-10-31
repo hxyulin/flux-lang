@@ -37,7 +37,7 @@ fn neon_and_transmute_execute_like_rustc() {
         assert!(expected.status.success());
         for optimize in [false, true] {
             let executable = dir.join(if optimize { "flux-opt" } else { "flux" });
-            let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+            let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
             command.arg("build").arg(&source).arg("-o").arg(&executable);
             if optimize {
                 command.arg("-O");
@@ -293,7 +293,7 @@ fn transmute_and_neon_contexts_match_rustc() {
             "rustc {name}: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let output = Command::new(env!("CARGO_BIN_EXE_flux"))
+        let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
             .arg("build")
             .arg(&source)
             .arg("-o")

@@ -15,7 +15,7 @@ fn bounded(root: &Path, label: &str, command: &mut Command) -> Output {
 
 fn compile(root: &Path, source: &Path, output: &Path, flux: bool, optimized: bool) {
     let mut command = Command::new(if flux {
-        env!("CARGO_BIN_EXE_flux")
+        env!("CARGO_BIN_EXE_fluxc")
     } else {
         "rustc"
     });

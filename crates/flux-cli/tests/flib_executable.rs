@@ -46,7 +46,7 @@ fn stat_hash_and_copy_paths_preserve_content_identity() {
 
 #[test]
 fn report_real_executable_check_costs() {
-    let executable = std::path::Path::new(env!("CARGO_BIN_EXE_flux"));
+    let executable = std::path::Path::new(env!("CARGO_BIN_EXE_fluxc"));
     let identity = ExecutableIdentity::capture(executable).unwrap();
     let start = std::time::Instant::now();
     assert_eq!(

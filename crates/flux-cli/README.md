@@ -1,20 +1,26 @@
 # flux-cli
 
-The `flux` command for [flux](../../README.md), an experimental compiler for
-a subset of Rust.
+`flux` manages packages. `fluxc` compiles individual source files. Both binaries
+share the compiler library. Install them together: `flux` invokes its sibling
+`fluxc` for package operations so artifact identities stay consistent.
+Package builds use native planning by default;
+`--cargo` explicitly selects the Cargo-backed host preparation route.
+
+The `flux` package manager and `fluxc` compiler for [Flux](../../README.md),
+an experimental compiler for a subset of Rust.
 
 ```sh
-flux lex file.rs      # tokens, trivia included
-flux parse file.rs    # syntax tree and errors
-flux check a.rs b.rs  # errors only; exits with 1 if there are any
+fluxc lex file.rs      # tokens, trivia included
+fluxc parse file.rs    # syntax tree and errors
+fluxc check a.rs b.rs  # errors only; exits with 1 if there are any
 ```
 
 ## Native lockfile generation
 
 ```sh
-flux cargo generate-lockfile --manifest-path Cargo.toml
-flux cargo fetch --locked
-flux cargo build --native --offline -p flux-cli --bin flux -O
+flux generate-lockfile --manifest-path Cargo.toml
+flux fetch --locked
+flux build --offline -p flux-cli --bin fluxc -O
 ```
 
 `generate-lockfile` resolves every package in the workspace and writes Cargo.lock
@@ -76,9 +82,9 @@ indexed by `out/lockfile-resolution-audit/proof.json`.
 ## Locked dependency fetching
 
 ```sh
-flux cargo fetch --locked --manifest-path Cargo.toml
-flux cargo fetch --locked --offline
-flux cargo build --native --offline -p flux-cli --bin flux -O
+flux fetch --locked --manifest-path Cargo.toml
+flux fetch --locked --offline
+flux build --offline -p flux-cli --bin fluxc -O
 ```
 
 Fetching reads an existing Cargo.lock version 3 or 4 and downloads every locked
@@ -129,12 +135,12 @@ tests and workspace Clippy. Local evidence is indexed by
 ## Native offline planning
 
 ```sh
-flux cargo plan --manifest-path Cargo.toml -p flux-cli --bin flux
+flux plan --manifest-path Cargo.toml -p flux-cli --bin fluxc
 ```
 
 This command reads manifests and Cargo.lock directly. It never invokes Cargo,
 accesses the network, runs build scripts, or loads proc macros. Dependencies must
-already exist in `CARGO_HOME` (default `~/.cargo`); `flux cargo fetch --locked`
+already exist in `CARGO_HOME` (default `~/.cargo`); `flux fetch --locked`
 can populate it. Rustc supplies the host triple
 and target cfg; Git checks cached checkout revisions. Planning currently targets
 the host platform. `--offline` is accepted but planning is always offline.
@@ -154,8 +160,8 @@ and git working-tree changes are not integrity-checked. Git sources must have
 the exact locked commit checked out. Missing or ambiguous sources and stale
 lockfile edges fail without fetching or updating Cargo.lock.
 
-Planning does not execute host tools. Add `--native` to `prepare` or `build`
-to prepare or compile the graph without Cargo, as described below.
+Planning does not execute host tools. Use `prepare` or `build` to prepare or
+compile the graph without Cargo, as described below.
 Alternate registries, source replacement, patch/replace overrides,
 workspace member globs, resolver 1, and cross compilation are not supported.
 Unsupported source/target overrides in Cargo configuration fail explicitly.
@@ -163,8 +169,8 @@ Unsupported source/target overrides in Cargo configuration fail explicitly.
 ## Native source builds
 
 ```sh
-flux cargo prepare --native --manifest-path Cargo.toml -p flux-cli --bin flux
-flux cargo build --native --manifest-path path/to/Cargo.toml -p application -O
+flux prepare --manifest-path Cargo.toml -p flux-cli --bin fluxc
+flux build --manifest-path path/to/Cargo.toml -p application -O
 ```
 
 These commands use native offline planning. They compile host libraries,
@@ -225,9 +231,9 @@ The native route has not yet been verified through a stage 2 rebuild.
 ## Cargo-backed source builds
 
 ```sh
-flux cargo prepare --manifest-path path/to/Cargo.toml -p application --offline
-flux cargo build --manifest-path path/to/Cargo.toml -p application --offline
-flux cargo build --manifest-path path/to/Cargo.toml -p application --offline -O
+flux prepare --cargo --manifest-path path/to/Cargo.toml -p application --offline
+flux build --cargo --manifest-path path/to/Cargo.toml -p application --offline
+flux build --cargo --manifest-path path/to/Cargo.toml -p application --offline -O
 ```
 
 These commands always use the lockfile. Select one binary with `--bin` if the
@@ -297,7 +303,7 @@ mapping, rustc-compatible library artifact export, or `RUSTC=flux` adapter yet.
 
 Explicit source environments contain common Cargo package/crate variables and
 build-script outputs. Arbitrary process variables are not implicitly serialized
-or inherited. Direct standalone `flux build file.rs` retains process environment
+or inherited. Direct standalone `fluxc build file.rs` retains process environment
 lookup. This avoids leaking unrelated process values into source-graph plans;
 projects requiring other `env!` inputs need an explicit input interface extension.
 

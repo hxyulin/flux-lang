@@ -180,7 +180,7 @@ fn callback_abi_and_tls_lifetimes_match_rustc() {
             String::from_utf8_lossy(&rustc.stderr)
         );
         let flux = bounded(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("mir")
                 .arg(&path),
             &directory,
@@ -228,7 +228,7 @@ fn native_threads_have_isolated_values_and_run_destructors() {
     assert_eq!(expected.stdout, b"tls 8 8 37 19\n");
     for optimized in [false, true] {
         let executable = directory.join(format!("flux-{optimized}"));
-        let mut compile = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut compile = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         compile.arg("build").arg(&source).arg("-o").arg(&executable);
         if optimized {
             compile.arg("-O");

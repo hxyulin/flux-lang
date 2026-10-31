@@ -61,7 +61,7 @@ fn std_neon_boundaries_match_rustc() {
             format!("use std::arch::aarch64::*; fn main() {{ {body} }}"),
         )
         .unwrap();
-        for compiler in ["rustc", env!("CARGO_BIN_EXE_flux")] {
+        for compiler in ["rustc", env!("CARGO_BIN_EXE_fluxc")] {
             let mut command = Command::new(compiler);
             if compiler == "rustc" {
                 command.arg("--edition=2024");

@@ -51,7 +51,7 @@ fn invalid_field_offsets_match_rustc() {
         )
         .completed();
         let actual = support::process::run(
-            Command::new(env!("CARGO_BIN_EXE_flux"))
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .arg("mir")
                 .arg(&path),
             scratch.path(),

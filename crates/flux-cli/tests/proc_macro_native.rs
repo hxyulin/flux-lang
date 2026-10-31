@@ -216,7 +216,7 @@ fn main() {
     for compiler in ["rustc", "flux"] {
         let executable = fixture.0.join(compiler);
         let mut command = Command::new(if compiler == "flux" {
-            env!("CARGO_BIN_EXE_flux")
+            env!("CARGO_BIN_EXE_fluxc")
         } else {
             "rustc"
         });

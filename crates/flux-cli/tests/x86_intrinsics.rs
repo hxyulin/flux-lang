@@ -200,7 +200,7 @@ fn feature_and_immediate_contracts_match_rustc() {
     ] {
         let source_path = root.join(format!("{name}.rs"));
         std::fs::write(&source_path, source).unwrap();
-        for compiler in ["rustc", env!("CARGO_BIN_EXE_flux")] {
+        for compiler in ["rustc", env!("CARGO_BIN_EXE_fluxc")] {
             let mut command = Command::new(compiler);
             if compiler == "rustc" {
                 command.arg("--edition=2024");

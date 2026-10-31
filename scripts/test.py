@@ -339,8 +339,8 @@ def build(cargo: str, selected: list[Target], directory: Path, complete: bool = 
         if artifact.get("reason") != "compiler-artifact" or not artifact.get("executable"):
             continue
         if not artifact["profile"]["test"]:
-            if (artifact["target"]["name"] == "flux" and "bin" in artifact["target"]["kind"]
-                    and Path(artifact["target"]["src_path"]) == ROOT / "crates/flux-cli/src/main.rs"):
+            if (artifact["target"]["name"] == "fluxc" and "bin" in artifact["target"]["kind"]
+                    and Path(artifact["target"]["src_path"]) == ROOT / "crates/flux-cli/src/fluxc.rs"):
                 compiler = Path(artifact["executable"])
             continue
         for target in selected:
@@ -361,7 +361,7 @@ def build(cargo: str, selected: list[Target], directory: Path, complete: bool = 
 
 def build_compiler(cargo: str, directory: Path) -> Path:
     """Prepare the test-profile compiler when a focused plan does not build it."""
-    result = subprocess.run([cargo, "build", "--profile", "test", "-p", "flux-cli", "--bin", "flux",
+    result = subprocess.run([cargo, "build", "--profile", "test", "-p", "flux-cli", "--bin", "fluxc",
                              "--message-format=json"], cwd=ROOT, stdout=subprocess.PIPE, text=True)
     (directory / "compiler-build.jsonl").write_text(result.stdout)
     if result.returncode:
@@ -372,9 +372,9 @@ def build_compiler(cargo: str, directory: Path) -> Path:
         except json.JSONDecodeError:
             continue
         if (artifact.get("reason") == "compiler-artifact" and artifact.get("executable")
-                and not artifact["profile"]["test"] and artifact["target"]["name"] == "flux"
+                and not artifact["profile"]["test"] and artifact["target"]["name"] == "fluxc"
                 and "bin" in artifact["target"]["kind"]
-                and Path(artifact["target"]["src_path"]) == ROOT / "crates/flux-cli/src/main.rs"):
+                and Path(artifact["target"]["src_path"]) == ROOT / "crates/flux-cli/src/fluxc.rs"):
             return Path(artifact["executable"])
     raise RuntimeError("missing compiler executable for staging")
 
