@@ -9,7 +9,9 @@ use super::Options;
 
 mod execute;
 mod fetch;
+mod resolve;
 pub(crate) use fetch::FetchOptions;
+pub(crate) use resolve::ResolveOptions;
 
 type Table = toml::Table;
 type Result<T> = std::result::Result<T, String>;
@@ -400,9 +402,11 @@ impl Planner {
             let mut parts = entry.splitn(3, ' ');
             parts.next() == Some(&package.name)
                 && parts.next().is_none_or(|v| v == package.version)
-                && parts
-                    .next()
-                    .is_none_or(|s| Some(s.trim_matches(['(', ')'])) == package.source.as_deref())
+                && parts.next().is_none_or(|s| {
+                    package.source.as_deref().is_some_and(|source| {
+                        lock_source_matches(s.trim_matches(['(', ')']), source)
+                    })
+                })
         });
         if valid {
             Ok(())
@@ -609,20 +613,34 @@ impl Planner {
 }
 
 fn expand(package: &Package, state: &mut Features) -> Result<()> {
+    let mut optional = BTreeSet::new();
+    let mut required = BTreeSet::new();
+    for dependency in &package.dependencies {
+        if boolean(&dependency.spec, "optional", false)? {
+            optional.insert(dependency.alias.clone());
+        } else {
+            required.insert(dependency.alias.clone());
+        }
+    }
+    expand_features(&package.features, &optional, &required, state)
+        .map_err(|e| format!("{e} in {}", package.manifest.display()))
+}
+
+fn expand_features(
+    definitions: &BTreeMap<String, Vec<String>>,
+    optional: &BTreeSet<String>,
+    required: &BTreeSet<String>,
+    state: &mut Features,
+) -> Result<()> {
     loop {
         let before = state.clone();
         for feature in &before.names {
-            let entries = package.features.get(feature).ok_or_else(|| {
-                format!(
-                    "unknown feature `{feature}` in {}",
-                    package.manifest.display()
-                )
-            })?;
+            let entries = definitions
+                .get(feature)
+                .ok_or_else(|| format!("unknown feature `{feature}`"))?;
             for entry in entries {
                 if let Some(dep) = entry.strip_prefix("dep:") {
-                    if !package.dependencies.iter().any(|d| {
-                        d.alias == dep && boolean(&d.spec, "optional", false).unwrap_or(false)
-                    }) {
+                    if !optional.contains(dep) {
                         return Err(format!(
                             "feature references unknown optional dependency `{dep}`"
                         ));
@@ -631,26 +649,19 @@ fn expand(package: &Package, state: &mut Features) -> Result<()> {
                 } else if let Some((dep, feature)) = entry.split_once('/') {
                     let weak = dep.ends_with('?');
                     let dep = dep.trim_end_matches('?');
-                    if !package.dependencies.iter().any(|d| d.alias == dep) {
+                    if !optional.contains(dep) && !required.contains(dep) {
                         return Err(format!("feature references unknown dependency `{dep}`"));
                     }
                     if !weak {
                         state.optional.insert(dep.into());
-                        if package
-                            .features
+                        if definitions
                             .get(dep)
                             .is_some_and(|v| v == &[format!("dep:{dep}")])
                         {
                             state.names.insert(dep.into());
                         }
                     }
-                    // Weak forwarding must be reconsidered after other features activate the edge.
-                    if !weak
-                        || state.optional.contains(dep)
-                        || package.dependencies.iter().any(|d| {
-                            d.alias == dep && !boolean(&d.spec, "optional", false).unwrap_or(false)
-                        })
-                    {
+                    if !weak || state.optional.contains(dep) || required.contains(dep) {
                         state
                             .forwarded
                             .entry(dep.into())
@@ -695,7 +706,14 @@ fn load(path: &Path) -> Result<Package> {
     super::edition(string(fields, "edition")?)?;
     let fields = fields.clone();
     let mut dependencies = Vec::new();
-    dependency_tables(&table, &root, &ws, None, &mut dependencies)?;
+    dependency_tables(
+        &table,
+        &root,
+        &ws,
+        None,
+        &mut dependencies,
+        string(&fields, "edition")? == "2024",
+    )?;
     if let Some(targets) = table.get("target").and_then(toml::Value::as_table) {
         for (condition, target) in targets {
             dependency_tables(
@@ -706,6 +724,7 @@ fn load(path: &Path) -> Result<Package> {
                 &ws,
                 Some(condition),
                 &mut dependencies,
+                string(&fields, "edition")? == "2024",
             )?;
         }
     }
@@ -775,6 +794,7 @@ fn dependency_tables(
     ws: &Table,
     condition: Option<&str>,
     output: &mut Vec<Dependency>,
+    override_defaults: bool,
 ) -> Result<()> {
     for (key, build) in [("dependencies", false), ("build-dependencies", true)] {
         if let Some(deps) = table.get(key) {
@@ -800,7 +820,9 @@ fn dependency_tables(
                             toml::Value::String(root.join(path).to_string_lossy().into_owned()),
                         );
                     }
-                    if spec.get("default-features").and_then(toml::Value::as_bool) == Some(false)
+                    if !override_defaults
+                        && spec.get("default-features").and_then(toml::Value::as_bool)
+                            == Some(false)
                         && boolean(&inherited, "default-features", true)?
                     {
                         return Err(format!(
@@ -997,17 +1019,7 @@ fn validate_configuration(root: &Path, table: &Table, reject_target: bool) -> Re
     if table.contains_key("patch") || table.contains_key("replace") {
         return Err("native source operations do not support patch or replace tables yet".into());
     }
-    let mut configs = root
-        .ancestors()
-        .flat_map(|p| [p.join(".cargo/config"), p.join(".cargo/config.toml")])
-        .collect::<Vec<_>>();
-    if let Some(home) = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cargo")))
-    {
-        configs.extend([home.join("config"), home.join("config.toml")]);
-    }
-    for config in configs {
+    for config in configuration_paths(root) {
         if !config.is_file() {
             continue;
         }
@@ -1025,6 +1037,20 @@ fn validate_configuration(root: &Path, table: &Table, reject_target: bool) -> Re
     }
     Ok(())
 }
+fn configuration_paths(root: &Path) -> Vec<PathBuf> {
+    let mut configs = root
+        .ancestors()
+        .flat_map(|p| [p.join(".cargo/config"), p.join(".cargo/config.toml")])
+        .collect::<Vec<_>>();
+    if let Some(home) = std::env::var_os("CARGO_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cargo")))
+    {
+        configs.extend([home.join("config"), home.join("config.toml")]);
+    }
+    configs
+}
+
 fn condition_matches(condition: &str, host: &str, cfg: &BTreeSet<String>) -> Result<bool> {
     if let Some(inner) = condition
         .strip_prefix("cfg(")
@@ -1208,7 +1234,7 @@ fn git_source_matches(source: &str, url: &str, spec: &Table) -> bool {
             identity.push('?');
             identity.push_str(key);
             identity.push('=');
-            identity.push_str(value);
+            identity.push_str(&encode_git_ref(value));
         }
     }
     source
@@ -1295,4 +1321,34 @@ fn cached_source(home: &Path, package: &Locked) -> Result<Option<PathBuf>> {
 
 pub(super) fn fetch(options: &FetchOptions) -> Result<ExitCode> {
     fetch::run(options)
+}
+
+pub(super) fn generate_lockfile(options: &ResolveOptions) -> Result<ExitCode> {
+    resolve::run(options)
+}
+
+fn encode_git_ref(value: &str) -> String {
+    let mut result = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            result.push(byte as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(result, "%{byte:02X}");
+        }
+    }
+    result
+}
+
+fn source_reference(source: &str) -> &str {
+    if source.starts_with("git+") {
+        source
+            .rsplit_once('#')
+            .map_or(source, |(reference, _)| reference)
+    } else {
+        source
+    }
+}
+fn lock_source_matches(reference: &str, source: &str) -> bool {
+    reference == source || reference == source_reference(source)
 }

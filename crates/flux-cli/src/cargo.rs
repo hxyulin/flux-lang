@@ -15,6 +15,8 @@ pub(crate) enum Command {
     Plan(Options),
     /// Fetch exact locked registry and git sources without Cargo.
     Fetch(native::FetchOptions),
+    /// Resolve dependencies and generate Cargo.lock without invoking Cargo.
+    GenerateLockfile(native::ResolveOptions),
     /// Prepare build scripts and host proc-macro artifacts.
     Prepare(Options),
     /// Prepare inputs, then compile a supported binary's source graph with Flux.
@@ -173,6 +175,9 @@ struct Plan {
 }
 
 pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
+    if let Command::GenerateLockfile(options) = command {
+        return native::generate_lockfile(options);
+    }
     if let Command::Fetch(options) = command {
         return native::fetch(options);
     }

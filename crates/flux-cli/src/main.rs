@@ -112,6 +112,7 @@ fn main() -> ExitCode {
             | Command::Cargo {
                 command: cargo::Command::Plan(_)
                     | cargo::Command::Fetch(_)
+                    | cargo::Command::GenerateLockfile(_)
                     | cargo::Command::Prepare(cargo::Options { native: true, .. }),
             }
     ) && let Err(message) = flux_cli::builtins::initialize()

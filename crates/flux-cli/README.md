@@ -9,6 +9,69 @@ flux parse file.rs    # syntax tree and errors
 flux check a.rs b.rs  # errors only; exits with 1 if there are any
 ```
 
+## Native lockfile generation
+
+```sh
+flux cargo generate-lockfile --manifest-path Cargo.toml
+flux cargo fetch --locked
+flux cargo build --native --offline -p flux-cli --bin flux -O
+```
+
+`generate-lockfile` resolves every package in the workspace and writes Cargo.lock
+version 4 without invoking Cargo. It reads crates.io sparse-index metadata,
+local manifests and git checkouts. It does not download registry archives or run
+build scripts. Like Cargo's command, it reselects versions for the complete graph;
+it does not preserve existing versions merely because they were locked.
+
+Resolution backtracks across compatible version choices, unifies semver-compatible
+releases, permits incompatible versions together, validates requested features,
+and rejects dependency cycles and conflicting `links` declarations. Yanked
+registry releases are excluded even if a previous lockfile used them. The lockfile
+pass includes workspace development dependencies, all target conditions and all
+workspace features, including implicit path members. Weak feature forwarding can
+retain a lockfile edge without making that crate active in native build planning.
+Edition 2024 workspace dependencies can override inherited default features.
+
+Resolver 3 prefers Rust-version-compatible releases, using the lowest declared
+workspace `rust-version` or the selected rustc version when none is declared.
+If no matching compatible release exists it can fall back to a newer requirement.
+Resolver 1/2 defaults to allowing newer Rust requirements. Cargo configuration's
+`resolver.incompatible-rust-versions` policy and `--ignore-rust-version` can change
+this preference. Version choices can differ from Cargo for loose requirements
+because the search order and workspace Rust-version heuristic are not identical.
+
+Git dependencies support full commit IDs, advertised revisions, branches, tags
+and the default branch. Branches and annotated tags are resolved to commit IDs;
+lockfiles record the precise commits. Offline branch/tag resolution requires a
+reference cached by a previous native resolution. Unadvertised short commit IDs
+and arbitrary git revision expressions are not supported yet.
+
+Sparse-index responses are validated and cached under `CARGO_HOME`. Each online
+run refreshes the records it needs. `--index-url <URL>` selects a sparse mirror
+with the same crates.io identities, including local file mirrors for testing.
+`--offline` uses cached index records and considers only downloaded registry
+releases. For the default endpoint it can also read Cargo's version 3 sparse-cache
+format. Locked fetching alone does not populate an index cache.
+
+Resolution completes before the lockfile is replaced by rename. Failure leaves
+an existing lockfile unchanged. Semantically unchanged lockfiles retain their
+original bytes. `--locked` checks the newly resolved graph without changing the
+file and fails if it differs. A checksum change for an already locked registry
+version also fails. Search is bounded to 100,000 decisions and a depth of 512.
+
+Alternate registries, patch/replace overrides, workspace globs, artifact
+dependencies and package-specific or precise updates are not supported yet.
+Use `generate-lockfile`, then `fetch --locked`; automatic resolution during
+`fetch` or native builds is not enabled.
+
+Resolution has been checked against Cargo with ten regression cases and a fresh
+98-package workspace graph on arm64 macOS and x86-64 Linux. An empty-cache macOS
+run resolved from the public index, fetched the selected crate and built its
+program with Cargo blocked. A separate snapshot built the updated compiler with
+Flux; that generated compiler then resolved a graph requiring backtracking,
+fetched it and built and ran it offline with Cargo blocked. The complete macOS
+suite passed 478 targets. Both hosts passed workspace Clippy. Local evidence is
+indexed by `out/lockfile-resolution-audit/proof.json`.
 
 ## Locked dependency fetching
 
@@ -50,8 +113,8 @@ only follows HTTPS redirects. Git retains the user's credential helpers.
 `--download-base <URL>` selects a mirror of the crates.io download API, appending
 `/<name>/<version>/download`. HTTPS, HTTP and local file mirrors are accepted;
 package identities and checksums still come from Cargo.lock. Alternate registry
-identities, source replacement, patch/replace overrides, version resolution and
-lockfile generation or updates are not supported yet.
+identities, source replacement and patch/replace overrides are not supported yet.
+Use `generate-lockfile` above to create or regenerate a crates.io lockfile.
 
 Empty-cache fetching has been verified on arm64 macOS and x86-64 Linux for all
 85 locked source packages in this repository. Both runs left Cargo.lock unchanged

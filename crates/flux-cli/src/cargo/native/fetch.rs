@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 mod archive;
-const REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
-const CACHE: &str = "index.crates.io-1949cf8c6b5b557f";
+pub(super) const REGISTRY: &str = "registry+https://github.com/rust-lang/crates.io-index";
+pub(super) const CACHE: &str = "index.crates.io-1949cf8c6b5b557f";
 const MAX_ARCHIVE: u64 = 128 * 1024 * 1024;
 
 #[derive(clap::Args)]
@@ -27,7 +27,10 @@ pub(crate) struct FetchOptions {
 
 pub(super) fn run(options: &FetchOptions) -> Result<ExitCode> {
     if !options.locked {
-        return Err("dependency resolution is not supported yet; use `fetch --locked` with an existing Cargo.lock".into());
+        return Err(
+            "fetching requires `fetch --locked`; create Cargo.lock with `generate-lockfile` first"
+                .into(),
+        );
     }
     let manifest = super::canonical(&options.manifest_path)?;
     let (root, table) = super::workspace(&manifest)?;
@@ -161,7 +164,7 @@ fn registry(home: &Path, package: &Locked, options: &FetchOptions) -> Result<()>
     eprintln!("fetched registry {name}");
     Ok(())
 }
-fn download(url: &str, destination: &Path) -> Result<()> {
+pub(super) fn download(url: &str, destination: &Path) -> Result<()> {
     let protocols = if url.starts_with("https://") {
         "=https"
     } else if url.starts_with("http://") {
@@ -223,7 +226,7 @@ fn verify_archive(path: &Path, package: &Locked) -> Result<()> {
     }
     Ok(())
 }
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut text = String::with_capacity(64);
     const HEX: &[u8] = b"0123456789abcdef";
@@ -249,7 +252,7 @@ fn git_identity(source: &str) -> Result<(&str, &str)> {
     }
     Ok((url, commit))
 }
-fn git(home: &Path, source: &str, offline: bool) -> Result<()> {
+pub(super) fn git(home: &Path, source: &str, offline: bool) -> Result<()> {
     let (url, commit) = git_identity(source)?;
     if offline {
         return Err(format!("offline git checkout missing for {commit}"));
@@ -340,9 +343,9 @@ fn validate_manifest(path: &Path, package: &Locked) -> Result<()> {
     }
     Ok(())
 }
-struct Temporary(PathBuf);
+pub(super) struct Temporary(pub(super) PathBuf);
 impl Temporary {
-    fn new(parent: &Path) -> Result<Self> {
+    pub(super) fn new(parent: &Path) -> Result<Self> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
