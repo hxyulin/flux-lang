@@ -29,7 +29,7 @@ enum Command {
         #[arg(short = 'O')]
         optimize: bool,
     },
-    /// Prepare Cargo host inputs or build target sources with Flux.
+    /// Plan dependencies, prepare host inputs, or build target sources with Flux.
     Cargo {
         #[command(subcommand)]
         command: cargo::Command,
@@ -109,6 +109,9 @@ fn main() -> ExitCode {
             | Command::Lex { .. }
             | Command::Parse { .. }
             | Command::Check { .. }
+            | Command::Cargo {
+                command: cargo::Command::Plan(_),
+            }
     ) && let Err(message) = flux_cli::builtins::initialize()
     {
         eprintln!("error: {message}");

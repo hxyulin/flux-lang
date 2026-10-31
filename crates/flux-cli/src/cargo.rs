@@ -1,4 +1,4 @@
-//! Cargo owns resolution and host tooling; Flux compiles target source crates.
+//! Native offline planning, Cargo-backed host preparation, and Flux source builds.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::{Command as Process, ExitCode};
@@ -7,8 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::build::{self, CompileRequest, SourceInput};
 
+mod native;
+
 #[derive(clap::Subcommand)]
 pub(crate) enum Command {
+    /// Plan locked dependencies from local manifests and caches, without Cargo.
+    Plan(Options),
     /// Run Cargo check to prepare build scripts and host proc-macro artifacts.
     Prepare(Options),
     /// Prepare inputs, then compile a supported binary's source graph with Flux.
@@ -34,7 +38,7 @@ pub(crate) struct Options {
     no_default_features: bool,
     #[arg(long)]
     offline: bool,
-    /// Write a versioned input plan here (default: target/flux/cargo-plan.json).
+    /// Write a versioned plan here (default: target/flux/{native,cargo}-plan.json).
     #[arg(long)]
     plan: Option<PathBuf>,
 }
@@ -164,7 +168,12 @@ struct Plan {
 }
 
 pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
-    let (Command::Prepare(options) | Command::Build { options, .. }) = command;
+    if let Command::Plan(options) = command {
+        return native::execute(options);
+    }
+    let (Command::Prepare(options) | Command::Build { options, .. }) = command else {
+        unreachable!("native planning returned above")
+    };
     let rustc = output(
         Process::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())).arg("-vV"),
         "rustc version",

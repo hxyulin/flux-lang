@@ -10,6 +10,39 @@ flux check a.rs b.rs  # errors only; exits with 1 if there are any
 ```
 
 
+## Native offline planning
+
+```sh
+flux cargo plan --manifest-path Cargo.toml -p flux-cli --bin flux
+```
+
+This command reads manifests and Cargo.lock directly. It never invokes Cargo,
+accesses the network, runs build scripts, or loads proc macros. Dependencies must
+already exist in `CARGO_HOME` (default `~/.cargo`). Rustc supplies the host triple
+and target cfg; Git checks cached checkout revisions. Planning currently targets
+the host platform. `--offline` is accepted but planning is always offline.
+
+The separate version 1 `flux-native-offline` plan defaults to
+`target/flux/native-plan.json`; use `--plan` to choose another path. It records
+locked package identities, checksums, manifest paths, and dependency-first build
+units. Host and target features stay separate under resolver 2/3. Optional
+dependencies, dependency aliases, workspace inheritance, default features,
+`dep:` activation, strong and weak feature forwarding, and target predicates
+are supported. Build scripts record both their host compilation domain and the
+feature domain of the package they prepare. Proc macros are host units.
+
+The source cache is trusted as a working tree. Registry package checksum
+metadata is compared with the lockfile when present; extracted source files
+and git working-tree changes are not integrity-checked. Git sources must have
+the exact locked commit checked out. Missing or ambiguous sources and stale
+lockfile edges fail without fetching or updating Cargo.lock.
+
+Planning does not execute the plan or produce the prepared artifacts expected
+by `flux cargo build`. Host-tool execution is the next step toward Cargo-free
+builds. Alternate registries, source replacement, patch/replace overrides,
+workspace member globs, resolver 1, and cross compilation are not supported.
+Unsupported source/target overrides in Cargo configuration fail explicitly.
+
 ## Cargo-backed source builds
 
 ```sh
