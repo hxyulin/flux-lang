@@ -26,7 +26,7 @@ impl Fixture {
             .unwrap();
         assert!(output.status.success());
         let rustc = Path::new(String::from_utf8_lossy(&output.stdout).trim()).join("bin/rustc");
-        for tool in ["cc", "clang", "ld", "ar", "as", "git", "xcrun"] {
+        for tool in ["cc", "clang", "ld", "ar", "as", "git", "xcrun", "bash"] {
             let found = Command::new("which").arg(tool).output().unwrap();
             if found.status.success() {
                 std::os::unix::fs::symlink(

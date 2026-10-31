@@ -87,8 +87,23 @@ On arm64 macOS, native preparation has built all 31 host artifacts and run all
 The complete optimized compiler build passed with a failing Cargo trap and
 unchanged guarded repository sources. The generated compiler passed help/version
 checks and six native comparisons against rustc, then built and ran a separate
-proc-macro graph through its own native driver with Cargo blocked. This native
-route has not yet been reverified on Linux or through a stage 2 rebuild.
+proc-macro graph through its own native driver with Cargo blocked.
+
+On x86-64 Linux, the native route built the optimized compiler in 288.6 seconds
+from production sources at `1345009`, with a test-only PATH fix allowing Bash
+for the system linker wrapper. The graph contained 85 packages and 102 build
+units, with 30 host artifacts, 12 build-script units and five proc macros.
+Cargo stayed blocked throughout the compiler build. All 5,713 guarded repository
+and cached dependency files stayed unchanged through final validation.
+The generated compiler passed help/version checks and ten native comparisons
+against rustc: pointer array APIs, bootstrap collection APIs, BTreeMap,
+x86 intrinsics and x86 crypto intrinsics, each in both output modes. It also
+built and ran a separate proc-macro graph through its own native driver with
+Cargo blocked. Formatting, workspace Clippy, 43 runner tests, all 476 Linux test
+targets and workspace/example source checks passed. Local evidence is indexed
+by `out/native-linux-validation/proof.json`.
+
+The native route has not yet been verified through a stage 2 rebuild.
 
 ## Cargo-backed source builds
 
@@ -130,7 +145,7 @@ rustc version is recorded because host macro artifacts depend on its ABI. Cargo
 may reuse cached build-script outputs and artifacts; preparation does not force
 them to rerun. The plan contains explicit compile-time values and local paths.
 
-Supported builds currently select one host binary on arm64 macOS. Function-like,
+Supported builds select one host binary on arm64 macOS or x86-64 Linux. Function-like,
 attribute and derive proc macros execute in the toolchain's separate
 `rust-analyzer-proc-macro-srv` process. Cargo/rustc compile the host dylibs; Flux
 checks and compiles their expanded target code. Imports, renamed exports, derive
