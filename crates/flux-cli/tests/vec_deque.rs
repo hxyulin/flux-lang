@@ -115,6 +115,21 @@ fn ring_trait_and_drop_contracts_match_rustc() {
             "fn bad()->std::collections::vec_deque::Iter<'static,u32>{let q=VecDeque::from([1]);q.iter()}fn main(){}",
         ),
         (
+            "drain_holds_borrow",
+            false,
+            "fn main(){let mut q=VecDeque::from([1,2]);let mut d=q.drain(..);q.push_back(3);let _=d.next();}",
+        ),
+        (
+            "drain_no_escape",
+            false,
+            "fn bad()->std::collections::vec_deque::Drain<'static,u32>{let mut q=VecDeque::from([1]);q.drain(..)}fn main(){}",
+        ),
+        (
+            "drain_send",
+            true,
+            "fn need<T:Send>(_:T){}fn main(){let mut q=VecDeque::from([std::cell::Cell::new(1)]);need(q.drain(..));}",
+        ),
+        (
             "iter_holds_borrow",
             false,
             "fn main(){let mut q=VecDeque::from([1]);let mut it=q.iter();q.push_back(2);let _=it.next();}",
@@ -153,15 +168,20 @@ fn host_panic_cleanup_preserves_initialized_ring() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let root = repo.join(format!("out/vec-deque-host/{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    // Stable rustc cannot accept the internal dropck attribute. Remove only
-    // that declaration marker; all ring/drop algorithm bodies remain unchanged.
-    // The minimal RawVec adapter supplies allocation-only storage, while real
-    // Flux/rustc contract cases above independently check may_dangle admission.
+    // Stable rustc cannot accept internal dropck/trusted-length markers or
+    // slice::range. Strip the markers and use the driver's checked range
+    // adapter; ownership, element movement and cleanup bodies stay unchanged.
+    // Native/contract cases separately check Flux's bounds and drop admission.
     let source = std::fs::read_to_string(repo.join("library/alloc/src/collections/vec_deque.rs"))
         .unwrap()
         .replace(
             "unsafe impl<#[may_dangle] T> Drop for VecDeque<T>",
             "impl<T> Drop for VecDeque<T>",
+        )
+        .replace("    const __TRUSTED_LEN: bool = true;\n", "")
+        .replace(
+            "core::slice::range(range, ..len)",
+            "crate::checked_range(range, len)",
         );
     let actual = root.join("ring.rs");
     std::fs::write(&actual, source).unwrap();

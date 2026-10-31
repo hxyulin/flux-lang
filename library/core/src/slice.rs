@@ -107,6 +107,20 @@ impl<T> [T] {
         (whole, remainder)
     }
 
+    /// Splits into a remaining prefix and arrays of `N` elements.
+    /// Panics if `N` is zero.
+    #[track_caller]
+    pub fn as_rchunks<const N: usize>(&self) -> (&[T], &[[T; N]]) {
+        assert!(N != 0, "chunk size must be non-zero");
+        let (remainder, whole) = self.split_at(self.len() % N);
+        // SAFETY: the suffix contains exactly whole.len()/N contiguous
+        // arrays. Grouping preserves T's alignment and the original borrow.
+        let whole = unsafe {
+            from_raw_parts(whole.as_ptr() as *const [T; N], whole.len() / N)
+        };
+        (remainder, whole)
+    }
+
     /// Splits into disjoint mutable arrays of `N` elements and a suffix.
     /// Panics if `N` is zero.
     #[track_caller]
@@ -239,6 +253,13 @@ impl<T> [T] {
             let first = unsafe { &*(self.as_ptr() as *const [T; N]) };
             Some((first, &self[N..]))
         }
+    }
+
+    /// The remaining prefix and the last `N` elements as an array.
+    /// Returns `None` when the slice is shorter than `N`.
+    pub fn split_last_chunk<const N: usize>(&self) -> Option<(&[T], &[T; N])> {
+        let last = self.last_chunk::<N>()?;
+        Some((&self[..self.len() - N], last))
     }
 
     /// The last element and the rest, or `None` if the slice is empty.

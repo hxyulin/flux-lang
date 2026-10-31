@@ -486,6 +486,8 @@ copies `Copy` elements when the slice length is exactly `N`, otherwise returning
 has `first_mut`, `last_mut`, `get_mut`, `split_first`, `split_last`,
 `split_first_chunk::<N>` (a borrowed array prefix and remaining slice, or `None`
 when too short; zero gives an empty prefix and the complete suffix),
+`split_last_chunk::<N>` (the remaining slice and a borrowed array suffix;
+zero gives the complete prefix and an empty suffix),
 `swap`, `reverse`, `rotate_left`, `rotate_right`, `split_at`,
 `split_at_mut`, `copy_from_slice`, `clone_from_slice`, `fill`,
 `contains`, `starts_with`, `ends_with`, `windows`, `chunks`,
@@ -1563,8 +1565,10 @@ Linux runtime detection is implemented but has not been executed natively.
 
 The two lane-extraction wrappers and narrowing shift also accept rustc's
 legacy trailing const argument in direct path calls, including aliases and
-macro expansions. Literals and resolved constant paths are supported; compound
-legacy const expressions are explicitly rejected. The trailing argument is
+macro expansions. Literals and resolved constant paths are supported. In function
+bodies, compound legacy arguments also use the ordinary constant checker and
+evaluator, including arithmetic and const-function calls. Runtime values and
+operations depending on generic parameters remain rejected. The trailing argument is
 never evaluated at runtime. Explicit turbofish calls, parenthesized callees
 and function values retain the modern signature and its safety rules.
 
@@ -1765,7 +1769,8 @@ their compiled catalogs and toolchain server. See
 Raw pointers provide runtime `wrapping_offset`. Arrays implement `Borrow<[T]>`
 and `BorrowMut<[T]>`, generic Index/IndexMut, and shared/mutable slice-to-array
 reference TryFrom conversions without a Copy bound. Slice `as_chunks` and `as_chunks_mut` return fixed-array
-chunks and a remainder, and reject zero chunk sizes. Constant raw slice
+chunks and a remaining suffix. `as_rchunks` returns a remaining prefix followed
+by fixed-array chunks. These APIs reject zero chunk sizes. Constant raw slice
 construction accepts represented, correctly typed array/slice storage; it does
 not manufacture valid references from integer addresses. Offset slices retain
 their original allocation and element-count metadata.
@@ -1776,7 +1781,10 @@ layouts reserve zero as a niche, and constant construction validates that range.
 Float primitives provide const `copysign` and `recip`. `String::new` is const;
 `FromUtf8Error` implements Display and Error; Box implements AsRef/AsMut; Arc
 accepts owned boxes of sized values, slices and str. Fuse implements Debug, and
-VecDeque supports initial capacity.
+VecDeque supports initial capacity and range draining. Drain iterators borrow
+the deque exclusively, yield removed elements from either end with an exact
+remaining length, and drop unconsumed elements before restoring the retained
+tail. Wrapped storage and zero-sized elements preserve their ownership counts.
 
 Ordered maps provide retain, borrowed-key ranges, into_values, last_key_value and
 clear. Ordered sets provide retain, remove, pop_first and clear. Unix paths

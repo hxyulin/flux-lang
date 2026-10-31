@@ -1,7 +1,7 @@
 //! An owning ring buffer with constant-time endpoint insertion and removal.
 use crate::raw_vec::{RawVec, min_non_zero_cap};
 use core::iter::FusedIterator;
-use core::ops::{Index, IndexMut};
+use core::ops::{Index, IndexMut, RangeBounds};
 use core::{ptr, slice};
 
 /// Elements occupy the `len` slots beginning at `head`, wrapping at capacity.
@@ -182,6 +182,26 @@ impl<T> VecDeque<T> {
         let guard = DropGuard(self);
         while let Some(value) = guard.0.pop_front() {
             drop(value);
+        }
+    }
+    /// Removes a range, yielding its elements from either end.
+    /// Unconsumed elements are dropped when the iterator is dropped.
+    ///
+    /// # Panics
+    /// Panics if the range is out of bounds or its start exceeds its end.
+    #[track_caller]
+    pub fn drain<R: RangeBounds<usize>>(&mut self, range: R) -> Drain<'_, T> {
+        let len = self.len;
+        let core::ops::Range { start, end } = core::slice::range(range, ..len);
+        // Keep only the prefix visible. Forgetting Drain may leak the detached
+        // range and tail, but cannot expose moved or uninitialized elements.
+        self.len = start;
+        Drain {
+            deque: self,
+            front: start,
+            back: end,
+            tail_start: end,
+            tail_len: len - end,
         }
     }
     pub fn iter(&self) -> Iter<'_, T> {
@@ -371,3 +391,86 @@ impl<T> IntoIterator for VecDeque<T> {
 
 impl<T: core::panic::UnwindSafe> core::panic::UnwindSafe for VecDeque<T> {}
 impl<T: core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for VecDeque<T> {}
+
+/// An iterator owning a removed range while exclusively borrowing its deque.
+pub struct Drain<'a, T> {
+    deque: &'a mut VecDeque<T>,
+    front: usize,
+    back: usize,
+    tail_start: usize,
+    tail_len: usize,
+}
+
+impl<T> Iterator for Drain<'_, T> {
+    type Item = T;
+    const __TRUSTED_LEN: bool = true;
+
+    fn next(&mut self) -> Option<T> {
+        if self.front == self.back {
+            return None;
+        }
+        let index = self.deque.index(self.front);
+        self.front += 1;
+        // SAFETY: this initialized slot belongs to the detached range. Advancing
+        // front transfers ownership exactly once, including for zero-sized T.
+        Some(unsafe { ptr::read(self.deque.buf.ptr().add(index)) })
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.back - self.front;
+        (len, Some(len))
+    }
+}
+
+impl<T> DoubleEndedIterator for Drain<'_, T> {
+    fn next_back(&mut self) -> Option<T> {
+        if self.front == self.back {
+            return None;
+        }
+        self.back -= 1;
+        let index = self.deque.index(self.back);
+        // SAFETY: back was decremented before moving the initialized slot out;
+        // it is no longer part of the remaining range or the deque's prefix.
+        Some(unsafe { ptr::read(self.deque.buf.ptr().add(index)) })
+    }
+}
+impl<T> ExactSizeIterator for Drain<'_, T> {}
+impl<T> FusedIterator for Drain<'_, T> {}
+
+impl<T> Drain<'_, T> {
+    fn restore_tail(&mut self) {
+        let start = self.deque.len;
+        for offset in 0..self.tail_len {
+            let from = self.deque.index(self.tail_start + offset);
+            let to = self.deque.index(start + offset);
+            // SAFETY: forward movement copies the initialized tail into the
+            // removed gap. Logical ring indices are distinct below capacity,
+            // and each source is read before a later move can overwrite it.
+            unsafe {
+                let value = ptr::read(self.deque.buf.ptr().add(from));
+                ptr::write(self.deque.buf.ptr().add(to), value);
+            }
+        }
+        self.deque.len = start + self.tail_len;
+    }
+}
+
+// Finish dropping the detached range and restore the tail even if an element's
+// destructor unwinds. A second destructor panic during unwinding aborts as usual.
+struct DrainGuard<'a, 'b, T>(&'a mut Drain<'b, T>);
+impl<T> Drop for DrainGuard<'_, '_, T> {
+    fn drop(&mut self) {
+        while let Some(value) = self.0.next() {
+            drop(value);
+        }
+        self.0.restore_tail();
+    }
+}
+impl<T> Drop for Drain<'_, T> {
+    fn drop(&mut self) {
+        let guard = DrainGuard(self);
+        while let Some(value) = guard.0.next() {
+            drop(value);
+        }
+    }
+}

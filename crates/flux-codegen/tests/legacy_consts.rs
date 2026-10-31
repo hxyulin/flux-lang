@@ -22,36 +22,32 @@ fn legacy_const_runtime_program_lowers() {
 #[test]
 fn legacy_constants_do_not_become_runtime_expressions() {
     for (arg, expected) in [
-        ("n", "attempt to use a non-constant value in a constant"),
+        (
+            "n",
+            Some("attempt to use a non-constant value in a constant"),
+        ),
         (
             "{ n += 1; n }",
-            "legacy const expressions other than literals and constant paths are not supported yet",
+            Some("attempt to use a non-constant value in a constant"),
         ),
-        (
-            "side_effect()",
-            "legacy const expressions other than literals and constant paths are not supported yet",
-        ),
-        (
-            "1 + 0",
-            "legacy const expressions other than literals and constant paths are not supported yet",
-        ),
-        (
-            "-N",
-            "legacy const unary expressions other than negative integer literals are not supported yet",
-        ),
-        (
-            "0.0",
-            "legacy const expressions other than literals and constant paths are not supported yet",
-        ),
+        ("side_effect()", Some("non-const")),
+        ("1 + 0", None),
+        ("-N", None),
+        ("0.0", Some("mismatched types")),
     ] {
         let text = format!("use core::arch::aarch64::*; const N:i32=0; fn side_effect()->i32 {{ 0 }}
 fn bad(a:uint64x2_t, mut n:i32) {{ unsafe {{ let _ = vgetq_lane_u64(a, {arg}); }} }} fn main() {{}}");
         let (_, _, hir) = flux_hir::lower_text("main.rs", &text);
-        assert!(
-            hir.diagnostics.iter().any(|d| d.message == expected),
-            "{arg}: {:?}",
-            hir.diagnostics
-        );
+        let typed = flux_mir::check_file(&hir);
+        let diagnostics: Vec<_> = hir.diagnostics.iter().chain(&typed.diagnostics).collect();
+        if let Some(expected) = expected {
+            assert!(
+                diagnostics.iter().any(|d| d.message.contains(expected)),
+                "{arg}: {diagnostics:?}"
+            );
+        } else {
+            assert!(diagnostics.is_empty(), "{arg}: {diagnostics:?}");
+        }
         let body = hir
             .bodies
             .iter()
@@ -60,7 +56,8 @@ fn bad(a:uint64x2_t, mut n:i32) {{ unsafe {{ let _ = vgetq_lane_u64(a, {arg}); }
             .1;
         let body = &body.0;
         assert!(!body.exprs.iter().any(|(_, e)| matches!(e, flux_hir::Expr::Path(flux_hir::Res::Local(b)) if body.bindings[*b].name.as_str() == "n")));
-        // Only the outer call exists; a rejected side effect has no HIR call.
+        // Only the outer runtime call exists; constant expressions belong
+        // to separate checked constant bodies.
         let calls: Vec<_> = body
             .exprs
             .iter()

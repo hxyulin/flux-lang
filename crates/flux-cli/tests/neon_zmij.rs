@@ -22,6 +22,41 @@ fn immediate_boundaries_match_rustc() {
             true,
         ),
         (
+            "legacy_arithmetic",
+            "let _=vshll_n_u16(core::mem::transmute([1u16;4]),8+8);",
+            true,
+        ),
+        (
+            "legacy_const_call",
+            "const fn amount()->i32{8} let _=vshll_n_u16(core::mem::transmute([1u16;4]),amount()+1);",
+            true,
+        ),
+        (
+            "legacy_macro_arithmetic",
+            "macro_rules! shift { () => { vshll_n_u16(core::mem::transmute([1u16;4]),16-9) }; } let _=shift!();",
+            true,
+        ),
+        (
+            "legacy_generic_arithmetic",
+            "fn f<const N:i32>() { unsafe { let _=vshll_n_u16(core::mem::transmute([1u16;4]),N+1); } }",
+            false,
+        ),
+        (
+            "legacy_shadow",
+            "let vshll_n_u16=|_:uint16x4_t,n:i32|n;let n=7;let _=vshll_n_u16(core::mem::transmute([1u16;4]),n+1);",
+            true,
+        ),
+        (
+            "legacy_runtime",
+            "let n=8;let _=vshll_n_u16(core::mem::transmute([1u16;4]),n+1);",
+            false,
+        ),
+        (
+            "legacy_bad_arithmetic",
+            "let _=vshll_n_u16(core::mem::transmute([1u16;4]),16+1);",
+            false,
+        ),
+        (
             "legacy_right",
             "let _=vshr_n_u32(core::mem::transmute([1u32;2]),32);",
             true,

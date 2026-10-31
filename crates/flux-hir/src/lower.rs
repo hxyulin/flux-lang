@@ -1683,11 +1683,48 @@ fn build_variant(
 
 /// The names `node`'s parameters and `let` statements bind before
 /// offset `at`, in the nodes around `at` only: what code at `at` sees.
-fn visible_bindings<'t>(node: SyntaxNode<'t>, at: u32, out: &mut Vec<&'t str>) {
+pub(crate) fn visible_bindings<'t>(node: SyntaxNode<'t>, at: u32, out: &mut Vec<&'t str>) {
     let names = |pat: SyntaxNode<'t>, out: &mut Vec<&'t str>| {
         let idents = pat.descendants().filter_map(ast::IdentPat::cast);
         out.extend(idents.filter_map(|p| p.name()).map(|n| n.text()));
     };
+    if let Some(loop_) = ast::ForExpr::cast(node)
+        && loop_
+            .loop_body()
+            .is_some_and(|body| body.syntax().text_range().start() <= at)
+        && let Some(pat) = loop_.pat()
+    {
+        names(pat.syntax(), out);
+    }
+    if let Some(arm) = ast::MatchArm::cast(node)
+        && let Some(pat) = arm.pat()
+        && pat.syntax().text_range().end() <= at
+    {
+        names(pat.syntax(), out);
+    }
+    let condition = if let Some(if_) = ast::IfExpr::cast(node) {
+        if_.then_branch()
+            .filter(|body| body.syntax().text_range().contains(at))
+            .and_then(|_| if_.condition())
+    } else if let Some(while_) = ast::WhileExpr::cast(node) {
+        while_
+            .loop_body()
+            .filter(|body| body.syntax().text_range().contains(at))
+            .and_then(|_| while_.condition())
+    } else {
+        None
+    };
+    if let Some(condition) = condition {
+        for let_ in condition
+            .syntax()
+            .descendants()
+            .filter_map(ast::LetExpr::cast)
+        {
+            if let Some(pat) = let_.pat() {
+                names(pat.syntax(), out);
+            }
+        }
+    }
     for child in node.children() {
         let range = child.text_range();
         if range.start() >= at {
@@ -2791,7 +2828,7 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// The bounded constants accepted by the legacy NEON convention. Do not
+    /// Constants accepted by the legacy intrinsic convention. Do not
     /// lower these as runtime expressions: even a rejected side effect must
     /// never become an argument evaluated by MIR.
     fn lower_legacy_const_arg(&mut self, expr: ast::Expr<'_>) -> crate::ArrayLen {
@@ -2804,6 +2841,19 @@ impl<'a> Ctx<'a> {
             if ast::Expr::cast(node).is_some() {
                 self.check_attrs(node);
             }
+        }
+        if let Some(file) = self
+            .expansion_file
+            .or_else(|| self.place.map(|place| place.file))
+            && self
+                .items
+                .anon_consts
+                .contains_key(&(file, root.syntax().id()))
+        {
+            return crate::ArrayLen {
+                kind: ArrayLenKind::Anon(file, root.syntax().id()),
+                range,
+            };
         }
         let kind = match root {
             ast::Expr::Literal(literal)

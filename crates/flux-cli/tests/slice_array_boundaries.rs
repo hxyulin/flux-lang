@@ -23,6 +23,26 @@ fn slice_array_rejections_match_rustc() {
             "cannot return value referencing local variable `a`",
         ),
         (
+            "last_chunk_escape",
+            "fn escape() -> &'static [u8; 1] { let a = [1]; a.split_last_chunk::<1>().unwrap().1 } fn main() {}",
+            "cannot return value referencing local variable `a`",
+        ),
+        (
+            "last_chunk_alias",
+            r#"fn main() { let mut a = [1]; let p = a.split_last_chunk::<1>().unwrap().1; a[0] = 2; println!("{}", p[0]); }"#,
+            "cannot assign to `a[_]` because it is borrowed",
+        ),
+        (
+            "rchunks_escape",
+            "fn escape() -> &'static [[u8; 1]] { let a = [1]; a.as_rchunks::<1>().1 } fn main() {}",
+            "cannot return value referencing local variable `a`",
+        ),
+        (
+            "rchunks_alias",
+            r#"fn main() { let mut a = [1]; let p = a.as_rchunks::<1>().1; a[0] = 2; println!("{}", p[0][0]); }"#,
+            "cannot assign to `a[_]` because it is borrowed",
+        ),
+        (
             "chunk_alias",
             r#"fn main() { let mut a = [1]; let p = a.split_first_chunk::<1>().unwrap().0; a[0] = 2; println!("{}", p[0]); }"#,
             "cannot assign to `a[_]` because it is borrowed",

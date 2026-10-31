@@ -1,4 +1,7 @@
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64"),
+))]
 mod support;
 #[test]
 fn pointer_array_apis_match_rustc() {
@@ -12,13 +15,8 @@ fn zero_chunk_size_panics() {
         .join("../..")
         .join(format!("out/pointer-array-zero/{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    for mutable in [false, true] {
-        let source = root.join(format!("zero-{mutable}.rs"));
-        let method = if mutable {
-            "as_chunks_mut"
-        } else {
-            "as_chunks"
-        };
+    for method in ["as_chunks", "as_chunks_mut", "as_rchunks"] {
+        let source = root.join(format!("zero-{method}.rs"));
         std::fs::write(
             &source,
             format!("#![allow(unconditional_panic)] fn main() {{ let mut a = [1u8, 2]; let _ = a.{method}::<0>(); }}"),
@@ -29,7 +27,7 @@ fn zero_chunk_size_panics() {
             ("flux", env!("CARGO_BIN_EXE_flux"), false),
             ("flux-opt", env!("CARGO_BIN_EXE_flux"), true),
         ] {
-            let executable = root.join(format!("{label}-{mutable}"));
+            let executable = root.join(format!("{label}-{method}"));
             let mut command = Command::new(compiler);
             if label == "rustc" {
                 command.args(["--edition=2024", "-C", "panic=abort"]);

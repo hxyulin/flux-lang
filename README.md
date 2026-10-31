@@ -41,21 +41,23 @@ registry and feature resolution that Cargo does. The
 
 ## Self-hosting
 
-On arm64 macOS, flux has built both stage 1 and stage 2 from the complete
-compiler source graph, including pinned Keel `103c23de`, bbtree and Verus.
-Stage 1 is built by a rustc-built Flux; stage 2 is built by stage 1.
+On arm64 macOS and x86-64 Linux, flux has built optimized stage 1 and stage 2
+from the complete compiler source graph with pinned Keel `a078986c`, bbtree and
+Verus. Stage 1 is built by a rustc-built Flux; stage 2 is built by stage 1.
+The proofs use commit `1aacb10` plus the recorded library and frontend support
+patches described in [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md).
 
-Stage 2 was built with and without `-O`. Both passed help/version and native
-compilation checks. Optimized stage 2 passed six compile/run comparisons
-across both output optimization modes, followed by 45 benchmark comparisons
-against rustc's output. The audited source inputs stayed unchanged.
+On each host, stage 2 is byte-for-byte identical to stage 1 and passed
+help/version checks. Linux stage 2 passed ten compile/run comparisons in both
+output optimization modes against rustc; the macOS proof covers seven programs
+in both modes. The inventoried inputs stayed unchanged. Earlier macOS proofs
+also cover building the compiler without `-O`.
 
 x86-64 Linux supports native executable and local package builds, including
 library artifact reuse. Process spawning, owned pipes and channels have native
 Linux comparisons. Integer SSE/AVX2, the AVX-512 CRC folding subset, SHA-256 instructions and runtime
 CPU detection have native Linux comparison coverage. Argument capture, recursive removal and
-bounded integer inline assembly also run on Linux. Linux self-hosting still needs
-`as_rchunks` and compound legacy constants. x86-64 macOS and
+bounded integer inline assembly also run on Linux. x86-64 macOS and
 Rosetta are not supported targets. Cargo and rustc still build host build scripts
 and procedural macros. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the audited graph,
 verification scope and remaining blockers.

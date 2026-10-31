@@ -1,19 +1,88 @@
 # Compiling Flux with Flux
 
-Flux built a stage-1 Flux CLI from the complete compiler source graph with
-Keel `103c23de480d76e02267c5a8d5a9d3505bc73231`. No local
-backend override was required. The current pin is `a078986c`; the recorded
-stage-1 and stage-2 proofs below predate that update. Both compiler optimization modes passed CLI checks
-and compile/run smoke comparisons against rustc. Both stage-1 compilers also
-compile the smoke program with `-O`, with matching output and exit status.
+Flux built optimized stage 1 and stage 2 from the complete compiler source
+graph with unmodified Keel `a078986ccddb1394db73b42843b282f271807ae4` on
+arm64 macOS. The proof uses commit `1aacb10` plus the library support patch
+recorded in `out/bootstrap-keel-a078986c-retry/bootstrap-support.patch`.
+The new Keel requires `VecDeque::drain` and slice `split_last_chunk`; the first
+attempt from the commit alone stopped on those missing APIs. The retry copies
+only those library additions and their regression tests into a private source
+snapshot. It excludes the separate compiler profiling changes.
 
-The latest guarded proof is `out/flux-compiler-readiness/81431`. Syntax, HIR,
+Both generations rebuilt 72 source crates with five host procedural macros,
+using `flux cargo build --offline -O`. Stage 1 took 200.81 seconds; stage 2 took
+about 1,220.18 seconds. Stage 2 completed without a generation timeout.
+The test-runner interruption left the compiler running; a replacement runner
+captured its successful exit through a Darwin process-exit event. The stage-2
+time is recovered from the wall clock and includes subsecond runner bookkeeping.
+
+Both compilers passed help/version checks. Stage 1 passed a smoke comparison
+in both output optimization modes. Stage 2 passed seven programs in both modes
+against fresh rustc references: smoke, BTreeMap, pointer/slice helpers, trait
+lifetime keys, slice or-pattern bindings, layer associated-type bounds and the
+new collection APIs. All 14 stage-2 comparisons matched stdout, stderr and exit
+status. The stage-1 and stage-2 executables are byte-for-byte identical, with
+SHA-256 `79e16d3732434d79eafb72e137d9a960cd3fa60752baa7571a2d9ff3c84458ab`.
+
+Results, commands and artifact hashes are in
+`out/bootstrap-keel-a078986c-retry/status.json`. All 6,868 inventoried source and
+host-artifact files remained unchanged. Four generated build-script files were
+inventoried during stage 2 and remained unchanged through verification; they
+were not guarded before generation. The supporting library changes passed
+formatting, clippy, runner units, all 474 test targets and workspace/example
+source checks, recorded in `out/bootstrap-library-validation/results.json`.
+This proof covers the recorded support patch on arm64 macOS, not Linux
+self-hosting or later source edits. Cargo and rustc still supply host build
+scripts and procedural macros.
+
+## Linux stage 2
+
+On 2026-10-31, Flux built optimized stage 1 and stage 2 on native x86-64 Linux
+with unmodified Keel `a078986c`. The private snapshot uses commit `1aacb10` plus
+`out/bootstrap-linux-a078986c/support-changes.patch`; its exact hash and file
+inventory are recorded in `snapshot.json` beside that patch. The patch includes
+the earlier collection API additions, enables Linux Cargo source builds, adds
+slice `as_rchunks`, and checks compound legacy intrinsic const arguments through
+the existing constant evaluator. Dependency sources and Keel were not patched.
+The separate compiler profiling changes are excluded.
+
+Both stages rebuilt 71 source crates with five host procedural macros using
+`flux cargo build --offline -O`. Stage 1 took 332.93 seconds and stage 2 took
+1,998.76 seconds, without a generation timeout. Both passed help/version checks;
+stage 1 also passed a smoke comparison in both output optimization modes.
+
+Stage 2 passed ten programs in both output optimization modes against fresh
+rustc references: smoke, pointer/array APIs, integer SSE/AVX, x86 crypto,
+BTreeMap, pointer/slice helpers, trait lifetime keys, slice or-pattern bindings,
+layer associated-type bounds and the new collection APIs. All 20 comparisons
+matched stdout, stderr and exit status. A direct byte comparison confirms that
+the stage-1 and stage-2 executables are identical.
+
+The source plans match across stages. All 6,423 inventoried source files,
+host-macro artifacts and generated build-script files stayed unchanged. The
+independent inventory was captured during stage 1, before stage 2 began, and
+checked again after verification. Full validation of the supporting changes
+passed all 474 targets on both native hosts, plus formatting, clippy, runner
+units, workspace/example source checks and docs.
+
+The portable result is `out/bootstrap-linux-a078986c/proof.json`. Commands,
+plans, source guards and comparison logs are copied under its `evidence/`
+directory. These results cover the recorded source snapshot and optimized
+compiler builds. Cargo and rustc still supply host build scripts and procedural
+macros.
+
+## Earlier proofs
+
+The following results describe earlier compiler snapshots and Keel pins.
+
+
+An earlier guarded proof is `out/flux-compiler-readiness/81431`. Syntax, HIR,
 type, MIR and code-generation diagnostic reports are empty, and both final
 source-integrity reports are clean. That regression run covered 469 targets. The later process/channel runtime
 changes passed all 470 targets on both arm64 macOS and x86-64 Linux. The historical locally patched proof below records the older
 `f37f0bd` snapshot.
 
-Stage 2 is verified on arm64 macOS for the historical source graph above.
+Earlier stage-2 proofs used Keel `103c23de` on arm64 macOS.
 The unoptimized build in `out/bootstrap-stage2-unlimited` passed help/version
 and three native compile/run comparisons. The optimized build in
 `out/bootstrap-stage2-optimized` rebuilt all 72 source crates with five host
@@ -81,7 +150,7 @@ these source graphs.
 | `keel_asm_readiness` | Complete unchanged pinned assembler and its thirteen-package source graph, including object writing/reading and both hashbrown versions. |
 | `keel_backend_readiness`, with `FLUX_BACKEND_ONLY=full` | Complete pinned backend/linker source graph; emits AArch64 and x86 objects and links an AArch64 executable. Explicit ignored audit, with native off/on comparisons and byte guards. |
 | `keel_reduced_suite` | Flux-compiled pinned backend runs 19 selected upstream tests and emits ten executable semantic cases per compiler mode. Explicit ignored audit with byte guards. |
-| `flux_compiler_readiness` | Complete CLI library, binary and current target source graph. The current pin builds stage 1 off/on; the complete stage-2 Cargo attempt currently stops during optional-dependency preparation. |
+| `flux_compiler_readiness` | Complete CLI library, binary and target source graph. The separate current-pin bootstrap audits above verify optimized stage 1 and stage 2 on both hosts with the recorded support patches. |
 | `keel_ir_readiness` | Complete pinned Keel IR source, layouts, empty-module parsing and verification. |
 | `keel_float_math` | Unchanged pinned Keel floating-point constant folder with the complete Keel IR dependency. |
 | `bumpalo_readiness` | Original bumpalo 3.20.3 with the resolved `collections` and `default` features, including collection ownership and zero-sized drops. |
@@ -829,6 +898,6 @@ comparisons cover the unchanged crc32fast 1.5.3 sources with its real build-scri
 cfgs, including `stable_vpclmulqdq`, in both optimization modes.
 
 Runtime detection checks CPUID and OS-managed register state before enabling
-AVX-512 paths. Other AVX-512 APIs remain outside the supported subset. Linux
-compiler dependencies still need `as_rchunks` and compound intrinsic const
-arguments; the historical stage-1/stage-2 proofs do not certify the current pin.
+AVX-512 paths. Other AVX-512 APIs remain outside the supported subset. The
+Linux compiler dependency graph now builds through stage 2 with the library and
+legacy const-argument support described above.

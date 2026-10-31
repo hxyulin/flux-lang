@@ -70,6 +70,7 @@ impl ItemTree {
             collected_imports: rustc_hash::FxHashSet::default(),
             pending_items: Vec::new(),
             pending_body_macros: Vec::new(),
+            legacy_calls: Vec::new(),
         };
         collector.collect_crate(root, name, is_core, dependencies);
         collector.collect_pending_items(from);
@@ -77,7 +78,8 @@ impl ItemTree {
         collector.expand_derives();
         collector.make_ctors();
         let macro_paths = std::mem::take(&mut collector.macro_paths);
-        crate::def_map::resolve(self, from);
+        crate::def_map::resolve(collector.items, from);
+        collector.collect_legacy_consts();
         self.resolve_sized_dispatch(from);
         // Early predecessor lookup must agree with completed scopes. A local
         // item/import declared later may shadow a dependency's import name.
@@ -132,7 +134,16 @@ struct PendingBodyMacro {
     depth: u32,
 }
 
+/// Direct calls are resolved after imports, before anonymous constants are checked.
+struct LegacyCall {
+    ctx: Ctx,
+    node: NodeId,
+    function: FunctionId,
+    macro_scope: Option<MacroScopeId>,
+}
+
 struct Collector<'a> {
+    legacy_calls: Vec<LegacyCall>,
     pending_items: Vec<PendingItem>,
     pending_body_macros: Vec<PendingBodyMacro>,
     collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
@@ -2446,11 +2457,10 @@ impl Collector<'_> {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         // Most bodies have no items: they are found without a walk.
-        if !tree
-            .node(node)
-            .descendants()
-            .any(|n| is_item_kind(n.kind()) || n.kind() == SyntaxKind::MACRO_EXPR)
-        {
+        if !tree.node(node).descendants().any(|n| {
+            is_item_kind(n.kind())
+                || matches!(n.kind(), SyntaxKind::MACRO_EXPR | SyntaxKind::CALL_EXPR)
+        }) {
             return;
         }
         self.collect_body_node(ctx, tree.node(node), function);
@@ -2520,6 +2530,21 @@ impl Collector<'_> {
         if node.kind() == SyntaxKind::BLOCK_EXPR {
             self.collect_block(ctx, node.id(), function);
             return;
+        }
+        if node.kind() == SyntaxKind::CALL_EXPR
+            && let Some(function) = function
+            && let Some(call) = ast::CallExpr::cast(node)
+            && matches!(call.expr(), Some(ast::Expr::PathExpr(_)))
+            && call
+                .arg_list()
+                .is_some_and(|args| args.args().any(|arg| is_anon_const(const_expr_root(arg))))
+        {
+            self.legacy_calls.push(LegacyCall {
+                ctx,
+                node: node.id(),
+                function,
+                macro_scope: self.macro_scope,
+            });
         }
         if node.kind() == SyntaxKind::MACRO_EXPR {
             if macros::is_macro_rules(node) {
@@ -2621,6 +2646,140 @@ impl Collector<'_> {
         }
         for child in node.children() {
             self.collect_body_node(ctx, child, function);
+        }
+    }
+
+    /// Legacy intrinsic arguments use the existing checked constant-expression
+    /// pipeline, including retained body-macro expansions. Runtime arguments
+    /// and explicit turbofish calls never allocate a legacy constant.
+    fn collect_legacy_consts(&mut self) {
+        use crate::def_map::{Def, Ns, Resolved};
+        if self.legacy_calls.is_empty() {
+            return;
+        }
+        let mut counts = rustc_hash::FxHashMap::default();
+        for (_, konst) in self.items.consts.iter() {
+            if let Some(anon) = konst.anon {
+                let count = counts.entry(anon.item).or_insert(0);
+                *count = (*count).max(anon.index + 1);
+            }
+        }
+        for pending in std::mem::take(&mut self.legacy_calls) {
+            let shared = self.db.shared(pending.ctx.file);
+            let node = shared.parse.tree().node(pending.node);
+            let Some(call) = ast::CallExpr::cast(node) else {
+                continue;
+            };
+            let Some(ast::Expr::PathExpr(callee)) = call.expr() else {
+                continue;
+            };
+            let Some(path) = callee.path().and_then(|p| lower_path(p, &mut Vec::new())) else {
+                continue;
+            };
+            let Ok(Resolved::Def(Def::Function(callee))) =
+                self.items.resolve(pending.ctx.module, &path, Ns::Values)
+            else {
+                continue;
+            };
+            let callee = &self.items.functions[callee];
+            let Some(position) = callee.legacy_const_generic else {
+                continue;
+            };
+            let function = &self.items.functions[pending.function];
+            if let Some(name) = path.as_name() {
+                let mut file = pending.ctx.file;
+                let mut at = node.text_range().start();
+                let mut shadowed = false;
+                loop {
+                    let tree = self.db.shared(file);
+                    let mut locals = Vec::new();
+                    let scope = if file == function.loc.file {
+                        tree.parse.tree().node(function.node)
+                    } else {
+                        tree.parse.tree().root()
+                    };
+                    crate::lower::visible_bindings(scope, at, &mut locals);
+                    if locals.iter().any(|local| *local == name.as_str()) {
+                        shadowed = true;
+                        break;
+                    }
+                    if file == function.loc.file {
+                        break;
+                    }
+                    let Some((&(parent, call), _)) = self
+                        .items
+                        .body_expansions
+                        .iter()
+                        .find(|(_, expansion)| expansion.file == file)
+                    else {
+                        break;
+                    };
+                    file = parent;
+                    at = self
+                        .db
+                        .shared(parent)
+                        .parse
+                        .tree()
+                        .node(call)
+                        .text_range()
+                        .start();
+                }
+                if shadowed {
+                    continue;
+                }
+            }
+            let args: Vec<_> = call
+                .arg_list()
+                .into_iter()
+                .flat_map(|list| list.args())
+                .filter(|arg| item_enabled(arg.syntax(), &mut Vec::new()))
+                .collect();
+            if args.len() != callee.params.len() + 1 {
+                continue;
+            }
+            let expr = const_expr_root(args[position as usize]);
+            if !is_anon_const(expr)
+                || self
+                    .items
+                    .anon_consts
+                    .contains_key(&(pending.ctx.file, expr.syntax().id()))
+            {
+                continue;
+            }
+            // Keep the existing direct representation of negative integer
+            // literals, which type-only checking can evaluate without MIR.
+            if let ast::Expr::PrefixExpr(prefix) = expr
+                && prefix.op_kind() == Some(ast::UnaryOp::Neg)
+                && let Some(ast::Expr::Literal(literal)) = prefix.expr().map(const_expr_root)
+                && literal.kind() == Some(ast::LiteralKind::Int)
+            {
+                continue;
+            }
+            let owner_generics = self.items.owner_generics(function.owner);
+            let generics = owner_generics
+                .into_iter()
+                .chain(Some(&function.generics))
+                .flat_map(|g| g.params.iter().map(|p| (p.name, p.is_const())))
+                .collect();
+            let scope = AnonScope {
+                self_adt: None,
+                module: pending.ctx.module,
+                owner: function.owner,
+                generics,
+                generic_self: function
+                    .owner
+                    .is_some_and(|owner| matches!(owner, Owner::Trait(_)))
+                    || owner_generics
+                        .is_some_and(|g| !g.params.is_empty() || !g.lifetimes.is_empty()),
+                function: Some(pending.function),
+                item: function.name,
+            };
+            let start = self.items.diagnostics.len();
+            let old_scope = self.macro_scope;
+            self.macro_scope = pending.macro_scope;
+            self.anon_const(pending.ctx.file, expr, AnonUse::Arg, &scope, &mut counts);
+            self.macro_scope = old_scope;
+            self.tag(start, pending.ctx.file);
         }
     }
 

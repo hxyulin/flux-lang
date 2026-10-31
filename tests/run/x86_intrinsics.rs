@@ -32,6 +32,22 @@ fn main() {
         is_x86_feature_detected!("avx2")
     );
     unsafe {
+        const fn shuffle(z: i32, y: i32, x: i32, w: i32) -> i32 {
+            (z << 6) | (y << 4) | (x << 2) | w
+        }
+        let value = _mm_set_epi32(1, 2, 3, 4);
+        assert_eq!(
+            bytes(_mm_shuffle_epi32(value, shuffle(0, 1, 2, 3))),
+            bytes(_mm_shuffle_epi32::<27>(value))
+        );
+        macro_rules! shift {
+            ($v:expr) => {
+                _mm_slli_epi16($v, 16 - 9)
+            };
+        }
+        assert_eq!(bytes(shift!(value)), bytes(_mm_slli_epi16::<7>(value)));
+    }
+    unsafe {
         let cpu = __cpuid_count(0, 0);
         println!("{} {} {} {}", cpu.eax, cpu.ebx, cpu.ecx, cpu.edx);
         if __cpuid_count(1, 0).ecx & (1 << 27) != 0 {

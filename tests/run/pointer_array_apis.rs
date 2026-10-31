@@ -86,9 +86,35 @@ fn main() {
     let zsts = [(); 7];
     let (groups, rest) = zsts.as_chunks::<3>();
     assert_eq!((groups.len(), rest.len()), (2, 1));
+    for start in 0..values.len() {
+        for end in start..=values.len() {
+            let slice = &values[start..end];
+            let (rest, groups) = slice.as_rchunks::<2>();
+            assert_eq!(rest, &slice[..slice.len() % 2]);
+            assert_eq!(groups.len(), slice.len() / 2);
+            assert_eq!(
+                groups.as_ptr() as *const u32,
+                slice[slice.len() % 2..].as_ptr()
+            );
+            for i in 0..groups.len() {
+                assert_eq!(
+                    groups[i],
+                    [slice[rest.len() + i * 2], slice[rest.len() + i * 2 + 1]]
+                );
+            }
+        }
+    }
+    assert_eq!([1u8].as_rchunks::<8>(), (&[1][..], &[][..]));
+    assert_eq!(empty.as_rchunks::<3>(), (&[][..], &[][..]));
+    let (prefix, triples) = zsts.as_rchunks::<3>();
+    assert_eq!((prefix.len(), triples.len()), (1, 2));
     let owned = [String::from("a"), String::from("b"), String::from("c")];
     let (pairs, rest) = owned.as_chunks::<2>();
     assert_eq!(pairs[0][1], "b");
     assert_eq!(rest[0], "c");
+    let (rest, pairs) = owned.as_rchunks::<2>();
+    assert_eq!(rest[0], "a");
+    assert_eq!(pairs[0][0], "b");
+    assert_eq!(pairs[0][1], "c");
     println!("pointer array {} {}", values[2], groups.len());
 }

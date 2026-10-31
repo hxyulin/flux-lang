@@ -245,8 +245,11 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     if !plan.blockers.is_empty() {
         return Err(plan.blockers.join("; "));
     }
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        return Err("Cargo source builds support only arm64 macOS hosts".into());
+    if !cfg!(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "linux", target_arch = "x86_64"),
+    )) {
+        return Err("Cargo source builds support only arm64 macOS and x86-64 Linux hosts".into());
     }
     let mut sources = Vec::new();
     let mut hosts = BTreeMap::new();

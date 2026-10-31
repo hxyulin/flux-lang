@@ -123,6 +123,71 @@ fn feature_and_immediate_contracts_match_rustc() {
             true,
         ),
         (
+            "legacy_arithmetic",
+            "use core::arch::x86_64::*;fn main(){unsafe{let _=_mm_slli_epi16(_mm_setzero_si128(),16-9);}}",
+            true,
+        ),
+        (
+            "legacy_const_call",
+            "use core::arch::x86_64::*;fn main(){unsafe{const fn shuffle(z:i32,y:i32,x:i32,w:i32)->i32{(z<<6)|(y<<4)|(x<<2)|w}let _=_mm_shuffle_epi32(_mm_setzero_si128(),shuffle(0,1,2,3));}}",
+            true,
+        ),
+        (
+            "legacy_alias",
+            "use core::arch::x86_64::*;fn main(){unsafe{use core::arch::x86_64::_mm_slli_epi16 as shift;let _=shift(_mm_setzero_si128(),16-9);}}",
+            true,
+        ),
+        (
+            "legacy_runtime_arithmetic",
+            "use core::arch::x86_64::*;fn main(){unsafe{let n=7;let _=_mm_slli_epi16(_mm_setzero_si128(),n+1);}}",
+            false,
+        ),
+        (
+            "legacy_bad_arithmetic",
+            "use core::arch::x86_64::*;fn main(){unsafe{let _=_mm_shuffle_epi32(_mm_setzero_si128(),128+128);}}",
+            false,
+        ),
+        (
+            "legacy_non_const_call",
+            "use core::arch::x86_64::*;fn main(){unsafe{fn amount()->i32{7}let _=_mm_slli_epi16(_mm_setzero_si128(),amount()+1);}}",
+            false,
+        ),
+        (
+            "legacy_shadow",
+            "use core::arch::x86_64::*;fn main(){unsafe{let _mm_slli_epi16=|_:__m128i,n:i32|n;let n=7;assert_eq!(_mm_slli_epi16(_mm_setzero_si128(),n+1),8);}}",
+            true,
+        ),
+        (
+            "legacy_macro_shadow",
+            "use core::arch::x86_64::*;fn main(){unsafe{macro_rules! call{()=>{{let _mm_slli_epi16=|_:__m128i,n:i32|n;let n=7;_mm_slli_epi16(_mm_setzero_si128(),n+1)}}}assert_eq!(call!(),8);}}",
+            true,
+        ),
+        (
+            "legacy_outer_shadow",
+            "use core::arch::x86_64::*;fn main(){unsafe{let _mm_slli_epi16=|_:__m128i,n:i32|n;let n=7;macro_rules! call{()=>{_mm_slli_epi16(_mm_setzero_si128(),n+1)}}assert_eq!(call!(),8);}}",
+            true,
+        ),
+        (
+            "legacy_loop_shadow",
+            "use core::arch::x86_64::*;fn main(){unsafe{let n=7;for _mm_slli_epi16 in [|_:__m128i,n:i32|n]{let _=_mm_slli_epi16(_mm_setzero_si128(),n+1);}}}",
+            true,
+        ),
+        (
+            "legacy_match_shadow",
+            "use core::arch::x86_64::*;fn main(){unsafe{let n=7;match Some(|_:__m128i,n:i32|n){Some(_mm_slli_epi16)=>{let _=_mm_slli_epi16(_mm_setzero_si128(),n+1);},None=>{}}}}",
+            true,
+        ),
+        (
+            "legacy_if_let_shadow",
+            "use core::arch::x86_64::*;fn main(){unsafe{let n=7;if let Some(_mm_slli_epi16)=Some(|_:__m128i,n:i32|n){let _=_mm_slli_epi16(_mm_setzero_si128(),n+1);}}}",
+            true,
+        ),
+        (
+            "legacy_closure_shadow",
+            "use core::arch::x86_64::*;fn main(){unsafe{let n=7;let call=|_mm_slli_epi16:fn(__m128i,i32)->i32|_mm_slli_epi16(_mm_setzero_si128(),n+1);let _=call(|_,n|n);}}",
+            true,
+        ),
+        (
             "reified_shift",
             "use core::arch::x86_64::*;fn main(){let f:unsafe fn(__m128i)->__m128i=_mm_slli_epi16::<3>;unsafe{let _=f(_mm_setzero_si128());}}",
             true,
