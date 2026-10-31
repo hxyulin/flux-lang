@@ -32,11 +32,11 @@ stress-test Keel with Rust-shaped code.
 | Checking | Type inference, trait solving, a borrow checker, constant evaluation and rustc's overflow lints |
 | Libraries | Its own `core`, `alloc` and a bounded `std`, written in flux, including threads, atomics, `OnceLock` and collections |
 | Real crates | Unchanged sources of hashbrown, smallvec, typenum, bumpalo, memchr, crc32fast and more, matched against rustc on arm64 macOS |
-| Builds | One `.flib` artifact per crate, a prebuilt built-in library, local Cargo packages and procedural macros |
+| Builds | One `.flib` artifact per crate, a prebuilt built-in library, local Cargo packages, locked dependency fetching and procedural macros |
 | Backend | Native executables on arm64 macOS and x86-64 Linux, linked in-process with Keel |
 
-Not supported yet: unwinding (panics abort), registry fetching, dependency
-version resolution, and lockfile updates. The
+Not supported yet: unwinding (panics abort), dependency version resolution,
+and lockfile updates. The
 [language reference](docs/LANGUAGE.md) lists every restriction.
 
 ## Self-hosting

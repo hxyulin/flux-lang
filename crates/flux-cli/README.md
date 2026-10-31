@@ -10,6 +10,59 @@ flux check a.rs b.rs  # errors only; exits with 1 if there are any
 ```
 
 
+## Locked dependency fetching
+
+```sh
+flux cargo fetch --locked --manifest-path Cargo.toml
+flux cargo fetch --locked --offline
+flux cargo build --native --offline -p flux-cli --bin flux -O
+```
+
+Fetching reads an existing Cargo.lock version 3 or 4 and downloads every locked
+registry or git source, including optional dependencies and other platforms.
+It does not select versions, query a registry index, run Cargo or rustc, or
+change the lockfile. Path dependencies remain in their existing locations.
+Native planning and builds stay offline; fetching is an explicit separate step.
+
+Registry downloads use the crates.io download API and must match the lockfile's
+SHA-256 checksum. Extraction checks tar header checksums and package identity,
+rejects paths outside the package root, links, duplicate files and special
+entries, and installs the completed tree by rename. Supported tar entries are
+regular files, directories, GNU long paths and local PAX path/size records.
+Archives are limited to 128 MiB compressed, 512 MiB uncompressed and 100,000
+entries. Executable file bits are retained without privileged mode bits.
+Temporary downloads and extraction trees are removed on failure. A verified
+archive may remain cached if extraction fails.
+
+Git sources use the exact 40-digit locked commit, not the current branch tip.
+Submodules are fetched through Git using its normal transport policy. Sources
+live under `CARGO_HOME` (default `~/.cargo`) beside existing Cargo cache entries.
+Existing extracted trees and git checkouts retain the planner's trusted-cache
+contract; fetching does not rehash every existing source file. A corrupt cached
+archive fails checksum verification instead of being installed.
+
+`--offline` reuses extracted sources, existing git checkouts or verified cached
+registry archives. It can extract an archive without a download. Missing sources
+fail without network access. Fetching uses `curl`, `gzip` and `git` from PATH as
+needed; curl configuration files are disabled, and the default HTTPS endpoint
+only follows HTTPS redirects. Git retains the user's credential helpers.
+
+`--download-base <URL>` selects a mirror of the crates.io download API, appending
+`/<name>/<version>/download`. HTTPS, HTTP and local file mirrors are accepted;
+package identities and checksums still come from Cargo.lock. Alternate registry
+identities, source replacement, patch/replace overrides, version resolution and
+lockfile generation or updates are not supported yet.
+
+Empty-cache fetching has been verified on arm64 macOS and x86-64 Linux for all
+85 locked source packages in this repository. Both runs left Cargo.lock unchanged
+with Cargo blocked, then replayed fetching and planning offline. The macOS run
+built the optimized compiler from that fetched cache. The generated compiler
+then fetched a registry crate and a pinned git dependency into another empty
+cache, and built and ran their program offline with Cargo blocked. The complete
+macOS suite passed 477 targets; both hosts passed the seven fetching regression
+tests and workspace Clippy. Local evidence is indexed by
+`out/locked-fetch-audit/proof.json`.
+
 ## Native offline planning
 
 ```sh
@@ -18,7 +71,8 @@ flux cargo plan --manifest-path Cargo.toml -p flux-cli --bin flux
 
 This command reads manifests and Cargo.lock directly. It never invokes Cargo,
 accesses the network, runs build scripts, or loads proc macros. Dependencies must
-already exist in `CARGO_HOME` (default `~/.cargo`). Rustc supplies the host triple
+already exist in `CARGO_HOME` (default `~/.cargo`); `flux cargo fetch --locked`
+can populate it. Rustc supplies the host triple
 and target cfg; Git checks cached checkout revisions. Planning currently targets
 the host platform. `--offline` is accepted but planning is always offline.
 

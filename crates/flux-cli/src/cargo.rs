@@ -13,6 +13,8 @@ mod native;
 pub(crate) enum Command {
     /// Plan locked dependencies from local manifests and caches, without Cargo.
     Plan(Options),
+    /// Fetch exact locked registry and git sources without Cargo.
+    Fetch(native::FetchOptions),
     /// Prepare build scripts and host proc-macro artifacts.
     Prepare(Options),
     /// Prepare inputs, then compile a supported binary's source graph with Flux.
@@ -171,6 +173,9 @@ struct Plan {
 }
 
 pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
+    if let Command::Fetch(options) = command {
+        return native::fetch(options);
+    }
     if let Command::Plan(options) = command {
         return native::execute(options);
     }

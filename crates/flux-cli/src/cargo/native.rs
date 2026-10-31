@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use super::Options;
 
 mod execute;
+mod fetch;
+pub(crate) use fetch::FetchOptions;
 
 type Table = toml::Table;
 type Result<T> = std::result::Result<T, String>;
@@ -414,74 +416,12 @@ impl Planner {
 
     fn cached(&self, id: usize) -> Result<PathBuf> {
         let package = &self.lock.package[id];
-        let source = package
-            .source
-            .as_deref()
-            .ok_or("expected a cached dependency")?;
-        let mut found = Vec::new();
-        if source.starts_with("registry+") {
-            for registry in directories(&self.home.join("registry/src"))? {
-                // Only Cargo's standard crates.io caches. Source replacement needs explicit support.
-                if !registry
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|s| {
-                        s == "index.crates.io-1949cf8c6b5b557f"
-                            || s == "github.com-1ecc6299db9ec823"
-                    })
-                {
-                    continue;
-                }
-                let root = registry.join(format!("{}-{}", package.name, package.version));
-                if root.join("Cargo.toml").is_file() {
-                    let checksum_file = root.join(".cargo-checksum.json");
-                    if checksum_file.is_file() {
-                        let checksum: serde_json::Value =
-                            serde_json::from_str(&read(&checksum_file)?)
-                                .map_err(|e| format!("invalid cached checksum: {e}"))?;
-                        if checksum["package"].as_str() != package.checksum.as_deref() {
-                            return Err(format!("cached checksum differs for {}", package.name));
-                        }
-                    }
-                    found.push(root.join("Cargo.toml"));
-                }
-            }
-        } else if source.starts_with("git+") {
-            let commit = source
-                .rsplit_once('#')
-                .ok_or("git lock entry has no commit")?
-                .1;
-            if commit.len() != 40 || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
-                return Err("expected a full locked git commit".into());
-            }
-            for repo in directories(&self.home.join("git/checkouts"))? {
-                for checkout in directories(&repo)? {
-                    let head = super::output(
-                        Command::new("git")
-                            .arg("-C")
-                            .arg(&checkout)
-                            .args(["rev-parse", "HEAD"]),
-                        "cached git revision",
-                    )?;
-                    if head.trim() == commit {
-                        find_manifests(&checkout, &package.name, &package.version, &mut found)?;
-                    }
-                }
-            }
-        }
-        found.sort();
-        found.dedup();
-        match found.as_slice() {
-            [path] => canonical(path),
-            [] => Err(format!(
-                "offline source missing for {} {}; fetch it with Cargo first",
+        cached_source(&self.home, package)?.ok_or_else(|| {
+            format!(
+                "offline source missing for {} {}; run `flux cargo fetch --locked` first",
                 package.name, package.version
-            )),
-            _ => Err(format!(
-                "multiple cached sources for {} {}; set CARGO_HOME to one cache",
-                package.name, package.version
-            )),
-        }
+            )
+        })
     }
 
     fn resolve(&mut self) -> Result<()> {
@@ -1035,9 +975,6 @@ fn target(
     })
 }
 fn validate_overrides(root: &Path, table: &Table) -> Result<()> {
-    if table.contains_key("patch") || table.contains_key("replace") {
-        return Err("native planning does not support patch or replace tables yet".into());
-    }
     let resolver = table
         .get("workspace")
         .and_then(|w| w.get("resolver"))
@@ -1052,6 +989,13 @@ fn validate_overrides(root: &Path, table: &Table) -> Result<()> {
                 .is_none_or(|e| e == "2015" || e == "2018"))
     {
         return Err("native planning requires feature resolver 2 or 3".into());
+    }
+    validate_configuration(root, table, true)
+}
+
+fn validate_configuration(root: &Path, table: &Table, reject_target: bool) -> Result<()> {
+    if table.contains_key("patch") || table.contains_key("replace") {
+        return Err("native source operations do not support patch or replace tables yet".into());
     }
     let mut configs = root
         .ancestors()
@@ -1071,7 +1015,7 @@ fn validate_overrides(root: &Path, table: &Table) -> Result<()> {
         if ["source", "patch", "registries", "paths"]
             .iter()
             .any(|k| table.contains_key(*k))
-            || table.get("build").and_then(|v| v.get("target")).is_some()
+            || (reject_target && table.get("build").and_then(|v| v.get("target")).is_some())
         {
             return Err(format!(
                 "native planning cannot apply source or target overrides in {}",
@@ -1155,6 +1099,27 @@ fn check_version(package: &Locked, req: Option<&semver::VersionReq>) -> Result<(
         Err(format!("locked version does not match {}", package.name))
     }
 }
+fn package_version(fields: &Table, path: &Path) -> Result<String> {
+    if let Some(version) = fields.get("version").and_then(toml::Value::as_str) {
+        return Ok(version.to_owned());
+    }
+    if fields
+        .get("version")
+        .and_then(|v| v.get("workspace"))
+        .and_then(toml::Value::as_bool)
+        == Some(true)
+    {
+        let (_, table) = workspace(path)?;
+        return table
+            .get("workspace")
+            .and_then(|w| w.get("package"))
+            .and_then(|p| p.get("version"))
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+            .ok_or("missing workspace package version".into());
+    }
+    Err("missing package version".into())
+}
 fn find_manifests(root: &Path, name: &str, version: &str, found: &mut Vec<PathBuf>) -> Result<()> {
     let manifest = root.join("Cargo.toml");
     if manifest.is_file() {
@@ -1165,8 +1130,11 @@ fn find_manifests(root: &Path, name: &str, version: &str, found: &mut Vec<PathBu
             .and_then(toml::Value::as_str)
             == Some(name)
         {
-            let package = load(&manifest)?;
-            if string(&package.fields, "version")? == version {
+            let fields = table
+                .get("package")
+                .and_then(toml::Value::as_table)
+                .ok_or("missing package table")?;
+            if package_version(fields, &manifest)? == version {
                 found.push(manifest);
             }
         }
@@ -1250,4 +1218,81 @@ fn git_source_matches(source: &str, url: &str, spec: &Table) -> bool {
 
 pub(super) fn prepare(options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
     execute::run(make_plan(options)?, options, optimize)
+}
+
+fn cached_source(home: &Path, package: &Locked) -> Result<Option<PathBuf>> {
+    let source = package
+        .source
+        .as_deref()
+        .ok_or("expected a cached dependency")?;
+    let mut found = Vec::new();
+    if source.starts_with("registry+") {
+        for registry in directories(&home.join("registry/src"))? {
+            // Only Cargo's standard crates.io caches. Source replacement needs explicit support.
+            if !registry
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| {
+                    s == "index.crates.io-1949cf8c6b5b557f" || s == "github.com-1ecc6299db9ec823"
+                })
+            {
+                continue;
+            }
+            let root = registry.join(format!("{}-{}", package.name, package.version));
+            if root.join("Cargo.toml").is_file() {
+                let checksum_file = root.join(".cargo-checksum.json");
+                if checksum_file.is_file() {
+                    let checksum: serde_json::Value = serde_json::from_str(&read(&checksum_file)?)
+                        .map_err(|e| format!("invalid cached checksum: {e}"))?;
+                    if checksum["package"].as_str() != package.checksum.as_deref() {
+                        return Err(format!("cached checksum differs for {}", package.name));
+                    }
+                }
+                found.push(root.join("Cargo.toml"));
+            }
+        }
+    } else if source.starts_with("git+") {
+        let commit = source
+            .rsplit_once('#')
+            .ok_or("git lock entry has no commit")?
+            .1;
+        if commit.len() != 40 || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err("expected a full locked git commit".into());
+        }
+        for repo in directories(&home.join("git/checkouts"))? {
+            for checkout in directories(&repo)? {
+                if checkout
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(".flux-fetch-"))
+                {
+                    continue;
+                }
+                let head = super::output(
+                    Command::new("git")
+                        .arg("-C")
+                        .arg(&checkout)
+                        .args(["rev-parse", "HEAD"]),
+                    "cached git revision",
+                )?;
+                if head.trim() == commit {
+                    find_manifests(&checkout, &package.name, &package.version, &mut found)?;
+                }
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    match found.as_slice() {
+        [path] => canonical(path).map(Some),
+        [] => Ok(None),
+        _ => Err(format!(
+            "multiple cached sources for {} {}; set CARGO_HOME to one cache",
+            package.name, package.version
+        )),
+    }
+}
+
+pub(super) fn fetch(options: &FetchOptions) -> Result<ExitCode> {
+    fetch::run(options)
 }
