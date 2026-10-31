@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::Options;
 
+mod execute;
+
 type Table = toml::Table;
 type Result<T> = std::result::Result<T, String>;
 
@@ -116,7 +118,7 @@ struct Planner {
     host: String,
 }
 
-pub(super) fn execute(options: &Options) -> Result<ExitCode> {
+fn make_plan(options: &Options) -> Result<Plan> {
     let manifest = canonical(&options.manifest_path)?;
     let (workspace, workspace_table) = workspace(&manifest)?;
     validate_overrides(&workspace, &workspace_table)?;
@@ -162,7 +164,7 @@ pub(super) fn execute(options: &Options) -> Result<ExitCode> {
             selected.push((path, package));
         }
     }
-    let (path, package) = if options.package.is_none()
+    let (_path, package) = if options.package.is_none()
         && (manifest != workspace.join("Cargo.toml") || workspace_table.contains_key("package"))
     {
         (manifest.clone(), load(&manifest)?)
@@ -260,10 +262,15 @@ pub(super) fn execute(options: &Options) -> Result<ExitCode> {
         units,
         root_unit,
     };
+    Ok(plan)
+}
+
+pub(super) fn execute(options: &Options) -> Result<ExitCode> {
+    let plan = make_plan(options)?;
     let output = options
         .plan
         .clone()
-        .unwrap_or_else(|| workspace.join("target/flux/native-plan.json"));
+        .unwrap_or_else(|| plan.workspace_root.join("target/flux/native-plan.json"));
     if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -273,11 +280,10 @@ pub(super) fn execute(options: &Options) -> Result<ExitCode> {
     )
     .map_err(|e| format!("cannot write {}: {e}", output.display()))?;
     eprintln!(
-        "planned {} packages and {} build units without Cargo: {} (manifest {})",
+        "planned {} packages and {} build units without Cargo: {}",
         plan.packages.len(),
         plan.units.len(),
-        output.display(),
-        path.display()
+        output.display()
     );
     Ok(ExitCode::SUCCESS)
 }
@@ -1240,4 +1246,8 @@ fn git_source_matches(source: &str, url: &str, spec: &Table) -> bool {
     source
         .rsplit_once('#')
         .is_some_and(|(locked, _)| locked == identity)
+}
+
+pub(super) fn prepare(options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
+    execute::run(make_plan(options)?, options, optimize)
 }

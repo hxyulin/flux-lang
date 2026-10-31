@@ -110,7 +110,8 @@ fn main() -> ExitCode {
             | Command::Parse { .. }
             | Command::Check { .. }
             | Command::Cargo {
-                command: cargo::Command::Plan(_),
+                command: cargo::Command::Plan(_)
+                    | cargo::Command::Prepare(cargo::Options { native: true, .. }),
             }
     ) && let Err(message) = flux_cli::builtins::initialize()
     {

@@ -37,11 +37,58 @@ and git working-tree changes are not integrity-checked. Git sources must have
 the exact locked commit checked out. Missing or ambiguous sources and stale
 lockfile edges fail without fetching or updating Cargo.lock.
 
-Planning does not execute the plan or produce the prepared artifacts expected
-by `flux cargo build`. Host-tool execution is the next step toward Cargo-free
-builds. Alternate registries, source replacement, patch/replace overrides,
+Planning does not execute host tools. Add `--native` to `prepare` or `build`
+to prepare or compile the graph without Cargo, as described below.
+Alternate registries, source replacement, patch/replace overrides,
 workspace member globs, resolver 1, and cross compilation are not supported.
 Unsupported source/target overrides in Cargo configuration fail explicitly.
+
+## Native source builds
+
+```sh
+flux cargo prepare --native --manifest-path Cargo.toml -p flux-cli --bin flux
+flux cargo build --native --manifest-path path/to/Cargo.toml -p application -O
+```
+
+These commands use native offline planning. They compile host libraries,
+proc-macro dylibs, and build-script executables with direct rustc calls. They run
+build scripts from their package directories, then Flux compiles target source
+crates and generated includes. Rustc does not check or compile target libraries
+or binaries. Host and target units retain separate features and `OUT_DIR`s.
+The existing toolchain-matched proc-macro server executes host dylibs.
+
+Build scripts receive package, feature, target cfg, and profile variables, plus
+`DEP_*` metadata from direct dependencies with `links` declarations. Both
+`cargo:` and `cargo::` output prefixes support cfg, environment, linker search
+paths and libraries, and links metadata. Build-script environment names currently
+require ASCII. Unknown modern directives and custom
+linker arguments fail explicitly. Native linker directives can prepare rustc
+host tools; Flux target linking still rejects them.
+
+Each invocation recompiles host units and reruns build scripts. Host tools use
+optimization level 0 with debug assertions; `-O` selects Flux target optimization.
+Cargo profiles and rustc wrappers are not interpreted. Existing generated output
+is not reused. Artifacts and per-script stdout/stderr live under
+`target/flux/native-host/<run>/`. Preparation writes a separate version 1
+`flux-native-prepared` report to `target/flux/native-prepared-plan.json`, or
+`--plan`. The report records rustc identity, the native graph, host artifact
+paths, generated directories, and parsed script output. It is an audit report,
+not a replay input. A failed script stops preparation and includes its output
+in the diagnostic.
+
+The driver never invokes Cargo. Build scripts may invoke their own external
+tools; scripts that explicitly call Cargo still require it. Native preparation
+retains the planner's source and workspace limits. It currently uses rustc
+for proc macros with dependencies. The standalone `flux package` driver also
+offers Flux compilation for dependency-free macro hosts.
+
+On arm64 macOS, native preparation has built all 31 host artifacts and run all
+13 build-script units for Flux's compiler graph, including five proc macros.
+The complete optimized compiler build passed with a failing Cargo trap and
+unchanged guarded repository sources. The generated compiler passed help/version
+checks and six native comparisons against rustc, then built and ran a separate
+proc-macro graph through its own native driver with Cargo blocked. This native
+route has not yet been reverified on Linux or through a stage 2 rebuild.
 
 ## Cargo-backed source builds
 

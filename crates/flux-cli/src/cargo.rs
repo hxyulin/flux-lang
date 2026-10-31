@@ -13,7 +13,7 @@ mod native;
 pub(crate) enum Command {
     /// Plan locked dependencies from local manifests and caches, without Cargo.
     Plan(Options),
-    /// Run Cargo check to prepare build scripts and host proc-macro artifacts.
+    /// Prepare build scripts and host proc-macro artifacts.
     Prepare(Options),
     /// Prepare inputs, then compile a supported binary's source graph with Flux.
     Build {
@@ -38,6 +38,9 @@ pub(crate) struct Options {
     no_default_features: bool,
     #[arg(long)]
     offline: bool,
+    /// Prepare host tools directly with rustc, without invoking Cargo.
+    #[arg(long)]
+    pub(crate) native: bool,
     /// Write a versioned plan here (default: target/flux/{native,cargo}-plan.json).
     #[arg(long)]
     plan: Option<PathBuf>,
@@ -174,6 +177,13 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     let (Command::Prepare(options) | Command::Build { options, .. }) = command else {
         unreachable!("native planning returned above")
     };
+    if options.native {
+        let optimize = match command {
+            Command::Build { optimize, .. } => Some(*optimize),
+            _ => None,
+        };
+        return native::prepare(options, optimize);
+    }
     let rustc = output(
         Process::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())).arg("-vV"),
         "rustc version",
