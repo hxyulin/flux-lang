@@ -1,4 +1,4 @@
-//! Direct rustc preparation supplies Flux builds while Cargo is unavailable.
+//! Native host tools retain features, macro dependencies and script output.
 #![cfg(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "linux", target_arch = "x86_64")
@@ -41,7 +41,16 @@ impl Fixture {
             "tools/cargo",
             "#!/bin/sh\necho called > \"$CARGO_TRAP\"\nexit 93\n",
         );
+        f.write(
+            "tools/rustc",
+            "#!/bin/sh\necho called > \"$CARGO_TRAP\"\nexit 94\n",
+        );
         use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            f.root.join("tools/rustc"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
         std::fs::set_permissions(
             f.root.join("tools/cargo"),
             std::fs::Permissions::from_mode(0o755),
@@ -63,7 +72,14 @@ impl Fixture {
             .arg(self.root.join(format!("{label}.json")))
             .args(args)
             .env("PATH", self.root.join("tools"))
-            .env("RUSTC", &self.rustc)
+            .env(
+                "RUSTC",
+                if args.contains(&"flux") {
+                    self.root.join("tools/rustc")
+                } else {
+                    self.rustc.clone()
+                },
+            )
             .env("CARGO_HOME", self.root.join("cache"))
             .env("FLUX_BUILTINS_TRACE", "1")
             .env("CARGO_TRAP", self.root.join("cargo-was-called"))
@@ -187,7 +203,7 @@ proc-macro=true
 helper={package="shared",path="../shared",features=["host"]}
 "#,
     );
-    f.write("macros/build.rs", "fn main(){println!(\"cargo::rustc-env=MACRO_MARKER=macro-only\");println!(\"cargo::rustc-cfg=macro_generated\");}\n");
+    f.write("macros/build.rs", "fn main(){println!(\"cargo::rustc-env=MACRO_MARKER=macro-only\");println!(\"cargo::rustc-cfg=macro_generated\"); if std::env::var(\"FLUX_COMPILER_PROBE\").is_ok(){let output=std::process::Command::new(std::env::var(\"RUSTC\").unwrap()).arg(\"--version\").output().unwrap();assert!(output.status.success());assert!(output.stdout.starts_with(b\"fluxc \"));}}\n");
     f.write(
         "macros/src/lib.rs",
         r#"
@@ -231,6 +247,16 @@ dependencies=["shared"]
     for (label, args) in [
         ("plain", vec![]),
         ("optimized", vec!["-O", "--features", "derive"]),
+        (
+            "flux-macros",
+            vec![
+                "-O",
+                "--features",
+                "derive",
+                "--macro-host-compiler",
+                "flux",
+            ],
+        ),
     ] {
         let output = f.run("build", label, &args);
         support::oracle::success(&output, "native host source build");
@@ -251,7 +277,9 @@ dependencies=["shared"]
         let outputs = report["outputs"].as_array().unwrap();
         assert_eq!(units.len(), outputs.len());
         for (unit, output) in units.iter().zip(outputs) {
-            if unit["domain"] == "target" {
+            if unit["domain"] == "target"
+                || (label == "flux-macros" && unit["target"]["kind"] == "lib")
+            {
                 assert!(output["artifact"].is_null());
             } else {
                 assert!(Path::new(output["artifact"].as_str().unwrap()).is_file());

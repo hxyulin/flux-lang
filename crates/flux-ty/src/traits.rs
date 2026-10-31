@@ -1635,8 +1635,13 @@ fn coherence_goal_impossible(
             .impl_index
             .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
             .all(|imp| {
-                let header: Vec<Ty> = std::iter::once(sigs.impls[imp])
-                    .chain(sigs.impl_traits[imp].args.iter().copied())
+                let (Some(&self_ty), Some(trait_ref)) =
+                    (sigs.impls.get(imp), sigs.impl_traits.get(imp))
+                else {
+                    return false;
+                };
+                let header: Vec<Ty> = std::iter::once(self_ty)
+                    .chain(trait_ref.args.iter().copied())
                     .map(|ty| coherence_header_ty(items, sigs, own, ty))
                     .collect();
                 unify_headers(&header, &goal_header).is_none()
@@ -1659,11 +1664,17 @@ fn coherence_goal_impossible(
         .impl_index
         .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
         .all(|imp| {
+            // An indexed impl can lack a resolved trait header after an error.
+            // It cannot establish that the goal is impossible.
+            let (Some(&self_ty), Some(trait_ref)) =
+                (sigs.impls.get(imp), sigs.impl_traits.get(imp))
+            else {
+                return false;
+            };
             let Some(args) = match_impl(items, sigs, imp, goal) else {
                 // An unresolved projected header might match after its own
                 // constraints are solved. That is not a known disjoint candidate.
-                return !sigs.impls[imp].has_aliases()
-                    && !sigs.impl_traits[imp].args.iter().any(|ty| ty.has_aliases());
+                return !self_ty.has_aliases() && !trait_ref.args.iter().any(|ty| ty.has_aliases());
             };
             sigs.impl_predicates
                 .get(imp)
@@ -3486,5 +3497,33 @@ fn check_drop_impls(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod coherence_tests {
+    use super::*;
+
+    #[test]
+    fn unresolved_impl_header_does_not_prove_a_goal_impossible() {
+        let (_, _, hir) = flux_hir::lower_text_bare(
+            "incomplete.rs",
+            "trait Bound {} struct Local; impl Bound for Local {}",
+        );
+        assert!(hir.diagnostics.is_empty());
+        let (mut sigs, errors) = crate::signature::signatures(&hir.items);
+        assert!(errors.is_empty());
+        let (imp, _) = hir.items.impls.iter().next().expect("fixture impl");
+        let trait_ref = sigs.impl_traits[imp];
+        let self_ty = sigs.impls[imp];
+        let own = hir.items.modules[hir.items.traits[trait_ref.trait_].loc.module].krate;
+        sigs.impl_traits = Default::default();
+        assert!(!coherence_goal_impossible(
+            &hir.items,
+            &sigs,
+            own,
+            Predicate { self_ty, trait_ref },
+            &mut Vec::new()
+        ));
     }
 }

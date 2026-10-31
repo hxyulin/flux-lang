@@ -96,3 +96,58 @@ fn check(script: bool) {
     assert_eq!(output.stdout, b"rustc-free\n");
     assert!(!root.join("toolchain-called").exists());
 }
+
+#[test]
+fn compiler_probes_check_flux_capabilities_without_a_toolchain() {
+    let scratch = Scratch::new(std::env::temp_dir().join("flux-compiler-probes"));
+    let root = scratch.path();
+    std::fs::write(root.join("valid.rs"), "pub fn value()->usize {42}").unwrap();
+    std::fs::write(root.join("invalid.rs"), "pub fn value()->usize {true}").unwrap();
+    std::fs::write(
+        root.join("span.rs"),
+        "extern crate proc_macro; pub fn file(s:proc_macro::Span){s.file();}",
+    )
+    .unwrap();
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
+            .current_dir(root)
+            .args(args)
+            .env("FLUX_COMPILER_PROBE", "1")
+            .env("PATH", root.join("no-tools"))
+            .env("RUSTC", root.join("no-rustc"))
+            .output()
+            .unwrap()
+    };
+    let version = invoke(&["--version"]);
+    support::oracle::success(&version, "Flux probe version");
+    assert!(version.stdout.starts_with(b"fluxc "));
+    let cfg = invoke(&["--print", "cfg"]);
+    support::oracle::success(&cfg, "Flux probe cfg");
+    assert!(
+        String::from_utf8(cfg.stdout)
+            .unwrap()
+            .contains("panic=\"abort\"")
+    );
+    for (file, succeeds) in [
+        ("valid.rs", true),
+        ("invalid.rs", false),
+        ("span.rs", false),
+    ] {
+        let output = invoke(&[
+            "--edition=2024",
+            "--crate-name=probe",
+            "--crate-type=lib",
+            "--emit=dep-info,metadata",
+            "--out-dir",
+            "output",
+            file,
+        ]);
+        assert_eq!(
+            output.status.success(),
+            succeeds,
+            "{file}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(!invoke(&["--unsupported"]).status.success());
+}

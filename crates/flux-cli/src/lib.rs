@@ -16,3 +16,5 @@ use driver::{BuildOptions, CrateType, report_all};
 pub use driver::{compiler_main, package_main};
 
 mod target;
+
+mod probe;

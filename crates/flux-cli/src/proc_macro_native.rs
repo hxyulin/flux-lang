@@ -1,4 +1,4 @@
-//! Opt-in Flux compilation of dependency-free procedural macro hosts.
+//! Flux compilation of procedural macro source graphs.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -17,11 +17,29 @@ pub(crate) fn build_host(
     edition: Edition,
     output: &Path,
 ) -> Result<Vec<ProcMacro>, String> {
+    let mut input = SourceInput::standalone(source, name);
+    input.edition = edition;
+    build_host_graph(vec![input], output)
+}
+
+pub(crate) fn build_host_graph(
+    mut sources: Vec<SourceInput>,
+    output: &Path,
+) -> Result<Vec<ProcMacro>, String> {
+    let root = sources.last().ok_or("missing macro root source")?;
+    let source = root.file.clone();
+    let name = root.name.clone();
+    let mut cfg = native_cfg()?;
+    for symbol in &root.cfg.names {
+        cfg.insert(symbol.to_string());
+    }
+    for (key, value) in &root.cfg.values {
+        cfg.insert(format!("{key}={value:?}"));
+    }
     std::fs::create_dir_all(output)
         .map_err(|e| format!("cannot create macro host directory: {e}"))?;
     let output = output.canonicalize().map_err(|e| e.to_string())?;
     let source = source.canonicalize().map_err(|e| e.to_string())?;
-    let cfg = native_cfg();
     let prepared = local::prepare_source_with_cfg(&source, &output, &cfg)?;
     validate_exports(&prepared.text, &prepared.exports, &cfg)?;
     let runtime = output.join("runtime");
@@ -66,7 +84,25 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
         prepared.text
     );
     std::fs::write(&prepared.path, &runner).map_err(|e| e.to_string())?;
-    let sources = [
+    for source in &mut sources {
+        for (_, dependency) in &mut source.dependencies {
+            *dependency += 1;
+        }
+        if source.host_macros.is_none() {
+            if source
+                .dependencies
+                .iter()
+                .any(|(alias, _)| alias == "proc_macro")
+            {
+                return Err("proc_macro is reserved for the native token API".into());
+            }
+            source.dependencies.push(("proc_macro".into(), 0));
+        }
+    }
+    let root = sources.last_mut().ok_or("missing macro root source")?;
+    root.cfg.names.push(Symbol::intern("proc_macro"));
+    sources.insert(
+        0,
         SourceInput {
             edition: Edition::E2024,
             file: runtime.join("lib.rs"),
@@ -78,26 +114,12 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
             environment: None,
             cfg: CrateCfg::default(),
         },
-        SourceInput {
-            edition,
-            file: source.clone(),
-            name: name.into(),
-            dependencies: vec![("proc_macro".into(), 0)],
-            package_identity: None,
-            host_macros: None,
-            compilation_dir: None,
-            environment: None,
-            cfg: CrateCfg {
-                names: vec![Symbol::intern("proc_macro")],
-                values: Vec::new(),
-            },
-        },
-    ];
+    );
     let executable = output.join("host");
     if !crate::build::compile_generated(
         CompileRequest {
             file: &source,
-            crate_name: name,
+            crate_name: &name,
             output: &executable,
             options: crate::BuildOptions {
                 optimize: false,
@@ -112,38 +134,10 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
     Ok(local::descriptors(&executable, prepared.exports))
 }
 
-fn native_cfg() -> HashSet<String> {
-    let mut cfg = HashSet::from([
-        "proc_macro".into(),
-        "debug_assertions".into(),
-        "unix".into(),
-    ]);
-    for (key, value) in [
-        ("target_os", std::env::consts::OS),
-        ("target_arch", std::env::consts::ARCH),
-        ("target_family", "unix"),
-        ("target_pointer_width", "64"),
-        ("target_endian", "little"),
-        ("panic", "abort"),
-        (
-            "target_vendor",
-            if cfg!(target_os = "macos") {
-                "apple"
-            } else {
-                "unknown"
-            },
-        ),
-    ] {
-        cfg.insert(format!("{key}={value:?}"));
-    }
-    for feature in match std::env::consts::ARCH {
-        "aarch64" => &["neon"][..],
-        "x86_64" => &["fxsr", "sse", "sse2"][..],
-        _ => &[],
-    } {
-        cfg.insert(format!("target_feature={feature:?}"));
-    }
-    cfg
+fn native_cfg() -> Result<HashSet<String>, String> {
+    let mut cfg: HashSet<_> = crate::target::cfg()?.into_iter().collect();
+    cfg.insert("proc_macro".into());
+    Ok(cfg)
 }
 
 // Native hosts cannot use rustc to enforce proc-macro export restrictions.

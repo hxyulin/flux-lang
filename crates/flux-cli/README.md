@@ -12,8 +12,8 @@ an experimental compiler for a subset of Rust.
 `fluxc print host` and `fluxc print cfg` report Flux’s native target and baseline
 configuration without querying rustc. Resolution, planning and packages without
 host tools do not require rustc. Flux compiles build scripts and their library
-dependencies. Proc-macro hosts and build scripts that invoke `$RUSTC` still
-require rustc.
+dependencies. Native macro hosts with dependency graphs are available through
+`--macro-host-compiler flux`; the default macro host compiler remains rustc.
 
 ```sh
 fluxc lex file.rs      # tokens, trivia included
@@ -218,6 +218,47 @@ tools; scripts that explicitly call Cargo still require it. Native preparation
 retains the planner's source and workspace limits. It currently uses rustc
 for proc macros with dependencies. The standalone `flux package` driver also
 offers Flux compilation for dependency-free macro hosts.
+
+### Flux-native procedural macro graphs
+
+```sh
+flux build --offline --macro-host-compiler flux
+```
+
+This opt-in mode compiles macro hosts and their library dependencies as Flux source
+graphs, using the native token API and executable protocol rather than rustc
+dylibs. The same mode applies to `prepare`. Dependency aliases, host features,
+build-script cfg/environment output and generated includes are retained. Macros
+can be imported by target code, host libraries and build scripts. Host library
+units remain source inputs; they do not produce rustc `.rlib` files. No automatic
+fallback to rustc occurs. This option cannot be combined with `--cargo`.
+
+Build scripts in this mode receive `RUSTC` pointing to `fluxc` and a scoped
+`FLUX_COMPILER_PROBE` environment setting. The probe interface accepts native cfg
+queries and library metadata compilation with edition, crate-name, cfg, target,
+cap-lints and output-directory options. Unsupported options fail. Compile probes
+are checked against Flux's libraries and native token API. Version queries report
+`fluxc`'s own version, not a fabricated rustc release. Scripts requiring a numeric
+rustc version, rustc artifacts or other compiler flags are still unsupported.
+
+A macro graph with a library dependency and generated configuration has built and
+run with both Cargo and rustc trapped, including use by a build script and by the
+target. Native token construction and all three macro kinds have regression
+coverage. The compiler's real clap_derive/syn/quote/proc-macro2 host graph still
+fails with language/library diagnostics. Its blockers include Unicode char
+casing, `std::sync::Once`, span/token APIs and generic type checking. It has not
+completed a rustc-free self-hosting build. The standalone `flux package` route
+still restricts Flux-compiled macro hosts to dependency-free crates.
+
+Validation on arm64 macOS includes the complete 480-target suite, workspace
+Clippy, 43 runner tests and a native build of the updated compiler using Flux
+build scripts with rustc macro hosts and Cargo trapped. That generated compiler
+passed help/version and target-query checks and compiled a `Result::as_deref`
+program whose output matched rustc. Local evidence is indexed by
+`out/rustc-removal-audit/proof.json`. The new host path has not been retested on
+Linux, and this work does not verify a new stage 2 rebuild.
+
+### Earlier native-host validation
 
 On arm64 macOS, native preparation has built all 31 host artifacts and run all
 13 build-script units for Flux's compiler graph, including five proc macros.

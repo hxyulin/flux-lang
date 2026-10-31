@@ -47,6 +47,9 @@ pub(crate) struct Options {
     no_default_features: bool,
     #[arg(long)]
     offline: bool,
+    /// Select the compiler used for procedural macro hosts.
+    #[arg(long, value_enum, default_value_t = crate::package::MacroHostCompiler::Rustc)]
+    pub(crate) macro_host_compiler: crate::package::MacroHostCompiler,
     /// Use Cargo for host preparation instead of the native package pipeline.
     #[arg(long)]
     pub(crate) cargo: bool,
@@ -201,6 +204,12 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
             _ => None,
         };
         return native::prepare(options, optimize);
+    }
+    if matches!(
+        options.macro_host_compiler,
+        crate::package::MacroHostCompiler::Flux
+    ) {
+        return Err("flux macro hosts require native preparation; remove --cargo".into());
     }
     let rustc = output(
         Process::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())).arg("-vV"),
@@ -714,7 +723,7 @@ fn optional_dependency_enabled(package: &Package, features: &[String], name: &st
         })
     })
 }
-fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
+pub(crate) fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
     match value {
         "2015" => Ok(flux_syntax::Edition::E2015),
         "2018" => Ok(flux_syntax::Edition::E2018),
@@ -723,7 +732,7 @@ fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
         _ => Err(format!("unsupported edition {value}")),
     }
 }
-fn cfg(cfgs: &[String], features: &[String]) -> Result<flux_hir::CrateCfg, String> {
+pub(crate) fn cfg(cfgs: &[String], features: &[String]) -> Result<flux_hir::CrateCfg, String> {
     use flux_intern::Symbol;
     let mut cfg = flux_hir::CrateCfg::default();
     cfg.values.extend(

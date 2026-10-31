@@ -19,20 +19,27 @@ struct ScriptOutput {
 struct Output {
     artifact: Option<PathBuf>,
     script: Option<ScriptOutput>,
+    #[serde(skip)]
+    macros: Option<Vec<flux_hir::ProcMacro>>,
 }
 #[derive(Serialize)]
 struct Prepared {
     version: u32,
     kind: &'static str,
     rustc: String,
+    macro_host_compiler: &'static str,
     plan: Plan,
     outputs: Vec<Output>,
 }
 
 pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
+    let native_macros = matches!(
+        options.macro_host_compiler,
+        crate::package::MacroHostCompiler::Flux
+    );
     let mut rustc_units = BTreeSet::new();
     for (id, unit) in plan.units.iter().enumerate() {
-        if unit.domain == Domain::Host && unit.target.kind == "proc-macro" {
+        if !native_macros && unit.domain == Domain::Host && unit.target.kind == "proc-macro" {
             rustc_dependencies(&plan, id, &mut rustc_units);
         }
     }
@@ -60,7 +67,9 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
     for (index, unit) in plan.units.iter().enumerate() {
         let mut output = Output::default();
         let script = unit.target.kind == "build-script";
-        if unit.domain == Domain::Host && (script || rustc_units.contains(&index)) {
+        if unit.domain == Domain::Host
+            && (script || rustc_units.contains(&index) || unit.target.kind == "proc-macro")
+        {
             let package = &plan.packages[unit.package];
             let mut env = environment(package, &unit.target)?;
             let built = unit.build_script.and_then(|id| outputs[id].script.as_ref());
@@ -72,7 +81,9 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
                 );
             }
             let stem = unit.target.name.replace('-', "_");
-            let artifact = if script {
+            let artifact = if native_macros && unit.target.kind == "proc-macro" {
+                directory.join(format!("macro-{index}/host"))
+            } else if script {
                 directory.join(format!("build-{index}"))
             } else if unit.target.kind == "proc-macro" {
                 directory.join(format!(
@@ -100,6 +111,13 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
                         package.name
                     ));
                 }
+            } else if native_macros {
+                let sources = host_sources(&plan, &outputs, index, &version)?;
+                eprintln!("flux host {} proc-macro ({index})", package.name);
+                output.macros = Some(crate::proc_macro_native::build_host_graph(
+                    sources,
+                    artifact.parent().ok_or("macro host has no parent")?,
+                )?);
             } else {
                 let mut compile = Command::new(&rustc);
                 clean_environment(&mut compile);
@@ -172,8 +190,20 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
                     .env("DEBUG", "true")
                     .env("PROFILE", "debug")
                     .env("NUM_JOBS", "1")
-                    .env("RUSTC", &rustc)
+                    .env(
+                        "RUSTC",
+                        if native_macros {
+                            std::env::current_exe()
+                                .map_err(|e| e.to_string())?
+                                .into_os_string()
+                        } else {
+                            rustc.clone()
+                        },
+                    )
                     .env("CARGO_ENCODED_RUSTFLAGS", "");
+                if native_macros {
+                    run.env("FLUX_COMPILER_PROBE", "1");
+                }
                 if let Some(links) = &package.links {
                     run.env("CARGO_MANIFEST_LINKS", links);
                 }
@@ -214,6 +244,7 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
         version: 1,
         kind: "flux-native-prepared",
         rustc: version,
+        macro_host_compiler: if native_macros { "flux" } else { "rustc" },
         plan,
         outputs,
     };
@@ -263,6 +294,7 @@ fn host_sources(
         outputs: &[Output],
         id: usize,
         rustc: &str,
+        root: usize,
         indices: &mut BTreeMap<usize, usize>,
         sources: &mut Vec<SourceInput>,
     ) -> Result<usize> {
@@ -283,11 +315,11 @@ fn host_sources(
                 script.out_dir.to_string_lossy().into_owned(),
             );
         }
-        let macros = if unit.target.kind == "proc-macro" {
+        let macros = if unit.target.kind == "proc-macro" && id != root {
             cfg.names.push(flux_intern::Symbol::intern("proc_macro"));
-            Some(crate::proc_macro::exports(
+            Some(macro_exports(
                 rustc,
-                outputs[id].artifact.as_ref().ok_or("missing host macro")?,
+                &outputs[id],
                 &unit.target.root,
                 cfg.clone(),
             )?)
@@ -299,7 +331,7 @@ fn host_sources(
             for (alias, dependency) in &unit.dependencies {
                 dependencies.push((
                     alias.clone(),
-                    visit(plan, outputs, *dependency, rustc, indices, sources)?,
+                    visit(plan, outputs, *dependency, rustc, root, indices, sources)?,
                 ));
             }
         }
@@ -324,10 +356,28 @@ fn host_sources(
         outputs,
         root,
         rustc,
+        root,
         &mut BTreeMap::new(),
         &mut sources,
     )?;
     Ok(sources)
+}
+
+fn macro_exports(
+    rustc: &str,
+    output: &Output,
+    source: &std::path::Path,
+    cfg: flux_hir::CrateCfg,
+) -> Result<Vec<flux_hir::ProcMacro>> {
+    if let Some(exports) = &output.macros {
+        return Ok(exports.clone());
+    }
+    crate::proc_macro::exports(
+        rustc,
+        output.artifact.as_ref().ok_or("missing host macro")?,
+        source,
+        cfg,
+    )
 }
 
 fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<String, String>> {
@@ -571,12 +621,9 @@ fn build(prepared: &Prepared, optimize: bool) -> Result<ExitCode> {
         let mut cfg = crate::cargo::cfg(script.map_or(&[], |s| s.cfgs.as_slice()), &unit.features)?;
         let macros = if unit.target.kind == "proc-macro" {
             cfg.names.push(flux_intern::Symbol::intern("proc_macro"));
-            Some(crate::proc_macro::exports(
+            Some(macro_exports(
                 &prepared.rustc,
-                prepared.outputs[id]
-                    .artifact
-                    .as_ref()
-                    .ok_or("missing host macro")?,
+                &prepared.outputs[id],
                 &unit.target.root,
                 cfg.clone(),
             )?)

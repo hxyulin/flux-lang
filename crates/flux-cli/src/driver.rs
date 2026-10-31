@@ -104,6 +104,9 @@ pub(crate) struct BuildOptions {
 
 /// Run the source compiler CLI.
 pub fn compiler_main() -> ExitCode {
+    if std::env::var_os("FLUX_COMPILER_PROBE").is_some() {
+        return crate::probe::run();
+    }
     let cli = Cli::parse();
     if let Command::Print { kind } = &cli.command {
         let result = match kind {
@@ -381,14 +384,15 @@ fn parse_extern(value: &str) -> Result<(String, PathBuf), String> {
     Ok((name.to_owned(), PathBuf::from(path)))
 }
 
+#[derive(Parser)]
+#[command(name = "flux", version, about = "The Flux package manager")]
+struct PackageCli {
+    #[command(subcommand)]
+    command: cargo::Command,
+}
+
 /// Run the package manager CLI.
 pub fn package_main() -> ExitCode {
-    #[derive(Parser)]
-    #[command(name = "flux", version, about = "The Flux package manager")]
-    struct PackageCli {
-        #[command(subcommand)]
-        command: cargo::Command,
-    }
     let _cli = PackageCli::parse();
     let compiler = match std::env::current_exe() {
         Ok(path) => path.with_file_name("fluxc"),

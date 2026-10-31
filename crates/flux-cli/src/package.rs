@@ -44,7 +44,7 @@ pub(crate) struct Options {
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
-enum MacroHostCompiler {
+pub(crate) enum MacroHostCompiler {
     Rustc,
     Flux,
 }
