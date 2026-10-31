@@ -11,7 +11,9 @@ an experimental compiler for a subset of Rust.
 
 `fluxc print host` and `fluxc print cfg` report Flux’s native target and baseline
 configuration without querying rustc. Resolution, planning and packages without
-host tools do not require rustc. Host preparation still uses rustc.
+host tools do not require rustc. Flux compiles build scripts and their library
+dependencies. Proc-macro hosts and build scripts that invoke `$RUSTC` still
+require rustc.
 
 ```sh
 fluxc lex file.rs      # tokens, trivia included
@@ -178,8 +180,9 @@ flux prepare --manifest-path Cargo.toml -p flux-cli --bin fluxc
 flux build --manifest-path path/to/Cargo.toml -p application -O
 ```
 
-These commands use native offline planning. They compile host libraries,
-proc-macro dylibs, and build-script executables with direct rustc calls. They run
+These commands use native offline planning. Flux compiles build-script
+executables and their library source graphs. Libraries required by rustc-ABI
+proc macros and the macro dylibs themselves still compile with rustc. They run
 build scripts from their package directories, then Flux compiles target source
 crates and generated includes. Rustc does not check or compile target libraries
 or binaries. Host and target units retain separate features and `OUT_DIR`s.
@@ -203,6 +206,12 @@ is not reused. Artifacts and per-script stdout/stderr live under
 paths, generated directories, and parsed script output. It is an audit report,
 not a replay input. A failed script stops preparation and includes its output
 in the diagnostic.
+
+All 13 build scripts in the current compiler graph have been compiled and run
+with Flux on arm64 macOS. A regression resolves, builds and runs a package whose
+build script uses a library dependency, generated source, cfg and environment
+output while both rustc and Cargo are trapped. `Result::as_deref` is covered by
+a runtime comparison with rustc.
 
 The driver never invokes Cargo. Build scripts may invoke their own external
 tools; scripts that explicitly call Cargo still require it. Native preparation

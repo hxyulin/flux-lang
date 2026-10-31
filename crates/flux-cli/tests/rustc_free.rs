@@ -10,6 +10,15 @@ use support::scratch::Scratch;
 
 #[test]
 fn resolve_plan_build_and_run_without_rustc_or_cargo() {
+    check(false);
+}
+
+#[test]
+fn build_scripts_and_dependencies_compile_without_rustc() {
+    check(true);
+}
+
+fn check(script: bool) {
     let scratch = Scratch::new(std::env::temp_dir().join("flux-rustc-free"));
     let root = scratch.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -24,6 +33,34 @@ fn resolve_plan_build_and_run_without_rustc_or_cargo() {
         "fn main(){assert!(cfg!(panic=\"abort\"));println!(\"rustc-free\");}\n",
     )
     .unwrap();
+    if script {
+        std::fs::create_dir_all(root.join("helper/src")).unwrap();
+        let manifest = root.join("Cargo.toml");
+        let mut text = std::fs::read_to_string(&manifest).unwrap();
+        text.push_str("[build-dependencies]\nhelper={path='helper'}\n");
+        std::fs::write(manifest, text).unwrap();
+        std::fs::write(
+            root.join("helper/Cargo.toml"),
+            "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("helper/src/lib.rs"),
+            "pub fn generated()-> &'static str { \"pub const VALUE:usize=42;\" }",
+        )
+        .unwrap();
+        std::fs::write(root.join("build.rs"), r#"fn main(){
+            let out=std::env::var("OUT_DIR").unwrap();
+            std::fs::write(std::path::Path::new(&out).join("generated.rs"),helper::generated()).unwrap();
+            println!("cargo::rustc-cfg=generated");
+            println!("cargo::rustc-env=GENERATED=yes");
+        }"#).unwrap();
+        std::fs::write(root.join("src/main.rs"), r#"
+            include!(concat!(env!("OUT_DIR"),"/generated.rs"));
+            #[cfg(not(generated))] compile_error!("missing generated cfg");
+            fn main(){assert_eq!(VALUE,42);assert_eq!(env!("GENERATED"),"yes");println!("rustc-free");}
+        "#).unwrap();
+    }
     for name in ["cargo", "rustc"] {
         let path = root.join("tools").join(name);
         std::fs::write(

@@ -1,8 +1,8 @@
-//! Direct rustc host compilation and build-script execution for native plans.
+//! Flux build-script compilation and native host preparation.
 use super::{Domain, Options, Plan, PlannedPackage, Result, Target};
 use crate::build::{CompileRequest, SourceInput};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode};
 
@@ -30,8 +30,14 @@ struct Prepared {
 }
 
 pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
+    let mut rustc_units = BTreeSet::new();
+    for (id, unit) in plan.units.iter().enumerate() {
+        if unit.domain == Domain::Host && unit.target.kind == "proc-macro" {
+            rustc_dependencies(&plan, id, &mut rustc_units);
+        }
+    }
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let version = if plan.units.iter().any(|unit| unit.domain == Domain::Host) {
+    let version = if !rustc_units.is_empty() {
         crate::cargo::output(Command::new(&rustc).arg("-vV"), "rustc version")?
     } else {
         String::new()
@@ -54,7 +60,7 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
     for (index, unit) in plan.units.iter().enumerate() {
         let mut output = Output::default();
         let script = unit.target.kind == "build-script";
-        if unit.domain == Domain::Host {
+        if unit.domain == Domain::Host && (script || rustc_units.contains(&index)) {
             let package = &plan.packages[unit.package];
             let mut env = environment(package, &unit.target)?;
             let built = unit.build_script.and_then(|id| outputs[id].script.as_ref());
@@ -76,61 +82,81 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
             } else {
                 directory.join(format!("lib{stem}-flux{index}.rlib"))
             };
-            let mut compile = Command::new(&rustc);
-            clean_environment(&mut compile);
-            compile
-                .current_dir(package.manifest.parent().ok_or("manifest has no parent")?)
-                .envs(&env)
-                .arg(&unit.target.root)
-                .arg(format!("--edition={}", unit.target.edition))
-                .args([
-                    "--crate-name",
-                    &stem,
-                    "--crate-type",
-                    if script {
-                        "bin"
-                    } else if unit.target.kind == "proc-macro" {
-                        "proc-macro"
-                    } else {
-                        "rlib"
+            if script {
+                let sources = host_sources(&plan, &outputs, index, &version)?;
+                eprintln!("flux host {} build-script ({index})", package.name);
+                if !crate::build::compile(CompileRequest {
+                    file: &unit.target.root,
+                    crate_name: &stem,
+                    output: &artifact,
+                    sources: &sources,
+                    options: crate::BuildOptions {
+                        optimize: false,
+                        timings: false,
                     },
-                ])
-                .arg(format!("-Cmetadata=flux_native_{index}"))
-                .arg("-L")
-                .arg(format!("dependency={}", directory.display()))
-                .arg("-o")
-                .arg(&artifact);
-            if package.source.is_some() {
-                compile.args(["--cap-lints", "allow"]);
-            }
-            if unit.target.kind == "proc-macro" {
-                compile.args(["--extern", "proc_macro"]);
-            }
-            for feature in &unit.features {
-                compile.arg("--cfg").arg(format!("feature={feature:?}"));
-            }
-            if let Some(built) = built {
-                for cfg in &built.cfgs {
-                    compile.arg("--cfg").arg(cfg);
+                })? {
+                    return Err(format!(
+                        "cannot compile build script for {} with flux",
+                        package.name
+                    ));
                 }
-                for cfg in &built.check_cfgs {
-                    compile.arg("--check-cfg").arg(cfg);
-                }
-                for (flag, value) in &built.linker {
-                    compile.arg(flag).arg(value);
-                }
-            }
-            for (alias, dependency) in &unit.dependencies {
-                let dependency = outputs[*dependency]
-                    .artifact
-                    .as_ref()
-                    .ok_or("missing compiled host dependency")?;
+            } else {
+                let mut compile = Command::new(&rustc);
+                clean_environment(&mut compile);
                 compile
-                    .arg("--extern")
-                    .arg(format!("{alias}={}", dependency.display()));
+                    .current_dir(package.manifest.parent().ok_or("manifest has no parent")?)
+                    .envs(&env)
+                    .arg(&unit.target.root)
+                    .arg(format!("--edition={}", unit.target.edition))
+                    .args([
+                        "--crate-name",
+                        &stem,
+                        "--crate-type",
+                        if script {
+                            "bin"
+                        } else if unit.target.kind == "proc-macro" {
+                            "proc-macro"
+                        } else {
+                            "rlib"
+                        },
+                    ])
+                    .arg(format!("-Cmetadata=flux_native_{index}"))
+                    .arg("-L")
+                    .arg(format!("dependency={}", directory.display()))
+                    .arg("-o")
+                    .arg(&artifact);
+                if package.source.is_some() {
+                    compile.args(["--cap-lints", "allow"]);
+                }
+                if unit.target.kind == "proc-macro" {
+                    compile.args(["--extern", "proc_macro"]);
+                }
+                for feature in &unit.features {
+                    compile.arg("--cfg").arg(format!("feature={feature:?}"));
+                }
+                if let Some(built) = built {
+                    for cfg in &built.cfgs {
+                        compile.arg("--cfg").arg(cfg);
+                    }
+                    for cfg in &built.check_cfgs {
+                        compile.arg("--check-cfg").arg(cfg);
+                    }
+                    for (flag, value) in &built.linker {
+                        compile.arg(flag).arg(value);
+                    }
+                }
+                for (alias, dependency) in &unit.dependencies {
+                    let dependency = outputs[*dependency]
+                        .artifact
+                        .as_ref()
+                        .ok_or("missing compiled host dependency")?;
+                    compile
+                        .arg("--extern")
+                        .arg(format!("{alias}={}", dependency.display()));
+                }
+                eprintln!("rustc host {} {} ({index})", package.name, unit.target.kind);
+                crate::cargo::output(&mut compile, "native host compilation")?;
             }
-            eprintln!("rustc host {} {} ({index})", package.name, unit.target.kind);
-            crate::cargo::output(&mut compile, "native host compilation")?;
             if script {
                 let unit_directory = directory.join(format!("unit-{index}"));
                 let out = unit_directory.join("out");
@@ -214,6 +240,94 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
     } else {
         Ok(ExitCode::SUCCESS)
     }
+}
+
+// Only libraries consumed by a rustc ABI proc-macro host need rustc artifacts.
+fn rustc_dependencies(plan: &Plan, id: usize, needed: &mut BTreeSet<usize>) {
+    if !needed.insert(id) {
+        return;
+    }
+    for (_, dependency) in &plan.units[id].dependencies {
+        rustc_dependencies(plan, *dependency, needed);
+    }
+}
+
+fn host_sources(
+    plan: &Plan,
+    outputs: &[Output],
+    root: usize,
+    rustc: &str,
+) -> Result<Vec<SourceInput>> {
+    fn visit(
+        plan: &Plan,
+        outputs: &[Output],
+        id: usize,
+        rustc: &str,
+        indices: &mut BTreeMap<usize, usize>,
+        sources: &mut Vec<SourceInput>,
+    ) -> Result<usize> {
+        if let Some(index) = indices.get(&id) {
+            return Ok(*index);
+        }
+        let unit = &plan.units[id];
+        let script = unit.build_script.and_then(|i| outputs[i].script.as_ref());
+        let mut cfg = crate::cargo::cfg(script.map_or(&[], |s| s.cfgs.as_slice()), &unit.features)?;
+        let mut environment = environment(&plan.packages[unit.package], &unit.target)?;
+        if let Some(script) = script {
+            if !script.linker.is_empty() {
+                return Err("native host linker directives require Flux linker integration".into());
+            }
+            environment.extend(script.environment.clone());
+            environment.insert(
+                "OUT_DIR".into(),
+                script.out_dir.to_string_lossy().into_owned(),
+            );
+        }
+        let macros = if unit.target.kind == "proc-macro" {
+            cfg.names.push(flux_intern::Symbol::intern("proc_macro"));
+            Some(crate::proc_macro::exports(
+                rustc,
+                outputs[id].artifact.as_ref().ok_or("missing host macro")?,
+                &unit.target.root,
+                cfg.clone(),
+            )?)
+        } else {
+            None
+        };
+        let mut dependencies = Vec::new();
+        if macros.is_none() {
+            for (alias, dependency) in &unit.dependencies {
+                dependencies.push((
+                    alias.clone(),
+                    visit(plan, outputs, *dependency, rustc, indices, sources)?,
+                ));
+            }
+        }
+        let index = sources.len();
+        indices.insert(id, index);
+        sources.push(SourceInput {
+            compilation_dir: Some(plan.workspace_root.clone()),
+            package_identity: None,
+            host_macros: macros,
+            file: unit.target.root.clone(),
+            name: unit.target.name.replace('-', "_"),
+            edition: crate::cargo::edition(&unit.target.edition)?,
+            dependencies,
+            cfg,
+            environment: Some(environment),
+        });
+        Ok(index)
+    }
+    let mut sources = Vec::new();
+    visit(
+        plan,
+        outputs,
+        root,
+        rustc,
+        &mut BTreeMap::new(),
+        &mut sources,
+    )?;
+    Ok(sources)
 }
 
 fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<String, String>> {

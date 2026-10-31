@@ -22,6 +22,17 @@ impl<T, E> Result<T, E> {
     /// Mutably borrows the payload of either variant.
     pub const fn as_mut(&mut self)->Result<&mut T,&mut E> {match self {Ok(value)=>Ok(value),Err(error)=>Err(error)}}
 
+    /// Borrows the dereferenced success value or the original error.
+    pub fn as_deref(&self) -> Result<&T::Target, &E>
+    where
+        T: crate::ops::Deref,
+    {
+        match self {
+            Ok(value) => Ok(crate::ops::Deref::deref(value)),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Whether it is `Ok`.
     pub const fn is_ok(&self) -> bool {
         match self {
