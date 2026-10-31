@@ -1491,7 +1491,7 @@ UTF-8 through checked mutable ranges, while unsafe byte views require the
 caller to restore that invariant before their borrow ends.
 
 On x86-64, `core::arch::x86_64` and `std::arch::x86_64` provide
-`__m128i` and `__m256i` with native sizes and alignments. The bounded integer
+`__m128i`, `__m256i` and `__m512i` with native sizes and alignments. The bounded integer
 API covers constructors, aligned/unaligned loads, 128-bit aligned/unaligned stores,
 byte/halfword/word comparisons, byte masks, bitwise operations, wrapping adds,
 halfword subtraction/multiplication, SSE unsigned high/widening multiplication,
@@ -1501,17 +1501,25 @@ Operations lower to Keel vector IR and
 x86 intrinsics. Constructors and half composition use ordinary Rust.
 Immediate ranges are checked after generic substitution, including function
 values and legacy trailing constant arguments. This is not the full Rust
-SSE/AVX API; floating-point vectors, AVX-512 and SHA instructions remain unsupported.
+SSE/AVX API. The AVX-512 subset covers 64-byte unaligned loads/stores, XOR,
+zero/eight-lane construction, low-128-bit casts and 128-bit quarter extraction.
+Carryless multiplication supports 128-, 256- and 512-bit vectors, with independent
+128-bit lanes and immediate bits 0 and 4 selecting the input halves.
+SHA-256 message scheduling and two-round instructions are supported.
+Floating-point vectors and other AVX-512 operations remain unsupported.
 Vector arguments and returns through the C ABI are rejected.
 
 x86 `target_feature` accepts `sse`, `sse2`, `sse3`, `ssse3`, `sse4.1`,
-`sse4.2`, `avx` and `avx2`. Feature implications permit safe calls between
+`sse4.2`, `avx`, `avx2`, `avx512f`, `pclmulqdq`, `vpclmulqdq`, `sha` and `xsave`. Feature implications permit safe calls between
 annotated functions; memory operations retain their unsafe requirements.
 Permissions reach Keel per function and are preserved by its optimizer.
 The module-wide assembler permission union does not change baseline functions.
 `is_x86_feature_detected!` works at the std root, in `std::arch` and through
 imports. It supports the same feature names, checks CPUID and checks OSXSAVE
-and XCR0 before reporting AVX/AVX2. Unknown names are rejected.
+and XCR0 before reporting AVX/AVX2 or VPCLMULQDQ. AVX-512 detection also
+requires OS-managed opmask and upper-ZMM state. `__cpuid`, `__cpuid_count`,
+`_xgetbv` and `_XCR_XFEATURE_ENABLED_MASK` support dependency feature probes.
+Unknown names are rejected.
 Native Linux comparisons cover both optimization modes and match rustc.
 
 On x86-64, `core::arch::asm!` supports Intel syntax with `in(reg)` and

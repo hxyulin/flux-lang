@@ -21,8 +21,10 @@ versioned shared objects. Linux output is a dynamically linked non-PIE executabl
 Failed links preserve an existing destination. Linux cross-linking from macOS
 and x86-64 macOS (including Rosetta) are not supported.
 
-Integer SSE/AVX wrappers keep vector values in memory at Rust call boundaries
+Integer SSE/AVX/AVX-512 wrappers keep vector values in memory at Rust call boundaries
 and introduce packed Keel values inside intrinsic calls. Function target-feature
 attributes grant local ISA permissions. Assembly uses the union of those
 permissions after code generation checks each function against its own set.
 Runtime AVX detection checks CPUID and OS-managed XMM/YMM state through XCR0.
+AVX-512 detection also checks opmask and upper-ZMM state. The crypto subset
+includes lane-local PCLMUL/VPCLMUL at 128/256/512 bits and SHA-256 instructions.

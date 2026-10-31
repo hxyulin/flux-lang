@@ -61,6 +61,14 @@ intrinsics! {
     X86Mm256SrliEpi64 => "__x86_mm256_srli_epi64",
     X86MmMulhiEpu16 => "__x86_mm_mulhi_epu16",
     X86MmMulEpu32 => "__x86_mm_mul_epu32",
+    X86Mm512XorSi512 => "__x86_mm512_xor_si512",
+    X86Mm512LoaduSi512 => "__x86_mm512_loadu_si512",
+    X86MmClmulepi64Si128 => "__x86_mm_clmulepi64_si128",
+    X86Mm256Clmulepi64Epi128 => "__x86_mm256_clmulepi64_epi128",
+    X86Mm512Clmulepi64Epi128 => "__x86_mm512_clmulepi64_epi128",
+    X86MmSha256msg1Epu32 => "__x86_mm_sha256msg1_epu32",
+    X86MmSha256msg2Epu32 => "__x86_mm_sha256msg2_epu32",
+    X86MmSha256rnds2Epu32 => "__x86_mm_sha256rnds2_epu32",
     X86Cpuid => "__x86_cpuid",
     X86Xgetbv => "__x86_xgetbv",
     X86MmShuffleEpi32 => "__x86_mm_shuffle_epi32",
@@ -211,7 +219,15 @@ impl Intrinsic {
     pub const fn is_x86(self) -> bool {
         matches!(
             self,
-            Self::X86MmShuffleEpi32
+            Self::X86Mm512XorSi512
+                | Self::X86Mm512LoaduSi512
+                | Self::X86MmClmulepi64Si128
+                | Self::X86Mm256Clmulepi64Epi128
+                | Self::X86Mm512Clmulepi64Epi128
+                | Self::X86MmSha256msg1Epu32
+                | Self::X86MmSha256msg2Epu32
+                | Self::X86MmSha256rnds2Epu32
+                | Self::X86MmShuffleEpi32
                 | Self::X86MmAlignrEpi8
                 | Self::X86Mm256AlignrEpi8
                 | Self::X86MmBlendEpi16

@@ -236,6 +236,11 @@ pub(super) fn target_feature_attr(
                                 | "sse4.2"
                                 | "avx"
                                 | "avx2"
+                                | "avx512f"
+                                | "pclmulqdq"
+                                | "vpclmulqdq"
+                                | "sha"
+                                | "xsave"
                         ),
                         _ => false,
                     } {

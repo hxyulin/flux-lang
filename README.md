@@ -5,7 +5,7 @@
   <a href="Cargo.toml"><img alt="Rust edition 2024" src="https://img.shields.io/badge/edition-2024-dea584"></a>
   <a href="docs/SELF_HOSTING.md"><img alt="Target arm64 macOS" src="https://img.shields.io/badge/target-arm64%20macOS-lightgrey?logo=apple"></a>
   <a href="docs/SELF_HOSTING.md"><img alt="Target x86-64 Linux" src="https://img.shields.io/badge/target-x86--64%20Linux-lightgrey?logo=linux"></a>
-  <a href="https://github.com/hxyulin/keel/commit/103c23de480d76e02267c5a8d5a9d3505bc73231"><img alt="Keel 103c23de" src="https://img.shields.io/badge/Keel-103c23de-6e56cf"></a>
+  <a href="https://github.com/hxyulin/keel/commit/a078986ccddb1394db73b42843b282f271807ae4"><img alt="Keel a078986c" src="https://img.shields.io/badge/Keel-a078986c-6e56cf"></a>
   <a href="#size"><img alt="About 520k lines of compiler source" src="https://img.shields.io/badge/source-~520k%20lines-informational"></a>
   <a href="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="#license"><img alt="MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
@@ -52,10 +52,10 @@ against rustc's output. The audited source inputs stayed unchanged.
 
 x86-64 Linux supports native executable and local package builds, including
 library artifact reuse. Process spawning, owned pipes and channels have native
-Linux comparisons. Integer SSE/AVX2 operations and runtime CPU detection have
-native Linux comparison coverage. Argument capture, recursive removal and
+Linux comparisons. Integer SSE/AVX2, the AVX-512 CRC folding subset, SHA-256 instructions and runtime
+CPU detection have native Linux comparison coverage. Argument capture, recursive removal and
 bounded integer inline assembly also run on Linux. Linux self-hosting still needs
-crypto extensions, AVX-512 and compound legacy constants. x86-64 macOS and
+`as_rchunks` and compound legacy constants. x86-64 macOS and
 Rosetta are not supported targets. Cargo and rustc still build host build scripts
 and procedural macros. See [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md) for the audited graph,
 verification scope and remaining blockers.

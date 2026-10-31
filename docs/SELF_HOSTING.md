@@ -1,8 +1,9 @@
 # Compiling Flux with Flux
 
-Flux builds a stage-1 Flux CLI from the complete compiler source graph with the
-current pinned Keel, `103c23de480d76e02267c5a8d5a9d3505bc73231`. No local
-backend override is required. Both compiler optimization modes pass CLI checks
+Flux built a stage-1 Flux CLI from the complete compiler source graph with
+Keel `103c23de480d76e02267c5a8d5a9d3505bc73231`. No local
+backend override was required. The current pin is `a078986c`; the recorded
+stage-1 and stage-2 proofs below predate that update. Both compiler optimization modes passed CLI checks
 and compile/run smoke comparisons against rustc. Both stage-1 compilers also
 compile the smoke program with `-O`, with matching output and exit status.
 
@@ -818,16 +819,16 @@ suite in `out/test-runs/1793350466552616000-33436/results.json`, workspace clipp
 with warnings denied, formatting, 43 runner unit tests and workspace/example
 source checks before this guarded retry.
 
+
 ## Linux backend capability boundary
 
-The pinned Keel IR represents vectors up to 256 bits. Its x86 inline assembly
-transport also stops at 256 bits. The assembler can encode some EVEX instructions,
-but that does not supply a 512-bit IR value or ZMM transport for `__m512i`.
-Adding the Rust type and feature attribute alone cannot enable AVX-512 codegen.
+Keel `a078986c` supplies 512-bit vector IR and typed SHA-256 and VPCLMUL
+operations. Flux supports the AVX-512F CRC folding subset, 128/256/512-bit
+carryless multiplication and SHA-256 message/round instructions. Native Linux
+comparisons cover the unchanged crc32fast 1.5.3 sources with its real build-script
+cfgs, including `stable_vpclmulqdq`, in both optimization modes.
 
-crc32fast 1.5.3's build script emits `stable_vpclmulqdq` when the host rustc is
-at least 1.89. That cfg compiles both its AVX2 and AVX-512 folding kernels.
-The Cargo source plan retains this host build output, so runtime CPU detection
-cannot remove the AVX-512 frontend requirement. Supporting the wider backend or
-providing explicit compiler capability configuration remains separate work.
-The argument and filesystem changes do not alter dependency sources or their cfgs.
+Runtime detection checks CPUID and OS-managed register state before enabling
+AVX-512 paths. Other AVX-512 APIs remain outside the supported subset. Linux
+compiler dependencies still need `as_rchunks` and compound intrinsic const
+arguments; the historical stage-1/stage-2 proofs do not certify the current pin.

@@ -500,6 +500,7 @@ fn collect_roots(
                         name.as_str(),
                         "_mm_extract_epi32"
                             | "__x86_mm_extract_epi32"
+                            | "_mm512_extracti32x4_epi32"
                             | "_mm_prefetch"
                             | "__x86_mm_prefetch"
                     ) {

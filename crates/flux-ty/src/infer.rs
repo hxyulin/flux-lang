@@ -1890,6 +1890,29 @@ impl Ctx<'_> {
                     || match own.as_str() {
                         "sha3" => matches!(feature.as_str(), "sha2" | "neon"),
                         "sha2" => feature.as_str() == "neon",
+                        "avx512f" => matches!(
+                            feature.as_str(),
+                            "avx2"
+                                | "avx"
+                                | "sse4.2"
+                                | "sse4.1"
+                                | "ssse3"
+                                | "sse3"
+                                | "sse2"
+                                | "sse"
+                        ),
+                        "vpclmulqdq" => matches!(
+                            feature.as_str(),
+                            "avx"
+                                | "pclmulqdq"
+                                | "sse4.2"
+                                | "sse4.1"
+                                | "ssse3"
+                                | "sse3"
+                                | "sse2"
+                                | "sse"
+                        ),
+                        "sha" | "pclmulqdq" => matches!(feature.as_str(), "sse" | "sse2"),
                         "avx2" => matches!(
                             feature.as_str(),
                             "avx" | "sse4.2" | "sse4.1" | "ssse3" | "sse3" | "sse2" | "sse"

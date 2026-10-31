@@ -61,8 +61,7 @@ pub use crate::is_x86_feature_detected;
 #[cfg(target_arch = "x86_64")]
 pub fn __x86_detected(feature: &str) -> bool {
     use core::arch::x86_64::{__cpuid_count, _xgetbv};
-    // SAFETY: CPUID is available on all x86-64 processors.
-    let leaf = unsafe { __cpuid_count(1, 0) };
+    let leaf = __cpuid_count(1, 0);
     match feature {
         "sse" => leaf.edx & (1 << 25) != 0,
         "sse2" => leaf.edx & (1 << 26) != 0,
@@ -70,20 +69,45 @@ pub fn __x86_detected(feature: &str) -> bool {
         "ssse3" => leaf.ecx & (1 << 9) != 0,
         "sse4.1" => leaf.ecx & (1 << 19) != 0,
         "sse4.2" => leaf.ecx & (1 << 20) != 0,
-        "avx" | "avx2" => {
+        "pclmulqdq" => leaf.ecx & (1 << 1) != 0,
+        "xsave" => {
+            if leaf.ecx & (3 << 26) != 3 << 26 {
+                return false;
+            }
+            // SAFETY: XSAVE and OSXSAVE were checked before querying XCR0.
+            let state = unsafe { _xgetbv(0) };
+            state & 6 == 6
+        }
+        "sha" => __cpuid_count(0, 0).eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 29) != 0,
+        "avx" | "avx2" | "avx512f" | "vpclmulqdq" => {
             // AVX requires XSAVE, OSXSAVE, hardware AVX and OS-managed XMM/YMM state.
             if leaf.ecx & (7 << 26) != 7 << 26 {
                 return false;
             }
             // SAFETY: OSXSAVE was checked above; only XCR0 is queried.
-            if unsafe { _xgetbv(0) } & 6 != 6 {
+            let state = unsafe { _xgetbv(0) };
+            if state & 6 != 6 {
                 return false;
             }
             if feature == "avx" {
                 return true;
             }
-            // SAFETY: CPUID is available on all x86-64 processors.
-            unsafe { __cpuid_count(0, 0).eax >= 7 && __cpuid_count(7, 0).ebx & (1 << 5) != 0 }
+            if __cpuid_count(0, 0).eax < 7 {
+                return false;
+            }
+            let extended = __cpuid_count(7, 0);
+            match feature {
+                "avx2" => extended.ebx & (1 << 5) != 0,
+                "vpclmulqdq" => extended.ecx & (1 << 10) != 0,
+                _ => {
+                    // AVX-512 also needs OS-managed opmask and upper ZMM state.
+                    // Rust's AVX-512F permission also assumes FMA and F16C.
+                    let prerequisites = (1 << 12) | (1 << 29);
+                    extended.ebx & (1 << 16) != 0
+                        && leaf.ecx & prerequisites == prerequisites
+                        && state & 0xe6 == 0xe6
+                }
+            }
         }
         _ => false,
     }

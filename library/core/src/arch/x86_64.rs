@@ -1,4 +1,4 @@
-//! Integer SSE and AVX intrinsics used by the compiler dependency graph.
+//! Integer SSE, AVX and AVX-512 intrinsics used by the compiler dependency graph.
 //!
 //! Values retain Rust's vector size and alignment across ordinary Rust calls.
 
@@ -709,11 +709,8 @@ pub struct CpuidResult {
     pub ecx: u32,
     pub edx: u32,
 }
-/// Executes CPUID with a leaf and subleaf.
-///
-/// # Safety
-/// The processor must support CPUID (all x86-64 processors do).
-pub unsafe fn __cpuid_count(leaf: u32, subleaf: u32) -> CpuidResult {
+/// Executes CPUID with a leaf and subleaf, available on every x86-64 processor.
+pub fn __cpuid_count(leaf: u32, subleaf: u32) -> CpuidResult {
     // SAFETY: CPUID is available on x86-64, and register indices are in range.
     unsafe {
         CpuidResult {
@@ -1029,4 +1026,191 @@ pub fn _mm256_castsi256_si128(a: __m256i) -> __m128i {
         bytes[i] = a.0[i];
     }
     __m128i(bytes)
+}
+
+/// 64 packed bytes with native AVX-512 vector alignment.
+#[allow(non_camel_case_types)]
+#[repr(C, align(64))]
+#[derive(Clone, Copy)]
+pub struct __m512i(pub(crate) [u8; 64]);
+
+impl crate::fmt::Debug for __m512i {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        // SAFETY: every vector bit pattern is a valid array of eight i64 lanes.
+        let lanes: [i64; 8] = unsafe { crate::mem::transmute(*self) };
+        let mut tuple = f.debug_tuple("__m512i");
+        for lane in &lanes {
+            tuple.field(lane);
+        }
+        tuple.finish()
+    }
+}
+
+/// Constructs an all-zero vector.
+#[target_feature(enable = "avx512f")]
+pub fn _mm512_setzero_si512() -> __m512i {
+    __m512i([0; 64])
+}
+
+/// Constructs eight lanes from high to low.
+#[target_feature(enable = "avx512f")]
+pub fn _mm512_set_epi64(
+    e7: i64,
+    e6: i64,
+    e5: i64,
+    e4: i64,
+    e3: i64,
+    e2: i64,
+    e1: i64,
+    e0: i64,
+) -> __m512i {
+    // SAFETY: both representations contain the same 64 initialized bytes.
+    unsafe { crate::mem::transmute([e0, e1, e2, e3, e4, e5, e6, e7]) }
+}
+
+/// Widens the low 128 bits; the unspecified upper bits are currently zeroed.
+#[target_feature(enable = "avx512f")]
+pub fn _mm512_castsi128_si512(a: __m128i) -> __m512i {
+    let mut bytes = [0u8; 64];
+    for i in 0..16 {
+        bytes[i] = a.0[i];
+    }
+    __m512i(bytes)
+}
+
+/// Extracts the low 128 bits without changing their representation.
+#[target_feature(enable = "avx512f")]
+pub fn _mm512_castsi512_si128(a: __m512i) -> __m128i {
+    _mm512_extracti32x4_epi32::<0>(a)
+}
+
+/// Extracts one of four 128-bit quarters.
+#[rustc_legacy_const_generics(1)]
+#[target_feature(enable = "avx512f")]
+pub fn _mm512_extracti32x4_epi32<const IMM8: i32>(a: __m512i) -> __m128i {
+    let mut bytes = [0u8; 16];
+    for i in 0..16 {
+        bytes[i] = a.0[IMM8 as usize * 16 + i];
+    }
+    __m128i(bytes)
+}
+
+/// Stores 64 bytes without an alignment requirement.
+///
+/// # Safety
+/// The CPU must support AVX-512F and `p` must address 64 writable bytes.
+#[target_feature(enable = "avx512f")]
+pub unsafe fn _mm512_storeu_si512(p: *mut __m512i, a: __m512i) {
+    // SAFETY: the caller supplies 64 writable bytes; byte stores need no alignment.
+    unsafe { crate::ptr::copy_nonoverlapping(a.0.as_ptr(), p as *mut u8, 64) }
+}
+
+/// Queries a CPUID leaf with subleaf zero.
+pub fn __cpuid(leaf: u32) -> CpuidResult {
+    __cpuid_count(leaf, 0)
+}
+
+/// XGETBV selector for the enabled extended-state mask in XCR0.
+pub const _XCR_XFEATURE_ENABLED_MASK: u32 = 0;
+
+/// Native _mm512_xor_si512 operation.
+#[target_feature(enable = "avx512f")]
+pub fn _mm512_xor_si512(a: __m512i, b: __m512i) -> __m512i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm512_xor_si512(a, b) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm512_xor_si512(a: __m512i, b: __m512i) -> __m512i {
+    loop {}
+}
+
+/// Native _mm512_loadu_si512 operation.
+///
+/// # Safety
+/// The CPU must support avx512f; `p` must address 64 readable bytes, without an alignment requirement.
+#[target_feature(enable = "avx512f")]
+pub unsafe fn _mm512_loadu_si512(p: *const __m512i) -> __m512i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm512_loadu_si512(p) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm512_loadu_si512(p: *const __m512i) -> __m512i {
+    loop {}
+}
+
+/// Native _mm_clmulepi64_si128 operation.
+#[rustc_legacy_const_generics(2)]
+#[target_feature(enable = "pclmulqdq")]
+pub fn _mm_clmulepi64_si128<const IMM8: i32>(a: __m128i, b: __m128i) -> __m128i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm_clmulepi64_si128::<IMM8>(a, b) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm_clmulepi64_si128<const IMM8: i32>(a: __m128i, b: __m128i) -> __m128i {
+    loop {}
+}
+
+/// Native _mm256_clmulepi64_epi128 operation.
+#[rustc_legacy_const_generics(2)]
+#[target_feature(enable = "vpclmulqdq,avx")]
+pub fn _mm256_clmulepi64_epi128<const IMM8: i32>(a: __m256i, b: __m256i) -> __m256i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm256_clmulepi64_epi128::<IMM8>(a, b) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm256_clmulepi64_epi128<const IMM8: i32>(a: __m256i, b: __m256i) -> __m256i {
+    loop {}
+}
+
+/// Native _mm512_clmulepi64_epi128 operation.
+#[rustc_legacy_const_generics(2)]
+#[target_feature(enable = "vpclmulqdq,avx512f")]
+pub fn _mm512_clmulepi64_epi128<const IMM8: i32>(a: __m512i, b: __m512i) -> __m512i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm512_clmulepi64_epi128::<IMM8>(a, b) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm512_clmulepi64_epi128<const IMM8: i32>(a: __m512i, b: __m512i) -> __m512i {
+    loop {}
+}
+
+/// Native _mm_sha256msg1_epu32 operation.
+#[target_feature(enable = "sha")]
+pub fn _mm_sha256msg1_epu32(a: __m128i, b: __m128i) -> __m128i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm_sha256msg1_epu32(a, b) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm_sha256msg1_epu32(a: __m128i, b: __m128i) -> __m128i {
+    loop {}
+}
+
+/// Native _mm_sha256msg2_epu32 operation.
+#[target_feature(enable = "sha")]
+pub fn _mm_sha256msg2_epu32(a: __m128i, b: __m128i) -> __m128i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm_sha256msg2_epu32(a, b) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm_sha256msg2_epu32(a: __m128i, b: __m128i) -> __m128i {
+    loop {}
+}
+
+/// Native _mm_sha256rnds2_epu32 operation.
+#[target_feature(enable = "sha")]
+pub fn _mm_sha256rnds2_epu32(a: __m128i, b: __m128i, k: __m128i) -> __m128i {
+    // SAFETY: the function establishes CPU support; the caller supplies valid memory where required.
+    unsafe { __x86_mm_sha256rnds2_epu32(a, b, k) }
+}
+
+#[rustc_intrinsic]
+unsafe fn __x86_mm_sha256rnds2_epu32(a: __m128i, b: __m128i, k: __m128i) -> __m128i {
+    loop {}
 }

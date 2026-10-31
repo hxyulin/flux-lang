@@ -64,6 +64,21 @@ macro_rules! is_x86_feature_detected {
     ("avx2" $(,)?) => {
         $crate::arch::__x86_detected("avx2")
     };
+    ("avx512f" $(,)?) => {
+        $crate::arch::__x86_detected("avx512f")
+    };
+    ("pclmulqdq" $(,)?) => {
+        $crate::arch::__x86_detected("pclmulqdq")
+    };
+    ("vpclmulqdq" $(,)?) => {
+        $crate::arch::__x86_detected("vpclmulqdq")
+    };
+    ("sha" $(,)?) => {
+        $crate::arch::__x86_detected("sha")
+    };
+    ("xsave" $(,)?) => {
+        $crate::arch::__x86_detected("xsave")
+    };
     ($($tokens:tt)*) => {
         compile_error!("unsupported x86 feature name")
     };

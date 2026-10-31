@@ -1,5 +1,8 @@
 //! Original crc32fast sources, including their real build-script cfg.
-#![cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#![cfg(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_arch = "x86_64")
+))]
 mod support;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -114,6 +117,7 @@ fn unchanged_crc32fast_matches_rustc() {
             .filter_map(|line| line.strip_prefix("cargo:rustc-cfg=").map(str::to_owned))
             .collect();
         assert!(cfgs.iter().any(|cfg| cfg == "stable_arm_crc32_intrinsics"));
+        assert!(cfgs.iter().any(|cfg| cfg == "stable_vpclmulqdq"));
         std::fs::write(
             root.join("configuration.json"),
             serde_json::to_vec_pretty(&cfgs).unwrap(),
@@ -233,7 +237,11 @@ fn unchanged_crc32fast_matches_rustc() {
                 "inputs changed before codegen: {changed:?}"
             );
             let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
-            let target = flux_codegen::Target::Aarch64AppleDarwin;
+            let target = if cfg!(target_os = "linux") {
+                flux_codegen::Target::X86_64LinuxGnu
+            } else {
+                flux_codegen::Target::Aarch64AppleDarwin
+            };
             let tier = if optimized {
                 flux_codegen::OptimizationTier::Full
             } else {

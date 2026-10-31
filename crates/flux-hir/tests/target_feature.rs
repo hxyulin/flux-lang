@@ -85,7 +85,7 @@ fn unsupported_target_feature_contexts_remain_errors() {
         "#[target_feature(enable = \"aes\")] unsafe fn f() {}",
         "#[target_feature(enable = \"neon,aes\")] #[target_feature(enable = \"neon\")] unsafe fn f() {}",
         "#[cfg_attr(all(), target_feature(enable = \"aes\"))] unsafe fn f() {}",
-        "#[target_feature(enable = \"avx512f\")] unsafe fn f() {}",
+        "#[target_feature(enable = \"avx512bw\")] unsafe fn f() {}",
     ] {
         let (_, _, hir) = flux_hir::lower_text("probe.rs", source);
         assert!(!hir.diagnostics.is_empty(), "{source}");

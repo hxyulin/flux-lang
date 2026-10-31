@@ -5,6 +5,7 @@ mod support;
 #[test]
 fn integer_vectors_match_rustc() {
     support::oracle::compare_fixture("x86_intrinsics");
+    support::oracle::compare_fixture("x86_crypto_intrinsics");
     support::oracle::compare_fixture("function_pointer_raw_casts");
 }
 
@@ -40,6 +41,46 @@ fn feature_and_immediate_contracts_match_rustc() {
             "safe_feature_context",
             "use core::arch::x86_64::*;#[target_feature(enable=\"sse2\")]fn f()->__m128i{_mm_add_epi32(_mm_setzero_si128(),_mm_set1_epi8(7))}fn main(){unsafe{let _=f();}}",
             true,
+        ),
+        (
+            "avx_does_not_grant_xsave",
+            "#[target_feature(enable=\"xsave\")]fn g(){}#[target_feature(enable=\"avx\")]fn f(){g();}fn main(){}",
+            false,
+        ),
+        (
+            "safe_cpuid",
+            "fn main(){let a=core::arch::x86_64::__cpuid(0);let b=core::arch::x86_64::__cpuid_count(0,0);assert_eq!(a.eax,b.eax);}",
+            true,
+        ),
+        (
+            "avx512_context",
+            "use core::arch::x86_64::*;#[target_feature(enable=\"avx512f\")]fn f()->__m512i{_mm512_xor_si512(_mm512_setzero_si512(),_mm512_setzero_si512())}fn main(){unsafe{let _=f();}}",
+            true,
+        ),
+        (
+            "avx512_implied_avx2",
+            "use core::arch::x86_64::*;#[target_feature(enable=\"avx512f\")]fn f()->__m256i{_mm256_add_epi64(_mm256_setzero_si256(),_mm256_setzero_si256())}fn main(){unsafe{let _=f();}}",
+            true,
+        ),
+        (
+            "sha_implied_sse2",
+            "use core::arch::x86_64::*;#[target_feature(enable=\"sha\")]fn f()->__m128i{_mm_sha256msg1_epu32(_mm_setzero_si128(),_mm_setzero_si128())}fn main(){unsafe{let _=f();}}",
+            true,
+        ),
+        (
+            "avx512_extract_too_large",
+            "use core::arch::x86_64::*;fn main(){unsafe{let _=_mm512_extracti32x4_epi32::<4>(_mm512_setzero_si512());}}",
+            false,
+        ),
+        (
+            "pclmul_negative",
+            "use core::arch::x86_64::*;fn main(){unsafe{let _=_mm_clmulepi64_si128::<-1>(_mm_setzero_si128(),_mm_setzero_si128());}}",
+            false,
+        ),
+        (
+            "vpclmul_too_large",
+            "use core::arch::x86_64::*;fn main(){unsafe{let _=_mm512_clmulepi64_epi128::<256>(_mm512_setzero_si512(),_mm512_setzero_si512());}}",
+            false,
         ),
         (
             "function_to_wide_pointer",

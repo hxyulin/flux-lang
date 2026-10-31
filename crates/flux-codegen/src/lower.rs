@@ -4657,12 +4657,34 @@ impl Lower<'_, '_, '_> {
                     Binary(VectorBinaryOp),
                     Compare(IntCC),
                     Native(Intrinsic),
+                    Native3(Intrinsic),
+                    Immediate(Intrinsic),
                     Shift(Intrinsic),
                     Mask(Intrinsic),
                     Shift32(Intrinsic),
                 }
                 use Operation::*;
                 let (shape, operation) = match name {
+                    "__x86_mm512_xor_si512" => (VectorType::I64x8, Binary(VectorBinaryOp::Xor)),
+                    "__x86_mm512_loadu_si512" => (VectorType::I64x8, Load),
+                    "__x86_mm_clmulepi64_si128" => {
+                        (VectorType::I64x2, Immediate(Intrinsic::X86Pclmulqdq128))
+                    }
+                    "__x86_mm256_clmulepi64_epi128" => {
+                        (VectorType::I64x4, Immediate(Intrinsic::X86Vpclmulqdq256))
+                    }
+                    "__x86_mm512_clmulepi64_epi128" => {
+                        (VectorType::I64x8, Immediate(Intrinsic::X86Vpclmulqdq512))
+                    }
+                    "__x86_mm_sha256msg1_epu32" => {
+                        (VectorType::I32x4, Native(Intrinsic::X86Sha256msg1))
+                    }
+                    "__x86_mm_sha256msg2_epu32" => {
+                        (VectorType::I32x4, Native(Intrinsic::X86Sha256msg2))
+                    }
+                    "__x86_mm_sha256rnds2_epu32" => {
+                        (VectorType::I32x4, Native3(Intrinsic::X86Sha256rnds2))
+                    }
                     "__x86_mm_and_si128" => (VectorType::I8x16, Binary(VectorBinaryOp::And)),
                     "__x86_mm_or_si128" => (VectorType::I8x16, Binary(VectorBinaryOp::Or)),
                     "__x86_mm_xor_si128" => (VectorType::I8x16, Binary(VectorBinaryOp::Xor)),
@@ -4764,7 +4786,7 @@ impl Lower<'_, '_, '_> {
                         let inst = self.b.ins().intrinsic(id, &[a, count]);
                         self.b.function().inst_results(inst)[0]
                     }
-                    Binary(_) | Compare(_) | Native(_) => {
+                    Binary(_) | Compare(_) | Native(_) | Native3(_) | Immediate(_) => {
                         let second = self.operand(&args[1])[0];
                         let b = self.b.ins().load(ty, second);
                         match operation {
@@ -4772,6 +4794,21 @@ impl Lower<'_, '_, '_> {
                             Compare(cc) => self.b.ins().vicmp(cc, a, b),
                             Native(id) => {
                                 let inst = self.b.ins().intrinsic(id, &[a, b]);
+                                self.b.function().inst_results(inst)[0]
+                            }
+                            Native3(id) => {
+                                let third = self.operand(&args[2])[0];
+                                let c = self.b.ins().load(ty, third);
+                                let inst = self.b.ins().intrinsic(id, &[a, b, c]);
+                                self.b.function().inst_results(inst)[0]
+                            }
+                            Immediate(id) => {
+                                let TyKind::Value(immediate) = generic_args[0].kind() else {
+                                    unreachable!("validated immediate")
+                                };
+                                let immediate =
+                                    self.b.ins().iconst(Type::I32, immediate.bits() as i64);
+                                let inst = self.b.ins().intrinsic(id, &[a, b, immediate]);
                                 self.b.function().inst_results(inst)[0]
                             }
                             _ => unreachable!(),
