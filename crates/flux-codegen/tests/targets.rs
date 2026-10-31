@@ -5,6 +5,50 @@ mod process;
 use flux_codegen::{OptimizationTier, Target};
 
 #[test]
+fn full_tier_uses_target_selection_for_offset_loads() {
+    let source = "func @probe(ptr) -> i64 {\nblock0(v0: ptr):\n v1 = iconst.i64 8\n v2 = ptradd v0, v1\n v3 = load.i64 v2\n return v3\n}\n";
+    for tier in [
+        OptimizationTier::None,
+        OptimizationTier::Fast,
+        OptimizationTier::Basic,
+        OptimizationTier::Full,
+    ] {
+        let mut module = keel_ir::parse(source).unwrap();
+        let actual =
+            flux_codegen::compile_object(&mut module, Target::Aarch64AppleDarwin, tier).unwrap();
+        let baseline = keel_codegen::compile_program(&module, Target::Aarch64AppleDarwin).unwrap();
+        let baseline = keel_asm::assemble_program(&baseline, Default::default()).unwrap();
+        if tier == OptimizationTier::Full {
+            let selected = keel_codegen::compile_program_with_pipeline(
+                &module,
+                Target::Aarch64AppleDarwin,
+                &keel_codegen::CodegenPipeline {
+                    selector: &keel_codegen::SelectionTier::Full,
+                    allocator: &keel_codegen::regalloc::AllocationTier::Full,
+                },
+            )
+            .unwrap();
+            let selected = keel_asm::assemble_program(&selected, Default::default()).unwrap();
+            assert!(
+                selected.text.len() < baseline.text.len(),
+                "the offset load must fold into one memory instruction"
+            );
+            assert_eq!(
+                actual,
+                selected.to_macho().unwrap(),
+                "Full must use Keel's target selector"
+            );
+        } else {
+            assert_eq!(
+                actual,
+                baseline.to_macho().unwrap(),
+                "{tier:?} must retain baseline selection"
+            );
+        }
+    }
+}
+
+#[test]
 fn supported_object_formats_and_unimplemented_linux_target() {
     let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main() { println!(\"{}\", 42); }");
     assert!(hir.diagnostics.is_empty());

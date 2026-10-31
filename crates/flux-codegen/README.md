@@ -12,6 +12,11 @@ verification, optimization, codegen, assembly, SDK, linking and output failures.
 where the backend supplies an error type. Keel optimization errors remain stored
 as structured values; its linker currently supplies only text.
 
+Full optimization uses Keel's Full instruction selector and allocator after IR
+optimization. Other tiers retain baseline instruction selection. This enables
+target address folding and excludes encoded operands from register liveness in
+optimized objects.
+
 Native x86-64 Linux linking uses Keel's ELF linker. `cc` must locate the installed
 `crt1.o`, `crti.o`, `crtbegin.o`, `crtend.o`, `crtn.o`, `libgcc.a`, glibc, libm, libpthread
 and ELF loader. The embedded runtime uses `gettid` (glibc 2.30 or newer).

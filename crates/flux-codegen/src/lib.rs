@@ -90,7 +90,19 @@ fn compile_object_inner(
     })
     .map_err(Error::optimize)?;
     let program = measured(timings.as_deref_mut().map(|t| &mut t.codegen), || {
-        keel_codegen::compile_program(module, target)
+        let selector = if tier == OptimizationTier::Full {
+            keel_codegen::SelectionTier::Full
+        } else {
+            keel_codegen::SelectionTier::Baseline
+        };
+        keel_codegen::compile_program_with_pipeline(
+            module,
+            target,
+            &keel_codegen::CodegenPipeline {
+                selector: &selector,
+                allocator: &keel_codegen::regalloc::AllocationTier::Full,
+            },
+        )
     })
     .map_err(Error::codegen)?;
     measured(timings.map(|t| &mut t.assemble), || {
