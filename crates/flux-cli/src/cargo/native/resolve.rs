@@ -3,7 +3,7 @@ use super::{Features, Lock, Result};
 use semver::{Version, VersionReq};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 mod catalog;
 use catalog::{Catalog, Id};
@@ -160,26 +160,10 @@ pub(super) fn run(options: &ResolveOptions) -> Result<ExitCode> {
     let rust_version = if options.ignore_rust_version || !fallback {
         None
     } else {
-        let minimum = roots
+        roots
             .iter()
             .filter_map(|id| catalog.packages[id].rust_version.clone())
-            .min();
-        Some(if let Some(version) = minimum {
-            version
-        } else {
-            let output = crate::cargo::output(
-                Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
-                    .arg("--version"),
-                "rustc version",
-            )?;
-            Version::parse(
-                output
-                    .split_whitespace()
-                    .nth(1)
-                    .ok_or("invalid rustc version")?,
-            )
-            .map_err(|e| e.to_string())?
-        })
+            .min()
     };
     let mut links = BTreeSet::new();
     for id in &roots {

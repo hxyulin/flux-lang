@@ -31,8 +31,15 @@ struct Prepared {
 
 pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let version = crate::cargo::output(Command::new(&rustc).arg("-vV"), "rustc version")?;
-    let cfg = crate::cargo::output(Command::new(&rustc).args(["--print", "cfg"]), "rustc cfg")?;
+    let version = if plan.units.iter().any(|unit| unit.domain == Domain::Host) {
+        crate::cargo::output(Command::new(&rustc).arg("-vV"), "rustc version")?
+    } else {
+        String::new()
+    };
+    let cfg = crate::target::cfg()?
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join("\n");
     let run_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?

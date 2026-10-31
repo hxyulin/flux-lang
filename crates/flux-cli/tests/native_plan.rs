@@ -17,12 +17,6 @@ impl Fixture {
         std::fs::write(path, text).unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
-        let sysroot = Command::new("rustc")
-            .args(["--print", "sysroot"])
-            .output()
-            .unwrap();
-        assert!(sysroot.status.success());
-        let rustc = Path::new(String::from_utf8_lossy(&sysroot.stdout).trim()).join("bin/rustc");
         let output = Command::new(env!("CARGO_BIN_EXE_flux"))
             .args(["plan", "--manifest-path"])
             .arg(self.0.join("Cargo.toml"))
@@ -30,7 +24,7 @@ impl Fixture {
             .arg(self.0.join("plan.json"))
             .args(args)
             .env("PATH", self.0.join("tools"))
-            .env("RUSTC", rustc)
+            .env("RUSTC", self.0.join("missing-rustc"))
             .env("CARGO_HOME", self.0.join("cache"))
             .env("FLUX_BUILTINS_TRACE", "1")
             .output()

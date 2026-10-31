@@ -21,6 +21,11 @@ enum Command {
         #[command(subcommand)]
         command: cargo::Command,
     },
+    /// Print native compiler configuration.
+    Print {
+        #[arg(value_enum)]
+        kind: PrintKind,
+    },
     /// Stage checked built-in types and MIR beside the compiler executable.
     BuildBuiltins {
         /// Include every non-generic built-in definition in one native object.
@@ -75,6 +80,12 @@ enum Command {
     },
 }
 
+#[derive(clap::ValueEnum, Clone, Copy)]
+enum PrintKind {
+    Host,
+    Cfg,
+}
+
 #[derive(clap::ValueEnum, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CrateType {
     Bin,
@@ -94,6 +105,23 @@ pub(crate) struct BuildOptions {
 /// Run the source compiler CLI.
 pub fn compiler_main() -> ExitCode {
     let cli = Cli::parse();
+    if let Command::Print { kind } = &cli.command {
+        let result = match kind {
+            PrintKind::Host => crate::target::host().map(|host| println!("{host}")),
+            PrintKind::Cfg => crate::target::cfg().map(|cfg| {
+                for line in cfg {
+                    println!("{line}");
+                }
+            }),
+        };
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if let Command::PackageDriver { command } = &cli.command {
         return execute_package(command);
     }
@@ -259,7 +287,7 @@ fn run(command: Command) -> Result<bool, String> {
                 })
             }
         }
-        Command::PackageDriver { .. } | Command::Run { .. } => {
+        Command::Print { .. } | Command::PackageDriver { .. } | Command::Run { .. } => {
             unreachable!("handled in main")
         }
         Command::Check { files } => {

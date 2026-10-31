@@ -132,20 +132,8 @@ fn make_plan(options: &Options) -> Result<Plan> {
     if !matches!(lock.version, 3 | 4) {
         return Err("native planning requires Cargo.lock version 3 or 4".into());
     }
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let version = super::output(Command::new(&rustc).arg("-vV"), "rustc version")?;
-    let host = version
-        .lines()
-        .find_map(|s| s.strip_prefix("host: "))
-        .ok_or("rustc did not report its host")?
-        .to_owned();
-    let cfg = super::output(
-        Command::new(&rustc).args(["--print", "cfg"]),
-        "rustc target cfg",
-    )?
-    .lines()
-    .map(compact)
-    .collect();
+    let host = crate::target::host()?.to_owned();
+    let cfg = crate::target::cfg()?.iter().map(|s| compact(s)).collect();
     let home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cargo")))

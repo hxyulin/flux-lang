@@ -14,3 +14,5 @@ mod proc_macro_native;
 
 use driver::{BuildOptions, CrateType, report_all};
 pub use driver::{compiler_main, package_main};
+
+mod target;

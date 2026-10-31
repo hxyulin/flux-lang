@@ -1,4 +1,5 @@
 use super::*;
+use std::process::Command;
 
 impl Catalog {
     pub(super) fn git_candidates(

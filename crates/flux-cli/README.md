@@ -9,6 +9,10 @@ Package builds use native planning by default;
 The `flux` package manager and `fluxc` compiler for [Flux](../../README.md),
 an experimental compiler for a subset of Rust.
 
+`fluxc print host` and `fluxc print cfg` report Flux’s native target and baseline
+configuration without querying rustc. Resolution, planning and packages without
+host tools do not require rustc. Host preparation still uses rustc.
+
 ```sh
 fluxc lex file.rs      # tokens, trivia included
 fluxc parse file.rs    # syntax tree and errors
@@ -39,7 +43,8 @@ retain a lockfile edge without making that crate active in native build planning
 Edition 2024 workspace dependencies can override inherited default features.
 
 Resolver 3 prefers Rust-version-compatible releases, using the lowest declared
-workspace `rust-version` or the selected rustc version when none is declared.
+workspace `rust-version`. Without a declared workspace Rust version, no MSRV
+ceiling is inferred from the installed toolchain.
 If no matching compatible release exists it can fall back to a newer requirement.
 Resolver 1/2 defaults to allowing newer Rust requirements. Cargo configuration's
 `resolver.incompatible-rust-versions` policy and `--ignore-rust-version` can change
@@ -141,7 +146,7 @@ flux plan --manifest-path Cargo.toml -p flux-cli --bin fluxc
 This command reads manifests and Cargo.lock directly. It never invokes Cargo,
 accesses the network, runs build scripts, or loads proc macros. Dependencies must
 already exist in `CARGO_HOME` (default `~/.cargo`); `flux fetch --locked`
-can populate it. Rustc supplies the host triple
+can populate it. Flux supplies its baseline host triple
 and target cfg; Git checks cached checkout revisions. Planning currently targets
 the host platform. `--offline` is accepted but planning is always offline.
 
