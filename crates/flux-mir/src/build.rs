@@ -1346,7 +1346,7 @@ fn build_body(
         let range = b.pat_range(pat);
         b.scopes[0].locals.push((local, range));
         match body.pats[pat] {
-            Pat::Bind { binding, sub: None } if types.binding_refs.get(binding).is_none() => {
+            Pat::Bind { binding, sub: None } if types.pat_refs.get(pat).is_none() => {
                 let data = &body.bindings[binding];
                 b.locals[local].kind = LocalKind::User {
                     name: data.name,
@@ -1565,7 +1565,7 @@ impl From<Place> for PatPlace {
 /// next alternative of an or-pattern) if a guard fails.
 struct Exit {
     block: BasicBlock,
-    binds: Vec<(BindingId, Place)>,
+    binds: Vec<(BindingId, Place, Option<Mutability>)>,
     resume: BasicBlock,
 }
 
@@ -4389,7 +4389,7 @@ impl Builder<'_> {
         match &self.body.pats[pat] {
             Pat::Bind { binding, sub } => {
                 let mut dest = Place::from(self.binding_locals[*binding]);
-                if self.types.binding_refs.get(*binding).is_some() {
+                if self.types.pat_refs.get(pat).is_some() {
                     dest = dest.deref();
                 }
                 self.region_relations.push((
@@ -4532,7 +4532,7 @@ impl Builder<'_> {
 
     fn lower_let(&mut self, pat: PatId, init: ExprId) {
         match self.body.pats[pat] {
-            Pat::Bind { binding, sub: None } if self.types.binding_refs.get(binding).is_none() => {
+            Pat::Bind { binding, sub: None } if self.types.pat_refs.get(pat).is_none() => {
                 let local = self.binding_locals[binding];
                 self.lower_into(init, &local.into());
                 self.annotate_let_source(pat, local.into());
@@ -4716,7 +4716,11 @@ impl Builder<'_> {
                 // `y` out before `x` would take the whole.
                 let place = self.resolve(place, range);
                 for exit in &mut exits {
-                    exit.binds.push((*binding, place.clone()));
+                    exit.binds.push((
+                        *binding,
+                        place.clone(),
+                        self.types.pat_refs.get(pat).copied(),
+                    ));
                 }
                 exits
             }
@@ -5273,15 +5277,21 @@ impl Builder<'_> {
     /// Binds `binding` to the value in `place`, or a reference to it, at
     /// the binding. A move out of what may not be moved out of is at
     /// `scrutinee`, where rustc reports it.
-    fn bind(&mut self, binding: BindingId, place: Place, scrutinee: TextRange) {
+    fn bind(
+        &mut self,
+        binding: BindingId,
+        place: Place,
+        by_ref: Option<Mutability>,
+        scrutinee: TextRange,
+    ) {
         let local = self.binding_locals[binding];
         let mut range = self
             .binding_ranges
             .get(binding)
             .copied()
             .unwrap_or_default();
-        let rvalue = match self.types.binding_refs.get(binding) {
-            Some(&mutability) => Rvalue::Ref {
+        let rvalue = match by_ref {
+            Some(mutability) => Rvalue::Ref {
                 raw: false,
                 mutability,
                 place,
@@ -5300,9 +5310,9 @@ impl Builder<'_> {
         self.assign(&local.into(), rvalue, range);
     }
 
-    fn bind_all(&mut self, binds: &[(BindingId, Place)], scrutinee: TextRange) {
-        for (binding, place) in binds {
-            self.bind(*binding, place.clone(), scrutinee);
+    fn bind_all(&mut self, binds: &[(BindingId, Place, Option<Mutability>)], scrutinee: TextRange) {
+        for (binding, place, by_ref) in binds {
+            self.bind(*binding, place.clone(), *by_ref, scrutinee);
         }
     }
 
@@ -5324,9 +5334,6 @@ impl Builder<'_> {
     /// Whether binding `binding` takes a value that is not `Copy`, which
     /// a guard must not move: it reads the place instead.
     fn binds_value(&self, binding: BindingId) -> bool {
-        if self.types.binding_refs.get(binding).is_some() {
-            return false;
-        }
         let ty = self.locals[self.binding_locals[binding]].ty;
         !flux_solve::traits::is_copy(self.items, &self.typed.sigs, &self.env, ty)
     }
@@ -5352,13 +5359,15 @@ impl Builder<'_> {
                 for exit in exits {
                     b.current = Some(exit.block);
                     if let Some(guard) = arm.guard {
-                        let (later, now): (Vec<_>, Vec<_>) = exit
-                            .binds
-                            .iter()
-                            .cloned()
-                            .partition(|(binding, _)| b.binds_value(*binding));
+                        let (later, now): (Vec<_>, Vec<_>) =
+                            exit.binds
+                                .iter()
+                                .cloned()
+                                .partition(|(binding, _, by_ref)| {
+                                    by_ref.is_none() && b.binds_value(*binding)
+                                });
                         b.bind_all(&now, at);
-                        for (binding, place) in &later {
+                        for (binding, place, _) in &later {
                             b.guard_places.insert(*binding, place.clone());
                         }
                         let guard_range = b.range(guard);
@@ -5372,16 +5381,14 @@ impl Builder<'_> {
                             .guard
                             .as_ref()
                             .map_or_else(Vec::new, |guard| guard.bindings.clone());
-                        bindings.extend(exit.binds.iter().map(|&(binding, _)| binding));
+                        bindings.extend(exit.binds.iter().map(|&(binding, _, _)| binding));
                         let outer = b.guard.replace(Guard {
                             scrutinee,
                             bindings,
                             ref_muts: now
                                 .iter()
-                                .map(|&(binding, _)| binding)
-                                .filter(|&binding| {
-                                    b.types.binding_refs.get(binding) == Some(&Mutability::Mut)
-                                })
+                                .filter(|(_, _, by_ref)| *by_ref == Some(Mutability::Mut))
+                                .map(|&(binding, _, _)| binding)
                                 .collect(),
                         });
                         if b.has_let(guard) {
@@ -5400,13 +5407,13 @@ impl Builder<'_> {
                             );
                         }
                         b.guard = outer;
-                        for (binding, _) in &later {
+                        for (binding, _, _) in &later {
                             b.guard_places.remove(*binding);
                         }
                         // What the guard saw is bound again if another
                         // way of matching is tried.
                         b.current = Some(failed);
-                        let mut seen: Vec<BindingId> = now.iter().map(|&(b, _)| b).collect();
+                        let mut seen: Vec<BindingId> = now.iter().map(|&(b, _, _)| b).collect();
                         b.condition_bindings(guard, &mut seen);
                         for binding in &seen {
                             let Some(&local) = b.binding_locals.get(*binding) else {

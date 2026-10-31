@@ -1485,8 +1485,8 @@ impl Ctx<'_> {
         let place = (binding, proj);
         match &body.pats[pat] {
             Pat::Missing | Pat::Wild => {}
-            Pat::Bind { binding, sub } => {
-                self.bind_use(*binding, place.clone(), range, uses);
+            Pat::Bind { sub, .. } => {
+                self.bind_use(pat, place.clone(), range, uses);
                 if let Some(sub) = sub {
                     self.walk_pat(*sub, place, uses);
                 }
@@ -1607,7 +1607,7 @@ impl Ctx<'_> {
         match &body.pats[pat] {
             Pat::Missing | Pat::Wild => {}
             Pat::Bind { binding, sub } => {
-                let kind = match self.binding_refs.get(*binding) {
+                let kind = match self.pat_refs.get(pat) {
                     Some(&m) => UseKind::Borrow(m),
                     None => {
                         let ty = self.known_binding_ty(*binding);
@@ -1635,14 +1635,8 @@ impl Ctx<'_> {
     }
 
     /// A binding binding `place`: a borrow of it, or its value.
-    fn bind_use(
-        &mut self,
-        binding: BindingId,
-        place: Place,
-        range: TextRange,
-        uses: &mut Uses<'_>,
-    ) {
-        let kind = match self.binding_refs.get(binding) {
+    fn bind_use(&mut self, pat: PatId, place: Place, range: TextRange, uses: &mut Uses<'_>) {
+        let kind = match self.pat_refs.get(pat) {
             Some(&m) => UseKind::Borrow(m),
             None => {
                 let ty = self.capture_place_ty(place.0, &place.1);

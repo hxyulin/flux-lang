@@ -101,10 +101,9 @@ pub struct InferenceResult {
     /// How many references a pattern that is not a binding sees through
     /// before it matches: one for `Some(x)` matching a `&Option<i32>`.
     pub pat_derefs: ArenaMap<Pat, u32>,
-    /// The bindings that bind a reference to what they match rather than
-    /// its value: `ref x`, or `x` in a pattern that sees through a
-    /// reference.
-    pub binding_refs: ArenaMap<Binding, Mutability>,
+    /// Binding patterns that borrow what they match. Alternatives can bind
+    /// the same local by value or by reference while producing the same type.
+    pub pat_refs: ArenaMap<Pat, Mutability>,
     /// The checks of the body's patterns wait for the values of the
     /// constants its patterns name: [`crate::check_deferred_patterns`].
     pub deferred_pats: bool,
@@ -440,7 +439,7 @@ impl<'a> Ctx<'a> {
             pat_types: ArenaMap::new(),
             let_annotations: ArenaMap::new(),
             pat_derefs: ArenaMap::new(),
-            binding_refs: ArenaMap::new(),
+            pat_refs: ArenaMap::new(),
             mode_errors: Vec::new(),
             negated_pats: FxHashSet::default(),
             const_pats: FxHashSet::default(),
@@ -640,7 +639,7 @@ struct Ctx<'a> {
     pat_types: ArenaMap<Pat, Ty>,
     let_annotations: ArenaMap<Pat, (TypeRefId, Ty)>,
     pat_derefs: ArenaMap<Pat, u32>,
-    binding_refs: ArenaMap<Binding, Mutability>,
+    pat_refs: ArenaMap<Pat, Mutability>,
     /// Binding modifiers and reference patterns written where a pattern
     /// borrows implicitly, which edition 2024 forbids: reported with the
     /// checks of patterns, after inference, as rustc does.
@@ -2180,7 +2179,7 @@ impl Ctx<'_> {
                     }
                 }
                 if let Some(m) = by_ref {
-                    self.binding_refs.insert(*binding, m);
+                    self.pat_refs.insert(pat, m);
                 }
                 if uninit {
                     self.uninit_bindings.insert(*binding);
@@ -6694,7 +6693,7 @@ impl Ctx<'_> {
             pat_types,
             let_regions,
             pat_derefs: self.pat_derefs,
-            binding_refs: self.binding_refs,
+            pat_refs: self.pat_refs,
             deferred_pats,
             unsizes,
             builtin_methods: self.builtin_methods,
@@ -7000,7 +6999,7 @@ impl Ctx<'_> {
             }
             let ty = self.binding_types.get(*binding).copied();
             if let Some(ty) = ty.filter(|&t| self.is_unsized(t))
-                && self.binding_refs.get(*binding).is_none()
+                && self.pat_refs.get(pat).is_none()
             {
                 let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
                 self.error(range, crate::unsized_error(ty));

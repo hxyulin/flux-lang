@@ -1342,14 +1342,23 @@ impl Ctx<'_> {
         if a.trait_ref.trait_ != b.trait_ref.trait_ {
             return false;
         }
-        let mut ok = self.unify(a.self_ty, b.self_ty);
+        // A bound for another receiver is not a candidate. Normalizing its
+        // arguments can recurse into the projection we are trying to resolve,
+        // as in `L1: Layer<L2::Service>, L2: Layer<S>`.
+        if !self.unify(a.self_ty, b.self_ty) {
+            return false;
+        }
+        let mut ok = true;
         for (&x, &y) in a.trait_ref.args.iter().zip(b.trait_ref.args) {
             // Opaque caller bounds can introduce output projections before
             // their inputs are fixed. Preserve their deferred obligations,
             // rather than comparing the raw projection with a concrete goal.
             let x = self.known(x);
-            let x = self.normalize(x, TextRange::default());
             let y = self.known(y);
+            if x == y {
+                continue;
+            }
+            let x = self.normalize(x, TextRange::default());
             let y = self.normalize(y, TextRange::default());
             ok &= self.unify(x, y);
         }

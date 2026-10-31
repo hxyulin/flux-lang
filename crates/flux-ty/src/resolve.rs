@@ -1488,23 +1488,42 @@ pub(super) fn resolve_predicates(
     scope: TypeScope<'_>,
     errors: &mut Vec<(TextRange, String)>,
 ) -> traits::Bounds {
-    let mut first = Vec::new();
-    let resolved = traits::resolve_predicates(items, module, generics, scope, &mut first);
-    if first.is_empty() {
-        return resolved;
+    let mut pending_errors = Vec::new();
+    let mut resolved =
+        traits::resolve_predicates(items, module, generics, scope, &mut pending_errors);
+    // A where-clause may use a later bound's associated type. Resolve one
+    // dependency layer per pass, rather than assuming two passes suffice.
+    for _ in 0..generics.predicates.len() {
+        if pending_errors.is_empty() {
+            return resolved;
+        }
+        let all: Vec<Predicate> = scope
+            .bounds
+            .iter()
+            .chain(&resolved.predicates)
+            .copied()
+            .collect();
+        let bounds = flux_solve::traits::elaborate(sigs, &all);
+        pending_errors.clear();
+        let next = traits::resolve_predicates(
+            items,
+            module,
+            generics,
+            TypeScope {
+                bounds: &bounds,
+                ..scope
+            },
+            &mut pending_errors,
+        );
+        let unchanged =
+            next.predicates == resolved.predicates && next.projections == resolved.projections;
+        resolved = next;
+        if unchanged {
+            break;
+        }
     }
-    let all: Vec<Predicate> = scope
-        .bounds
-        .iter()
-        .chain(&resolved.predicates)
-        .copied()
-        .collect();
-    let bounds = flux_solve::traits::elaborate(sigs, &all);
-    let scope = TypeScope {
-        bounds: &bounds,
-        ..scope
-    };
-    traits::resolve_predicates(items, module, generics, scope, errors)
+    errors.extend(pending_errors);
+    resolved
 }
 
 /// Detect a pointer binder in a carrier declaration before its arguments
