@@ -1673,6 +1673,7 @@ impl Ctx<'_> {
         let mut walker = crate::regions::Walker::new(self.items, self.module, names);
         walker.body = true;
         walker.infer_objects = true;
+        walker.infer_unknown_owners = true;
         walker.self_regions = self
             .owner_fn
             .and_then(|f| self.items.impl_of(f))

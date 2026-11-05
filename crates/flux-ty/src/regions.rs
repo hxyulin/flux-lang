@@ -168,6 +168,10 @@ pub(crate) struct Walker<'a> {
     ref_region: Option<Region>,
     /// A private candidate-counting view; never published as a signature row.
     elision_only: bool,
+    /// In a body's written annotation, the owner lifetimes of a projection
+    /// whose bound is not known here (`A::Error` for `A: MapAccess<'de>`)
+    /// are left to inference, as an unwritten lifetime is.
+    pub infer_unknown_owners: bool,
 }
 
 impl<'a> Walker<'a> {
@@ -196,6 +200,7 @@ impl<'a> Walker<'a> {
             self_projection_owner: None,
             ref_region: None,
             elision_only: false,
+            infer_unknown_owners: false,
         }
     }
 
@@ -768,6 +773,11 @@ impl<'a> Walker<'a> {
                 && lifetimes.len() == alias.owner_lifetimes as usize
             {
                 out.extend(lifetimes.iter().copied());
+            } else if self.infer_unknown_owners {
+                out.extend(std::iter::repeat_n(
+                    Region::Erased,
+                    alias.owner_lifetimes as usize,
+                ));
             } else {
                 self.errors.push((
                     path.range(0, TextRange::default()),
