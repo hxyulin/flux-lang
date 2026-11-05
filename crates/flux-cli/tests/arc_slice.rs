@@ -165,7 +165,7 @@ fn erased_layout_contract_and_overflow() {
         }
         let file = dir.join(format!("{name}.rs"));
         let source = format!(
-            "mod implementation {{\n{library}\npub fn exercise() {{ {body} }}\n}}\nfn main() {{ implementation::exercise(); }}\n"
+            "#[allow(unused_imports)]\nuse std::{{borrow, string}};\nmod implementation {{\n{library}\npub fn exercise() {{ {body} }}\n}}\nfn main() {{ implementation::exercise(); }}\n"
         );
         // The source is ordinary valid Rust in all cases, including checked
         // layout failures. Rustc metadata acceptance precedes every execution.

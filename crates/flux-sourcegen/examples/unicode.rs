@@ -22,7 +22,9 @@ pub fn generate() -> String {
                 if case {
                     (u8::from(c.is_lowercase()) << 2) | (u8::from(c.is_uppercase()) << 3)
                 } else {
-                    u8::from(c.is_alphabetic()) | (u8::from(c.is_alphanumeric()) << 1) | (u8::from(c.is_numeric()) << 4)
+                    u8::from(c.is_alphabetic())
+                        | (u8::from(c.is_alphanumeric()) << 1)
+                        | (u8::from(c.is_numeric()) << 4)
                 }
             });
             if flags != previous {

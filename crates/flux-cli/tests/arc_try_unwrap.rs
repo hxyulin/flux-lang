@@ -29,7 +29,7 @@ fn production_arc_try_unwrap_host_races_and_unwind() {
     .unwrap();
     let source = r#"
 extern crate alloc as host_alloc;
-pub use host_alloc::{vec,boxed};
+pub use host_alloc::{vec,boxed,string,borrow};
 use std::sync::atomic::{AtomicUsize,Ordering::SeqCst};
 static ALLOCS:AtomicUsize=AtomicUsize::new(0);static DEALLOCS:AtomicUsize=AtomicUsize::new(0);
 pub mod alloc{pub use std::alloc::{Layout,handle_alloc_error};pub unsafe fn alloc(layout:Layout)->*mut u8{super::ALLOCS.fetch_add(1,super::SeqCst);unsafe{std::alloc::alloc(layout)}}pub unsafe fn dealloc(ptr:*mut u8,layout:Layout){super::DEALLOCS.fetch_add(1,super::SeqCst);unsafe{std::alloc::dealloc(ptr,layout)}}}

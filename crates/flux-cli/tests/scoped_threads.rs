@@ -166,6 +166,12 @@ fn scope_cleanup_joins_on_host_unwind() {
 extern crate alloc as alloc_crate;
 type Result<T> = std::thread::Result<T>;
 mod sync {{ pub use std::sync::Mutex; }}
+use std::io;
+// The worker's thread handle; this harness checks joining only.
+#[derive(Clone)]
+pub struct Thread;
+impl Thread {{ pub(crate) fn new(_name: Option<String>) -> Thread {{ Thread }} }}
+pub(crate) fn set_current(_thread: Thread) {{}}
 #[path={module:?}]mod scoped;
 use std::sync::atomic::{{AtomicBool,Ordering}};
 struct Release<'a>(&'a AtomicBool);
