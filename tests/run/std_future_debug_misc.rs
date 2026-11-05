@@ -68,11 +68,6 @@ fn main() {
     println!("{}", entry.ino() == std::fs::metadata(&path).unwrap().ino());
     std::fs::remove_dir_all(&root).unwrap();
 
-    let values = [10u16, 20, 30];
-    let whole: *const [u16] = &values[..];
-    let shifted = unsafe { whole.byte_add(2) };
-    let back = unsafe { shifted.byte_sub(2) };
-    println!("{} {} {}", shifted.len(), unsafe { (*back)[0] }, unsafe { *(shifted as *const u16) });
     static LEGACY_ONCE: std::sync::Once = std::sync::ONCE_INIT;
     LEGACY_ONCE.call_once(|| println!("once"));
     LEGACY_ONCE.call_once(|| println!("twice"));

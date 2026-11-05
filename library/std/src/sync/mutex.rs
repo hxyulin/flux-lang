@@ -82,7 +82,7 @@ impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for Mutex<T> {
             };
             debug.field("data", &&*guard);
         } else {
-            debug.field("data", &format_args!("<locked>"));
+            debug.field("data", &"<locked>");
         }
         debug.field("poisoned", &self.is_poisoned()).finish_non_exhaustive()
     }

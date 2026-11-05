@@ -173,22 +173,6 @@ pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
 }
 
 impl<T: ?Sized> *const T {
-    /// Offsets the data address by count bytes, keeping pointer metadata.
-    /// # Safety
-    /// The displacement must fit isize and remain in the same allocation.
-    pub unsafe fn byte_add(self,count:usize)->*const T { self.wrapping_byte_add(count) }
-    /// Offsets the data address by count bytes with wrapping arithmetic.
-    pub fn wrapping_byte_add(self,count:usize)->*const T { self.with_addr(self.addr().wrapping_add(count)) }
-    /// Offsets the data address back by count bytes, keeping pointer metadata.
-    /// # Safety
-    /// The displacement must fit isize and remain in the same allocation.
-    pub unsafe fn byte_sub(self,count:usize)->*const T { self.wrapping_byte_sub(count) }
-    /// Offsets the data address back by count bytes with wrapping arithmetic.
-    pub fn wrapping_byte_sub(self,count:usize)->*const T { self.with_addr(self.addr().wrapping_sub(count)) }
-    /// Offsets the data address by a signed byte count, keeping pointer metadata.
-    /// # Safety
-    /// The displacement must stay in the same allocation.
-    pub unsafe fn byte_offset(self,count:isize)->*const T { self.with_addr(self.addr().wrapping_add_signed(count)) }
     /// Replaces the data address while retaining pointer metadata.
     pub fn with_addr(self,address:usize)->Self {
         crate::intrinsics::ptr_with_addr(self as *const T,address) as *const T
@@ -227,6 +211,29 @@ impl<T: ?Sized> *const T {
 }
 
 impl<T> *const T {
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_add(self,count:usize)->*const T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *const u8).add(count) as *const T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_add(self,count:usize)->*const T {
+        (self as *const u8).wrapping_add(count) as *const T
+    }
+
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_sub(self,count:usize)->*const T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *const u8).sub(count) as *const T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_sub(self,count:usize)->*const T {
+        (self as *const u8).wrapping_sub(count) as *const T
+    }
 
     /// The nonnegative element distance from origin.
     /// # Safety
@@ -331,22 +338,6 @@ impl<T> *const T {
 }
 
 impl<T: ?Sized> *mut T {
-    /// Offsets the data address by count bytes, keeping pointer metadata.
-    /// # Safety
-    /// The displacement must fit isize and remain in the same allocation.
-    pub unsafe fn byte_add(self,count:usize)->*mut T { self.wrapping_byte_add(count) }
-    /// Offsets the data address by count bytes with wrapping arithmetic.
-    pub fn wrapping_byte_add(self,count:usize)->*mut T { self.with_addr(self.addr().wrapping_add(count)) }
-    /// Offsets the data address back by count bytes, keeping pointer metadata.
-    /// # Safety
-    /// The displacement must fit isize and remain in the same allocation.
-    pub unsafe fn byte_sub(self,count:usize)->*mut T { self.wrapping_byte_sub(count) }
-    /// Offsets the data address back by count bytes with wrapping arithmetic.
-    pub fn wrapping_byte_sub(self,count:usize)->*mut T { self.with_addr(self.addr().wrapping_sub(count)) }
-    /// Offsets the data address by a signed byte count, keeping pointer metadata.
-    /// # Safety
-    /// The displacement must stay in the same allocation.
-    pub unsafe fn byte_offset(self,count:isize)->*mut T { self.with_addr(self.addr().wrapping_add_signed(count)) }
     /// Replaces the data address while retaining pointer metadata.
     pub fn with_addr(self,address:usize)->Self {
         crate::intrinsics::ptr_with_addr(self as *const T,address) as *mut T
@@ -394,6 +385,29 @@ impl<T: ?Sized> *mut T {
 }
 
 impl<T> *mut T {
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_add(self,count:usize)->*mut T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *mut u8).add(count) as *mut T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_add(self,count:usize)->*mut T {
+        (self as *mut u8).wrapping_add(count) as *mut T
+    }
+
+    /// Offsets the data address by count bytes.
+    /// # Safety
+    /// The displacement must fit isize and remain in the same allocation.
+    pub const unsafe fn byte_sub(self,count:usize)->*mut T {
+        // SAFETY: the caller supplies byte-allocation bounds.
+        unsafe {(self as *mut u8).sub(count) as *mut T}
+    }
+    /// Offsets the data address by count bytes with wrapping arithmetic.
+    pub fn wrapping_byte_sub(self,count:usize)->*mut T {
+        (self as *mut u8).wrapping_sub(count) as *mut T
+    }
 
     /// The nonnegative element distance from origin.
     /// # Safety
@@ -648,7 +662,7 @@ impl<T> NonNull<T> {
     /// Offsets the pointer by count bytes.
     /// # Safety
     /// The displacement must fit isize and stay in the same allocation.
-    pub unsafe fn byte_add(self,count:usize)->Self {
+    pub const unsafe fn byte_add(self,count:usize)->Self {
         // SAFETY: a valid in-allocation offset preserves non-nullness.
         unsafe {Self::new_unchecked(self.as_ptr().byte_add(count))}
     }
@@ -656,7 +670,7 @@ impl<T> NonNull<T> {
     /// Offsets the pointer by count bytes.
     /// # Safety
     /// The displacement must fit isize and stay in the same allocation.
-    pub unsafe fn byte_sub(self,count:usize)->Self {
+    pub const unsafe fn byte_sub(self,count:usize)->Self {
         // SAFETY: a valid in-allocation offset preserves non-nullness.
         unsafe {Self::new_unchecked(self.as_ptr().byte_sub(count))}
     }
