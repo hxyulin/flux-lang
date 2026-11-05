@@ -1,12 +1,25 @@
 //! Hash traits, keyed randomized builders and the default streaming hasher.
 pub use core::hash::*;
 
-/// A keyed builder. Clones retain their keys; new builders obtain fresh entropy.
+/// A keyed builder. Clones retain their keys. As in Rust's std, each thread
+/// draws entropy once and gives each new builder the next first key.
 #[derive(Clone)]
 pub struct RandomState { keys: [u64; 2] }
 
+thread_local! {
+    static KEYS: core::cell::Cell<[u64; 2]> = core::cell::Cell::new(RandomState::entropy());
+}
+
 impl RandomState {
     pub fn new() -> Self {
+        KEYS.with(|keys| {
+            let [k0, k1] = keys.get();
+            keys.set([k0.wrapping_add(1), k1]);
+            Self { keys: [k0, k1] }
+        })
+    }
+
+    fn entropy() -> [u64; 2] {
         unsafe extern "C" {
             fn getentropy(buffer: *mut core::ffi::c_void, length: usize) -> i32;
         }
@@ -16,7 +29,7 @@ impl RandomState {
         if unsafe { getentropy(keys.as_mut_ptr() as *mut core::ffi::c_void, 16) } != 0 {
             core::panicking::abort_now();
         }
-        Self { keys }
+        keys
     }
 }
 impl Default for RandomState {
