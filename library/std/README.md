@@ -86,13 +86,17 @@ and host-unwinding tests exercise scope cleanup. `thread::spawn` owns
 `Send + 'static` closures and results; dropping its handle detaches the worker, while
 consuming `join` returns the result. Scoped and unscoped join use the standard
 thread Result type, but worker panics still abort. Panic hooks, catch_unwind
-and an unwinding Flux runtime remain absent.
+and an unwinding Flux runtime remain absent. `thread::available_parallelism`
+counts the CPUs in the affinity mask on Linux (`sched_getaffinity`) and the
+online CPUs on macOS (`sysconf`); unlike Rust's std, it ignores cgroup quotas.
 
 `sync::mpsc` supplies unbounded channels, bounded channels and zero-capacity
 rendezvous channels using native mutexes and condition variables. Blocking,
 nonblocking and timed receives preserve disconnection and queued-value ownership.
 `process::Command` executes native child processes with arguments, environment
-and working-directory configuration. Main return values use the Termination
+and working-directory configuration, and reports them through `get_program`,
+`get_args`, `get_envs` (sorted by name, `None` for a removal) and
+`get_current_dir`. Main return values use the Termination
 contract, including ExitCode and Result; process exit flushes output and runs
 native exit cleanup without unwinding.
 
@@ -151,7 +155,9 @@ clone-on-write/extraction, and remains neither Send nor Sync.
 `io` provides `Read`, `Write`, `Seek`, `SeekFrom`, `BufRead` and forwarding implementations
 for mutable references. Reads from byte slices and the default `read_exact`,
 `read_to_end` and `read_to_string` helpers handle short reads, interrupted calls,
-EOF and UTF-8 errors. File and Cursor supply seeking; BufReader, Take and Bytes
+EOF and UTF-8 errors. File supplies advisory whole-file locks through `flock`:
+`lock`, `lock_shared`, `try_lock`, `try_lock_shared` (with `fs::TryLockError`)
+and `unlock`. File and Cursor supply seeking; BufReader, Take and Bytes
 adapt readable streams. Write supplies partial byte writes,
 `write_all`, `write_fmt` and flushing, with Vec and mutable byte-slice sinks.
 Boxed writers forward to their underlying implementation. Standard input,
@@ -163,7 +169,8 @@ platform categories and formatting. Stability gating for the Rust-unstable
 `Uncategorized` variant names is not implemented.
 
 `time::Duration` reexports the canonical core type, with allocation-free Debug
-formatting, normalized nanoseconds and checked arithmetic. Instant and SystemTime
+formatting, normalized nanoseconds, checked and saturating arithmetic and the
+`+`, `-`, `+=` and `-=` operators. Instant and SystemTime
 supply monotonic and wall-clock timestamps. Native monotonic timestamps use Apple's
 `CLOCK_UPTIME_RAW` or Linux's `CLOCK_MONOTONIC` through `clock_gettime`.
 Sleeping, duration parsing and the remaining formatting APIs

@@ -40,6 +40,42 @@ pub fn sleep(duration: crate::time::Duration) {
     }
 }
 
+/// An estimate of the parallelism available to this process: the CPUs in its
+/// affinity mask on Linux, and the online CPUs on macOS.
+pub fn available_parallelism() -> crate::io::Result<core::num::NonZeroUsize> {
+    unsafe extern "C" {
+        fn sysconf(name: i32) -> core::ffi::c_long;
+        #[cfg(target_os = "linux")]
+        fn sched_getaffinity(pid: i32, size: usize, mask: *mut u64) -> i32;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // glibc's cpu_set_t: 1024 CPUs as 16 words.
+        let mut mask = [0u64; 16];
+        // SAFETY: mask is writable for exactly the size passed; pid 0 is this thread.
+        if unsafe { sched_getaffinity(0, core::mem::size_of_val(&mask), mask.as_mut_ptr()) } == 0 {
+            let count = mask.iter().map(|word| word.count_ones() as usize).sum::<usize>();
+            if let Some(count) = core::num::NonZeroUsize::new(count) {
+                return Ok(count);
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    const ONLINE_PROCESSORS: i32 = 58;
+    #[cfg(target_os = "linux")]
+    const ONLINE_PROCESSORS: i32 = 84;
+    // SAFETY: sysconf takes no pointers.
+    let count = unsafe { sysconf(ONLINE_PROCESSORS) };
+    match count {
+        -1 => Err(crate::io::Error::last_os_error()),
+        0 => Err(crate::io::Error::new(
+            crate::io::ErrorKind::NotFound,
+            "The number of hardware threads is not known for the target platform",
+        )),
+        count => Ok(core::num::NonZeroUsize::new(count as usize).expect("count is nonzero")),
+    }
+}
+
 /// A process-unique thread identity that is not reused after a thread exits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ThreadId(usize);
