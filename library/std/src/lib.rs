@@ -12,7 +12,7 @@ pub use core::{
     mem, num, ops, option, ptr, result,
 };
 pub use core::{dbg, eprint, eprintln, print, println, stringify, write};
-pub use core::{slice, str, u8, u32, f32, f64, primitive};
+pub use core::{slice, str, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, primitive};
 
 mod float;
 
