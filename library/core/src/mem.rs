@@ -149,6 +149,7 @@ impl<T> MaybeUninit<T> {
     }
 
     /// Holding nothing yet.
+    #[inline(always)]
     pub const fn uninit() -> MaybeUninit<T> {
         MaybeUninit {
             value: ManuallyDrop::new(unsafe { crate::intrinsics::uninit() }),

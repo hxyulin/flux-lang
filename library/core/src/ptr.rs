@@ -634,6 +634,7 @@ impl<T: ?Sized> NonNull<T> {
     }
 
     /// The pointer.
+    #[inline(always)]
     pub const fn as_ptr(self) -> *mut T {
         self.pointer as *mut T
     }

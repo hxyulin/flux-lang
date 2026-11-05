@@ -32,11 +32,13 @@ pub const fn from_mut<T>(value: &mut T) -> &mut [T] {
 
 /// The `len` values from `data` on, as a slice, which must be valid for
 /// as long as the slice is used.
+#[inline(always)]
 pub const unsafe fn from_raw_parts<'a, T>(data: *const T, len: usize) -> &'a [T] {
     unsafe { crate::intrinsics::slice_from_raw_parts(data, len) }
 }
 
 /// The `len` values from `data` on, as a mutable slice.
+#[inline(always)]
 pub const unsafe fn from_raw_parts_mut<'a, T>(data: *mut T, len: usize) -> &'a mut [T] {
     unsafe { crate::intrinsics::slice_from_raw_parts_mut(data, len) }
 }
