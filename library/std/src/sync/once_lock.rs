@@ -79,6 +79,38 @@ impl<T> OnceLock<T> {
             }
         }
     }
+
+    /// Returns mutable access to the value through an exclusive borrow.
+    pub fn get_mut(&mut self) -> Option<&mut T> {
+        // An exclusive borrow excludes a running initializer, so the state is
+        // empty or ready.
+        if *self.state.get_mut() == 2 { self.value.get_mut().as_mut() } else { None }
+    }
+
+    /// Removes the value through an exclusive borrow, leaving an empty cell.
+    pub fn take(&mut self) -> Option<T> {
+        if *self.state.get_mut() == 2 {
+            *self.state.get_mut() = 0;
+            self.value.get_mut().take()
+        } else {
+            None
+        }
+    }
+
+    /// Consumes the cell, returning its value.
+    pub fn into_inner(mut self) -> Option<T> {
+        self.take()
+    }
+}
+
+impl<T: core::clone::Clone> core::clone::Clone for OnceLock<T> {
+    fn clone(&self) -> OnceLock<T> {
+        let cell = OnceLock::new();
+        if let Some(value) = self.get() {
+            let _ = cell.set(value.clone());
+        }
+        cell
+    }
 }
 
 impl<T> Default for OnceLock<T> {
