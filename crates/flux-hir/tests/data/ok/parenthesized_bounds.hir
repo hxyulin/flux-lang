@@ -1,0 +1,41 @@
+fn call<T, F>(f@0: F) -> Option<T> where F: FnOnce<(), Output = T> {
+    Option::Some(f@0())
+}
+
+fn show<T>(t@0: &T) -> String where T: std::fmt::Debug {
+    format(Arguments::new_v1((&[""]), (&match ((&t@0),) {
+        args@1 => [Argument::new_debug(args@1.0)],
+    })))
+}
+
+fn boxed(f@0: Box<dyn Fn<(u8,), Output = u8>>) -> u8 {
+    f@0(2)
+}
+
+fn opaque() -> <opaque 0> {
+    |x@0| (x@0 + 1)
+}
+
+fn main() -> () {
+    {
+        _print(Arguments::new_v1((&["", "\n"]), (&match ((&call(|| 3)),) {
+            args@0 => [Argument::new_debug(args@0.0)],
+        })));
+    };
+    {
+        _print(Arguments::new_v1((&["", "\n"]), (&match ((&show("str")),) {
+            args@1 => [Argument::new_display(args@1.0)],
+        })));
+    };
+    {
+        _print(Arguments::new_v1((&["", "\n"]), (&match ((&boxed(<Box>::new(|x@2| (x@2 * 4)))),) {
+            args@3 => [Argument::new_display(args@3.0)],
+        })));
+    };
+    {
+        _print(Arguments::new_v1((&["", "\n"]), (&match ((&opaque()(9)),) {
+            args@4 => [Argument::new_display(args@4.0)],
+        })));
+    };
+}
+

@@ -186,7 +186,7 @@ fn typed_receivers_and_anonymous_imports_match_rustc() {
 }
 
 #[test]
-fn boxed_dynamic_receivers_fail_explicitly() {
+fn boxed_dynamic_receivers_dispatch() {
     let source = "trait Take{fn take(self:Box<Self>)->u32;}struct S;impl Take for S{fn take(self:Box<Self>)->u32{7}}fn main(){let b:Box<dyn Take>=Box::new(S);assert_eq!(b.take(),7);}";
     let root = std::env::temp_dir().join(format!(
         "flux-boxed-dynamic-receiver-{}",
@@ -209,16 +209,12 @@ fn boxed_dynamic_receivers_fail_explicitly() {
     );
     let (_, _, hir) = flux_hir::lower_text(&path, source);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    // The vtable dispatches on the box, which the call moves, not on the
+    // object behind it.
     let typed = flux_mir::check_file(&hir);
-    assert!(
-        typed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("trait object")
-                || diagnostic.message.contains("cannot move a value")),
-        "{:?}",
-        typed.diagnostics
-    );
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
 }
 
 // Non-move closures copying a shared-reference field currently capture a

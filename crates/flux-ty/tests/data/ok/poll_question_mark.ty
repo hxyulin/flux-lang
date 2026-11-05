@@ -1,0 +1,39 @@
+struct Error { 0: u32 }
+struct Steps { 0: u32 }
+fn from(u8) -> Error
+    e@0: u8
+fn parse(u32) -> Result<u32, u8>
+    x@0: u32
+fn ready(u32) -> Poll<Result<u32, Error>>
+    x@0: u32
+fn next(u32) -> Poll<Option<Result<u32, Error>>>
+    x@0: u32
+    e@1: u8
+fn poll_result(u32) -> Poll<Result<u32, Error>>
+    x@0: u32
+    v@1: u32
+fn poll_stream(u32) -> Poll<Option<Result<u32, Error>>>
+    x@0: u32
+    v@1: u32
+fn forward(u32) -> Result<Poll<u32>, Error>
+    x@0: u32
+    p@1: Poll<u32>
+    v@2: u32
+fn forward_stream(u32) -> Poll<Result<Poll<Option<u32>>, Error>>
+    x@0: u32
+    p@1: Poll<Option<u32>>
+fn step(&mut Self) -> Poll<<Self as Step>::Output>
+fn step(&mut Steps) -> Poll<Result<u32, Error>>
+    self@0: &mut Steps
+    v@1: u32
+fn main() -> ()
+    s@0: Steps
+    iter@1: Range<i32>
+    args@2: (&Poll<Result<u32, Error>>,)
+    iter@3: IntoIter<u32, 4>
+    x@4: u32
+    args@5: (&Poll<Result<u32, Error>>, &Poll<Option<Result<u32, Error>>>)
+    args@6: (&Result<Poll<u32>, Error>, &Poll<Result<Poll<Option<u32>>, Error>>)
+fn fmt(&Error, &mut Formatter) -> Result<(), Error>
+    self@0: &Error
+    f@1: &mut Formatter

@@ -26,10 +26,10 @@ pub use signature::{signatures, signatures_checked, signatures_from};
 
 mod resolve;
 pub use resolve::{
-    ArrayLens, LenEvaluator, TypeScope, alias_type, arc_pointee, array_len, check_const_params,
-    const_param_ty, const_value, generic_consts, generic_names, impl_target, nonzero_integer,
-    param_const_ty, primitive, resolve_generic_arg, resolve_generic_args, resolve_type, self_ty,
-    struct_type, unsized_error, wrong_arg_count,
+    ArrayLens, LenEvaluator, TypeScope, alias_type, array_len, check_const_params, const_param_ty,
+    const_value, generic_consts, generic_names, impl_target, nonzero_integer, param_const_ty,
+    primitive, resolve_generic_arg, resolve_generic_args, resolve_type, self_ty, shared_pointee,
+    shared_pointees, struct_type, unsized_error, wrong_arg_count,
 };
 use resolve::{
     alias_cycle, check_type_defaults, reaches_alias, resolve_or_report, resolve_predicates,

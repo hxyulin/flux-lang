@@ -1,0 +1,9 @@
+fn plain(Poll<u32>) -> Result<u32, ()>
+    p@0: Poll<u32>
+    v@1: {error}
+fn option(Option<u32>) -> Poll<Result<u32, ()>>
+    o@0: Option<u32>
+    v@1: u32
+fn main() -> ()
+error 199..201: the `?` operator can only be applied to values that implement `Try`
+error 282..283: the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)

@@ -4071,9 +4071,16 @@ impl Builder<'_> {
     /// if type checking said so, dropping what is in scope as `return`
     /// does. Either way the temporary is moved out of, so it needs no
     /// drop.
+    /// `operand?`: its value, or a return of what it breaks with. A
+    /// `Poll` operand wraps its `Result` in `Poll::Ready` and maybe
+    /// `Option::Some`, whose other variants are the value's; a `Poll`
+    /// return type wraps the residual the same way.
     fn lower_try(&mut self, expr: ExprId, operand: ExprId, dest: &Place, range: TextRange) {
         let ty = self.expr_ty(operand);
-        let TyKind::Adt(adt, _) = ty.kind() else {
+        let temp = self.temp(ty);
+        self.lower_into(operand, &temp.into());
+        let (layers, base_ty) = self.try_layers(ty);
+        let TyKind::Adt(adt, _) = base_ty.kind() else {
             self.bug("`?` on neither `Option` nor `Result`", range);
             return;
         };
@@ -4095,20 +4102,53 @@ impl Builder<'_> {
             self.bug("`?` without its variants", range);
             return;
         };
-        let temp = self.temp(ty);
-        self.lower_into(operand, &temp.into());
+        // The types of the output's layers, outermost first, then its
+        // value's.
+        let mut out_types = vec![self.expr_ty(expr)];
+        for _ in &layers {
+            let inner = match out_types.last().map(|t| t.kind()) {
+                Some(TyKind::Adt(_, args)) => args.first().copied().unwrap_or(Ty::ERROR),
+                _ => Ty::ERROR,
+            };
+            out_types.push(inner);
+        }
+        // Where the layers' values meet; without layers, the value
+        // continues where it was read.
+        let join = (!layers.is_empty()).then(|| self.new_block());
+        let mut place = PatPlace::from(Place::from(temp));
+        let mut base = Place::from(temp);
+        for (i, &(layer, wanted, other)) in layers.iter().enumerate() {
+            let pass = self.new_block();
+            place = self.test_variant(layer, wanted, place, pass, range);
+            let resolved = self.resolve(place, range);
+            let next = self.current;
+            self.current = Some(pass);
+            let other = Rvalue::Aggregate(AggregateKind::Variant(layer, other), Vec::new());
+            self.wrap_try(&layers[..i], &out_types, other, dest, range);
+            if let Some(join) = join {
+                self.goto(join, range);
+            }
+            self.current = next;
+            place = PatPlace::from(resolved.field(0));
+            base = base.downcast(wanted).field(0);
+        }
         let fail = self.new_block();
-        let place = Place::from(temp).into();
         let place = self.test_variant(strukt, value, place, fail, range);
         let place = self.resolve(place, range);
         let output = self.read(place.field(0));
-        self.assign(dest, Rvalue::Use(output), range);
-        let next = self.current;
+        self.wrap_try(&layers, &out_types, Rvalue::Use(output), dest, range);
+        let next = match join {
+            Some(join) => {
+                self.goto(join, range);
+                Some(join)
+            }
+            None => self.current,
+        };
         self.current = Some(fail);
         let fields = if option {
             Vec::new()
         } else {
-            let error = self.read(Place::from(temp).downcast(residual).field(0));
+            let error = self.read(base.downcast(residual).field(0));
             match self.types.try_conversions.get(expr) {
                 Some(&instance) => {
                     let converted = self.temp(instance.args[0]);
@@ -4124,11 +4164,79 @@ impl Builder<'_> {
                 None => vec![error],
             }
         };
-        let rvalue = Rvalue::Aggregate(AggregateKind::Variant(strukt, residual), fields);
-        self.assign(&Body::RETURN.into(), rvalue, range);
+        let ret_ty = self.locals[Body::RETURN].ty;
+        let (ret_layers, ret_base) = self.try_layers(ret_ty);
+        let mut ret_types = vec![ret_ty];
+        let mut ty = ret_ty;
+        for _ in &ret_layers {
+            ty = match ty.kind() {
+                TyKind::Adt(_, args) => args.first().copied().unwrap_or(Ty::ERROR),
+                _ => Ty::ERROR,
+            };
+            ret_types.push(ty);
+        }
+        let ret_strukt = match ret_base.kind() {
+            TyKind::Adt(adt, _) => adt.strukt,
+            _ => strukt,
+        };
+        let rvalue = Rvalue::Aggregate(AggregateKind::Variant(ret_strukt, residual), fields);
+        self.wrap_try(&ret_layers, &ret_types, rvalue, &Body::RETURN.into(), range);
         self.leave_scopes(0, false, range);
         self.terminate(TerminatorKind::Return, range);
         self.current = next;
+    }
+
+    /// The `Poll::Ready` and `Option::Some` layers around the `Result` in
+    /// `ty`, outermost first, as (enum, wrapping variant, other variant),
+    /// and what they wrap; no layers unless `ty` is a `Poll` of one.
+    fn try_layers(&self, ty: Ty) -> (Vec<(StructId, u32, u32)>, Ty) {
+        let lang = |name: &str| self.items.lang_enums.get(&Symbol::intern(name)).copied();
+        let variants = |strukt: StructId, a: &str, b: &str| {
+            let data = &self.items.structs[strukt];
+            data.variant_named(Symbol::intern(a))
+                .zip(data.variant_named(Symbol::intern(b)))
+        };
+        let inner = |ty: Ty| match ty.kind() {
+            TyKind::Adt(adt, args) => Some((adt.strukt, args.first().copied()?)),
+            _ => None,
+        };
+        let mut layers = Vec::new();
+        let Some((poll, ready)) = inner(ty).filter(|&(s, _)| Some(s) == lang("Poll")) else {
+            return (layers, ty);
+        };
+        let Some((r, p)) = variants(poll, "Ready", "Pending") else {
+            return (layers, ty);
+        };
+        layers.push((poll, r, p));
+        let mut base = ready;
+        if let Some((option, some)) = inner(ready).filter(|&(s, _)| Some(s) == lang("Option"))
+            && inner(some).is_some_and(|(s, _)| Some(s) == lang("Result"))
+            && let Some((s, n)) = variants(option, "Some", "None")
+        {
+            layers.push((option, s, n));
+            base = some;
+        }
+        (layers, base)
+    }
+
+    /// Assigns `inner`, of type `types[layers.len()]`, to `dest` inside
+    /// the wrapping variants of `layers`, whose types are `types`.
+    fn wrap_try(
+        &mut self,
+        layers: &[(StructId, u32, u32)],
+        types: &[Ty],
+        inner: Rvalue,
+        dest: &Place,
+        range: TextRange,
+    ) {
+        let mut rvalue = inner;
+        for (i, &(strukt, wrapping, _)) in layers.iter().enumerate().rev() {
+            let temp = self.temp(types[i + 1]);
+            self.assign(&temp.into(), rvalue, range);
+            let value = self.read(temp.into());
+            rvalue = Rvalue::Aggregate(AggregateKind::Variant(strukt, wrapping), vec![value]);
+        }
+        self.assign(dest, rvalue, range);
     }
 
     /// A reference to what `expr` denotes, in a temporary.

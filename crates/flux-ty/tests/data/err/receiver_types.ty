@@ -1,0 +1,14 @@
+struct S {}
+fn optional(Option<S>) -> ()
+    self@0: Option<S>
+fn nested(Box<Rc<S>>) -> ()
+    self@0: Box<Rc<S>>
+fn by_ref(&Arc<Self>) -> ()
+fn object({error}) -> ()
+fn consume(Self) -> ()
+fn moved(Box<dyn Consume>) -> ()
+    b@0: Box<dyn Consume>
+fn main() -> ()
+error 178..190: invalid `self` parameter type: `Option<S>`
+error 301..311: the trait `Shared` is not dyn compatible
+error 394..395: cannot move a value of type `dyn Consume`

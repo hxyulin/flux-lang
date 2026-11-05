@@ -1,0 +1,5 @@
+fn f<'a, T>(_: &'a T) -> () {}
+
+fn main() -> () {}
+
+error 75..79: lifetime bounds may not be parenthesized

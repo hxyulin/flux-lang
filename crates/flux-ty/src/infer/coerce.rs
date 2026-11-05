@@ -148,11 +148,10 @@ impl Ctx<'_> {
                 _ => {}
             }
         }
-        // Arc object coercions transfer one owner without touching counts.
-        if let (Some(source), Some(object)) = (
-            crate::arc_pointee(self.items, self.shallow(actual)),
-            crate::arc_pointee(self.items, self.shallow(expected)),
-        ) && let TyKind::Dynamic(d) = object.kind()
+        // Arc and Rc object coercions transfer one owner without touching counts.
+        if let Some((source, object)) =
+            crate::shared_pointees(self.items, self.shallow(actual), self.shallow(expected))
+            && let TyKind::Dynamic(d) = object.kind()
         {
             if self.unsize_to_dyn(source, object, d, blamed) {
                 self.unsizes.insert(expr, expected);
@@ -162,13 +161,12 @@ impl Ctx<'_> {
             }
             return;
         }
-        // Moving an array Arc into a slice Arc preserves its shared header
+        // Moving an array Arc or Rc into a slice one preserves its shared header
         // and data address; only the data pointer gains length metadata.
-        if let (Some(array), Some(slice)) = (
-            crate::arc_pointee(self.items, self.shallow(actual)),
-            crate::arc_pointee(self.items, self.shallow(expected)),
-        ) && let (TyKind::Array(elem, _), TyKind::Slice(wanted)) =
-            (self.shallow(array).kind(), self.shallow(slice).kind())
+        if let Some((array, slice)) =
+            crate::shared_pointees(self.items, self.shallow(actual), self.shallow(expected))
+            && let (TyKind::Array(elem, _), TyKind::Slice(wanted)) =
+                (self.shallow(array).kind(), self.shallow(slice).kind())
         {
             if self.unify(elem, wanted) {
                 self.unsizes.insert(expr, expected);
@@ -581,10 +579,8 @@ impl Ctx<'_> {
         if actual == Ty::NEVER {
             return true;
         }
-        if let (Some(source), Some(target)) = (
-            crate::arc_pointee(self.items, actual),
-            crate::arc_pointee(self.items, expected),
-        ) && let TyKind::Dynamic(object) = target.kind()
+        if let Some((source, target)) = crate::shared_pointees(self.items, actual, expected)
+            && let TyKind::Dynamic(object) = target.kind()
         {
             return match source.kind() {
                 TyKind::Dynamic(from) => {
@@ -595,11 +591,9 @@ impl Ctx<'_> {
                 _ => !self.is_unsized(source) && self.may_implement(source, object.trait_),
             };
         }
-        if let (Some(array), Some(slice)) = (
-            crate::arc_pointee(self.items, actual),
-            crate::arc_pointee(self.items, expected),
-        ) && let (TyKind::Array(elem, _), TyKind::Slice(wanted)) =
-            (self.shallow(array).kind(), self.shallow(slice).kind())
+        if let Some((array, slice)) = crate::shared_pointees(self.items, actual, expected)
+            && let (TyKind::Array(elem, _), TyKind::Slice(wanted)) =
+                (self.shallow(array).kind(), self.shallow(slice).kind())
         {
             return self.can_unify(elem, wanted);
         }

@@ -1,0 +1,7 @@
+fn f(&str) -> Option<String>
+    s@0: &str
+    s@1: &str
+    date@2: Option<{error}>
+    s@3: {error}
+fn main() -> ()
+error 178..192: the method `no_such_method` on `&str` is not supported yet

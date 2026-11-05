@@ -1,0 +1,21 @@
+struct Error;
+
+struct State;
+
+fn g() -> i32 {
+    1
+}
+
+fn k() -> (Error, State, i32) {
+    (Error, State, g())
+}
+
+fn f() -> (State, i32) {
+    (State, g())
+}
+
+fn main() -> () {
+    let _ = f();
+    let _ = k();
+}
+

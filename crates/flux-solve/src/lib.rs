@@ -133,6 +133,67 @@ pub fn pin_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     }
 }
 
+/// A pointer a method receiver may wrap `Self` in, as rustc's stable
+/// receivers do: `&`, `&mut`, `Box`, `Rc`, `Arc` and `Pin`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReceiverWrap {
+    Ref(Mutability),
+    Box,
+    Rc,
+    Arc,
+    Pin,
+}
+
+/// The outermost receiver pointer of `ty`, and the type it wraps.
+pub fn receiver_wrap(items: &ItemTree, ty: Ty) -> Option<(ReceiverWrap, Ty)> {
+    match ty.kind() {
+        TyKind::Ref(m, pointee) => Some((ReceiverWrap::Ref(m), pointee)),
+        TyKind::Adt(adt, args) if args.len() == 1 => {
+            let wrap = if Some(adt.strukt) == flux_hir::owned_box() {
+                ReceiverWrap::Box
+            } else if is_lang_struct(items, adt.strukt, "arc") {
+                ReceiverWrap::Arc
+            } else if is_lang_struct(items, adt.strukt, "rc") {
+                ReceiverWrap::Rc
+            } else if is_lang_struct(items, adt.strukt, "pin") {
+                ReceiverWrap::Pin
+            } else {
+                return None;
+            };
+            Some((wrap, args[0]))
+        }
+        _ => None,
+    }
+}
+
+/// The pointers method receiver `receiver` wraps `self_ty` in, outermost
+/// first; `None` if it is not `self_ty` behind such pointers.
+pub fn receiver_shape(items: &ItemTree, receiver: Ty, self_ty: Ty) -> Option<Vec<ReceiverWrap>> {
+    let mut shape = Vec::new();
+    let mut ty = receiver;
+    while ty != self_ty {
+        let (wrap, inner) = receiver_wrap(items, ty)?;
+        shape.push(wrap);
+        ty = inner;
+    }
+    // `Pin` wraps a pointer, never `Self` itself.
+    (shape.last() != Some(&ReceiverWrap::Pin)).then_some(shape)
+}
+
+/// Whether a receiver of `shape` is one besides `self`, `&self` and
+/// `&mut self`, which method lookup finds through the type it wraps.
+pub fn is_wrapped_receiver(shape: &[ReceiverWrap]) -> bool {
+    !matches!(shape, [] | [ReceiverWrap::Ref(_)])
+}
+
+/// `ty` with the receiver pointers of `shape` removed, if it has them.
+pub fn strip_receiver(items: &ItemTree, ty: Ty, shape: &[ReceiverWrap]) -> Option<Ty> {
+    shape.iter().try_fold(ty, |ty, &want| {
+        let (wrap, inner) = receiver_wrap(items, ty)?;
+        (wrap == want).then_some(inner)
+    })
+}
+
 /// Whether `strukt` is `core`'s struct with `#[lang = "{lang}"]`.
 pub fn is_lang_struct(items: &ItemTree, strukt: StructId, lang: &str) -> bool {
     items.lang_enums.get(&Symbol::intern(lang)) == Some(&strukt)

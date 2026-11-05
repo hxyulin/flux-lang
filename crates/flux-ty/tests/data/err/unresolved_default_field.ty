@@ -1,0 +1,4 @@
+struct Cache { libraries: {error} }
+fn main() -> ()
+fn default() -> Cache
+error 173..180: cannot find type `Missing` in this scope

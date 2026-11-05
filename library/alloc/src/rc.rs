@@ -12,6 +12,7 @@ struct Header {
 }
 
 /// Shared ownership confined to one thread. NonNull keeps Rc !Send and !Sync.
+#[lang = "rc"]
 pub struct Rc<T: ?Sized> {
     ptr: NonNull<Header>,
     data: NonNull<T>,

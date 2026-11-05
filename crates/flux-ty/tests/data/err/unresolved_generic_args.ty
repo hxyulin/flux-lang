@@ -1,0 +1,9 @@
+struct A<const N: usize> {}
+fn f({error}, {error}, {error}, {error}) -> ()
+fn main() -> ()
+const C: usize
+error 175..182: cannot find type `Missing` in this scope
+error 190..194: cannot find type `Gone` in this scope
+error 190..194: unresolved item provided when a constant was expected
+error 207..208: constant provided when a type was expected
+error 224..228: cannot find type `Nope` in module `m`

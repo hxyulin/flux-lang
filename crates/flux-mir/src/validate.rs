@@ -342,8 +342,8 @@ impl Validator<'_> {
                     _ => flux_solve::box_pointee(from)
                         .zip(flux_solve::box_pointee(to))
                         .or_else(|| {
-                            flux_ty::arc_pointee(self.items, from)
-                                .zip(flux_ty::arc_pointee(self.items, to))
+                            flux_ty::shared_pointee(self.items, from)
+                                .zip(flux_ty::shared_pointee(self.items, to))
                         }),
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| {

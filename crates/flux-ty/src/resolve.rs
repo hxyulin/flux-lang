@@ -302,6 +302,14 @@ pub fn resolve_generic_arg(
             return resolve_type(items, module, arg, scope, range, errors);
         }
     };
+    if names_nothing(items, module, arg, scope) {
+        resolve_type(items, module, arg, scope, range, errors);
+        errors.push((
+            range,
+            "unresolved item provided when a constant was expected".to_owned(),
+        ));
+        return Ty::ERROR;
+    }
     let value = match arg {
         TypeRef::Const(value) => value.clone(),
         TypeRef::Infer if scope.signature_of.is_none() => {
@@ -351,7 +359,27 @@ fn names_type(
         // parameter wants.
         return None;
     }
-    Some(items.resolve(module, path, Ns::Types).is_ok())
+    // rustc reads a path that names nothing as a type, and reports it
+    // unresolved there.
+    Some(
+        items.resolve(module, path, Ns::Types).is_ok()
+            || items.resolve(module, path, Ns::Values).is_err(),
+    )
+}
+
+/// Whether the path `arg`, a generic argument, names neither a type nor
+/// a value.
+fn names_nothing(items: &ItemTree, module: ModuleId, arg: &TypeRef, scope: TypeScope<'_>) -> bool {
+    let TypeRef::Path(path) = arg else {
+        return false;
+    };
+    let first = path.segments.first().copied();
+    let local = path.anchor == flux_hir::PathAnchor::Plain
+        && first.is_some_and(|n| n == kw::SelfUpper || scope.generics.contains(&n));
+    path.qself.is_none()
+        && !local
+        && items.resolve(module, path, Ns::Types).is_err()
+        && items.resolve(module, path, Ns::Values).is_err()
 }
 
 /// The generic arguments `written` (with their ranges) for parameters
@@ -379,11 +407,21 @@ pub fn resolve_generic_args(
             };
             match (param.is_const(), is_const) {
                 (false, true) => Some((range, "constant provided when a type was expected")),
+                (true, false) if names_nothing(items, module, arg, scope) => Some((
+                    range,
+                    "unresolved item provided when a constant was expected",
+                )),
                 (true, false) => Some((range, "type provided when a constant was expected")),
                 _ => None,
             }
         });
     if let Some((range, message)) = wrong_kind {
+        // rustc reports a path that names nothing before the kind mismatch.
+        for (arg, &range) in written.types.iter().zip(&written.ranges) {
+            if names_nothing(items, module, arg, scope) {
+                resolve_type(items, module, arg, scope, range, errors);
+            }
+        }
         errors.push((range, message.to_owned()));
         return vec![Ty::ERROR; written.types.len()];
     }
@@ -833,7 +871,10 @@ pub fn resolve_type(
             if fields.contains(&Ty::ERROR) {
                 return Ty::ERROR;
             }
-            if let Some(&field) = fields.iter().find(|&&f| scope.is_unsized(items, f)) {
+            // Only the last element may be unsized, as a struct's last
+            // field may.
+            let leading = &fields[..fields.len().saturating_sub(1)];
+            if let Some(&field) = leading.iter().find(|&&f| scope.is_unsized(items, f)) {
                 return fail(errors, range, unsized_error(field));
             }
             Ty::tuple(&fields)
@@ -1729,7 +1770,11 @@ pub(super) fn unsized_argument(items: &ItemTree, scope: TypeScope<'_>, ty: Ty) -
 }
 
 /// rustc's E0277 for a value of unsized type `ty`.
-pub fn unsized_error(ty: Ty) -> String {
+pub fn unsized_error(mut ty: Ty) -> String {
+    // rustc names a tuple's unsized last element.
+    while let TyKind::Tuple([.., last]) = ty.kind() {
+        ty = *last;
+    }
     format!("the size for values of type `{ty}` cannot be known at compilation time")
 }
 
@@ -1989,16 +2034,29 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
     }
 }
 
-/// The payload of the trusted alloc Arc, whose library representation is
-/// shared with array-owner unsizing. User types with the same name do not
-/// acquire this coercion, including in item trees without embedded libraries.
-pub fn arc_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
-    static ARC: std::sync::OnceLock<Symbol> = std::sync::OnceLock::new();
+/// The payload of the trusted alloc `Arc` or `Rc`, whose library
+/// representations (a header address, then the data's) are shared with
+/// array-owner and trait-object unsizing. User types with the same name do
+/// not acquire this coercion, including in item trees without embedded
+/// libraries.
+pub fn shared_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     let TyKind::Adt(adt, args) = ty.kind() else {
         return None;
     };
-    let name = ARC.get_or_init(|| Symbol::intern("arc"));
-    (args.len() == 1 && items.lang_enums.get(name) == Some(&adt.strukt)).then(|| args[0])
+    let shared = flux_solve::is_lang_struct(items, adt.strukt, "arc")
+        || flux_solve::is_lang_struct(items, adt.strukt, "rc");
+    (args.len() == 1 && shared).then(|| args[0])
+}
+
+/// The payloads of `from` and `to`, if both are the same one of `Arc` and
+/// `Rc`, as [`shared_pointee`] reads them.
+pub fn shared_pointees(items: &ItemTree, from: Ty, to: Ty) -> Option<(Ty, Ty)> {
+    match (from.kind(), to.kind()) {
+        (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a.strukt == b.strukt => {
+            shared_pointee(items, from).zip(shared_pointee(items, to))
+        }
+        _ => None,
+    }
 }
 
 /// Integer representation of a trusted core nonzero wrapper.

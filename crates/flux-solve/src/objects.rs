@@ -6,6 +6,7 @@
 //! signatures are resolved: a trait's supertraits are found from their
 //! paths, and dyn compatibility from its items as written.
 
+use flux_hir::def_map::{Def, Ns, Resolved};
 use flux_hir::{Bound, ItemTree, ModuleId, TraitId, TypeRef};
 use flux_intern::{Symbol, kw};
 
@@ -65,6 +66,38 @@ pub fn dyn_assoc(items: &ItemTree, t: TraitId) -> Vec<(TraitId, Symbol)> {
 /// Whether `ty` is `Self`, as written.
 fn is_self(ty: &TypeRef) -> bool {
     matches!(ty, TypeRef::Path(p) if p.as_name() == Some(kw::SelfUpper))
+}
+
+/// Whether a method whose receiver is `ty`, written in `module`, can be
+/// called on a trait object: its receiver is `self`, or `Self` behind
+/// `&`, `&mut`, `Box`, `Rc` or `Arc`, or behind a `Pin` of one of those
+/// (rustc's `DispatchFromDyn`). Paths that name no struct are left to the
+/// signature's receiver check.
+fn dispatchable_receiver(items: &ItemTree, module: ModuleId, ty: &TypeRef, pinned: bool) -> bool {
+    match ty {
+        TypeRef::Ref { pointee, .. } => is_self(pointee),
+        TypeRef::Path(path) if !is_self(ty) => {
+            let last = path.segments.len().saturating_sub(1);
+            let Some([arg]) = path.args(last).map(|args| &args.types[..]) else {
+                return true;
+            };
+            let Ok(Resolved::Def(Def::Struct(strukt))) = items.resolve(module, path, Ns::Types)
+            else {
+                return true;
+            };
+            if Some(strukt) == flux_hir::owned_box()
+                || crate::is_lang_struct(items, strukt, "arc")
+                || crate::is_lang_struct(items, strukt, "rc")
+            {
+                is_self(arg)
+            } else if !pinned && crate::is_lang_struct(items, strukt, "pin") {
+                dispatchable_receiver(items, module, arg, true)
+            } else {
+                false
+            }
+        }
+        _ => !pinned,
+    }
 }
 
 /// Whether `ty` names `Self` other than through its associated types
@@ -189,6 +222,13 @@ pub fn dyn_incompatibility(items: &ItemTree, t: TraitId) -> Option<String> {
             }
             if !function.generics.params.is_empty() {
                 return Some(format!("method `{name}` has generic type parameters"));
+            }
+            if let Some(receiver) = function.params.first()
+                && !dispatchable_receiver(items, function.loc.module, &receiver.ty, false)
+            {
+                return Some(format!(
+                    "method `{name}`'s `self` parameter cannot be dispatched on"
+                ));
             }
             if function.params.iter().skip(1).any(|p| mentions_self(&p.ty)) {
                 return Some(format!(

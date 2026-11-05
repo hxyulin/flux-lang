@@ -783,11 +783,19 @@ pub(super) fn extend_signatures(
             }
             ty
         };
+        // A tuple struct's constructor has its fields' types, whose
+        // errors the struct reports.
+        let mut ctor_errors = Vec::new();
         let params: Box<[Ty]> = function
             .params
             .iter()
             .map(|p| {
-                let ty = resolve(items, function.loc, &p.ty, scope, p.range, &mut reported);
+                let errors = if function.ctor.is_some() {
+                    &mut ctor_errors
+                } else {
+                    &mut reported
+                };
+                let ty = resolve(items, function.loc, &p.ty, scope, p.range, errors);
                 sized(ty, p.range, &mut reported)
             })
             .collect();
@@ -795,14 +803,11 @@ pub(super) fn extend_signatures(
             && let (Some(&receiver), Some(self_ty)) = (params.first(), scope.self_ty)
         {
             let receiver = flux_solve::traits::normalize(items, &sigs, &[], receiver);
-            let valid = receiver == self_ty
-                || matches!(receiver.kind(), TyKind::Ref(_, pointee) if pointee == self_ty)
-                || flux_solve::box_pointee(receiver) == Some(self_ty)
-                || flux_solve::pin_pointee(items, receiver) == Some(self_ty);
+            let valid = flux_solve::receiver_shape(items, receiver, self_ty).is_some();
             if !receiver.has_error() && !valid {
                 let mut diagnostic = Diagnostic::new(
                     function.params[0].range,
-                    "this receiver type is not supported yet; expected Self, &Self, &mut Self, Box<Self> or Pin<Self pointer>",
+                    format!("invalid `self` parameter type: `{receiver}`"),
                 );
                 diagnostic.file = function.loc.file;
                 reported.push(diagnostic);

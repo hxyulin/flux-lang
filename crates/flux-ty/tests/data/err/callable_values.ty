@@ -1,0 +1,7 @@
+fn boxed(Box<u32>) -> u32
+    b@0: Box<u32>
+fn shared(&Arc<String>) -> ()
+    a@0: &Arc<String>
+fn main() -> ()
+error 128..129: expected function, found `Box<u32>`
+error 169..170: expected function, found `&Arc<String>`

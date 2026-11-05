@@ -1129,15 +1129,14 @@ impl Ctx<'_> {
         if self.shallow(ty) == Ty::NEVER {
             return;
         }
-        // A Box or Arc of an unsized type is wanted: its constructor still
+        // A Box, Arc or Rc of an unsized type is wanted: its constructor still
         // makes a sized owner, coerced after, as rustc only hints
         // its arguments with what is wanted.
         if let Some(&expected) = self.expected.get(expr)
             && let Some((e, t)) = flux_solve::box_pointee(self.shallow(expected))
                 .zip(flux_solve::box_pointee(self.shallow(ty)))
                 .or_else(|| {
-                    crate::arc_pointee(self.items, self.shallow(expected))
-                        .zip(crate::arc_pointee(self.items, self.shallow(ty)))
+                    crate::shared_pointees(self.items, self.shallow(expected), self.shallow(ty))
                 })
             && self.sigs.is_unsized(self.shallow(e))
             && !self.sigs.is_unsized(self.shallow(t))
@@ -3256,8 +3255,8 @@ impl Ctx<'_> {
                 // An array Arc's explicit `as Arc<[T]>` is also a coercion
                 // cast. Mark the operand so MIR moves the owner through its
                 // unsizing rather than treating it as a scalar enum cast.
-                if crate::arc_pointee(self.items, self.shallow(from)).is_some()
-                    && crate::arc_pointee(self.items, self.shallow(to)).is_some()
+                if crate::shared_pointees(self.items, self.shallow(from), self.shallow(to))
+                    .is_some()
                     && self.can_coerce(from, to, *expr)
                 {
                     self.coerce(from, to, *expr);
@@ -3380,6 +3379,43 @@ impl Ctx<'_> {
             TyKind::Adt(adt, args) if Some(adt.strukt) == control_flow => {
                 (arg(args, 1), TryResidual::Break(arg(args, 0)))
             }
+            // `Poll<Result<T, E>>` gives `Poll<T>`, and
+            // `Poll<Option<Result<T, E>>>` gives `Poll<Option<T>>`; both
+            // break with the error.
+            TyKind::Adt(adt, args) if Some(adt.strukt) == lang("Poll") => {
+                let inner = self.normalize(arg(args, 0), whole);
+                let inner = self.shallow(inner);
+                let poll = |ty: Ty| Ty::adt(adt.strukt, adt.name, &[ty]);
+                match inner.kind() {
+                    TyKind::Adt(r, r_args) if Some(r.strukt) == result => {
+                        (poll(arg(r_args, 0)), TryResidual::Result(arg(r_args, 1)))
+                    }
+                    TyKind::Adt(o, o_args) if Some(o.strukt) == option => {
+                        let some = self.normalize(arg(o_args, 0), whole);
+                        match self.shallow(some).kind() {
+                            TyKind::Adt(r, r_args) if Some(r.strukt) == result => (
+                                poll(Ty::adt(o.strukt, o.name, &[arg(r_args, 0)])),
+                                TryResidual::Result(arg(r_args, 1)),
+                            ),
+                            _ => {
+                                self.error(
+                                    whole,
+                                    "the `?` operator can only be applied to values that implement `Try`",
+                                );
+                                return Ty::ERROR;
+                            }
+                        }
+                    }
+                    TyKind::Error => return Ty::ERROR,
+                    _ => {
+                        self.error(
+                            whole,
+                            "the `?` operator can only be applied to values that implement `Try`",
+                        );
+                        return Ty::ERROR;
+                    }
+                }
+            }
             TyKind::Error => return Ty::ERROR,
             TyKind::Infer(var) if !self.unknown(var).0 => {
                 self.annotations_needed(operand, var, self.range(operand));
@@ -3425,6 +3461,33 @@ impl Ctx<'_> {
         let (option, result, control_flow) = (lang("Option"), lang("Result"), lang("ControlFlow"));
         let arg = |args: &[Ty], i: usize| args.get(i).copied().unwrap_or(Ty::ERROR);
         let ret = self.shallow(ret);
+        let general = "the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)";
+        // `Poll<Result<_, E>>` and `Poll<Option<Result<_, E>>>` take an
+        // error as the `Result` inside them does, and nothing else.
+        let polled = match ret.kind() {
+            TyKind::Adt(adt, args) if Some(adt.strukt) == lang("Poll") => {
+                let inner = self.normalize(arg(args, 0), whole);
+                let inner = self.shallow(inner);
+                match inner.kind() {
+                    TyKind::Adt(o, o_args) if Some(o.strukt) == option => {
+                        let inner = self.normalize(arg(o_args, 0), whole);
+                        let inner = self.shallow(inner);
+                        match inner.kind() {
+                            TyKind::Adt(r, _) if Some(r.strukt) == result => inner,
+                            _ => ret,
+                        }
+                    }
+                    TyKind::Adt(r, _) if Some(r.strukt) == result => inner,
+                    _ => ret,
+                }
+            }
+            _ => ret,
+        };
+        if polled != ret && !matches!(residual, TryResidual::Result(_)) {
+            self.error(question, general);
+            return;
+        }
+        let ret = polled;
         let ret_adt = match ret.kind() {
             TyKind::Error => return,
             TyKind::Adt(adt, args) => Some((adt.strukt, args)),
@@ -3485,10 +3548,7 @@ impl Ctx<'_> {
                 question,
                 "the `?` operator can only be used on `Option`s, not `Result`s, in a function that returns `Option`",
             ),
-            _ => self.error(
-                question,
-                "the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)",
-            ),
+            _ => self.error(question, general),
         }
     }
 
@@ -5223,6 +5283,14 @@ impl Ctx<'_> {
             self.error(name_range, format!("method `{method}` is private"));
             return Ty::ERROR;
         }
+        // A receiver whose type is not known after other errors is not
+        // reported, as below.
+        if let Some(ty) = unmet
+            && matches!(self.shallow(ty).kind(), TyKind::Infer(_))
+            && self.tainted()
+        {
+            return Ty::ERROR;
+        }
         if let Some(ty) = unmet {
             let what = self.describe_kind(ty);
             self.error(
@@ -5362,31 +5430,31 @@ impl Ctx<'_> {
         if inherent_found.is_some() {
             return Ok(inherent_found);
         }
-        // Box and Pin receivers belong to their target's impl, while the
-        // argument consumes the original pointer wrapper.
-        if mode.is_none()
-            && let Some(pointee) =
-                flux_solve::box_pointee(ty).or_else(|| flux_solve::pin_pointee(items, ty))
-        {
-            let pointee = self.shallow(pointee);
-            let pinned = flux_solve::pin_pointee(items, ty).is_some();
-            let boxed = |f: FunctionId| {
+        // A receiver that wraps Self in pointers (`self: Box<Self>`,
+        // `self: &Arc<Self>`) belongs to the wrapped type's impl, while
+        // the argument is this candidate, borrowed as `mode` says.
+        let mut outer = match mode {
+            None => ty,
+            Some(m) => Ty::new(TyKind::Ref(m, ty)),
+        };
+        let mut shape = Vec::new();
+        while let Some((wrap, inner)) = flux_solve::receiver_wrap(items, outer) {
+            shape.push(wrap);
+            let pointee = self.shallow(inner);
+            outer = pointee;
+            if !flux_solve::is_wrapped_receiver(&shape) {
+                continue;
+            }
+            let wrapped = |f: FunctionId| {
                 items.functions[f].has_self
-                    && wrapped_self(items, sigs, f)
-                    && sigs
-                        .fns
-                        .get(f)
-                        .and_then(|sig| sig.params.first())
-                        .is_some_and(|&receiver| {
-                            flux_solve::pin_pointee(items, receiver).is_some() == pinned
-                        })
+                    && receiver_shape(items, sigs, f).as_deref() == Some(&shape[..])
             };
             let functions = impl_target(items, pointee)
                 .and_then(|target| items.assoc.get(&(target, name)))
                 .into_iter()
                 .flatten()
                 .filter_map(|&item| match item {
-                    flux_hir::AssocItem::Function(f) if boxed(f) => Some(f),
+                    flux_hir::AssocItem::Function(f) if wrapped(f) => Some(f),
                     _ => None,
                 })
                 .collect::<Vec<_>>();
@@ -5403,7 +5471,7 @@ impl Ctx<'_> {
                 let functions: Vec<_> = self
                     .trait_items(pointee, name, true)
                     .into_iter()
-                    .filter(|&(f, _)| boxed(f))
+                    .filter(|&(f, _)| wrapped(f))
                     .collect();
                 match functions.as_slice() {
                     [(f, args)] => {
@@ -6868,6 +6936,11 @@ impl Ctx<'_> {
     /// known, as rustc does, rather than where the unknown part came
     /// from: `let x = f();` for a generic `f`.
     fn report_unknown_lets(&mut self, reported: &mut FxHashSet<InferVar>) {
+        // As rustc's writeback, a body with errors reports no unknown
+        // types: they likely come from those errors.
+        if self.tainted {
+            return;
+        }
         let body = self.body;
         for (_, expr) in body.exprs.iter() {
             let Expr::Block { stmts, .. } = expr else {
@@ -7640,18 +7713,25 @@ impl Ctx<'_> {
     }
 }
 
-/// Whether the receiver consumes a box around its impl or trait's Self.
+/// Whether the receiver wraps its impl or trait's Self in pointers other
+/// than one reference.
 fn wrapped_self(items: &ItemTree, sigs: &Signatures, f: FunctionId) -> bool {
+    receiver_shape(items, sigs, f).is_some_and(|shape| flux_solve::is_wrapped_receiver(&shape))
+}
+
+/// The pointers method `f`'s receiver wraps its `Self` in.
+fn receiver_shape(
+    items: &ItemTree,
+    sigs: &Signatures,
+    f: FunctionId,
+) -> Option<Vec<flux_solve::ReceiverWrap>> {
     let self_ty = match items.functions[f].owner {
         Some(flux_hir::Owner::Impl(imp)) => sigs.impls.get(imp).copied(),
         Some(flux_hir::Owner::Trait(_)) => Some(Ty::param(0, flux_intern::kw::SelfUpper)),
         None => None,
-    };
-    let receiver = sigs.fns.get(f).and_then(|sig| sig.params.first()).copied();
-    self_ty.is_some()
-        && receiver.and_then(|receiver| {
-            flux_solve::box_pointee(receiver).or_else(|| flux_solve::pin_pointee(items, receiver))
-        }) == self_ty
+    }?;
+    let receiver = *sigs.fns.get(f)?.params.first()?;
+    flux_solve::receiver_shape(items, receiver, self_ty)
 }
 
 /// How method `f` takes `self`: by value (`None`) or by reference.

@@ -756,10 +756,10 @@ impl<'a> Reach<'a> {
                 if runtime && let StatementKind::Assign(_, Rvalue::Unsize(op, to)) = &statement.kind
                 {
                     let from = body.operand_ty(op, self.sigs);
-                    let concrete =
-                        super::pointee_of(from).or_else(|| flux_ty::arc_pointee(self.items, from));
+                    let concrete = super::pointee_of(from)
+                        .or_else(|| flux_ty::shared_pointee(self.items, from));
                     let object =
-                        super::pointee_of(*to).or_else(|| flux_ty::arc_pointee(self.items, *to));
+                        super::pointee_of(*to).or_else(|| flux_ty::shared_pointee(self.items, *to));
                     if let (Some(concrete), Some(object)) = (concrete, object) {
                         self.vtable(object, concrete);
                     }

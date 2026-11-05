@@ -4588,7 +4588,7 @@ impl<'a> Cx<'a> {
             Rvalue::Unsize(op, to)
                 if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn())
                     || flux_solve::box_pointee(*to)
-                        .or_else(|| flux_ty::arc_pointee(self.items, *to))
+                        .or_else(|| flux_ty::shared_pointee(self.items, *to))
                         .is_some_and(|p| p.is_dyn()) =>
             {
                 let (op_ty, vars) = self.operand_regions(op);
@@ -4616,7 +4616,7 @@ impl<'a> Cx<'a> {
                     }
                     // A box's slots are its value's.
                     _ if let Some(pointee) = flux_solve::box_pointee(op_ty)
-                        .or_else(|| flux_ty::arc_pointee(self.items, op_ty)) =>
+                        .or_else(|| flux_ty::shared_pointee(self.items, op_ty)) =>
                     {
                         (pointee, &vars[..], dest_vars.first().copied())
                     }
@@ -4628,7 +4628,7 @@ impl<'a> Cx<'a> {
                 let object = match to.kind() {
                     TyKind::Ref(_, object) | TyKind::RawPtr(_, object) => Some(object),
                     _ => flux_solve::box_pointee(*to)
-                        .or_else(|| flux_ty::arc_pointee(self.items, *to)),
+                        .or_else(|| flux_ty::shared_pointee(self.items, *to)),
                 };
                 let mut callable_principal_checked = false;
                 if let Some(object) = object
