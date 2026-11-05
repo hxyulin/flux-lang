@@ -415,7 +415,8 @@ impl<'a> Ctx<'a> {
             body,
             source_map,
             vars: Vec::new(),
-            probe_snapshots: Vec::new(),
+            undo: Vec::new(),
+            undo_floor: 0,
             obligation_scratch: Vec::new(),
             projection_scratch: Vec::new(),
             expr_types: ArenaMap::new(),
@@ -614,8 +615,15 @@ struct Ctx<'a> {
     source_map: &'a BodySourceMap,
     /// Each variable's value and where it was created.
     vars: Vec<(VarValue, TextRange)>,
-    /// Reusable buffers owned by completed probes and solver passes.
-    probe_snapshots: Vec<Vec<(VarValue, TextRange)>>,
+    /// The old values of the variables that open probes changed, latest
+    /// last, for each probe to put back when it ends. Only variables
+    /// below `undo_floor` are recorded: the others the innermost probe
+    /// created, and removes when it ends.
+    undo: Vec<(u32, VarValue)>,
+    /// How many variables there were when the innermost probe started;
+    /// zero outside probes.
+    undo_floor: usize,
+    /// Reusable buffers owned by solver passes.
     obligation_scratch: Vec<Obligation>,
     projection_scratch: Vec<solve::PendingProjection>,
     expr_types: ArenaMap<Expr, Ty>,
@@ -781,6 +789,15 @@ impl Ctx<'_> {
         Ty::infer(var)
     }
 
+    /// Gives `var` value `value`, for an open probe to undo.
+    fn set_var(&mut self, var: InferVar, value: VarValue) {
+        let slot = &mut self.vars[var.0 as usize].0;
+        if (var.0 as usize) < self.undo_floor {
+            self.undo.push((var.0, *slot));
+        }
+        *slot = value;
+    }
+
     fn float_var(&self, var: InferVar) -> bool {
         matches!(
             self.vars[var.0 as usize].0,
@@ -796,11 +813,14 @@ impl Ctx<'_> {
         let TyKind::Infer(var) = ty.kind() else {
             unreachable!()
         };
-        self.vars[var.0 as usize].0 = VarValue::Unknown {
-            int: false,
-            float: true,
-            diverging: false,
-        };
+        self.set_var(
+            var,
+            VarValue::Unknown {
+                int: false,
+                float: true,
+                diverging: false,
+            },
+        );
         ty
     }
 
@@ -808,7 +828,7 @@ impl Ctx<'_> {
         match self.vars[var.0 as usize].0 {
             VarValue::Link(next) => {
                 let root = self.root(next);
-                self.vars[var.0 as usize].0 = VarValue::Link(root);
+                self.set_var(var, VarValue::Link(root));
                 root
             }
             _ => var,
@@ -943,12 +963,15 @@ impl Ctx<'_> {
                 if (xi || yi) && (xf || yf) {
                     return false;
                 }
-                self.vars[x.0 as usize].0 = VarValue::Link(y);
-                self.vars[y.0 as usize].0 = VarValue::Unknown {
-                    int: xi || yi,
-                    float: xf || yf,
-                    diverging: xd || yd,
-                };
+                self.set_var(x, VarValue::Link(y));
+                self.set_var(
+                    y,
+                    VarValue::Unknown {
+                        int: xi || yi,
+                        float: xf || yf,
+                        diverging: xd || yd,
+                    },
+                );
                 true
             }
             (TyKind::Infer(var), _) => self.bind_var(var, b),
@@ -1060,10 +1083,10 @@ impl Ctx<'_> {
             }
             let origin = self.vars[var.0 as usize].1;
             self.error(origin, "cannot resolve opaque type");
-            self.vars[root.0 as usize].0 = VarValue::Known(Ty::ERROR);
+            self.set_var(root, VarValue::Known(Ty::ERROR));
             return true;
         }
-        self.vars[var.0 as usize].0 = VarValue::Known(ty);
+        self.set_var(var, VarValue::Known(ty));
         true
     }
 
@@ -6361,7 +6384,7 @@ impl Ctx<'_> {
             if let TyKind::Infer(var) = self.shallow(v).kind()
                 && !self.unknown(var).0
             {
-                self.vars[var.0 as usize].0 = VarValue::Known(Ty::NEVER);
+                self.set_var(var, VarValue::Known(Ty::NEVER));
             }
         }
         self.finish_obligations(&mut reported);
@@ -7095,7 +7118,7 @@ impl Ctx<'_> {
                         Ty::ERROR
                     }
                 };
-                self.vars[var.0 as usize].0 = VarValue::Known(ty);
+                self.set_var(var, VarValue::Known(ty));
                 ty
             }
             _ if ty.has_infer() => ty.map_children(|t| self.resolve(t, reported)),

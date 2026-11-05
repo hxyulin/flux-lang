@@ -183,13 +183,11 @@ fn deep_iterator_chain() {
     );
 }
 
-/// `struct A0(A1, A1); ... struct A29(A30, A30);` is a DAG of 31 types,
-/// but `holds` caches nothing and explores it as a tree, so the `Sync`
-/// check of the static makes about 2^30 calls. A release build takes
-/// about 2.6 s at depth 22 and 9 s at depth 24, four times as long for
-/// each two levels.
+/// `struct A0(A1, A1); ... struct A29(A30, A30);` is a DAG of 31 types.
+/// `holds` explored it as a tree, so the `Sync` check of the static made
+/// about 2^30 calls: 2.6 s at depth 22 and 9 s at depth 24 in a release
+/// build. It proves each nested goal once now.
 #[test]
-#[ignore = "trait solver consolidation"]
 fn shared_type_sync_check_is_bounded() {
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", "sync_probe", "--nocapture"])

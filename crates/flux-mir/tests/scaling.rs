@@ -142,3 +142,84 @@ fn long_lived_reference() {
     };
     assert_scales("a reference carried through a body", 300, make, build);
 }
+
+/// Runs the ignored test `child` of this binary with `FLUX_SCALING_SIZE`
+/// set to `size`, failing if it fails or takes more than `limit`: for
+/// programs whose time was exponential in `size`, which an
+/// [`assert_scales`] run at four times the size would never finish.
+fn bounded(child: &str, size: usize, limit: std::time::Duration) {
+    let mut process = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", child, "--nocapture"])
+        .env("FLUX_SCALING_SIZE", size.to_string())
+        .spawn()
+        .unwrap();
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(status) = process.try_wait().unwrap() {
+            assert!(status.success(), "{child}: {status}");
+            return;
+        }
+        if start.elapsed() > limit {
+            process.kill().unwrap();
+            process.wait().unwrap();
+            panic!("{child} at size {size} took more than {limit:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The size [`bounded`] gives its child, which does nothing without it.
+fn bounded_size() -> Option<usize> {
+    Some(std::env::var("FLUX_SCALING_SIZE").ok()?.parse().unwrap())
+}
+
+/// `struct A0(A1, A1); ... struct A29(A30, A30);` is 31 types, but every
+/// walk of `A0` that does not remember the types it met (the `Sync`
+/// check of a static, whether dropping a value runs code) meets `A30`
+/// 2^30 times. Both took 9 s at depth 24 in a release build.
+#[test]
+fn shared_field_types() {
+    bounded(
+        "shared_field_types_child",
+        30,
+        std::time::Duration::from_secs(20),
+    );
+}
+
+#[test]
+#[ignore = "run by shared_field_types in a bounded subprocess"]
+fn shared_field_types_child() {
+    let Some(depth) = bounded_size() else {
+        return;
+    };
+    let mut text = format!("struct A{depth};\n");
+    for i in (0..depth).rev() {
+        text.push_str(&format!("struct A{i}(A{}, A{});\n", i + 1, i + 1));
+    }
+    text.push_str("static S: Option<A0> = None;\nfn main() { let _s = &S; }\n");
+    build(&typed(text));
+}
+
+/// Each `Map` adapter's `Iterator` impl needs its inner iterator's, and
+/// the borrow check's proofs of those bounds selected the inner impls
+/// again for every candidate: 61 s for 14 adapters in a release build.
+#[test]
+fn nested_iterator_adapters() {
+    bounded(
+        "nested_iterator_adapters_child",
+        14,
+        std::time::Duration::from_secs(20),
+    );
+}
+
+#[test]
+#[ignore = "run by nested_iterator_adapters in a bounded subprocess"]
+fn nested_iterator_adapters_child() {
+    let Some(n) = bounded_size() else {
+        return;
+    };
+    let adapters = ".map(|x| x + 1)".repeat(n);
+    build(&typed(format!(
+        "fn total(n: u32) -> u32 {{ (0..n){adapters}.sum() }}\nfn main() {{ let _t = total(3); }}\n"
+    )));
+}

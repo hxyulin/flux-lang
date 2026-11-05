@@ -5,7 +5,7 @@
 use std::cell::RefCell;
 use std::marker::PhantomData;
 
-use flux_hir::{ImplId, StructId};
+use flux_hir::{ImplId, StructId, TraitId};
 use rustc_hash::FxHashMap;
 
 use crate::{ClosureArgs, Mutability, Predicate, Signatures, Ty, TyKind, max_param, traits, ty};
@@ -160,10 +160,16 @@ pub fn field_types(sigs: &Signatures, strukt: StructId, args: &[Ty]) -> &'static
     })
 }
 
-/// The generic arguments of `imp` for which its header is `args`
-/// (the trait's `Self` and arguments), as far as the header has them.
-fn match_header(sigs: &Signatures, imp: ImplId, args: &[Ty]) -> Option<Vec<Option<Ty>>> {
-    let trait_ref = sigs.impl_traits.get(imp)?;
+/// The generic arguments of `imp`, a block of `trait_`, for which its
+/// header is `args` (the trait's `Self` and arguments), as far as the
+/// header has them.
+fn match_header(
+    sigs: &Signatures,
+    imp: ImplId,
+    trait_: TraitId,
+    args: &[Ty],
+) -> Option<Vec<Option<Ty>>> {
+    let trait_ref = sigs.impl_traits.get(imp).filter(|t| t.trait_ == trait_)?;
     // Every parameter of a trait's block is in its header, but those
     // only its bounds' associated types decide.
     let header = std::iter::once(sigs.impls[imp]).chain(trait_ref.args.iter().copied());
@@ -237,11 +243,8 @@ fn may_hold(sigs: &Signatures, p: Predicate, depth: u32) -> Option<bool> {
     let mut args = vec![p.self_ty];
     args.extend_from_slice(p.trait_ref.args);
     let mut found = None;
-    for (imp, trait_ref) in sigs.impl_traits.iter() {
-        if trait_ref.trait_ != p.trait_ref.trait_ {
-            continue;
-        }
-        let Some(binds) = match_header(sigs, imp, &args) else {
+    for imp in sigs.impl_index.matching_of(p.trait_ref.trait_, p.self_ty) {
+        let Some(binds) = match_header(sigs, imp, p.trait_ref.trait_, &args) else {
             continue;
         };
         match bounds_hold(sigs, imp, &binds, depth) {
@@ -296,11 +299,8 @@ fn normalize_known(
             // bounds surely hold, else, for a type whose shape picks
             // it, the only one whose bounds may (on parameters).
             let mut judged = Vec::new();
-            for (imp, trait_ref) in sigs.impl_traits.iter() {
-                if trait_ref.trait_ != alias.trait_ {
-                    continue;
-                }
-                let Some(binds) = match_header(sigs, imp, args) else {
+            for imp in sigs.impl_index.matching_of(alias.trait_, args[0]) {
+                let Some(binds) = match_header(sigs, imp, alias.trait_, args) else {
                     continue;
                 };
                 let Some(definite) = bounds_hold(sigs, imp, &binds, 0) else {

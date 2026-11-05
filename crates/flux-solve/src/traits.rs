@@ -332,7 +332,7 @@ impl SignatureImplProof<'_> {
         {
             return true;
         }
-        if let Some(coinductive) = auto_cycle(self.items, goal, stack) {
+        if let Some((_, coinductive)) = auto_cycle(self.items, goal, stack) {
             return coinductive;
         }
         if stack.len() >= SIGNATURE_RECURSION_LIMIT {
@@ -380,7 +380,7 @@ impl SignatureImplProof<'_> {
         for imp in self
             .sigs
             .impl_index
-            .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+            .matching(self.items, goal.trait_ref.trait_, goal.self_ty)
         {
             let Some(args) = match_impl(self.items, self.sigs, imp, goal) else {
                 continue;
@@ -1263,23 +1263,102 @@ pub fn select_impl(
     sigs: &Signatures,
     goal: Predicate,
 ) -> Option<(ImplId, Vec<Ty>)> {
+    // Judging bounds normalizes their associated types, which selects
+    // blocks again. A repeated goal cannot establish an inductive proof;
+    // growing goals retain the depth limit.
+    let sigs_id = std::ptr::from_ref(sigs) as usize;
+    let entered = SELECTION.with_borrow_mut(|s| {
+        let depth = s.active.len();
+        if depth == 0 {
+            s.sigs = sigs_id;
+        }
+        if depth > 32 {
+            s.cut = 0;
+            return Err(None);
+        }
+        if let Some(start) = s.active.iter().position(|p| *p == goal) {
+            s.cut = s.cut.min(start);
+            return Err(None);
+        }
+        let remember = s.sigs == sigs_id;
+        if remember && let Some(known) = s.memo.get(&goal) {
+            return Err(known.clone());
+        }
+        Ok((depth, remember, std::mem::replace(&mut s.cut, usize::MAX)))
+    });
+    let (depth, remember, outer) = match entered {
+        Ok(entered) => entered,
+        Err(known) => return known,
+    };
+    let guard = Selecting;
+    let chosen = select_uncached(items, sigs, goal);
+    std::mem::forget(guard);
+    SELECTION.with_borrow_mut(|s| {
+        s.active.pop();
+        // An answer that a cycle through a goal below this one cut
+        // depends on the goals being selected, not on `goal` alone. The
+        // outermost goal is not asked again.
+        if remember && s.cut >= depth && depth > 0 {
+            s.memo.insert(goal, chosen.clone());
+        }
+        s.cut = s.cut.min(outer);
+        if depth == 0 && !s.memo.is_empty() {
+            s.memo.clear();
+        }
+    });
+    chosen
+}
+
+/// The goals [`select_impl`] is selecting a block for, outermost first,
+/// and the answers it found meanwhile. Answers do not outlive the
+/// outermost selection: `Signatures` grows between them.
+struct Selection {
+    active: Vec<Predicate>,
+    /// The lowest index in `active` that a cycle or the depth limit cut
+    /// at since the innermost selection started.
+    cut: usize,
+    memo: rustc_hash::FxHashMap<Predicate, Option<(ImplId, Vec<Ty>)>>,
+    /// The `Signatures` the outermost selection is in, by address; a
+    /// nested one in others (none so far) neither reads nor writes `memo`.
+    sigs: usize,
+}
+
+thread_local! {
+    static SELECTION: std::cell::RefCell<Selection> = std::cell::RefCell::new(Selection {
+        active: Vec::new(),
+        cut: usize::MAX,
+        memo: rustc_hash::FxHashMap::default(),
+        sigs: 0,
+    });
+}
+
+/// Resets [`SELECTION`] when a selection unwinds, so that a caught panic
+/// leaves no goal behind as being selected.
+struct Selecting;
+
+impl Drop for Selecting {
+    fn drop(&mut self) {
+        SELECTION.with_borrow_mut(|s| {
+            s.active.clear();
+            s.memo.clear();
+            s.cut = usize::MAX;
+        });
+    }
+}
+
+fn select_uncached(
+    items: &ItemTree,
+    sigs: &Signatures,
+    goal: Predicate,
+) -> Option<(ImplId, Vec<Ty>)> {
     let impls = sigs
         .impl_index
-        .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
+        .matching(items, goal.trait_ref.trait_, goal.self_ty);
     let mut found: Vec<(ImplId, Vec<Ty>)> = impls
         .filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)))
         .collect();
     let rigid_self = is_rigid(goal.self_ty);
-    // Judging bounds normalizes their associated types, which selects
-    // blocks again. A repeated goal cannot establish an inductive proof;
-    // growing goals retain the depth limit.
-    thread_local! {
-        static ACTIVE: std::cell::RefCell<Vec<Predicate>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    if ACTIVE.with_borrow(|active| active.len() > 32 || active.contains(&goal)) {
-        return None;
-    }
-    ACTIVE.with_borrow_mut(|active| active.push(goal));
+    SELECTION.with_borrow_mut(|s| s.active.push(goal));
     // Selection needs only the number and index of eligible candidates.
     // Keep the header-matching and bounds-checking passes in their original
     // order: checking a bound can recursively select another impl.
@@ -1295,7 +1374,6 @@ pub fn select_impl(
             }
         }
     }
-    ACTIVE.with_borrow_mut(|active| active.pop());
     let chosen = if definite_count == 1 {
         definite_index
     } else if !rigid_self && definite_count == 0 && judged_count == 1 {
@@ -1368,7 +1446,7 @@ fn may_hold(items: &ItemTree, sigs: &Signatures, p: Predicate, depth: u32) -> Op
     }
     let impls = sigs
         .impl_index
-        .impls_for(items, p.trait_ref.trait_, p.self_ty);
+        .matching(items, p.trait_ref.trait_, p.self_ty);
     let mut found = None;
     for imp in impls {
         let Some(args) = match_impl(items, sigs, imp, p) else {
@@ -1568,132 +1646,161 @@ pub fn has_error(ty: Ty) -> bool {
 /// which generic parameters are rigid: from a bound, or from an `impl`
 /// block whose own bounds hold.
 pub fn holds(items: &ItemTree, sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
-    holds_at(items, sigs, env, goal, &mut Vec::new())
+    Holds {
+        items,
+        sigs,
+        env,
+        stack: Vec::new(),
+        memo: rustc_hash::FxHashMap::default(),
+        cut: usize::MAX,
+    }
+    .holds_at(goal)
 }
 
 /// Auto-trait cycles are coinductive only while every edge in the cycle
 /// remains an auto trait. Ordinary trait requirements stay inductive.
-fn auto_cycle(items: &ItemTree, goal: Predicate, stack: &[Predicate]) -> Option<bool> {
+fn auto_cycle(items: &ItemTree, goal: Predicate, stack: &[Predicate]) -> Option<(usize, bool)> {
     let start = stack.iter().position(|p| *p == goal)?;
-    Some(
+    Some((
+        start,
         stack[start..]
             .iter()
             .all(|p| is_auto_trait(items, p.trait_ref.trait_)),
-    )
+    ))
 }
 
-/// [`holds`], within the goals `stack` is proving. As in rustc, a goal
-/// that needs itself does not hold, nor does one that needs ever larger
-/// types.
-fn holds_at(
-    items: &ItemTree,
-    sigs: &Signatures,
-    env: &[Predicate],
-    goal: Predicate,
-    stack: &mut Vec<Predicate>,
-) -> bool {
-    if goal.self_ty == Ty::ERROR || goal.trait_ref.args.contains(&Ty::ERROR) {
-        return true;
+/// One [`holds`]: the goals it is proving, and the answers for those it
+/// proved. Types are DAGs (`struct A(B, B)`), so a nested goal recurs
+/// often; each is proved once.
+struct Holds<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    env: &'a [Predicate],
+    stack: Vec<Predicate>,
+    /// Answers that did not depend on a goal further down `stack`.
+    memo: rustc_hash::FxHashMap<Predicate, bool>,
+    /// The lowest index in `stack` that a cycle or the depth limit cut
+    /// at, since the goal being proved started: an answer whose proof
+    /// cut below its own goal's index depends on its callers.
+    cut: usize,
+}
+
+impl Holds<'_> {
+    /// [`holds`], within the goals `stack` is proving. As in rustc, a goal
+    /// that needs itself does not hold, nor does one that needs ever larger
+    /// types.
+    fn holds_at(&mut self, goal: Predicate) -> bool {
+        if let Some(&known) = self.memo.get(&goal) {
+            return known;
+        }
+        let depth = self.stack.len();
+        let outer = std::mem::replace(&mut self.cut, usize::MAX);
+        let holds = self.prove(goal);
+        // The outermost goal is not asked again.
+        if self.cut >= depth && depth > 0 {
+            self.memo.insert(goal, holds);
+        }
+        self.cut = self.cut.min(outer);
+        holds
     }
-    if in_env(sigs, env, goal) {
-        return true;
+
+    fn nested(&mut self, goal: Predicate, nested: Predicate) -> bool {
+        self.stack.push(goal);
+        let holds = self.holds_at(nested);
+        self.stack.pop();
+        holds
     }
-    if env
-        .iter()
-        .any(|p| p.trait_ref.trait_ == goal.trait_ref.trait_)
-    {
-        let normalized = normalize_predicate(items, sigs, goal);
-        if env.iter().any(|&predicate| {
-            predicate.trait_ref.trait_ == goal.trait_ref.trait_
-                && normalize_predicate(items, sigs, predicate) == normalized
-        }) {
+
+    fn prove(&mut self, goal: Predicate) -> bool {
+        let (items, sigs, env) = (self.items, self.sigs, self.env);
+        if goal.self_ty == Ty::ERROR || goal.trait_ref.args.contains(&Ty::ERROR) {
             return true;
         }
-    }
-    if let Some(coinductive) = auto_cycle(items, goal, stack) {
-        return coinductive;
-    }
-    if stack.len() > 256 {
-        return false;
-    }
-    if let Some(owner) = declared_alias_bound(sigs, goal) {
-        stack.push(goal);
-        let proven = holds_at(items, sigs, env, owner, stack);
-        stack.pop();
-        if proven {
+        if in_env(sigs, env, goal) {
             return true;
         }
-    }
-    // Outside bodies, a parameter is taken to be sized.
-    if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
-        return !crate::maybe_unsized(items, sigs, goal.self_ty, &[], env);
-    }
-    if is_builtin_trait(items, goal.trait_ref.trait_, goal.self_ty) {
-        return true;
-    }
-    if let Some(found) = fn_goal(items, goal.trait_ref.trait_, goal.self_ty) {
-        return match found {
-            ClosureGoal::Fn(_, params) => goal.trait_ref.args.first() == Some(&params),
-            _ => false,
-        };
-    }
-    if let TyKind::Closure(_, args) = goal.self_ty.kind() {
-        match closure_goal(items, goal.trait_ref.trait_, args) {
-            ClosureGoal::Fn(kind, params) => {
-                return ClosureArgs::split(args)
-                    .closure_kind()
-                    .is_some_and(|k| k <= kind)
-                    && goal.trait_ref.args.first() == Some(&params);
+        if env
+            .iter()
+            .any(|p| p.trait_ref.trait_ == goal.trait_ref.trait_)
+        {
+            let normalized = normalize_predicate(items, sigs, goal);
+            if env.iter().any(|&predicate| {
+                predicate.trait_ref.trait_ == goal.trait_ref.trait_
+                    && normalize_predicate(items, sigs, predicate) == normalized
+            }) {
+                return true;
             }
-            ClosureGoal::Upvars(upvars) => {
-                stack.push(goal);
-                let trait_ref = copy_trait_ref(items).unwrap_or(goal.trait_ref);
-                let all = upvars.iter().all(|&ty| {
-                    let goal = Predicate {
-                        self_ty: ty,
-                        trait_ref,
-                    };
-                    holds_at(items, sigs, env, goal, stack)
-                });
-                stack.pop();
-                return all;
-            }
-            // Other traits hold through blanket `impl` blocks, below.
-            ClosureGoal::No => {}
         }
-    }
-    let mut impls = sigs
-        .impl_index
-        .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
-    stack.push(goal);
-    let holds = impls.any(|imp| {
-        let Some(args) = match_impl(items, sigs, imp, goal) else {
+        if let Some((start, coinductive)) = auto_cycle(items, goal, &self.stack) {
+            self.cut = self.cut.min(start);
+            return coinductive;
+        }
+        if self.stack.len() > 256 {
+            self.cut = 0;
+            return false;
+        }
+        if let Some(owner) = declared_alias_bound(sigs, goal)
+            && self.nested(goal, owner)
+        {
+            return true;
+        }
+        // Outside bodies, a parameter is taken to be sized.
+        if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
+            return !crate::maybe_unsized(items, sigs, goal.self_ty, &[], env);
+        }
+        if is_builtin_trait(items, goal.trait_ref.trait_, goal.self_ty) {
+            return true;
+        }
+        if let Some(found) = fn_goal(items, goal.trait_ref.trait_, goal.self_ty) {
+            return match found {
+                ClosureGoal::Fn(_, params) => goal.trait_ref.args.first() == Some(&params),
+                _ => false,
+            };
+        }
+        if let TyKind::Closure(_, args) = goal.self_ty.kind() {
+            match closure_goal(items, goal.trait_ref.trait_, args) {
+                ClosureGoal::Fn(kind, params) => {
+                    return ClosureArgs::split(args)
+                        .closure_kind()
+                        .is_some_and(|k| k <= kind)
+                        && goal.trait_ref.args.first() == Some(&params);
+                }
+                ClosureGoal::Upvars(upvars) => {
+                    let trait_ref = copy_trait_ref(items).unwrap_or(goal.trait_ref);
+                    return upvars.iter().all(|&ty| {
+                        let upvar = Predicate {
+                            self_ty: ty,
+                            trait_ref,
+                        };
+                        self.nested(goal, upvar)
+                    });
+                }
+                // Other traits hold through blanket `impl` blocks, below.
+                ClosureGoal::No => {}
+            }
+        }
+        let mut impls = sigs
+            .impl_index
+            .matching(items, goal.trait_ref.trait_, goal.self_ty);
+        let holds = impls.any(|imp| {
+            let Some(args) = match_impl(items, sigs, imp, goal) else {
+                return false;
+            };
+            let nested = sigs.impl_predicates.get(imp).into_iter().flatten();
+            nested
+                .copied()
+                .all(|p| self.nested(goal, normalize_predicate(items, sigs, p.subst(&args))))
+        });
+        if holds {
+            return true;
+        }
+        let Some(nested) = auto_trait_requirements(items, sigs, goal) else {
             return false;
         };
-        let nested = sigs.impl_predicates.get(imp).into_iter().flatten();
-        nested.copied().all(|p| {
-            holds_at(
-                items,
-                sigs,
-                env,
-                normalize_predicate(items, sigs, p.subst(&args)),
-                stack,
-            )
-        })
-    });
-    stack.pop();
-    if holds {
-        return true;
+        nested
+            .into_iter()
+            .all(|p| self.nested(goal, normalize_predicate(items, sigs, p)))
     }
-    let Some(nested) = auto_trait_requirements(items, sigs, goal) else {
-        return false;
-    };
-    stack.push(goal);
-    let holds = nested
-        .into_iter()
-        .all(|p| holds_at(items, sigs, env, normalize_predicate(items, sigs, p), stack));
-    stack.pop();
-    holds
 }
 
 /// Built-in auto traits, identified by core's lang items, never by name.
@@ -1969,29 +2076,72 @@ pub fn drop_impl(items: &ItemTree, sigs: &Signatures, strukt: StructId) -> Optio
 /// in scope: it is, or has a part that is, a struct with a `Drop` impl,
 /// or a type parameter that is not `Copy`, which may be one.
 pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
-    match ty.kind() {
-        TyKind::Tuple(elements) => elements.iter().any(|&e| needs_drop(items, sigs, env, e)),
-        TyKind::Array(elem, len) => len.as_usize() != Some(0) && needs_drop(items, sigs, env, elem),
-        TyKind::Slice(elem) => needs_drop(items, sigs, env, elem),
-        // The erased concrete type may have a destructor.
-        TyKind::Dynamic(_) => true,
-        TyKind::Closure(_, args) => ClosureArgs::split(args)
-            .upvar_types()
-            .iter()
-            .any(|&e| needs_drop(items, sigs, env, e)),
-        // Holds a value it never drops.
-        TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "manually_drop") => false,
-        // Copy excludes destructors even when a stored associated type
-        // has not been normalized to its concrete representation yet.
-        TyKind::Adt(..) if is_copy(items, sigs, env, ty) => false,
-        TyKind::Adt(adt, args) => {
-            drop_impl(items, sigs, adt.strukt).is_some()
-                || sigs.structs[adt.strukt]
-                    .iter()
-                    .any(|f| needs_drop(items, sigs, env, f.subst(args)))
+    DropWalk {
+        items,
+        sigs,
+        env,
+        structs: 0,
+        memo: rustc_hash::FxHashMap::default(),
+    }
+    .needs_drop(ty)
+}
+
+/// One [`needs_drop`]. A type is a DAG (`struct A(B, B)`), which a walk
+/// that does not remember the structs it met sees as a tree; most walks
+/// meet a few, for which a map costs more than it saves.
+struct DropWalk<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    env: &'a [Predicate],
+    /// How many structs the walk met: after [`DropWalk::UNREMEMBERED`],
+    /// it remembers them in `memo`.
+    structs: u32,
+    memo: rustc_hash::FxHashMap<Ty, bool>,
+}
+
+impl DropWalk<'_> {
+    const UNREMEMBERED: u32 = 16;
+
+    fn needs_drop(&mut self, ty: Ty) -> bool {
+        let (items, sigs, env) = (self.items, self.sigs, self.env);
+        match ty.kind() {
+            TyKind::Tuple(elements) => elements.iter().any(|&e| self.needs_drop(e)),
+            TyKind::Array(elem, len) => len.as_usize() != Some(0) && self.needs_drop(elem),
+            TyKind::Slice(elem) => self.needs_drop(elem),
+            // The erased concrete type may have a destructor.
+            TyKind::Dynamic(_) => true,
+            TyKind::Closure(_, args) => ClosureArgs::split(args)
+                .upvar_types()
+                .iter()
+                .any(|&e| self.needs_drop(e)),
+            // Holds a value it never drops.
+            TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "manually_drop") => {
+                false
+            }
+            TyKind::Adt(adt, args) => {
+                self.structs += 1;
+                let remember = self.structs > Self::UNREMEMBERED;
+                if remember && let Some(&known) = self.memo.get(&ty) {
+                    return known;
+                }
+                // Copy excludes destructors even when a stored associated
+                // type has not been normalized to its concrete
+                // representation yet.
+                let needs = !is_copy(items, sigs, env, ty)
+                    && (drop_impl(items, sigs, adt.strukt).is_some()
+                        || sigs.structs[adt.strukt]
+                            .iter()
+                            .any(|f| self.needs_drop(f.subst(args))));
+                if remember {
+                    self.memo.insert(ty, needs);
+                }
+                needs
+            }
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
+                !is_copy(items, sigs, env, ty)
+            }
+            _ => false,
         }
-        TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => !is_copy(items, sigs, env, ty),
-        _ => false,
     }
 }
 

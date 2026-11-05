@@ -35,7 +35,7 @@ use flux_syntax::TextRange;
 
 use super::{Ctx, Method, OverloadedDeref};
 use crate::traits::{Predicate, TraitRef};
-use crate::ty::{ClosureArgs, ClosureId, ClosureKind, Mutability, Ty, TyKind};
+use crate::ty::{ClosureArgs, ClosureId, ClosureKind, InferVar, Mutability, Ty, TyKind};
 
 /// How a closure holds a place it captures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -772,16 +772,13 @@ impl Ctx<'_> {
     /// Integer and float variables take their defaults, `i32` and
     /// `f64`, as rustc's fallback does before it analyzes closures.
     pub(super) fn default_numeric_vars(&mut self) {
-        for (value, _) in &mut self.vars {
-            match value {
-                super::VarValue::Unknown { float: true, .. } => {
-                    *value = super::VarValue::Known(Ty::float(crate::FloatTy::F64));
-                }
-                super::VarValue::Unknown { int: true, .. } => {
-                    *value = super::VarValue::Known(Ty::int(crate::IntTy::I32));
-                }
-                _ => {}
-            }
+        for var in 0..self.vars.len() as u32 {
+            let default = match self.vars[var as usize].0 {
+                super::VarValue::Unknown { float: true, .. } => Ty::float(crate::FloatTy::F64),
+                super::VarValue::Unknown { int: true, .. } => Ty::int(crate::IntTy::I32),
+                _ => continue,
+            };
+            self.set_var(InferVar(var), super::VarValue::Known(default));
         }
         self.select_obligations();
     }

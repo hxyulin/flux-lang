@@ -638,6 +638,7 @@ const BUCKETS: usize = 26;
 
 impl Kinds {
     /// The bucket and slot of index `i`.
+    #[inline]
     fn locate(i: u32) -> (usize, usize) {
         let n = i / FIRST + 1;
         let bucket = (31 - n.leading_zeros()) as usize;
@@ -645,6 +646,7 @@ impl Kinds {
         (bucket, (i - start) as usize)
     }
 
+    #[inline]
     fn get(&self, i: u32) -> Option<(TyKind, u8)> {
         let (bucket, slot) = Kinds::locate(i);
         self.buckets[bucket].get()?[slot].get().copied()
@@ -801,19 +803,27 @@ impl Ty {
         KINDS.get(raw).map(|_| Self(raw))
     }
 
+    // `kind` and the flags are read everywhere, in every crate: inlined,
+    // with the slow path apart.
+    #[inline]
     pub fn kind(self) -> TyKind {
         self.entry().0
     }
 
+    #[inline]
     fn entry(self) -> (TyKind, u8) {
         match KINDS.get(self.0) {
             Some(entry) => entry,
-            // The predefined types exist before anything is interned.
-            None => {
-                LazyLock::force(&INTERNER);
-                KINDS.get(self.0).expect("types are interned before use")
-            }
+            None => self.first_entry(),
         }
+    }
+
+    /// The predefined types exist before anything is interned.
+    #[cold]
+    #[inline(never)]
+    fn first_entry(self) -> (TyKind, u8) {
+        LazyLock::force(&INTERNER);
+        KINDS.get(self.0).expect("types are interned before use")
     }
 
     pub fn infer(var: InferVar) -> Ty {
@@ -858,21 +868,25 @@ impl Ty {
         Ty::new(TyKind::Param(ParamTy { index, name }))
     }
 
+    #[inline]
     fn flags(self) -> u8 {
         self.entry().1
     }
 
     /// Whether the type mentions a generic parameter.
+    #[inline]
     pub fn has_params(self) -> bool {
         self.flags() & HAS_PARAM != 0
     }
 
     /// Whether the type contains an inference variable.
+    #[inline]
     pub fn has_infer(self) -> bool {
         self.flags() & HAS_INFER != 0
     }
 
     /// Whether the type contains an associated type.
+    #[inline]
     pub fn has_aliases(self) -> bool {
         self.flags() & HAS_ALIAS != 0
     }
@@ -882,11 +896,13 @@ impl Ty {
     }
 
     /// Whether the type contains an opaque type.
+    #[inline]
     pub fn has_opaques(self) -> bool {
         self.flags() & HAS_OPAQUE != 0
     }
 
     /// Whether the type is or contains [`Ty::ERROR`].
+    #[inline]
     pub fn has_error(self) -> bool {
         self.flags() & HAS_ERROR != 0
     }
