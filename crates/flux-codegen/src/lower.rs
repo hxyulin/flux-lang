@@ -3955,6 +3955,41 @@ impl Lower<'_, '_, '_> {
                     }
                     return;
                 }
+                if let Some(intrinsic) = items.functions[*func]
+                    .intrinsic
+                    .filter(|intrinsic| intrinsic.is_bit_count())
+                {
+                    let ty = keel_type(generic_args[0]).expect("an integer argument");
+                    let x = self.scalar(&args[0]).expect("an integer argument");
+                    let ins = self.b.ins();
+                    let result = match intrinsic {
+                        // A byte is its own reverse; keel's `bswap` needs two.
+                        flux_hir::Intrinsic::Bswap if ty == Type::I8 => x,
+                        flux_hir::Intrinsic::Bswap => ins.bswap(x),
+                        // Counts come in the argument's type, and are `u32`s.
+                        count => {
+                            let n = match count {
+                                flux_hir::Intrinsic::Ctlz => ins.clz(x),
+                                flux_hir::Intrinsic::Cttz => ins.ctz(x),
+                                _ => ins.popcnt(x),
+                            };
+                            match ty {
+                                Type::I32 => n,
+                                Type::I8 | Type::I16 => {
+                                    self.b.ins().convert(ConvertOp::Uext, Type::I32, n)
+                                }
+                                _ => self.b.ins().convert(ConvertOp::Trunc, Type::I32, n),
+                            }
+                        }
+                    };
+                    self.write(dest, &[result]);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
                 if items.functions[*func]
                     .intrinsic
                     .is_some_and(flux_hir::Intrinsic::is_x86)

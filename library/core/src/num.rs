@@ -135,13 +135,7 @@ impl i8 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u8;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -149,30 +143,11 @@ impl i8 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u8;
-        let mut n = 0;
-        let mut bit = 8;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u8;
-        if x == 0 {
-            return 8;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> i8 {
@@ -277,13 +252,7 @@ impl i16 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u16;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -291,30 +260,11 @@ impl i16 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u16;
-        let mut n = 0;
-        let mut bit = 16;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u16;
-        if x == 0 {
-            return 16;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> i16 {
@@ -419,13 +369,7 @@ impl i32 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u32;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -433,30 +377,11 @@ impl i32 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u32;
-        let mut n = 0;
-        let mut bit = 32;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u32;
-        if x == 0 {
-            return 32;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> i32 {
@@ -561,13 +486,7 @@ impl i64 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u64;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -575,30 +494,11 @@ impl i64 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u64;
-        let mut n = 0;
-        let mut bit = 64;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u64;
-        if x == 0 {
-            return 64;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> i64 {
@@ -703,13 +603,7 @@ impl i128 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u128;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -717,30 +611,11 @@ impl i128 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u128;
-        let mut n = 0;
-        let mut bit = 128;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u128;
-        if x == 0 {
-            return 128;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> i128 {
@@ -845,13 +720,7 @@ impl isize {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as usize;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -859,30 +728,11 @@ impl isize {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as usize;
-        let mut n = 0;
-        let mut bit = 64;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as usize;
-        if x == 0 {
-            return 64;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> isize {
@@ -987,13 +837,7 @@ impl u8 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u8;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -1001,30 +845,11 @@ impl u8 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u8;
-        let mut n = 0;
-        let mut bit = 8;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u8;
-        if x == 0 {
-            return 8;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> u8 {
@@ -1093,13 +918,7 @@ impl u16 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u16;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -1107,30 +926,11 @@ impl u16 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u16;
-        let mut n = 0;
-        let mut bit = 16;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u16;
-        if x == 0 {
-            return 16;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> u16 {
@@ -1199,13 +999,7 @@ impl u32 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u32;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -1213,30 +1007,11 @@ impl u32 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u32;
-        let mut n = 0;
-        let mut bit = 32;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u32;
-        if x == 0 {
-            return 32;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> u32 {
@@ -1305,13 +1080,7 @@ impl u64 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u64;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -1319,30 +1088,11 @@ impl u64 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u64;
-        let mut n = 0;
-        let mut bit = 64;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u64;
-        if x == 0 {
-            return 64;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> u64 {
@@ -1411,13 +1161,7 @@ impl u128 {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as u128;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -1425,30 +1169,11 @@ impl u128 {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as u128;
-        let mut n = 0;
-        let mut bit = 128;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as u128;
-        if x == 0 {
-            return 128;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> u128 {
@@ -1517,13 +1242,7 @@ impl usize {
     }
 
     pub const fn count_ones(self) -> u32 {
-        let mut x = self as usize;
-        let mut n = 0;
-        while x != 0 {
-            n += (x & 1) as u32;
-            x >>= 1;
-        }
-        n
+        crate::intrinsics::ctpop(self)
     }
 
     pub const fn count_zeros(self) -> u32 {
@@ -1531,30 +1250,11 @@ impl usize {
     }
 
     pub const fn leading_zeros(self) -> u32 {
-        let x = self as usize;
-        let mut n = 0;
-        let mut bit = 64;
-        while bit > 0 {
-            bit -= 1;
-            if (x >> bit) & 1 == 1 {
-                return n;
-            }
-            n += 1;
-        }
-        n
+        crate::intrinsics::ctlz(self)
     }
 
     pub const fn trailing_zeros(self) -> u32 {
-        let mut x = self as usize;
-        if x == 0 {
-            return 64;
-        }
-        let mut n = 0;
-        while x & 1 == 0 {
-            x >>= 1;
-            n += 1;
-        }
-        n
+        crate::intrinsics::cttz(self)
     }
 
     pub const fn rotate_left(self, n: u32) -> usize {
@@ -1992,15 +1692,7 @@ impl i8 {
     }
 
     pub const fn swap_bytes(self) -> i8 {
-        let mut x = self as u8;
-        let mut r: u8 = 0;
-        let mut i = 0;
-        while i < 1 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as i8
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> i8 {
@@ -2458,15 +2150,7 @@ impl i16 {
     }
 
     pub const fn swap_bytes(self) -> i16 {
-        let mut x = self as u16;
-        let mut r: u16 = 0;
-        let mut i = 0;
-        while i < 2 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as i16
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> i16 {
@@ -2924,15 +2608,7 @@ impl i32 {
     }
 
     pub const fn swap_bytes(self) -> i32 {
-        let mut x = self as u32;
-        let mut r: u32 = 0;
-        let mut i = 0;
-        while i < 4 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as i32
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> i32 {
@@ -3390,15 +3066,7 @@ impl i64 {
     }
 
     pub const fn swap_bytes(self) -> i64 {
-        let mut x = self as u64;
-        let mut r: u64 = 0;
-        let mut i = 0;
-        while i < 8 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as i64
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> i64 {
@@ -3856,15 +3524,7 @@ impl i128 {
     }
 
     pub const fn swap_bytes(self) -> i128 {
-        let mut x = self as u128;
-        let mut r: u128 = 0;
-        let mut i = 0;
-        while i < 16 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as i128
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> i128 {
@@ -4322,15 +3982,7 @@ impl isize {
     }
 
     pub const fn swap_bytes(self) -> isize {
-        let mut x = self as usize;
-        let mut r: usize = 0;
-        let mut i = 0;
-        while i < 8 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as isize
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> isize {
@@ -4788,15 +4440,7 @@ impl u8 {
     }
 
     pub const fn swap_bytes(self) -> u8 {
-        let mut x = self as u8;
-        let mut r: u8 = 0;
-        let mut i = 0;
-        while i < 1 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as u8
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> u8 {
@@ -5254,15 +4898,7 @@ impl u16 {
     }
 
     pub const fn swap_bytes(self) -> u16 {
-        let mut x = self as u16;
-        let mut r: u16 = 0;
-        let mut i = 0;
-        while i < 2 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as u16
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> u16 {
@@ -5720,15 +5356,7 @@ impl u32 {
     }
 
     pub const fn swap_bytes(self) -> u32 {
-        let mut x = self as u32;
-        let mut r: u32 = 0;
-        let mut i = 0;
-        while i < 4 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as u32
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> u32 {
@@ -6186,15 +5814,7 @@ impl u64 {
     }
 
     pub const fn swap_bytes(self) -> u64 {
-        let mut x = self as u64;
-        let mut r: u64 = 0;
-        let mut i = 0;
-        while i < 8 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as u64
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> u64 {
@@ -6652,15 +6272,7 @@ impl u128 {
     }
 
     pub const fn swap_bytes(self) -> u128 {
-        let mut x = self as u128;
-        let mut r: u128 = 0;
-        let mut i = 0;
-        while i < 16 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as u128
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> u128 {
@@ -7118,15 +6730,7 @@ impl usize {
     }
 
     pub const fn swap_bytes(self) -> usize {
-        let mut x = self as usize;
-        let mut r: usize = 0;
-        let mut i = 0;
-        while i < 8 {
-            r = (r << 8) | (x & 0xff);
-            x >>= 8;
-            i += 1;
-        }
-        r as usize
+        crate::intrinsics::bswap(self)
     }
 
     pub const fn reverse_bits(self) -> usize {
