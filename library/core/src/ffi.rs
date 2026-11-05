@@ -60,6 +60,7 @@ impl CStr {
     }
 
     /// A pointer to its first byte, valid while the borrow lasts.
+    #[inline(always)]
     pub const fn as_ptr(&self) -> *const c_char {
         self as *const CStr as *const c_char
     }
