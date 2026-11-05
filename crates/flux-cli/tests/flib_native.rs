@@ -172,7 +172,7 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
             ],
             target,
             &output,
-            &[],
+            &Default::default(),
         )
         .unwrap();
         let result = flib_support::run(&mut std::process::Command::new(output), "native");

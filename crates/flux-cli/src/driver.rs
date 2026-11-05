@@ -318,6 +318,7 @@ fn run(command: Command) -> Result<bool, String> {
                     output: &output,
                     options,
                     sources: &[],
+                    native: Default::default(),
                 })
             }
         }

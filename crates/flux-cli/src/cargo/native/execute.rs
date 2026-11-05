@@ -12,7 +12,11 @@ struct ScriptOutput {
     check_cfgs: Vec<String>,
     environment: BTreeMap<String, String>,
     metadata: BTreeMap<String, String>,
+    /// `-l` and `-L` requests, as rustc reads them.
     linker: Vec<(String, String)>,
+    /// `rustc-link-arg` arguments for the package's binaries: for every
+    /// binary (`None`), or for the one named.
+    link_args: Vec<(Option<String>, String)>,
     out_dir: PathBuf,
 }
 #[derive(Default, Serialize)]
@@ -315,7 +319,13 @@ fn flux_unit(
     let stem = unit.target.name.replace('-', "_");
     let mut output = Output::default();
     if unit.target.kind != "build-script" {
-        let sources = host_sources(plan, outputs, index, version)?;
+        let (sources, native) = host_sources(plan, outputs, index, version)?;
+        if native != flux_codegen::NativeLink::default() {
+            return Err(format!(
+                "native libraries in the procedural macro host of {} are not supported yet",
+                package.name
+            ));
+        }
         eprintln!("flux host {} proc-macro ({index})", package.name);
         output.macros = Some(crate::proc_macro_native::build_host_graph(
             sources, &directory,
@@ -333,13 +343,14 @@ fn flux_unit(
         );
     }
     let artifact = directory.join("build-script");
-    let sources = host_sources(plan, outputs, index, version)?;
+    let (sources, native) = host_sources(plan, outputs, index, version)?;
     eprintln!("flux host {} build-script ({index})", package.name);
     if !crate::build::compile(CompileRequest {
         file: &unit.target.root,
         crate_name: &stem,
         output: &artifact,
         sources: &sources,
+        native,
         options: crate::BuildOptions {
             optimize: false,
             timings: false,
@@ -657,12 +668,15 @@ fn rustc_dependencies(plan: &Plan, id: usize, needed: &mut BTreeSet<usize>) {
     }
 }
 
+/// The source graph of a host unit, and the native libraries its
+/// dependencies' build scripts request.
 fn host_sources(
     plan: &Plan,
     outputs: &[Output],
     root: usize,
     rustc: &str,
-) -> Result<Vec<SourceInput>> {
+) -> Result<(Vec<SourceInput>, flux_codegen::NativeLink)> {
+    #[allow(clippy::too_many_arguments)]
     fn visit(
         plan: &Plan,
         outputs: &[Output],
@@ -671,6 +685,7 @@ fn host_sources(
         root: usize,
         indices: &mut BTreeMap<usize, usize>,
         sources: &mut Vec<SourceInput>,
+        native: &mut flux_codegen::NativeLink,
     ) -> Result<usize> {
         if let Some(index) = indices.get(&id) {
             return Ok(*index);
@@ -680,8 +695,9 @@ fn host_sources(
         let mut cfg = crate::cargo::cfg(script.map_or(&[], |s| s.cfgs.as_slice()), &unit.features)?;
         let mut environment = environment(&plan.packages[unit.package], &unit.target)?;
         if let Some(script) = script {
-            if !script.linker.is_empty() {
-                return Err("native host linker directives require Flux linker integration".into());
+            // A dependency proc macro runs in its own host, outside this link.
+            if unit.target.kind != "proc-macro" || id == root {
+                link_directives(plan, id, script, native)?;
             }
             environment.extend(script.environment.clone());
             environment.insert(
@@ -705,7 +721,16 @@ fn host_sources(
             for (alias, dependency) in &unit.dependencies {
                 dependencies.push((
                     alias.clone(),
-                    visit(plan, outputs, *dependency, rustc, root, indices, sources)?,
+                    visit(
+                        plan,
+                        outputs,
+                        *dependency,
+                        rustc,
+                        root,
+                        indices,
+                        sources,
+                        native,
+                    )?,
                 ));
             }
         }
@@ -725,6 +750,7 @@ fn host_sources(
         Ok(index)
     }
     let mut sources = Vec::new();
+    let mut native = flux_codegen::NativeLink::default();
     visit(
         plan,
         outputs,
@@ -733,8 +759,33 @@ fn host_sources(
         root,
         &mut BTreeMap::new(),
         &mut sources,
+        &mut native,
     )?;
-    Ok(sources)
+    Ok((sources, native))
+}
+
+/// Adds the `-l` and `-L` requests of `unit`'s build script to `native`.
+/// Like Cargo, every library's requests reach each link that includes it.
+fn link_directives(
+    plan: &Plan,
+    unit: usize,
+    script: &ScriptOutput,
+    native: &mut flux_codegen::NativeLink,
+) -> Result<()> {
+    let directory = package_directory(plan, unit)?;
+    for (flag, value) in &script.linker {
+        if flag == "-l" {
+            crate::cargo::link_library(native, value)?;
+        } else {
+            crate::cargo::link_search(native, value, directory);
+        }
+    }
+    Ok(())
+}
+
+fn package_directory(plan: &Plan, unit: usize) -> Result<&Path> {
+    let manifest = &plan.packages[plan.units[unit].package].manifest;
+    Ok(manifest.parent().ok_or("manifest has no parent")?)
 }
 
 fn macro_exports(
@@ -937,6 +988,17 @@ fn parse_script(text: &str, out_dir: PathBuf) -> Result<ScriptOutput> {
                 output.environment.insert(key.into(), value.into());
             }
             "rustc-link-lib" => output.linker.push(("-l".into(), value.into())),
+            "rustc-link-arg" | "rustc-link-arg-bins" | "rustc-link-arg-bin" => {
+                output
+                    .link_args
+                    .extend(crate::cargo::binary_link_arg(key, value)?);
+            }
+            // Flux builds only binaries.
+            "rustc-link-arg-tests"
+            | "rustc-link-arg-examples"
+            | "rustc-link-arg-benches"
+            | "rustc-link-arg-cdylib"
+            | "rustc-cdylib-link-arg" => {}
             "rustc-link-search" => output.linker.push(("-L".into(), value.into())),
             "rustc-flags" => {
                 let mut flags = value.split_whitespace();
@@ -974,6 +1036,7 @@ fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<Exi
     let plan = &prepared.plan;
     let mut sources = Vec::new();
     let mut indices = BTreeMap::new();
+    let mut native = flux_codegen::NativeLink::default();
     for (id, unit) in plan.units.iter().enumerate() {
         if unit.target.kind == "build-script"
             || (unit.domain == Domain::Host && unit.target.kind != "proc-macro")
@@ -1004,10 +1067,10 @@ fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<Exi
         } else {
             None
         };
-        if macros.is_none() && script.is_some_and(|s| !s.linker.is_empty()) {
-            return Err(
-                "native build-script linker directives require Flux linker integration".into(),
-            );
+        if macros.is_none()
+            && let Some(script) = script
+        {
+            link_directives(plan, id, script, &mut native)?;
         }
         let mut env = environment(&plan.packages[unit.package], &unit.target)?;
         if let Some(script) = script {
@@ -1053,6 +1116,19 @@ fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<Exi
         });
     }
     let root = *indices.get(&plan.root_unit).ok_or("missing root unit")?;
+    // Link arguments apply to the package's own binaries only.
+    let binary = &plan.units[plan.root_unit];
+    if let Some(script) = (binary.build_script).and_then(|i| prepared.outputs[i].script.as_ref()) {
+        let arguments: Vec<String> = (script.link_args.iter())
+            .filter(|(name, _)| name.as_ref().is_none_or(|n| *n == binary.target.name))
+            .map(|(_, argument)| argument.clone())
+            .collect();
+        crate::cargo::link_arguments(
+            &mut native,
+            &arguments,
+            package_directory(plan, plan.root_unit)?,
+        )?;
+    }
     let output = plan
         .workspace_root
         .join("target/flux")
@@ -1063,6 +1139,7 @@ fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<Exi
         output: &output,
         sources: &sources,
         options,
+        native,
     })?;
     Ok(if success {
         ExitCode::SUCCESS

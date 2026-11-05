@@ -749,7 +749,7 @@ fn flux_core(root: &Path, suite: Suite) {
             &object,
             target,
             &executable,
-            &hir.items.native_libraries,
+            &flux_codegen::NativeLink::libraries(&hir.items.native_libraries),
         )
         .unwrap();
         let actual = execute_consumer(

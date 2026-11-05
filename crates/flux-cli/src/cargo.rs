@@ -271,13 +271,6 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         &mut visited,
         &mut active,
     )?;
-    for (id, script) in &plan.build_scripts {
-        if !script.linked_libs.is_empty() || !script.linked_paths.is_empty() {
-            plan.blockers.push(format!(
-                "native linker directives for {id} require Flux linker integration"
-            ));
-        }
-    }
     let path = options
         .plan
         .clone()
@@ -370,6 +363,38 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
             environment: Some(source.environment.clone()),
         });
     }
+    // Cargo hands every library's link directives to the final link.
+    let mut native = flux_codegen::NativeLink::default();
+    for source in &plan.sources {
+        let Some(script) = plan.build_scripts.get(&source.package_id) else {
+            continue;
+        };
+        let directory = (metadata.packages.iter())
+            .find(|p| p.id == source.package_id)
+            .and_then(|p| p.manifest_path.parent())
+            .ok_or("unknown build-script package")?;
+        for library in &script.linked_libs {
+            link_library(&mut native, library)?;
+        }
+        for path in &script.linked_paths {
+            link_search(&mut native, path, directory);
+        }
+    }
+    // Cargo's messages leave out link arguments; its saved script output has them.
+    if let Some(script) = plan.build_scripts.get(&package.id) {
+        let path = script.out_dir.with_file_name("output");
+        let output = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let directory = package
+            .manifest_path
+            .parent()
+            .ok_or("manifest has no parent")?;
+        link_arguments(
+            &mut native,
+            &script_link_args(&output, &target.name)?,
+            directory,
+        )?;
+    }
     let main = sources.last().ok_or("empty Cargo source graph")?;
     let executable = metadata.target_directory.join("flux").join(&target.name);
     std::fs::create_dir_all(executable.parent().expect("target output has a parent"))
@@ -387,6 +412,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
                 *optimize,
             )?),
         },
+        native,
     })?;
     Ok(if ok {
         ExitCode::SUCCESS
@@ -794,6 +820,140 @@ pub(crate) fn cfg(cfgs: &[String], features: &[String]) -> Result<flux_hir::Crat
     Ok(cfg)
 }
 
+/// Adds a library request in rustc's `-l [KIND[:MODIFIERS]=]NAME` form, as
+/// `cargo:rustc-link-lib` gives it.
+pub(crate) fn link_library(
+    native: &mut flux_codegen::NativeLink,
+    value: &str,
+) -> Result<(), String> {
+    use flux_hir::NativeKind;
+    let (kind, name) = match value.split_once('=') {
+        Some((kind, name)) => (Some(kind), name),
+        None => (None, value),
+    };
+    let (kind, modifiers) = match kind.map(|k| k.split_once(':').unwrap_or((k, ""))) {
+        Some((kind, modifiers)) => (Some(kind), modifiers),
+        None => (None, ""),
+    };
+    let kind = match kind {
+        None | Some("dylib") => NativeKind::Dylib,
+        Some("static") => NativeKind::Static,
+        Some("framework") => NativeKind::Framework,
+        Some(kind) => return Err(format!("native library kind `{kind}` is not supported yet")),
+    };
+    for modifier in modifiers.split(',').filter(|m| !m.is_empty()) {
+        // Bundling and as-needed do not change what a whole-program link reads.
+        if !matches!(
+            modifier,
+            "+bundle" | "-bundle" | "+as-needed" | "-as-needed" | "-whole-archive" | "-verbatim"
+        ) {
+            return Err(format!(
+                "native library modifier `{modifier}` is not supported yet"
+            ));
+        }
+    }
+    if name.is_empty() {
+        return Err(format!("empty native library name in `{value}`"));
+    }
+    if name.contains(':') {
+        return Err(format!(
+            "renamed native library `{name}` is not supported yet"
+        ));
+    }
+    native.add_library(flux_hir::NativeLibrary {
+        name: flux_intern::Symbol::intern(name),
+        kind,
+    });
+    Ok(())
+}
+
+/// Adds a search directory in rustc's `-L [KIND=]PATH` form, as
+/// `cargo:rustc-link-search` gives it. A relative path is relative to
+/// `directory`, where the build script ran.
+pub(crate) fn link_search(
+    native: &mut flux_codegen::NativeLink,
+    value: &str,
+    directory: &std::path::Path,
+) {
+    if let Some(path) = value.strip_prefix("framework=") {
+        native.add_framework_path(directory.join(path));
+    } else if !value.starts_with("crate=") && !value.starts_with("dependency=") {
+        // Crate and dependency directories hold Rust crates, never native libraries.
+        let path = (value.strip_prefix("native="))
+            .or_else(|| value.strip_prefix("all="))
+            .unwrap_or(value);
+        native.add_search_path(directory.join(path));
+    }
+}
+
+/// The argument of a `rustc-link-arg*` build-script directive, with the
+/// binary it is for (`None` for every binary). `Ok(None)` when the directive
+/// is not a link argument, or names targets Flux does not build.
+pub(crate) fn binary_link_arg(
+    key: &str,
+    value: &str,
+) -> Result<Option<(Option<String>, String)>, String> {
+    Ok(match key {
+        "rustc-link-arg" | "rustc-link-arg-bins" => Some((None, value.into())),
+        "rustc-link-arg-bin" => {
+            let (binary, argument) = value
+                .split_once('=')
+                .ok_or("expected rustc-link-arg-bin=BIN=FLAG")?;
+            Some((Some(binary.into()), argument.into()))
+        }
+        _ => None,
+    })
+}
+
+/// The link arguments for binary `name` in a build script's standard output.
+fn script_link_args(output: &str, name: &str) -> Result<Vec<String>, String> {
+    let mut arguments = Vec::new();
+    for line in output.lines() {
+        let Some(directive) =
+            (line.strip_prefix("cargo::")).or_else(|| line.strip_prefix("cargo:"))
+        else {
+            continue;
+        };
+        let Some((key, value)) = directive.split_once('=') else {
+            continue;
+        };
+        if let Some((binary, argument)) = binary_link_arg(key, value)?
+            && binary.is_none_or(|b| b == name)
+        {
+            arguments.push(argument);
+        }
+    }
+    Ok(arguments)
+}
+
+/// Adds the linker arguments of `cargo:rustc-link-arg`, as far as they name
+/// libraries and search directories: `-lNAME`, `-LDIR`, `-FDIR` and
+/// `-framework NAME`. Flux's linker takes no other arguments.
+pub(crate) fn link_arguments(
+    native: &mut flux_codegen::NativeLink,
+    arguments: &[String],
+    directory: &std::path::Path,
+) -> Result<(), String> {
+    let mut arguments = arguments.iter().flat_map(|a| a.split_whitespace());
+    while let Some(argument) = arguments.next() {
+        if argument == "-framework" {
+            let name = arguments
+                .next()
+                .ok_or("`-framework` needs a framework name")?;
+            link_library(native, &format!("framework={name}"))?;
+        } else if let Some(name) = argument.strip_prefix("-l").filter(|n| !n.is_empty()) {
+            link_library(native, name)?;
+        } else if let Some(path) = argument.strip_prefix("-L").filter(|p| !p.is_empty()) {
+            native.add_search_path(directory.join(path));
+        } else if let Some(path) = argument.strip_prefix("-F").filter(|p| !p.is_empty()) {
+            native.add_framework_path(directory.join(path));
+        } else {
+            return Err(format!("linker argument `{argument}` is not supported yet"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -817,5 +977,57 @@ mod tests {
         let invalid = format!("{package}[profile.release]\ndebug-assertions = 1\n");
         assert!(check(&invalid, true).is_err());
         std::fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn link_directives_follow_rustc_syntax() {
+        use flux_hir::NativeKind;
+        let mut native = flux_codegen::NativeLink::default();
+        let directory = std::path::Path::new("/pkg");
+        super::link_library(&mut native, "static:+bundle=psm_s").unwrap();
+        super::link_library(&mut native, "framework=IOKit").unwrap();
+        super::link_library(&mut native, "z").unwrap();
+        super::link_search(&mut native, "native=/out", directory);
+        super::link_search(&mut native, "dependency=/deps", directory);
+        super::link_search(&mut native, "framework=/frameworks", directory);
+        super::link_search(&mut native, "relative", directory);
+        super::link_arguments(
+            &mut native,
+            &[
+                "-framework".into(),
+                "Security".into(),
+                "-liconv -L/lib".into(),
+            ],
+            directory,
+        )
+        .unwrap();
+        let kinds: Vec<_> = (native.libraries.iter())
+            .map(|l| (l.name.as_str().to_owned(), l.kind))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("psm_s".into(), NativeKind::Static),
+                ("IOKit".into(), NativeKind::Framework),
+                ("z".into(), NativeKind::Dylib),
+                ("Security".into(), NativeKind::Framework),
+                ("iconv".into(), NativeKind::Dylib),
+            ]
+        );
+        let paths = |p: &[std::path::PathBuf]| {
+            p.iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(&native.search_paths),
+            ["/out", "/pkg/relative", "/lib"]
+        );
+        assert_eq!(paths(&native.framework_paths), ["/frameworks"]);
+        assert!(super::link_library(&mut native, "static:+whole-archive=a").is_err());
+        assert!(super::link_library(&mut native, "raw-dylib=a").is_err());
+        assert!(
+            super::link_arguments(&mut native, &["-Wl,-dead_strip".into()], directory).is_err()
+        );
     }
 }

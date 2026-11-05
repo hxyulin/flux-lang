@@ -17,6 +17,7 @@ mod error;
 pub use error::{Error, Stage};
 mod linux;
 mod lower;
+mod native;
 
 use std::path::{Path, PathBuf};
 
@@ -26,6 +27,7 @@ pub use lower::{
     Compilation, LoweredCrate, LoweringTimings, OutputKind, lower_crate,
     lower_crate_with_requirements, lower_module, lower_with_timings,
 };
+pub use native::NativeLink;
 
 /// Verifies, optimizes and compiles `module` to an object file for
 /// `target`.
@@ -137,22 +139,22 @@ fn compile_object_inner(
 /// Links `object` against the C library into an executable at `output`.
 /// Returns the linker's warnings.
 pub fn link_executable(object: &[u8], target: Target, output: &Path) -> Result<Vec<String>, Error> {
-    link_executable_with_libraries(object, target, output, &[])
+    link_executable_with_libraries(object, target, output, &NativeLink::default())
 }
 
-/// Links an object and the literal dynamic-library requirements collected
-/// from the source graph. Object-only callers may use [`link_executable`].
+/// Links an object and the native libraries collected from the source graph
+/// and its build scripts. Object-only callers may use [`link_executable`].
 pub fn link_executable_with_libraries(
     object: &[u8],
     target: Target,
     output: &Path,
-    libraries: &[flux_intern::Symbol],
+    native: &NativeLink,
 ) -> Result<Vec<String>, Error> {
     let input = ObjectInput {
         name: "flux.o",
         bytes: object,
     };
-    link_objects(&[input], target, output, libraries)
+    link_objects(&[input], target, output, native)
 }
 
 /// One native object supplied to the executable link.
@@ -164,7 +166,7 @@ pub struct ObjectInput<'a> {
     pub bytes: &'a [u8],
 }
 
-/// Links native objects and requested system libraries into a native executable.
+/// Links native objects and requested native libraries into a native executable.
 ///
 /// The caller supplies the executable object and each dependency object exactly
 /// once. Inputs are object bytes, not `.flib` archives; artifact resolution and
@@ -173,13 +175,13 @@ pub struct ObjectInput<'a> {
 ///
 /// # Errors
 ///
-/// Reports unsupported targets, SDK or system-library lookup failures, invalid
+/// Reports unsupported targets, SDK or native-library lookup failures, invalid
 /// objects, unresolved or duplicate symbols, and output-writing failures.
 pub fn link_objects(
     objects: &[ObjectInput<'_>],
     target: Target,
     output: &Path,
-    libraries: &[flux_intern::Symbol],
+    native: &NativeLink,
 ) -> Result<Vec<String>, Error> {
     match target {
         Target::Aarch64AppleDarwin => {
@@ -187,24 +189,67 @@ pub fn link_objects(
             let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), &sdk)
                 .map_err(|message| Error::message(Stage::Sdk, message))?;
             let mut dylibs = vec![system];
-            let mut seen = std::collections::HashSet::new();
-            for name in libraries {
+            let mut archives = Vec::new();
+            let libraries = [sdk.join("usr/lib")];
+            let frameworks = [sdk.join("System/Library/Frameworks")];
+            for library in &native.libraries {
                 // Darwin's libc and libm are umbrella aliases of libSystem,
                 // already included for the executable's runtime entry point.
-                if matches!(name.as_str(), "c" | "m" | "System") || !seen.insert(*name) {
+                if library.kind == flux_hir::NativeKind::Dylib
+                    && matches!(library.name.as_str(), "c" | "m" | "System")
+                {
                     continue;
                 }
-                let path = sdk.join("usr/lib").join(format!("lib{name}.tbd"));
+                // ld64's default `-search_paths_first` order.
+                let found = native::find(
+                    *library,
+                    native,
+                    &libraries,
+                    &frameworks,
+                    &["tbd", "dylib", "so", "a"],
+                )?;
+                let path = match found {
+                    native::Found::Archive(path, bytes) => {
+                        if !archives.iter().any(|(p, _)| *p == path) {
+                            archives.push((path, bytes));
+                        }
+                        continue;
+                    }
+                    native::Found::Interface(path) => path,
+                    native::Found::Shared(path) => {
+                        return Err(Error::message(
+                            Stage::Link,
+                            format!(
+                                "linking the Mach-O shared library {} is not supported yet; \
+                                 the linker reads only `.tbd` interfaces",
+                                path.display()
+                            ),
+                        ));
+                    }
+                };
                 let dylib = keel_link::Dylib::from_tbd(&path, &sdk)
                     .map_err(|message| Error::message(Stage::Sdk, message))?;
-                dylibs.push(dylib);
+                // Aliases such as libpthread name a library already present.
+                if !dylibs.iter().any(|d| d.install_name == dylib.install_name) {
+                    dylibs.push(dylib);
+                }
             }
+            let names: Vec<_> = archives
+                .iter()
+                .map(|(path, _)| path.to_string_lossy().into_owned())
+                .collect();
             let inputs: Vec<_> = objects
                 .iter()
                 .map(|o| keel_link::Input {
                     name: o.name,
                     bytes: o.bytes,
                 })
+                .chain(
+                    names
+                        .iter()
+                        .zip(&archives)
+                        .map(|(name, (_, bytes))| keel_link::Input { name, bytes }),
+                )
                 .collect();
             let defaults = keel_link::Options::default();
             // The SDK the executable was built against: Darwin picks some
@@ -223,7 +268,7 @@ pub fn link_objects(
                 .map_err(|message| Error::message(Stage::Write, message))?;
             Ok(executable.warnings)
         }
-        Target::X86_64LinuxGnu => linux::link(objects, output, libraries),
+        Target::X86_64LinuxGnu => linux::link(objects, output, native),
         Target::Aarch64LinuxGnu => Err(Error::message(
             Stage::Link,
             "linking for AArch64 Linux is not supported yet",

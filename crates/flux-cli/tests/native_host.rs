@@ -368,7 +368,7 @@ dependencies=["shared"]
     for (label, source, error) in [
         (
             "bad-directive",
-            "fn main(){println!(\"cargo::rustc-link-arg=-bad\");}",
+            "fn main(){println!(\"cargo::rustc-unknown=-bad\");}",
             "unsupported build-script directive",
         ),
         (

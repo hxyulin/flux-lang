@@ -128,6 +128,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
                 debug_assertions: None,
             },
             sources: &sources,
+            native: Default::default(),
         },
         &runner,
     )? {

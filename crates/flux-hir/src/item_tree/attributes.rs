@@ -1,7 +1,7 @@
 //! Attribute admission and representation hints.
 use super::{
-    AstChildren, AstNode, Diagnostic, REPR_INTS, Symbol, SyntaxElement, SyntaxKind, T, TextRange,
-    ast, cfg_position, macros, unsupported,
+    AstChildren, AstNode, Diagnostic, NativeKind, NativeLibrary, REPR_INTS, Symbol, SyntaxElement,
+    SyntaxKind, T, TextRange, ast, cfg_position, macros, unsupported,
 };
 
 /// `non_exhaustive` is a safe, bare attribute; lists and values are errors.
@@ -556,9 +556,12 @@ pub(super) fn link_name_attr(
     Some(Symbol::intern(&name))
 }
 
-/// Literal native-library requests. Other linker kinds need their own
-/// object/archive semantics and must not silently become dynamic libraries.
-pub(super) fn link_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) -> Option<Symbol> {
+/// Literal native-library requests of the kinds the linker distinguishes:
+/// `dylib` (the default), `static` and `framework`.
+pub(super) fn link_attr(
+    attr: ast::Attr<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<NativeLibrary> {
     let range = attr.syntax().text_range();
     let meta = attr.meta()?;
     let Some(tree) = meta
@@ -629,10 +632,19 @@ pub(super) fn link_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) 
             }
         };
     }
-    if kind.as_deref().is_some_and(|kind| kind != "dylib") {
-        unsupported(diagnostics, range, "native library kinds other than dylib");
-        return None;
-    }
+    let kind = match kind.as_deref() {
+        None | Some("dylib") => NativeKind::Dylib,
+        Some("static") => NativeKind::Static,
+        Some("framework") => NativeKind::Framework,
+        Some(_) => {
+            unsupported(
+                diagnostics,
+                range,
+                "native library kinds other than dylib, static and framework",
+            );
+            return None;
+        }
+    };
     let Some(name) = name.filter(|name| !name.is_empty() && !name.contains('\0')) else {
         diagnostics.push(Diagnostic::new(
             range,
@@ -644,7 +656,10 @@ pub(super) fn link_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) 
         unsupported(diagnostics, range, "native library path names");
         return None;
     }
-    Some(Symbol::intern(&name))
+    Some(NativeLibrary {
+        name: Symbol::intern(&name),
+        kind,
+    })
 }
 
 /// Deprecation is lint metadata; validate its payload as for other accepted
