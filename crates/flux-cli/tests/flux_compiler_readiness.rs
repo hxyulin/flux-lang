@@ -662,7 +662,7 @@ fn flux_compiler(root: &Path) {
             &object,
             target,
             &executable,
-            &hir.items.native_libraries,
+            &flux_codegen::NativeLink::libraries(&hir.items.native_libraries),
         )
         .unwrap();
         cli_contract(&executable, root, label);

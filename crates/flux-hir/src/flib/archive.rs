@@ -232,7 +232,7 @@ pub fn read_items(
         Decode::decode(d)?;
     let anonymous: rustc_hash::FxHashMap<(FileId, flux_syntax::NodeId), crate::ConstId> =
         Decode::decode(d)?;
-    let native: Vec<flux_intern::Symbol> = Decode::decode(d)?;
+    let native: Vec<crate::NativeLibrary> = Decode::decode(d)?;
     let own_module = |id: crate::ModuleId| d.ids.contains_owned(IdKind::Module, id.into_raw());
     if !own_module(data.root) {
         return Err(Error("crate root is not owned by artifact"));

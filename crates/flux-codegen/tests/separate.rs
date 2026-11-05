@@ -179,7 +179,7 @@ fn separate_objects_link_with_generics_statics_and_function_pointers() {
             ],
             Target::Aarch64AppleDarwin,
             &path,
-            &[],
+            &Default::default(),
         );
         result.unwrap();
         let output = execute(&path, &format!("basic-{tier:?}"));
@@ -301,7 +301,13 @@ fn run_objects(modules: &[keel_ir::Module], name: &str, expected: &str) {
             .collect();
         let path =
             std::env::temp_dir().join(format!("flux-{name}-{}-{tier:?}", std::process::id()));
-        flux_codegen::link_objects(&inputs, Target::Aarch64AppleDarwin, &path, &[]).unwrap();
+        flux_codegen::link_objects(
+            &inputs,
+            Target::Aarch64AppleDarwin,
+            &path,
+            &Default::default(),
+        )
+        .unwrap();
         let output = execute(&path, &format!("{name}-{tier:?}"));
         let _ = std::fs::remove_file(&path);
         assert!(output.status.success(), "{name} {tier:?}: {output:?}");

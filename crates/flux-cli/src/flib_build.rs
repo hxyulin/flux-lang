@@ -255,7 +255,12 @@ pub(crate) fn compile(
         );
         for warning in timings
             .time("link", || {
-                flux_codegen::link_objects(&inputs, target, output, &hir.items.native_libraries)
+                flux_codegen::link_objects(
+                    &inputs,
+                    target,
+                    output,
+                    &flux_codegen::NativeLink::libraries(&hir.items.native_libraries),
+                )
             })
             .map_err(|e| e.to_string())?
         {

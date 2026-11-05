@@ -80,6 +80,7 @@ pub(crate) fn build(file: &Path, output: &Path, options: BuildOptions) -> Result
         output,
         options,
         sources: &[],
+        native: Default::default(),
     })
 }
 
@@ -92,6 +93,9 @@ pub(crate) struct CompileRequest<'a> {
     pub options: BuildOptions,
     /// Dependency-ordered source crates; empty for a single source file.
     pub sources: &'a [SourceInput],
+    /// Native libraries and search directories from build scripts, linked
+    /// with those the sources' `#[link]` attributes request.
+    pub native: flux_codegen::NativeLink,
 }
 
 pub(crate) struct SourceInput {
@@ -149,6 +153,7 @@ fn compile_inner(
         output,
         options,
         sources,
+        mut native,
     } = request;
     let suite = crate::builtins::active();
     // `core`'s files are parsed with the database.
@@ -336,6 +341,9 @@ fn compile_inner(
                 flux_codegen::compile_object(&mut module, target, tier)
                     .map_err(|error| error.to_string())?
             };
+            for library in &hir.items.native_libraries {
+                native.add_library(*library);
+            }
             let warnings = timings.time("link", || {
                 if builtin_object {
                     let builtin = suite
@@ -356,17 +364,12 @@ fn compile_inner(
                         ],
                         target,
                         output,
-                        &hir.items.native_libraries,
+                        &native,
                     )
                     .map_err(|error| error.to_string());
                 }
-                flux_codegen::link_executable_with_libraries(
-                    &object,
-                    target,
-                    output,
-                    &hir.items.native_libraries,
-                )
-                .map_err(|error| error.to_string())
+                flux_codegen::link_executable_with_libraries(&object, target, output, &native)
+                    .map_err(|error| error.to_string())
             })?;
             for warning in warnings {
                 eprintln!("warning: {warning}");

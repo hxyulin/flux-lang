@@ -297,6 +297,8 @@ record!(DynRef {
 });
 record!(ArrayLen { kind, range });
 variants!(Visibility {0=>Public,1=>Crate(id),2=>Module(id)});
+variants!(crate::NativeKind {0=>Dylib,1=>Static,2=>Framework});
+record!(crate::NativeLibrary { name, kind });
 variants!(Owner {0=>Impl(id),1=>Trait(id)});
 variants!(AssocItem {0=>Function(id),1=>Const(id)});
 variants!(ImplTarget {0=>Struct(id),1=>Primitive(name),2=>Object(id)});

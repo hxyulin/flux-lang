@@ -106,9 +106,11 @@ reported as "not supported yet":
   C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`), and foreign
   statics. Foreign static accesses require unsafe code; taking a raw address
   does not read the static. Literal `link_name` preserves the imported symbol.
-  Literal extern-block `link` attributes support default/explicit dynamic
-  libraries. Other link kinds, modifiers, conditional options and path names
-  are explicitly unsupported. Items
+  Literal extern-block `link` attributes support the `dylib` (default),
+  `static` and `framework` kinds; the link searches build scripts'
+  `rustc-link-search` directories, then the macOS SDK. Other link kinds,
+  modifiers, conditional options and path names are explicitly unsupported.
+  Items
   may be `pub`, `pub(crate)`, `pub(super)`, `pub(self)` or
   `pub(in path)`, and flux checks privacy as rustc does. An enum's
   variants are named through it (`E::A`, `Self::A`) or imported

@@ -4591,10 +4591,10 @@ impl Collector<'_> {
         );
         for attr in attrs.iter() {
             if attr_name(attr) == Some("link") {
-                if let Some(name) = super::attributes::link_attr(attr, diagnostics)
-                    && !self.items.native_libraries.contains(&name)
+                if let Some(library) = super::attributes::link_attr(attr, diagnostics)
+                    && !self.items.native_libraries.contains(&library)
                 {
-                    self.items.native_libraries.push(name);
+                    self.items.native_libraries.push(library);
                 }
             } else {
                 super::attributes::check_attr(attr, diagnostics);

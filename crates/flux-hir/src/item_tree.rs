@@ -54,6 +54,25 @@ pub type ConstId = Idx<Const>;
 pub type TraitId = Idx<Trait>;
 pub type TypeAliasId = Idx<TypeAlias>;
 
+/// How a native library is linked: `#[link(kind = ...)]`, or the `KIND` of
+/// a `-l KIND=NAME` request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NativeKind {
+    /// A shared library, or whatever the linker's `-l` search finds first.
+    Dylib,
+    /// A static archive, `libNAME.a`.
+    Static,
+    /// An Apple framework, `NAME.framework`.
+    Framework,
+}
+
+/// A native library the final link needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct NativeLibrary {
+    pub name: Symbol,
+    pub kind: NativeKind,
+}
+
 /// A crate, an index into [`ItemTree::crates`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CrateId(pub u32);
@@ -121,8 +140,8 @@ pub struct ItemTree {
     pub consts: LayeredArena<Const>,
     pub type_aliases: LayeredArena<TypeAlias>,
     pub uses: Vec<Use>,
-    /// Native dynamic libraries requested by literal foreign-block attributes.
-    pub native_libraries: Vec<Symbol>,
+    /// Native libraries requested by literal foreign-block attributes.
+    pub native_libraries: Vec<NativeLibrary>,
     /// What each module's names mean, imports included.
     pub def_map: DefMap,
     /// The associated items of each type's inherent `impl` blocks, by

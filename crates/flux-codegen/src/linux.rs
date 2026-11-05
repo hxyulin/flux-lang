@@ -1,19 +1,19 @@
 //! Native glibc startup and shared-library discovery for Keel's ELF linker.
-use crate::{Error, ObjectInput, Stage};
+use crate::{Error, NativeLink, ObjectInput, Stage};
 use std::path::Path;
 
 pub(crate) fn link(
     objects: &[ObjectInput<'_>],
     output: &Path,
-    libraries: &[flux_intern::Symbol],
+    native: &NativeLink,
 ) -> Result<Vec<String>, Error> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        native::link(objects, output, libraries)
+        native::link(objects, output, native)
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
-        let _ = (objects, output, libraries);
+        let _ = (objects, output, native);
         Err(Error::message(
             Stage::Link,
             "x86-64 Linux linking requires a native Linux host",
@@ -24,6 +24,8 @@ pub(crate) fn link(
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod native {
     use super::*;
+    use crate::native::{Found, find};
+    use flux_hir::NativeKind;
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
@@ -48,7 +50,7 @@ mod native {
     pub(super) fn link(
         objects: &[ObjectInput<'_>],
         output: &Path,
-        libraries: &[flux_intern::Symbol],
+        native: &NativeLink,
     ) -> Result<Vec<String>, Error> {
         let mut names = vec![
             "crt1.o".to_owned(),
@@ -61,8 +63,37 @@ mod native {
             "libm.so.6".into(),
             "libpthread.so.0".into(),
         ]);
-        for name in libraries {
-            let name = name.as_str();
+        for library in &native.libraries {
+            if library.kind == NativeKind::Framework {
+                return Err(Error::message(
+                    Stage::Link,
+                    "frameworks can only be linked on Apple targets",
+                ));
+            }
+            // Requested directories first, then the C driver's own.
+            let found = if native.search_paths.is_empty() && library.kind == NativeKind::Dylib {
+                None
+            } else {
+                match find(*library, native, &[], &[], &["so", "a"]) {
+                    Ok(Found::Archive(path, _) | Found::Shared(path) | Found::Interface(path)) => {
+                        Some(path)
+                    }
+                    Err(error) if library.kind == NativeKind::Static => return Err(error),
+                    Err(_) => None,
+                }
+            };
+            if let Some(path) = found {
+                let path = path
+                    .canonicalize()
+                    .map_err(|e| Error::io(Stage::Link, "cannot resolve library path", e))?
+                    .to_string_lossy()
+                    .into_owned();
+                if !names.contains(&path) {
+                    names.push(path);
+                }
+                continue;
+            }
+            let name = library.name.as_str();
             let file = match name {
                 "c" | "m" => continue,
                 "pthread" => "libpthread.so.0".into(),
@@ -78,7 +109,11 @@ mod native {
         let files: Vec<_> = names
             .iter()
             .map(|name| {
-                let path = runtime_file(name)?;
+                let path = if Path::new(name).is_absolute() {
+                    PathBuf::from(name)
+                } else {
+                    runtime_file(name)?
+                };
                 std::fs::read(&path).map_err(|e| {
                     Error::io(Stage::Sdk, &format!("cannot read {}", path.display()), e)
                 })
