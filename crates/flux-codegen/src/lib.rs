@@ -205,11 +205,16 @@ pub fn link_objects(
                     bytes: o.bytes,
                 })
                 .collect();
+            let defaults = keel_link::Options::default();
+            // The SDK the executable was built against: Darwin picks some
+            // runtime behavior by it, such as the malloc zone.
+            let sdk_version = sdk_version(&sdk).unwrap_or(defaults.minimum_macos);
             let executable = keel_link::link(
                 &inputs,
                 keel_link::Options {
                     dylibs,
-                    ..keel_link::Options::default()
+                    sdk_version,
+                    ..defaults
                 },
             )
             .map_err(|message| Error::message(Stage::Link, message))?;
@@ -227,6 +232,30 @@ pub fn link_objects(
             "linking for WebAssembly is not supported yet",
         )),
     }
+}
+
+/// The version of the macOS SDK at `sdk`, from its `SDKSettings.json`,
+/// encoded as the build-version load command wants it: `xxxx.yy.zz` as
+/// `0xXXXXYYZZ`.
+fn sdk_version(sdk: &Path) -> Option<u32> {
+    let settings = std::fs::read_to_string(sdk.join("SDKSettings.json")).ok()?;
+    let after = &settings[settings.find("\"Version\"")? + "\"Version\"".len()..];
+    let value = after
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start()
+        .strip_prefix('"')?;
+    parse_version(&value[..value.find('"')?])
+}
+
+/// `27.0` or `15.4.1` as `0xXXXXYYZZ`.
+fn parse_version(text: &str) -> Option<u32> {
+    let mut parts = text.split('.').map(|part| part.parse::<u32>().ok());
+    let major = parts.next()??;
+    let minor = parts.next().unwrap_or(Some(0))?;
+    let patch = parts.next().unwrap_or(Some(0))?;
+    (parts.next().is_none() && major <= 0xffff && minor <= 0xff && patch <= 0xff)
+        .then_some(major << 16 | minor << 8 | patch)
 }
 
 /// The macOS SDK: `$SDKROOT`, or what `xcrun` reports.
@@ -247,4 +276,20 @@ fn macos_sdk() -> Result<PathBuf, Error> {
     Ok(PathBuf::from(
         String::from_utf8_lossy(&output.stdout).trim(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_version;
+
+    #[test]
+    fn sdk_versions_encode_as_nibbles() {
+        assert_eq!(parse_version("27.0"), Some(0x001b_0000));
+        assert_eq!(parse_version("15.4.1"), Some(0x000f_0401));
+        assert_eq!(parse_version("14"), Some(0x000e_0000));
+        assert_eq!(parse_version("14.x"), None);
+        assert_eq!(parse_version("1.2.3.4"), None);
+        assert_eq!(parse_version("1.256"), None);
+        assert_eq!(parse_version(""), None);
+    }
 }
