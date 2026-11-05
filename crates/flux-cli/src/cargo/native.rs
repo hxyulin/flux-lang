@@ -1093,11 +1093,10 @@ fn predicate(input: &str, cfg: &BTreeSet<String>) -> Result<bool> {
         }
     }
     let atom = compact(input);
-    if atom.starts_with("feature=")
-        || atom == "test"
-        || atom == "debug_assertions"
-        || atom.starts_with("target_feature=")
-    {
+    // `target_feature` atoms are decided by the same list the compiled
+    // code sees (`crate::target::cfg`), so a dependency is planned exactly
+    // when its users' `cfg(target_feature = ..)` is true.
+    if atom.starts_with("feature=") || atom == "test" || atom == "debug_assertions" {
         return Err(format!("unsupported target dependency predicate {input}"));
     }
     if input.contains(['(', ')', ',']) || input.is_empty() {
@@ -1346,4 +1345,35 @@ fn source_reference(source: &str) -> &str {
 }
 fn lock_source_matches(reference: &str, source: &str) -> bool {
     reference == source || reference == source_reference(source)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::predicate;
+
+    #[test]
+    fn target_features_follow_the_target_cfg() {
+        let cfg = crate::target::cfg(true)
+            .unwrap()
+            .iter()
+            .map(|s| super::compact(s))
+            .collect();
+        let baseline = if cfg!(target_arch = "aarch64") {
+            "neon"
+        } else {
+            "sse2"
+        };
+        let on = format!("target_feature = \"{baseline}\"");
+        assert_eq!(predicate(&on, &cfg), Ok(true));
+        assert_eq!(predicate("target_feature = \"atomics\"", &cfg), Ok(false));
+        assert_eq!(predicate("target_feature = \"avx2\"", &cfg), Ok(false));
+        assert_eq!(
+            predicate(
+                "all(target_arch = \"wasm32\", target_feature = \"atomics\")",
+                &cfg
+            ),
+            Ok(false)
+        );
+        assert!(predicate("feature = \"std\"", &cfg).is_err());
+    }
 }
