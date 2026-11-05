@@ -578,11 +578,31 @@ pub fn check_impls(
             match sigs.impls.get(id).map(|ty| ty.kind()) {
                 Some(TyKind::Adt(..)) => {
                     let lifetimes = crate::regions::slots(items, sigs.impls[id]);
+                    let predicates = sigs.impl_predicates.get(id).map_or(&[][..], |p| &p[..]);
                     let regular_lifetimes = sigs.regions.impls.get(id).is_some_and(|r| {
+                        // A lifetime in no slot of the self type, `'__pin` in
+                        // pin-project-lite's `impl<'__pin, T> Unpin for S<T>
+                        // where __Origin<'__pin, T>: Unpin`, is existential.
+                        // Erasing it is exact where it occurs only in the
+                        // types of auto trait bounds: the accepted impls of
+                        // auto traits never depend on lifetimes, so such a
+                        // bound holds for some lifetime if and only if it
+                        // holds erased.
+                        let free = |region: &Region| {
+                            matches!(region, Region::Param(p) if (*p as usize) < r.names.len())
+                                && !r.self_ty.contains(region)
+                        };
+                        let bound_self = |(row, predicate): (&[Region], &Predicate)| {
+                            row.is_empty()
+                                || (row.iter().all(free)
+                                    && is_auto_trait(items, predicate.trait_ref.trait_)
+                                    && !predicate.self_ty.has_aliases()
+                                    && !predicate.self_ty.has_opaques())
+                        };
                         // Named and elided header lifetimes are both universal.
                         // Accept a permutation of distinct binder parameters;
                         // constants and repeated parameters specialize the impl.
-                        r.names.len() == lifetimes
+                        r.names.len() >= lifetimes
                             && r.self_ty.len() == lifetimes
                             && r.self_ty.iter().enumerate().all(|(i, region)| {
                                 matches!(region, Region::Param(p) if (*p as usize) < r.names.len())
@@ -594,7 +614,8 @@ pub fn check_impls(
                             && r.bound_selfs.len() == sigs.impl_predicates.get(id).map_or(0, |p| p.len())
                             && r.bound_traits.len() == r.bound_selfs.len()
                             && r.projections.len() == sigs.impl_projections.get(id).map_or(0, |p| p.len())
-                            && r.bound_selfs.iter().all(|r| r.is_empty())
+                            && r.bound_selfs.len() == predicates.len()
+                            && r.bound_selfs.iter().map(|r| &r[..]).zip(predicates).all(bound_self)
                             && r.bound_traits.iter().all(|r| {
                                 r.lifetimes.is_empty() && r.args.iter().all(|a| a.is_empty())
                             })
@@ -1787,6 +1808,20 @@ pub fn check_trivial_bounds(
         // resolve; match them by their written types' text.
         for (written, &p) in generics.predicates.iter().zip(predicates) {
             if p.self_ty.has_params() || p.trait_ref.args.iter().any(|a| a.has_params()) {
+                continue;
+            }
+            // A named lifetime other than `'static` is a generic parameter
+            // too, as rustc has it, even though types erase it:
+            // `where (PhantomData<&'a ()>, PhantomPinned): Unpin` is not
+            // checked where it is written.
+            let mut found = Vec::new();
+            crate::regions::lifetimes_in(&written.ty, &mut found);
+            crate::regions::lifetimes_in(&TypeRef::Path(written.bound.path.clone()), &mut found);
+            if found.iter().any(|l| {
+                !l.is_static()
+                    && !l.is_anonymous()
+                    && !written.bound.bound_lifetimes.contains(&l.name)
+            }) {
                 continue;
             }
             if !holds(items, sigs, &[], p) {

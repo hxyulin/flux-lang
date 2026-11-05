@@ -889,8 +889,17 @@ for either marker; mutable references require `T: Send` for Send and `T: Sync`
 for Sync. Raw pointers do not receive either marker automatically, and Cell
 and UnsafeCell are not Sync. Explicit unsafe implementations replace structural propagation,
 including their generic obligations; shared statics use the same Sync rules.
-Lifetime specialization/bounds in marker implementations and custom auto
-traits remain unsupported. Recursive structural proofs are conservatively
+A marker implementation may have lifetimes that no slot of its self type
+has when only the types of its auto trait bounds name them, as
+pin-project-lite's `impl<'__pin, T> Unpin for S<T> where
+PinnedFieldsOf<__Origin<'__pin, T>>: Unpin` does: such a lifetime is
+existential, and since accepted marker implementations never depend on
+lifetimes, the bound holds for some lifetime exactly when it holds with
+lifetimes erased. A bound that names a lifetime other than `'static` is
+not checked where it is written, as in rustc, so
+`where (PhantomData<&'__pin ()>, PhantomPinned): Unpin` only keeps the
+implementation from applying. Other lifetime specialization/bounds in
+marker implementations and custom auto traits remain unsupported. Recursive structural proofs are conservatively
 depth-limited; no threading APIs are implied by these markers.
 `Unpin` also propagates structurally. `PhantomPinned` prevents that propagation;
 references, raw pointers, Box, Rc, Arc and Arc's Weak remain Unpin regardless of

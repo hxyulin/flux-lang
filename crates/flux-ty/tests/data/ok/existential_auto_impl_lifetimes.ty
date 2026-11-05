@@ -1,0 +1,12 @@
+struct PinnedFieldsOfHelperStruct<T> { 0: T }
+struct Wrapper<'a, F> { name: &str, inner: F }
+struct __Origin<'__pin, 'a, F> { __dummy_lifetime: PhantomData<&()>, name: PhantomData<&str>, inner: F }
+struct NeverUnpin<F> { inner: F }
+fn is_unpin<T>(&T) -> bool
+fn generic<F>(&Wrapper<F>) -> bool
+    w@0: &Wrapper<F>
+fn main() -> ()
+    x@0: u8
+    w@1: Wrapper<&u8>
+    n@2: NeverUnpin<u8>
+type PinnedFieldsOf<T> = <PinnedFieldsOfHelperStruct<T> as PinnedFieldsOfHelperTrait>::Actual
