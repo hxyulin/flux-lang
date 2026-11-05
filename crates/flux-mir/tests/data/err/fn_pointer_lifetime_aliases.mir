@@ -1,0 +1,80 @@
+fn static_row(_1: fn(&&u8) -> u8) -> u8 {
+    let mut _0: u8;
+    let _2: u8; // x
+    let _3: &u8; // r
+    let _4: fn(&&u8) -> u8;
+    let _5: &&u8;
+
+    bb0: {
+        _2 = const 1_u8;
+        _3 = &_2;
+        _4 = copy _1;
+        _5 = &_3;
+        _0 = (copy _4)(copy _5) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_3);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn elided_result<'x>(_1: fn((&u8, &u8)) -> &u8, _2: &u8) -> &u8 {
+    let mut _0: &u8;
+    let _3: fn((&u8, &u8)) -> &u8;
+    let _4: (&u8, &u8);
+    let _5: &u8;
+    let _6: &u8;
+
+    bb0: {
+        _3 = copy _1;
+        _5 = copy _2;
+        _6 = copy _2;
+        _4 = (copy _5, copy _6);
+        _0 = (copy _3)(copy _4) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn named<'a>(_1: &Buf, _2: fn(&Buf) -> &str) -> &str {
+    let mut _0: &str;
+    let _3: fn(&Buf) -> &str;
+    let _4: &Buf;
+
+    bb0: {
+        _3 = copy _2;
+        _4 = copy _1;
+        _0 = (copy _3)(copy _4) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn contravariant<'a>(_1: Holder) -> Holder {
+    let mut _0: Holder;
+
+    bb0: {
+        _0 = move _1;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 410..412: `x` does not live long enough
+error 504..513: lifetime may not live long enough
+error 597..601: lifetime may not live long enough
+error 666..667: lifetime may not live long enough

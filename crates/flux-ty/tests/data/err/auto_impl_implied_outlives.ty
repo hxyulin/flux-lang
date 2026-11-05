@@ -1,0 +1,10 @@
+struct G<'a, T> { data: *mut T, marker: PhantomData<&()> }
+struct H<'a, 'b> { a: &u8, b: &u8 }
+struct Mapped<'a, T> { data: *mut T, marker: PhantomData<&mut T> }
+fn is_sync<T>(&T) -> ()
+fn main() -> ()
+    c@0: Cell<u8>
+    m@1: Mapped<Cell<u8>>
+error 317..325: lifetime specialization and bounds in auto trait impls are not supported yet
+error 419..428: lifetime specialization and bounds in auto trait impls are not supported yet
+error 762..764: the trait bound `Mapped<Cell<u8>>: Sync` is not satisfied

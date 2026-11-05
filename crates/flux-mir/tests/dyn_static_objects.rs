@@ -382,7 +382,9 @@ fn early_owner_function_item_remains_explicitly_unsupported() {
         String::from_utf8_lossy(&rustc.stderr)
     );
     let (_, _, hir) = flux_hir::lower_text(&path, source);
-    assert!(hir.diagnostics.iter().any(|error|
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.iter().any(|error|
         error.message == "lifetime arguments in expressions are not supported yet"),
-        "{:?}", hir.diagnostics);
+        "{:?}", typed.diagnostics);
 }

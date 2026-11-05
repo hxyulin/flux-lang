@@ -1,0 +1,365 @@
+fn peek(_1: &Buf, _2: fn(&Buf) -> bool) -> bool {
+    let mut _0: bool;
+    let _3: fn(&Buf) -> bool;
+    let _4: &Buf;
+
+    bb0: {
+        _3 = copy _2;
+        _4 = copy _1;
+        _0 = (copy _3)(copy _4) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn call<'a, T>(_1: &Buf, _2: fn(&Buf) -> Result<T, ()>) -> Result<T, ()> {
+    let mut _0: Result<T, ()>;
+    let _3: fn(&Buf) -> Result<T, ()>;
+    let _4: &Buf;
+
+    bb0: {
+        _3 = copy _2;
+        _4 = copy _1;
+        _0 = (copy _3)(copy _4) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn text(_1: &Buf) -> &str {
+    let mut _0: &str;
+
+    bb0: {
+        _0 = copy (*_1).0;
+        return;
+    }
+}
+
+fn apply<'x>(_1: fn((&u8, &u8)) -> &u8, _2: &u8, _3: &u8) -> &u8 {
+    let mut _0: &u8;
+    let _4: fn((&u8, &u8)) -> &u8;
+    let _5: (&u8, &u8);
+    let _6: &u8;
+    let _7: &u8;
+
+    bb0: {
+        _4 = copy _1;
+        _6 = copy _2;
+        _7 = copy _3;
+        _5 = (copy _6, copy _7);
+        _0 = (copy _4)(copy _5) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn larger(_1: (&u8, &u8)) -> &u8 {
+    let mut _0: &u8;
+    let _2: bool;
+    let _3: &u8;
+    let _4: &u8;
+
+    bb0: {
+        _3 = copy _1.0;
+        _4 = copy _1.1;
+        _2 = gt::<u8, u8>(copy _3, copy _4) -> bb1;
+    }
+
+    bb1: {
+        switchInt(copy _2) -> [0: bb3, otherwise: bb2];
+    }
+
+    bb2: {
+        _0 = copy _1.0;
+        goto -> bb4;
+    }
+
+    bb3: {
+        _0 = copy _1.1;
+        goto -> bb4;
+    }
+
+    bb4: {
+        return;
+    }
+}
+
+fn deref(_1: fn(&&u8) -> u8) -> u8 {
+    let mut _0: u8;
+    let _2: &u8; // r
+    let _3: &u8;
+    let mut _4: &u8;
+    let _5: fn(&&u8) -> u8;
+    let _6: &&u8;
+
+    bb0: {
+        _4 = const &S;
+        _2 = &(*_4);
+        _5 = copy _1;
+        _6 = &_2;
+        _0 = (copy _5)(copy _6) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn get(_1: &&u8) -> u8 {
+    let mut _0: u8;
+
+    bb0: {
+        _0 = copy (*(*_1));
+        return;
+    }
+}
+
+fn grow<'a>(_1: Holder) -> Holder {
+    let mut _0: Holder;
+
+    bb0: {
+        _0 = move _1;
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: Buf; // buf
+    let _2: bool;
+    let _3: &Buf;
+    let _4: fn(&Buf) -> bool;
+    let _5: {closure};
+    let _6: Result<usize, ()>;
+    let _7: &Buf;
+    let _8: fn(&Buf) -> Result<usize, ()>;
+    let _9: {closure};
+    let _10: fn(&Buf) -> &str; // f
+    let _11: fn(&Buf) -> &str {text};
+    let _12: &str;
+    let _13: fn(&Buf) -> &str;
+    let _14: &Buf;
+    let _15: &u8;
+    let _16: fn((&u8, &u8)) -> &u8;
+    let _17: fn((&u8, &u8)) -> &u8 {larger};
+    let _18: &u8;
+    let _19: &u8;
+    let _20: u8;
+    let _21: fn(&&u8) -> u8;
+    let _22: fn(&&u8) -> u8 {get};
+    let _23: Holder;
+    let _24: Holder;
+    let _25: fn(&Buf) -> bool;
+    let _26: {closure};
+
+    bb0: {
+        _1 = Buf { s: const &promoted[0] };
+        _3 = &_1;
+        _5 = {closure}();
+        _4 = const FnOnce::call_once::<{closure}, (&Buf,)> as fn;
+        _2 = peek(copy _3, copy _4) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        _7 = &_1;
+        _9 = {closure}();
+        _8 = const FnOnce::call_once::<{closure}, (&Buf,)> as fn;
+        _6 = call::<usize>(copy _7, copy _8) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_6);
+        _11 = const text;
+        _10 = const text as fn;
+        _13 = copy _10;
+        _14 = &_1;
+        _12 = (copy _13)(copy _14) -> bb3;
+    }
+
+    bb3: {
+        StorageDead(_12);
+        _17 = const larger;
+        _16 = const larger as fn;
+        _18 = const &promoted[1];
+        _19 = const &promoted[2];
+        _15 = apply(copy _16, copy _18, copy _19) -> bb4;
+    }
+
+    bb4: {
+        StorageDead(_15);
+        _22 = const get;
+        _21 = const get as fn;
+        _20 = deref(copy _21) -> bb5;
+    }
+
+    bb5: {
+        StorageDead(_20);
+        _26 = {closure}();
+        _25 = const FnOnce::call_once::<{closure}, (&Buf,)> as fn;
+        _24 = Holder { f: copy _25 };
+        _23 = grow(move _24) -> bb6;
+    }
+
+    bb6: {
+        StorageDead(_23);
+        _0 = const ();
+        StorageDead(_10);
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn main::{closure#8} as Fn(_1: &{closure}, _2: (&Buf,)) -> bool {
+    let mut _0: bool;
+    let _3: &Buf; // b
+    let _4: &str;
+
+    bb0: {
+        _3 = copy _2.0;
+        _4 = &(*(*_3).0);
+        _0 = is_empty(copy _4) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#8} as FnMut(_1: &mut {closure}, _2: (&Buf,)) -> bool {
+    let mut _0: bool;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&Buf,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#8} as FnOnce(_1: {closure}, _2: (&Buf,)) -> bool {
+    let mut _0: bool;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&Buf,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#18} as Fn(_1: &{closure}, _2: (&Buf,)) -> Result<usize, ()> {
+    let mut _0: Result<usize, ()>;
+    let _3: &Buf; // b
+    let _4: usize;
+    let _5: &str;
+
+    bb0: {
+        _3 = copy _2.0;
+        _5 = &(*(*_3).0);
+        _4 = len(copy _5) -> bb1;
+    }
+
+    bb1: {
+        _0 = Result::Ok(copy _4);
+        return;
+    }
+}
+
+fn main::{closure#18} as FnMut(_1: &mut {closure}, _2: (&Buf,)) -> Result<usize, ()> {
+    let mut _0: Result<usize, ()>;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&Buf,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#18} as FnOnce(_1: {closure}, _2: (&Buf,)) -> Result<usize, ()> {
+    let mut _0: Result<usize, ()>;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&Buf,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn main::{closure#39} as Fn(_1: &{closure}, _2: (&Buf,)) -> bool {
+    let mut _0: bool;
+    let _3: &Buf; // b
+    let _4: &str;
+
+    bb0: {
+        _3 = copy _2.0;
+        _4 = &(*(*_3).0);
+        _0 = is_empty(copy _4) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#39} as FnMut(_1: &mut {closure}, _2: (&Buf,)) -> bool {
+    let mut _0: bool;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (&Buf,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main::{closure#39} as FnOnce(_1: {closure}, _2: (&Buf,)) -> bool {
+    let mut _0: bool;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (&Buf,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+

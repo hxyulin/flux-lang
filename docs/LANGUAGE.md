@@ -867,6 +867,12 @@ or result types. Reification rejects fixed, owner-bound, bounded or repeated
 input lifetimes rather than discarding their constraints; this also rejects
 some valid Rust signatures. Named pointer lifetimes remain unsupported, and elided reference outputs
 retain conservative checks. Borrowed function pointers autodereference at calls.
+A pointer's parameters and result may name type aliases with lifetimes, as
+in `fn(ParseStream<'a>) -> Result<T>` with `type ParseStream<'a> =
+&'a ParseBuffer<'a>`: each stands for its declared type, with the lifetimes
+written at the use (an elided one is one lifetime, as in rustc) and its
+type arguments' regions. Aliases whose region-bearing type parameters are
+left to defaults remain unsupported.
 A tuple struct's or tuple variant's constructor is a function
 too, as in rustc: its path not called (`Token::Num`, `Some`, `Wrapper`)
 is a value of its own function item type (`fn(i64) -> Token
@@ -891,8 +897,21 @@ for either marker; mutable references require `T: Send` for Send and `T: Sync`
 for Sync. Raw pointers do not receive either marker automatically, and Cell
 and UnsafeCell are not Sync. Explicit unsafe implementations replace structural propagation,
 including their generic obligations; shared statics use the same Sync rules.
-Lifetime specialization/bounds in marker implementations and custom auto
-traits remain unsupported. Recursive structural proofs are conservatively
+A marker implementation may have lifetimes that no slot of its self type
+has when only the types of its auto trait bounds name them, as
+pin-project-lite's `impl<'__pin, T> Unpin for S<T> where
+PinnedFieldsOf<__Origin<'__pin, T>>: Unpin` does: such a lifetime is
+existential, and since accepted marker implementations never depend on
+lifetimes, the bound holds for some lifetime exactly when it holds with
+lifetimes erased. A bound that names a lifetime other than `'static` is
+not checked where it is written, as in rustc, so
+`where (PhantomData<&'__pin ()>, PhantomPinned): Unpin` only keeps the
+implementation from applying. Outlives bounds that the self type's fields
+already require, `R: 'a` and `T: 'a` in lock_api's `unsafe impl<'a, R:
+RawMutex + Sync + 'a, T: ?Sized + Sync + 'a> Sync for MutexGuard<'a, R,
+T>`, are met by every instance and are accepted too. Other lifetime
+specialization/bounds in marker implementations and custom auto traits
+remain unsupported. Recursive structural proofs are conservatively
 depth-limited; no threading APIs are implied by these markers.
 `Unpin` also propagates structurally. `PhantomPinned` prevents that propagation;
 references, raw pointers, Box, Rc, Arc and Arc's Weak remain Unpin regardless of
@@ -1404,11 +1423,25 @@ Direct function and method calls accept named, impl-owned and static lifetimes
 inside written type arguments, such as `nth_child::<Expr<'t>>(node)`.
 The borrow checker enforces these written regions and their well-formedness
 constraints, including when the return value is unused. Named arguments in
-closures and function-item values remain unsupported; constructor paths and
-general named local annotations are outside this extension.
+closures and function-item values remain unsupported; general named local
+annotations are outside this extension.
 Direct trait calls on a qualified reference type, such as
 `<&'a Self>::try_from(value)`, preserve the written Self lifetime row too.
 Named inherent reference paths and function-item values remain unsupported.
+Constructor paths may write lifetimes and lifetime-bearing type arguments:
+`Scope::<'env> { .. }`, `Pair::<'a, T>(x, y)`, `E::<'a>::A`,
+`Some::<&'a u8>(x)`. As in rustc, the constructed value has exactly the
+written type, which the borrow checker relates invariantly, and then may
+become a subtype where it is used. The type before an associated function
+may write them too: `Scope::<'a>::new(x)`, `Vec::<&'a mut [T]>::new()`,
+`Holder::<'a>::default()`. They fix the lifetimes of the inherent `impl`
+block's self type, or of a trait method's `Self`, for that call. A direct
+call through a trait path may write the trait's lifetimes,
+`<T as Arbitrary<'a>>::arbitrary(u)` or `Arbitrary::<'a>::arbitrary(u)`:
+they fix the trait's lifetimes in the callee for that call. A wrong count
+of lifetime arguments is E0107. Lifetime arguments on functions and methods
+themselves (`f::<'a>()`), on associated constants' types, in patterns, in
+function item values, and named ones in closures are not supported yet.
 Concrete qualified associated types in struct fields can normalize through a
 selected impl while retaining their written input lifetimes. This covers owned
 and borrowed `IntoIterator::IntoIter` fields, including nested fields. Selection

@@ -5305,6 +5305,35 @@ impl<'a> Cx<'a> {
             Region::Param(i) => lifetimes.get(i as usize).copied(),
             Region::Erased | Region::Late(_) => None,
         };
+        if let Some((_, table)) = written
+            .iter()
+            .find(|(index, _)| *index == flux_ty::regions::IMPL_SELF_ARG)
+        {
+            self.impl_self_annotation(func, table, &mut map, generic_args, &type_vars, range);
+        }
+        // `<T as Tr<'a>>::f`: the trait's lifetimes, the first of `func`'s.
+        if let Some((_, table)) = written
+            .iter()
+            .find(|(index, _)| *index == flux_ty::regions::TRAIT_LIFETIMES_ARG)
+        {
+            if regions.owner as usize != table.len() {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "lifetime arguments of this trait are not supported yet",
+                ));
+            } else {
+                for (&var, region) in lifetimes.iter().zip(table.iter()) {
+                    let declared = match *region {
+                        Region::Static => Some(STATIC),
+                        Region::Param(i) => Some(1 + i),
+                        Region::Erased | Region::Late(_) => None,
+                    };
+                    if let Some(declared) = declared {
+                        self.equate(var, declared, Category::CallArgument, range);
+                    }
+                }
+            }
+        }
         let mut inputs: Vec<Var> = Vec::new();
         let mut unmatched_inputs: Vec<Var> = Vec::new();
         for (i, op) in args.iter().enumerate() {
@@ -5407,6 +5436,64 @@ impl<'a> Cx<'a> {
         self.signature_obligations(func, &lifetimes, generic_args, &type_vars, range);
         for (id, closure_args, upvars) in passed {
             self.passed_closure(id, closure_args, &upvars, args, dest, range, true);
+        }
+    }
+
+    /// `S::<'a>::f`: the self type of `func`'s `impl` block, instantiated
+    /// for the call, is the written `table`'s, as rustc's user type
+    /// annotation has it.
+    fn impl_self_annotation(
+        &mut self,
+        func: flux_hir::FunctionId,
+        table: &[Region],
+        map: &mut dyn FnMut(Region) -> Option<Var>,
+        generic_args: &[Ty],
+        type_vars: &[Vec<Var>],
+        range: TextRange,
+    ) {
+        let (items, sigs) = (self.items, self.sigs);
+        let vars = items.impl_of(func).and_then(|imp| {
+            let self_ty = *sigs.impls.get(imp)?;
+            let impl_regions = sigs.regions.impls.get(imp)?;
+            // The block's lifetimes are the first of the function's.
+            if sigs.regions.fns.get(func)?.owner as usize != impl_regions.names.len() {
+                return None;
+            }
+            let own = &impl_regions.self_ty;
+            let vars = self.instantiate_sig(self_ty, own, map, generic_args, type_vars)?;
+            (vars.len() == table.len()).then(|| (self_ty.subst(generic_args), vars))
+        });
+        let Some((self_ty, vars)) = vars else {
+            self.errors.push(Diagnostic::new(
+                range,
+                "lifetime arguments of this `impl` block's self type are not supported yet",
+            ));
+            return;
+        };
+        for (&var, region) in vars.iter().zip(table) {
+            let declared = match *region {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => Some(1 + i),
+                Region::Erased | Region::Late(_) => None,
+            };
+            if let Some(declared) = declared {
+                self.equate(var, declared, Category::CallArgument, range);
+            }
+        }
+        let mut implied = Vec::new();
+        flux_ty::regions::implied_outlives_with_static(
+            items,
+            sigs,
+            self_ty,
+            &vars,
+            Some(STATIC),
+            &mut implied,
+        );
+        for constraint in implied {
+            match constraint {
+                Outlives::Region(a, b) => self.outlives(a, b, Category::CallArgument, range),
+                Outlives::Type(t, b) => self.type_outlives(t, b, range),
+            }
         }
     }
 

@@ -294,6 +294,9 @@ pub struct SegmentArgs {
     pub segment: TextRange,
     /// From `<` to `>`.
     pub range: TextRange,
+    /// `'a` in `S::<'a, T>`, which type checking relates to the borrow
+    /// checker's regions or reports.
+    pub lifetimes: Box<[crate::item_tree::LifetimeRef]>,
     pub types: Box<[TypeRefId]>,
 }
 

@@ -75,6 +75,11 @@ pub struct InferenceResult {
     pub calls: ArenaMap<Expr, Instance>,
     /// Written function type arguments, indexed in the full generic argument list.
     pub call_regions: ArenaMap<Expr, crate::regions::TypeArgRegions>,
+    /// The slots of constructors' types as their paths' generic arguments
+    /// write them: `S<'a, T>` for `S::<'a, T> { .. }`, `S::<'a, T>(x)` (at
+    /// the call) and `E::<'a, T>::A`. The value has exactly that type,
+    /// which the borrow checker relates invariantly before it is moved on.
+    pub expr_regions: ArenaMap<Expr, Box<[crate::regions::Region]>>,
     /// The trait method each operator on a type other than the integers
     /// and `bool` calls: `Add::add` for `a + b`, `PartialEq::eq` for
     /// `a == b`, `PartialOrd::lt` for `a < b`, `AddAssign::add_assign`
@@ -1524,6 +1529,319 @@ impl Ctx<'_> {
         }
     }
 
+    /// [`InferenceResult::expr_regions`], after reporting the lifetime
+    /// arguments of expression paths that flux cannot relate to regions:
+    /// on functions and methods themselves, on traits, on constants and
+    /// in patterns.
+    fn constructor_regions(
+        &mut self,
+        calls: &ArenaMap<Expr, Instance>,
+    ) -> ArenaMap<Expr, Box<[crate::regions::Region]>> {
+        const UNSUPPORTED: &str = "lifetime arguments in expressions are not supported yet";
+        let body = self.body;
+        let mut call_of = FxHashMap::default();
+        for (expr, data) in body.exprs.iter() {
+            if let Expr::Call { callee, .. } = data {
+                call_of.insert(*callee, expr);
+            }
+        }
+        let mut out = ArenaMap::new();
+        for (expr, generics) in body.generic_args.iter() {
+            let (item, ty) = (generics.item.as_ref(), generics.ty.as_ref());
+            // Which of the path's argument lists are related to regions, as
+            // the constructor's type or an inherent function's self type.
+            let (item_ok, ty_ok) = match body.exprs[expr] {
+                Expr::Record { .. } | Expr::Path(Res::Struct(_) | Res::Variant(..))
+                    if !generics.self_type && generics.alias.is_none() =>
+                {
+                    // `instantiate_adt` takes the item's, else the type's.
+                    let written = item.or(ty);
+                    let value = match body.exprs[expr] {
+                        Expr::Record { .. } => Some(expr),
+                        _ => call_of.get(&expr).copied().or_else(|| {
+                            let ty = self.expr_types.get(expr).copied();
+                            ty.filter(|t| matches!(t.kind(), TyKind::Adt(..)))
+                                .map(|_| expr)
+                        }),
+                    };
+                    let value_ty = value.and_then(|v| self.expr_types.get(v).copied());
+                    match (written, value, value_ty) {
+                        (Some(written), Some(value), Some(value_ty)) => {
+                            if let Some(regions) = self.written_adt_regions(written, value_ty)
+                                && regions.iter().any(|r| *r != crate::regions::Region::Erased)
+                            {
+                                out.insert(value, regions);
+                            }
+                        }
+                        (Some(written), None, _) if !self.written_lifetimes(written).is_empty() => {
+                            let message = "lifetimes in function item values are not supported yet";
+                            self.report_walker_errors(vec![(self.range(expr), message.to_owned())]);
+                        }
+                        _ => {}
+                    }
+                    (item.is_some(), item.is_none())
+                }
+                // The self type's are in `call_regions`.
+                Expr::Path(Res::Function(_))
+                    if calls
+                        .get(expr)
+                        .is_some_and(|i| self.items.impl_of(i.function).is_some()) =>
+                {
+                    (false, true)
+                }
+                // Written in the path's type, which `call_regions` has, or
+                // reported where it is resolved.
+                Expr::Path(Res::Assoc { trait_: None, .. }) => (false, true),
+                // The trait's, which `call_regions` has at a call of one of
+                // its functions.
+                Expr::Path(Res::Assoc {
+                    trait_: Some(t), ..
+                }) if calls.get(expr).is_some_and(|i| {
+                    self.items.functions[i.function].owner == Some(flux_hir::Owner::Trait(t))
+                }) =>
+                {
+                    (false, true)
+                }
+                _ => (false, false),
+            };
+            for (args, ok) in [(item, item_ok), (ty, ty_ok)] {
+                if let Some(args) = args
+                    && !ok
+                    && let (Some(first), Some(last)) =
+                        (args.lifetimes.first(), args.lifetimes.last())
+                {
+                    self.error(
+                        TextRange::new(first.range.start(), last.range.end()),
+                        UNSUPPORTED,
+                    );
+                }
+            }
+            // An associated constant's `impl` block, whose arguments are
+            // resolved as written, without regions.
+            if let Expr::Path(Res::Const(_)) = body.exprs[expr]
+                && let Some(ty) = ty
+            {
+                let mut found = Vec::new();
+                for &t in &ty.types {
+                    crate::regions::lifetimes_in(&body.types[t], &mut found);
+                }
+                if let Some(l) = found.iter().find(|l| !l.is_anonymous()) {
+                    self.error(
+                        l.range,
+                        "named lifetimes in types in bodies are not supported yet",
+                    );
+                }
+            }
+        }
+        // `S::<'a>::N` names a constant of a type with lifetimes.
+        for (expr, data) in body.exprs.iter() {
+            if let Expr::Path(Res::Assoc {
+                ty: Some(written), ..
+            }) = data
+                && calls.get(expr).is_none()
+            {
+                let mut found = Vec::new();
+                crate::regions::lifetimes_in(&body.types[*written], &mut found);
+                if let Some(l) = found.iter().find(|l| !l.is_anonymous()) {
+                    self.error(
+                        l.range,
+                        "named lifetimes in types in bodies are not supported yet",
+                    );
+                }
+            }
+        }
+        for (_, generics) in body.pat_generic_args.iter() {
+            for args in [&generics.item, &generics.ty].into_iter().flatten() {
+                if let (Some(first), Some(last)) = (args.lifetimes.first(), args.lifetimes.last()) {
+                    self.error(
+                        TextRange::new(first.range.start(), last.range.end()),
+                        "lifetime arguments in patterns are not supported yet",
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    /// A walker of the body's written types, whose lifetimes are those of
+    /// the function the body is of.
+    fn body_walker(&self) -> crate::regions::Walker<'_> {
+        let names = self
+            .owner_fn
+            .and_then(|f| self.sigs.regions.fns.get(f))
+            .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
+        let mut walker = crate::regions::Walker::new(self.items, self.module, names);
+        walker.body = true;
+        walker.infer_objects = true;
+        walker.self_regions = self
+            .owner_fn
+            .and_then(|f| self.items.impl_of(f))
+            .and_then(|imp| self.sigs.regions.impls.get(imp))
+            .map(|r| &*r.self_ty);
+        walker.scope = TypeScope {
+            self_ty: self.self_ty,
+            generics: &self.generics,
+            consts: &self.const_params,
+            bounds: &self.param_env,
+            defaults: Some(&self.sigs.trait_defaults),
+            struct_fields: Some(&self.sigs.structs),
+            ..TypeScope::default()
+        };
+        walker
+    }
+
+    /// Reports the walker's `errors` that are not reported yet.
+    fn report_walker_errors(&mut self, errors: Vec<(TextRange, String)>) {
+        for (range, message) in errors {
+            if !self
+                .diagnostics
+                .iter()
+                .any(|d| d.range == range && d.message == message)
+            {
+                self.error(range, message);
+            }
+        }
+    }
+
+    /// Outside a function, a named lifetime in an expression's path has no
+    /// region the borrow checker knows: reported, and true, if `found` has one.
+    fn unrepresented_lifetimes(&mut self, found: &[flux_hir::LifetimeRef]) -> bool {
+        if self.owner_fn.is_some() {
+            return false;
+        }
+        let Some(l) = found.iter().find(|l| !l.is_anonymous() && !l.is_static()) else {
+            return false;
+        };
+        self.error(
+            l.range,
+            "lifetime arguments in expressions are not supported yet",
+        );
+        true
+    }
+
+    /// The regions of the lifetime arguments `written` for trait `t`, as
+    /// many as it has: inferred if none is written.
+    fn written_trait_lifetimes(
+        &mut self,
+        t: flux_hir::TraitId,
+        written: &SegmentArgs,
+    ) -> Option<Box<[crate::regions::Region]>> {
+        let got = written.lifetimes.len();
+        if got == 0 || self.unrepresented_lifetimes(&written.lifetimes) {
+            return None;
+        }
+        let want = self.items.traits[t].generics.lifetimes.len();
+        if got != want {
+            let verb = if got == 1 { "was" } else { "were" };
+            let plural = |n: usize| if n == 1 { "" } else { "s" };
+            self.error(
+                written.segment,
+                format!(
+                    "trait takes {want} lifetime argument{} but {got} lifetime argument{} {verb} supplied",
+                    plural(want),
+                    plural(got)
+                ),
+            );
+            return None;
+        }
+        let mut walker = self.body_walker();
+        let regions = written.lifetimes.iter().map(|&l| walker.named(l)).collect();
+        let errors = walker.errors;
+        self.report_walker_errors(errors);
+        Some(regions)
+    }
+
+    /// The lifetimes written in generic arguments `written`, `'_` aside.
+    fn written_lifetimes(&self, written: &SegmentArgs) -> Vec<flux_hir::LifetimeRef> {
+        let mut found = written.lifetimes.to_vec();
+        for &t in &written.types {
+            crate::regions::lifetimes_in(&self.body.types[t], &mut found);
+        }
+        found.retain(|l| !l.is_anonymous());
+        found
+    }
+
+    /// The slots of `ty`, the body's type `written` resolved.
+    fn written_type_regions(
+        &mut self,
+        written: TypeRefId,
+        ty: Ty,
+    ) -> Option<Box<[crate::regions::Region]>> {
+        let mut found = Vec::new();
+        crate::regions::lifetimes_in(&self.body.types[written], &mut found);
+        if self.unrepresented_lifetimes(&found) {
+            return None;
+        }
+        let mut walker = self.body_walker();
+        let regions = walker.regions(&self.body.types[written], ty);
+        let errors = walker.errors;
+        self.report_walker_errors(errors);
+        Some(regions)
+    }
+
+    /// The slots of `ty`, a struct or enum named in an expression's path
+    /// with the generic arguments `written`: `S<'a, &'b T>` in
+    /// `S::<'a, &'b T> { .. }` or `S::<'a, &'b T>::f`. Type arguments
+    /// left out, and `'_`, are inferred.
+    fn written_adt_regions(
+        &mut self,
+        written: &SegmentArgs,
+        ty: Ty,
+    ) -> Option<Box<[crate::regions::Region]>> {
+        let found = self.written_lifetimes(written);
+        if (found.is_empty() && written.lifetimes.is_empty())
+            || self.unrepresented_lifetimes(&found)
+        {
+            return None;
+        }
+        let TyKind::Adt(adt, args) = ty.kind() else {
+            if ty != Ty::ERROR
+                && let Some(&l) = found.first().or(written.lifetimes.first())
+            {
+                self.error(
+                    l.range,
+                    "lifetime arguments in expressions are not supported yet",
+                );
+            }
+            return None;
+        };
+        let def = &self.items.structs[adt.strukt];
+        let want = def.generics.lifetimes.len();
+        let kind = if def.is_enum() { "enum" } else { "struct" };
+        let mut walker = self.body_walker();
+        let mut out = Vec::new();
+        let got = written.lifetimes.len();
+        if got != 0 && got != want {
+            let verb = if got == 1 { "was" } else { "were" };
+            let plural = |n: usize| if n == 1 { "" } else { "s" };
+            walker.errors.push((
+                written.segment,
+                format!(
+                    "{kind} takes {want} lifetime argument{} but {got} lifetime argument{} {verb} supplied",
+                    plural(want),
+                    plural(got)
+                ),
+            ));
+        }
+        if got == want {
+            for &l in &written.lifetimes {
+                out.push(walker.named(l));
+            }
+        } else {
+            out.extend(std::iter::repeat_n(crate::regions::Region::Erased, want));
+        }
+        for (i, &arg) in args.iter().enumerate() {
+            let n = crate::regions::slots(self.items, arg);
+            match written.types.get(i) {
+                Some(&t) if n > 0 => out.extend(walker.regions(&self.body.types[t], arg)),
+                _ => out.extend(std::iter::repeat_n(crate::regions::Region::Erased, n)),
+            }
+        }
+        let errors = walker.errors;
+        self.report_walker_errors(errors);
+        Some(out.into())
+    }
+
     /// `ty` with each `_` in it a new variable.
     fn fill_placeholders(&mut self, ty: Ty, origin: TextRange) -> Ty {
         if !ty.has_infer() {
@@ -1654,16 +1972,20 @@ impl Ctx<'_> {
         origin: TextRange,
     ) -> Ty {
         let generics = at.and_then(|e| self.body.generic_args.get(e));
-        self.instantiate_adt(strukt, generics, origin)
+        self.instantiate_adt(strukt, generics, true, origin)
     }
 
     /// Struct or enum `strukt` with the generic arguments of a path,
     /// after the struct, or after the enum or its variant (`E::<T>::A`,
     /// `E::A::<T>`).
+    /// In an expression (`expr`), written lifetimes are left to
+    /// [`InferenceResult::expr_regions`]; in a pattern they are not
+    /// supported.
     fn instantiate_adt(
         &mut self,
         strukt: StructId,
         generics: Option<&flux_hir::PathGenerics>,
+        expr: bool,
         origin: TextRange,
     ) -> Ty {
         let def = &self.items.structs[strukt];
@@ -1674,7 +1996,7 @@ impl Ctx<'_> {
         }
         // Named through a type alias: its type.
         if let Some(alias) = generics.and_then(|g| g.alias) {
-            let ty = self.resolve_path_type(alias);
+            let ty = self.resolve_path_type(alias, false);
             return match ty.kind() {
                 TyKind::Adt(adt, _) if adt.strukt == strukt => ty,
                 _ => Ty::ERROR,
@@ -1690,7 +2012,7 @@ impl Ctx<'_> {
             &def.generics.params,
             Some(flux_hir::def_map::Def::Struct(strukt)),
             written.as_ref(),
-            false,
+            expr,
             origin,
         );
         Ty::adt(strukt, def.name, &args)
@@ -1748,7 +2070,7 @@ impl Ctx<'_> {
             params,
             Some(flux_hir::def_map::Def::Struct(adt.strukt)),
             Some(&written),
-            false,
+            true,
             self.range(expr),
         );
         let ty = Ty::adt(adt.strukt, adt.name, &args);
@@ -2463,7 +2785,7 @@ impl Ctx<'_> {
                     );
                 }
                 let generics = body.pat_generic_args.get(pat);
-                let ty = self.instantiate_adt(*strukt, generics, range);
+                let ty = self.instantiate_adt(*strukt, generics, false, range);
                 let of_error = self.shallow(expected) == Ty::ERROR;
                 if !self.unify(ty, expected) {
                     self.mismatch(expected, ty, range);
@@ -2515,7 +2837,7 @@ impl Ctx<'_> {
                 rest,
             } => {
                 let generics = body.pat_generic_args.get(pat);
-                let ty = self.instantiate_adt(*strukt, generics, range);
+                let ty = self.instantiate_adt(*strukt, generics, false, range);
                 self.register_struct_bounds(ty, &[], range);
                 let of_error = self.shallow(expected) == Ty::ERROR;
                 if !self.unify(ty, expected) {
@@ -2605,7 +2927,7 @@ impl Ctx<'_> {
                     );
                 }
                 let generics = body.pat_generic_args.get(pat);
-                let ty = self.instantiate_adt(*strukt, generics, range);
+                let ty = self.instantiate_adt(*strukt, generics, false, range);
                 if !self.unify(ty, expected) {
                     self.mismatch(expected, ty, range);
                 }
@@ -6521,10 +6843,6 @@ impl Ctx<'_> {
                 _ => {}
             }
         }
-        let names = self
-            .owner_fn
-            .and_then(|f| self.sigs.regions.fns.get(f))
-            .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
         let mut call_regions = ArenaMap::new();
         for (expr, instance) in calls.iter() {
             let written = self
@@ -6539,16 +6857,21 @@ impl Ctx<'_> {
                 .flat_map(|w| w.types.iter().enumerate())
                 .map(|(i, &ty)| ((offset + i) as u32, ty))
                 .collect();
+            // `S::<'a>::f` for an inherent `f`: the written type is the
+            // `impl` block's self type, instantiated with the call's
+            // arguments.
+            let mut impl_self = None;
             if let Expr::Path(Res::Assoc {
                 ty: Some(written), ..
             }) = self.body.exprs[expr]
-                && matches!(self.body.types[written], flux_hir::TypeRef::Ref { .. })
             {
-                if matches!(
-                    self.items.functions[instance.function].owner,
-                    Some(flux_hir::Owner::Trait(_))
-                ) {
+                let owner = self.items.functions[instance.function].owner;
+                if matches!(owner, Some(flux_hir::Owner::Trait(_))) {
                     written_types.push((0, written));
+                } else if let Some(imp) = owner.and_then(flux_hir::Owner::as_impl)
+                    && matches!(self.body.types[written], flux_hir::TypeRef::Path(_))
+                {
+                    impl_self = Some((imp, written));
                 } else {
                     let mut lifetimes = Vec::new();
                     crate::regions::lifetimes_in(&self.body.types[written], &mut lifetimes);
@@ -6565,36 +6888,51 @@ impl Ctx<'_> {
                 let Some(&ty) = instance.args.get(index as usize) else {
                     continue;
                 };
-                let mut walker =
-                    crate::regions::Walker::new(self.items, self.module, names.clone());
-                walker.body = true;
-                walker.infer_objects = true;
-                walker.self_regions = self
-                    .owner_fn
-                    .and_then(|f| self.items.impl_of(f))
-                    .and_then(|imp| self.sigs.regions.impls.get(imp))
-                    .map(|r| &*r.self_ty);
-                walker.scope = TypeScope {
-                    self_ty: self.self_ty,
-                    generics: &self.generics,
-                    consts: &self.const_params,
-                    bounds: &self.param_env,
-                    defaults: Some(&self.sigs.trait_defaults),
-                    struct_fields: Some(&self.sigs.structs),
-                    ..TypeScope::default()
+                let Some(regions) = self.written_type_regions(written, ty) else {
+                    continue;
                 };
-                let regions = walker.regions(&self.body.types[written], ty);
-                for (range, message) in walker.errors {
-                    if !self
-                        .diagnostics
-                        .iter()
-                        .any(|d| d.range == range && d.message == message)
-                    {
-                        self.error(range, message);
-                    }
-                }
                 if regions.iter().any(|r| *r != crate::regions::Region::Erased) {
                     tables.push((index, regions));
+                }
+            }
+            let segment_self = match self.body.exprs[expr] {
+                Expr::Path(Res::Function(_)) => self
+                    .body
+                    .generic_args
+                    .get(expr)
+                    .and_then(|g| g.ty.as_ref())
+                    .zip(self.items.impl_of(instance.function)),
+                _ => None,
+            };
+            if let Expr::Path(Res::Assoc {
+                trait_: Some(t), ..
+            }) = self.body.exprs[expr]
+                && let Some(written) = self.body.generic_args.get(expr).and_then(|g| g.ty.as_ref())
+                && self.items.functions[instance.function].owner == Some(flux_hir::Owner::Trait(t))
+                && let Some(regions) = self.written_trait_lifetimes(t, written)
+                && regions.iter().any(|r| *r != crate::regions::Region::Erased)
+            {
+                tables.push((crate::regions::TRAIT_LIFETIMES_ARG, regions));
+            }
+            if impl_self.is_some() || segment_self.is_some() {
+                let imp = impl_self.map_or_else(|| segment_self.unwrap().1, |(imp, _)| imp);
+                let count = self.items.impls[imp].generics.len();
+                let self_ty = self
+                    .sigs
+                    .impls
+                    .get(imp)
+                    .copied()
+                    .unwrap_or(Ty::ERROR)
+                    .subst(&instance.args[..count.min(instance.args.len())]);
+                let regions = match (impl_self, segment_self) {
+                    (Some((_, written)), _) => self.written_type_regions(written, self_ty),
+                    (None, Some((written, _))) => self.written_adt_regions(written, self_ty),
+                    (None, None) => unreachable!("checked above"),
+                };
+                if let Some(regions) = regions
+                    && regions.iter().any(|r| *r != crate::regions::Region::Erased)
+                {
+                    tables.push((crate::regions::IMPL_SELF_ARG, regions));
                 }
             }
             if !tables.is_empty() {
@@ -6610,6 +6948,7 @@ impl Ctx<'_> {
                 }
             }
         }
+        let expr_regions = self.constructor_regions(&calls);
         self.calls = instances;
         let overloaded = std::mem::take(&mut self.overloads);
         let mut overloads = ArenaMap::new();
@@ -6803,6 +7142,7 @@ impl Ctx<'_> {
             reified,
             calls,
             call_regions,
+            expr_regions,
             overloads,
             consts,
             compared_refs: self.compared_refs,

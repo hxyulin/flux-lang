@@ -2863,7 +2863,8 @@ impl Builder<'_> {
         active: &mut Vec<ConstId>,
     ) -> Option<crate::eval::Value> {
         use crate::eval::Value;
-        if types.reified.get(expr).is_some() {
+        // A written annotation relates the value's own regions.
+        if types.reified.get(expr).is_some() || types.expr_regions.get(expr).is_some() {
             return None;
         }
         let ty = types.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
@@ -3256,6 +3257,54 @@ impl Builder<'_> {
 
     /// Evaluates `expr` and stores its value in `dest`.
     fn lower_value(&mut self, expr: ExprId, dest: &Place) {
+        match self.types.expr_regions.get(expr) {
+            Some(regions) => self.lower_annotated(expr, regions, dest),
+            None => self.lower_value_as_is(expr, dest),
+        }
+    }
+
+    /// A constructor whose path writes lifetimes, `S::<'a> { .. }`: built
+    /// in a temporary whose type is exactly the written one, as rustc's
+    /// user type annotation has it, then moved into `dest`, which may
+    /// be a subtype.
+    fn lower_annotated(
+        &mut self,
+        expr: ExprId,
+        regions: &[flux_ty::regions::Region],
+        dest: &Place,
+    ) {
+        let range = self.range(expr);
+        if self.in_closure
+            && regions
+                .iter()
+                .any(|r| matches!(r, flux_ty::regions::Region::Param(_)))
+        {
+            self.errors.push(flux_hir::Diagnostic::new(
+                range,
+                "named lifetime arguments in closures are not supported yet",
+            ));
+            return self.lower_value_as_is(expr, dest);
+        }
+        let ty = self.own_ty(expr);
+        let value = self.temp(ty);
+        self.lower_value_as_is(expr, &value.into());
+        let annotation = self.locals.alloc(LocalDecl {
+            ty,
+            kind: LocalKind::Temp,
+        });
+        self.region_annotations
+            .push((annotation, regions.into(), range));
+        self.region_relations.push((
+            value.into(),
+            annotation.into(),
+            flux_ty::regions::Variance::Invariant,
+            range,
+        ));
+        let value = self.read(value.into());
+        self.assign(dest, Rvalue::Use(value), range);
+    }
+
+    fn lower_value_as_is(&mut self, expr: ExprId, dest: &Place) {
         let range = self.range(expr);
         let body = self.body;
         match &body.exprs[expr] {
