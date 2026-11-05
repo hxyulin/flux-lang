@@ -686,9 +686,16 @@ fn expand_at_depth(
             }
         }
         &MacroKind::Builtin(builtin) => {
+            // `panic!` and `unreachable!` pass their first argument to
+            // `format_args!`, or in editions 2015 and 2018 take a single
+            // literal, which a macro such as `concat!` may produce.
             let format_first = matches!(
                 builtin,
-                Builtin::FormatArgs | Builtin::ConstFormatArgs | Builtin::FormatArgsNl
+                Builtin::FormatArgs
+                    | Builtin::ConstFormatArgs
+                    | Builtin::FormatArgsNl
+                    | Builtin::Panic
+                    | Builtin::Unreachable
             );
             let capture_format_variables = !format_first
                 || inner
