@@ -62,6 +62,9 @@ pub struct ImplIndex {
     /// The blocks that may be for any type (`impl<T> Tr for T`), or whose
     /// type did not resolve, in source order.
     blanket: FxHashMap<TraitId, Vec<u32>>,
+    /// Each trait's [`ItemTree::trait_impls`] entry, for callers without
+    /// the items.
+    impls: FxHashMap<TraitId, Box<[ImplId]>>,
 }
 
 impl ImplIndex {
@@ -77,8 +80,23 @@ impl ImplIndex {
                 };
                 list.push(position as u32);
             }
+            index.impls.insert(t, impls.as_slice().into());
         }
         index
+    }
+
+    /// [`ImplIndex::impls_for`], from the items this was made from.
+    pub fn impls_of_ty(&self, t: TraitId, ty: Ty) -> ImplsFor<'_> {
+        let impls = self.impls.get(&t).map_or(&[][..], |v| v);
+        match head(ty) {
+            Some(head) => self.positions(impls, t, head, usize::MAX),
+            None => ImplsFor {
+                impls,
+                some: None,
+                blanket: &[],
+                next: 0,
+            },
+        }
     }
 
     /// The `impl` blocks of `t` that may be for `ty`, as far as their
