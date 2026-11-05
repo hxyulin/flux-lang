@@ -51,6 +51,7 @@ use flux_mir::{
     ProjectionElem, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
+use flux_ty_ir::type_identity::DefinitionKeys;
 use keel_frontend::{FunctionBuilder, Variable};
 use keel_ir::ConvertOp;
 use keel_ir::{
@@ -293,20 +294,8 @@ fn lower_inner(
     }
     let mut module = Module::default();
     let items = &hir.items;
-    let function_ordinals = definition_ordinals(
-        items,
-        items
-            .functions
-            .iter()
-            .map(|(id, f)| (id.into_raw(), f.loc.module)),
-    );
-    let const_ordinals = definition_ordinals(
-        items,
-        items
-            .consts
-            .iter()
-            .map(|(id, c)| (id.into_raw(), c.loc.module)),
-    );
+    let identities = compilation.map_or(&[][..], |c| c.crate_hashes);
+    let definitions = std::cell::RefCell::new(DefinitionKeys::new(items, identities));
     let names: FxHashMap<FunctionId, String> = items
         .functions
         .iter()
@@ -352,13 +341,11 @@ fn lower_inner(
                 // the whole-program path retains its process-local suffix.
                 let identity;
                 if compilation.is_some() || id.index() >= items.core.functions as usize {
-                    identity = if let Some(c) = compilation {
+                    identity = if compilation.is_some() {
                         definition_symbol(
-                            items,
-                            c.crate_hashes,
+                            &mut definitions.borrow_mut(),
                             flux_hir::flib::IdKind::Function,
                             id.into_raw(),
-                            function_ordinals[&id.into_raw()],
                         )
                     } else {
                         format!("__flux_f{}", id.index())
@@ -373,8 +360,9 @@ fn lower_inner(
     let symbols = Symbols {
         names,
         separate: compilation.is_some(),
-        identities: compilation.map_or(&[], |c| c.crate_hashes),
+        definitions,
         type_keys: std::cell::RefCell::new(FxHashMap::default()),
+        instances: std::cell::RefCell::new(FxHashMap::default()),
     };
     let mut declared_abort = false;
     let mut declared = FxHashSet::default();
@@ -426,13 +414,11 @@ fn lower_inner(
             path.push(c.name.map_or("_", |n| n.as_str()));
             let identity;
             if compilation.is_some() || id.index() >= items.core.consts as usize {
-                identity = if let Some(cmp) = compilation {
+                identity = if compilation.is_some() {
                     definition_symbol(
-                        items,
-                        cmp.crate_hashes,
+                        &mut symbols.definitions.borrow_mut(),
                         flux_hir::flib::IdKind::Const,
                         id.into_raw(),
-                        const_ordinals[&id.into_raw()],
                     )
                 } else {
                     format!("__flux_s{}", id.index())
@@ -726,8 +712,11 @@ fn data_key(items: &[DataItem], align: u32) -> Vec<u8> {
 struct Symbols<'a> {
     names: FxHashMap<FunctionId, String>,
     separate: bool,
-    identities: &'a [(flux_hir::CrateId, [u8; 32])],
+    /// The keys of definitions, under the compilation's crate identities.
+    definitions: std::cell::RefCell<DefinitionKeys<'a>>,
     type_keys: std::cell::RefCell<FxHashMap<Ty, Vec<u8>>>,
+    /// The symbol of each instance named so far.
+    instances: std::cell::RefCell<FxHashMap<Instance, String>>,
 }
 
 impl std::ops::Index<&FunctionId> for Symbols<'_> {
@@ -737,32 +726,15 @@ impl std::ops::Index<&FunctionId> for Symbols<'_> {
     }
 }
 
-fn definition_ordinals(
-    items: &flux_hir::ItemTree,
-    entries: impl Iterator<Item = (u32, flux_hir::ModuleId)>,
-) -> FxHashMap<u32, u32> {
-    let mut counts: FxHashMap<flux_hir::CrateId, u32> = FxHashMap::default();
-    entries
-        .map(|(raw, module)| {
-            let next = counts.entry(items.modules[module].krate).or_default();
-            let ordinal = *next;
-            *next += 1;
-            (raw, ordinal)
-        })
-        .collect()
-}
-
 fn definition_symbol(
-    items: &flux_hir::ItemTree,
-    hashes: &[(flux_hir::CrateId, [u8; 32])],
+    definitions: &mut DefinitionKeys<'_>,
     kind: flux_hir::flib::IdKind,
     raw: u32,
-    ordinal: u32,
 ) -> String {
-    let key =
-        flux_ty_ir::type_identity::definition_key_with_ordinal(items, hashes, kind, raw, ordinal)
-            .expect("code generation uses valid definition identities");
-    content_symbol("definition", &key)
+    let key = definitions
+        .key(kind, raw)
+        .expect("code generation uses valid definition identities");
+    content_symbol("definition", key)
 }
 
 fn generic_instance(items: &flux_hir::ItemTree, instance: Instance) -> bool {
@@ -817,6 +789,15 @@ fn owns_static(
 /// or is in one of a generic struct's blocks, which may each have a
 /// function of its name. The hash covers the arguments and the block.
 fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> String {
+    if let Some(symbol) = symbols.instances.borrow().get(&instance) {
+        return symbol.clone();
+    }
+    let symbol = instance_symbol_uncached(hir, symbols, instance);
+    (symbols.instances.borrow_mut()).insert(instance, symbol.clone());
+    symbol
+}
+
+fn instance_symbol_uncached(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> String {
     let base = &symbols[&instance.function];
     let items = &hir.items;
     // A trait's blocks for different types each have its methods.
@@ -841,7 +822,7 @@ fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> Stri
         feed(&instance.function.into_raw().to_le_bytes());
     }
     for &arg in instance.args {
-        encode_type(arg, hir, symbols, &mut feed);
+        encode_type(arg, symbols, &mut feed);
     }
     use std::fmt::Write;
     let mut hash = String::new();
@@ -851,10 +832,10 @@ fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> Stri
     format!("{}65h{hash}E", &base[..base.len() - 1])
 }
 
-fn encode_type(ty: Ty, hir: &Hir, symbols: &Symbols<'_>, feed: &mut impl FnMut(&[u8])) {
+fn encode_type(ty: Ty, symbols: &Symbols<'_>, feed: &mut impl FnMut(&[u8])) {
     let mut keys = symbols.type_keys.borrow_mut();
     let key = keys.entry(ty).or_insert_with(|| {
-        flux_ty_ir::type_identity::stable_key(&hir.items, symbols.identities, ty)
+        (symbols.definitions.borrow_mut().stable_key(ty))
             .expect("code generation uses fully resolved types")
     });
     feed(key);
@@ -1742,10 +1723,10 @@ impl Ctx<'_> {
             return name.clone();
         }
         let mut key = Vec::new();
-        encode_type(object, self.hir, self.symbols, &mut |bytes| {
+        encode_type(object, self.symbols, &mut |bytes| {
             key.extend_from_slice(bytes)
         });
-        encode_type(concrete, self.hir, self.symbols, &mut |bytes| {
+        encode_type(concrete, self.symbols, &mut |bytes| {
             key.extend_from_slice(bytes)
         });
         let name = content_symbol("vtable", &key);
