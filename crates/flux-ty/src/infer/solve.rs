@@ -295,15 +295,17 @@ impl Ctx<'_> {
 
     /// Whether `f` holds, leaving the variables as they were.
     pub(super) fn probe(&mut self, f: impl FnOnce(&mut Self) -> bool) -> bool {
-        // Each nested probe owns its snapshot; buffers are reused only after
-        // rollback, and no cached answer survives a change to inference variables.
-        let mut snapshot = self.probe_snapshots.pop().unwrap_or_default();
-        snapshot.extend_from_slice(&self.vars);
+        // An undo log rather than a copy of every variable: most probes
+        // change a few, in bodies with thousands.
+        let (vars, undo) = (self.vars.len(), self.undo.len());
+        let floor = std::mem::replace(&mut self.undo_floor, vars);
         let projections = self.projections.len();
         let result = f(self);
-        std::mem::swap(&mut self.vars, &mut snapshot);
-        snapshot.clear();
-        self.probe_snapshots.push(snapshot);
+        for (var, value) in self.undo.drain(undo..).rev() {
+            self.vars[var as usize].0 = value;
+        }
+        self.vars.truncate(vars);
+        self.undo_floor = floor;
         self.projections.truncate(projections);
         result
     }
@@ -827,7 +829,7 @@ impl Ctx<'_> {
                 } else {
                     Ty::int(IntTy::I32)
                 };
-                self.vars[var.0 as usize].0 = super::VarValue::Known(default);
+                self.set_var(var, super::VarValue::Known(default));
             }
         }
         self.select_obligations();
@@ -2539,5 +2541,61 @@ pub(super) mod tests {
             !cx.diagnostics.is_empty(),
             "an incompatible committed output must still fail"
         );
+    }
+
+    #[test]
+    fn nested_probes_roll_back_links_and_new_variables() {
+        use super::Ctx;
+        use crate::{IntTy, Ty};
+        use flux_syntax::TextRange;
+        let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main() {}");
+        let (sigs, diagnostics) = crate::signatures(&hir.items);
+        assert!(diagnostics.is_empty());
+        let (function, (body, source_map)) = hir.bodies.iter().next().unwrap();
+        let owner = super::super::Owner {
+            function: Some(function),
+            closure_owner: crate::ClosureOwner::Function(function),
+            module: hir.items.functions[function].loc.module,
+            self_ty: None,
+            generics: Vec::new(),
+            consts: Vec::new(),
+            is_unsafe: false,
+            const_context: None,
+            ret: Ty::UNIT,
+            param_env: Vec::new(),
+            unsized_params: Vec::new(),
+            env_projections: Vec::new(),
+            caller_projections: Vec::new(),
+            self_trait: None,
+        };
+        let mut cx = Ctx::new(&hir.items, &sigs, owner, body, source_map);
+        let range = TextRange::default();
+        let (a, b, c) = (
+            cx.new_var(false, range),
+            cx.new_var(false, range),
+            cx.new_var(false, range),
+        );
+        assert!(cx.unify(a, b));
+        let root = cx.shallow(a);
+        let vars = cx.vars.len();
+        assert!(cx.probe(|cx| {
+            assert!(cx.unify(b, c));
+            let inner = cx.probe(|cx| {
+                let d = cx.new_var(false, range);
+                cx.unify(c, d) && cx.unify(d, Ty::BOOL) && cx.shallow(a) == Ty::BOOL
+            });
+            // The inner probe's value and variable are gone, the outer
+            // probe's link is not.
+            assert_eq!(cx.vars.len(), vars);
+            assert_eq!(cx.shallow(a), cx.shallow(c));
+            assert!(!matches!(cx.shallow(a).kind(), crate::TyKind::Bool));
+            inner
+        }));
+        assert_eq!(cx.vars.len(), vars);
+        assert_eq!(cx.undo.len(), 0);
+        assert_eq!(cx.shallow(a), root);
+        assert_eq!(cx.shallow(b), root);
+        assert!(cx.unify(c, Ty::int(IntTy::I32)));
+        assert_eq!(cx.shallow(a), root);
     }
 }

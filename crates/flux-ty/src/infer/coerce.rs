@@ -12,11 +12,14 @@ impl Ctx<'_> {
             self.never_coercions.insert(expr, expected);
             if let TyKind::Infer(var) = self.shallow(expected).kind() {
                 let (int, _) = self.unknown(var);
-                self.vars[var.0 as usize].0 = VarValue::Unknown {
-                    int,
-                    float: self.float_var(var),
-                    diverging: true,
-                };
+                self.set_var(
+                    var,
+                    VarValue::Unknown {
+                        int,
+                        float: self.float_var(var),
+                        diverging: true,
+                    },
+                );
             }
             return;
         }
