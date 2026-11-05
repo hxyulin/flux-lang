@@ -1611,6 +1611,25 @@ impl Collector<'_> {
                     .collect();
                 path.segments = segments.into();
                 path.ranges = ranges.into();
+            } else if let (
+                true,
+                PathAnchor::SelfModule | PathAnchor::Super(_),
+                PathAnchor::Super(m),
+            ) = (prefix.segments.is_empty(), prefix.anchor, p.anchor)
+            {
+                // `use super::{super::x}` is `use super::super::x`.
+                let n = match prefix.anchor {
+                    PathAnchor::Super(n) => n,
+                    _ => 0,
+                };
+                p.anchor = PathAnchor::Super(n + m);
+                p.anchor_ranges = prefix
+                    .anchor_ranges
+                    .iter()
+                    .chain(p.anchor_ranges.iter())
+                    .copied()
+                    .collect();
+                path = p;
             } else {
                 let message = "`crate`, `self` and `super` can only start a path";
                 self.items.diagnostics.push(Diagnostic::new(range, message));
