@@ -34,6 +34,60 @@ pub mod panic {
 
 pub mod arch;
 
+/// Stack backtraces. Flux cannot capture frames: a capture that the
+/// environment enables, or that is forced, reports Unsupported.
+pub mod backtrace {
+    /// Whether a backtrace holds frames.
+    #[non_exhaustive]
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum BacktraceStatus {
+        Unsupported,
+        Disabled,
+        Captured,
+    }
+    /// A captured stack backtrace; in Flux it never holds frames.
+    pub struct Backtrace { status: BacktraceStatus }
+    impl Backtrace {
+        // RUST_LIB_BACKTRACE, then RUST_BACKTRACE, enable captures unless "0".
+        fn enabled() -> bool {
+            match crate::env::var("RUST_LIB_BACKTRACE") {
+                Ok(s) => s != "0",
+                Err(_) => match crate::env::var("RUST_BACKTRACE") {
+                    Ok(s) => s != "0",
+                    Err(_) => false,
+                },
+            }
+        }
+        pub fn capture() -> Backtrace {
+            Backtrace { status: if Backtrace::enabled() { BacktraceStatus::Unsupported } else { BacktraceStatus::Disabled } }
+        }
+        pub fn force_capture() -> Backtrace { Backtrace { status: BacktraceStatus::Unsupported } }
+        pub const fn disabled() -> Backtrace { Backtrace { status: BacktraceStatus::Disabled } }
+        pub fn status(&self) -> BacktraceStatus {
+            match self.status {
+                BacktraceStatus::Disabled => BacktraceStatus::Disabled,
+                _ => BacktraceStatus::Unsupported,
+            }
+        }
+    }
+    impl core::fmt::Display for Backtrace {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self.status {
+                BacktraceStatus::Disabled => f.write_str("disabled backtrace"),
+                _ => f.write_str("unsupported backtrace"),
+            }
+        }
+    }
+    impl core::fmt::Debug for Backtrace {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            match self.status {
+                BacktraceStatus::Disabled => f.write_str("<disabled>"),
+                _ => f.write_str("<unsupported>"),
+            }
+        }
+    }
+}
+
 pub mod thread;
 pub mod time;
 pub mod net;

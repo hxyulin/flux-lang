@@ -286,6 +286,14 @@ impl<T> Drop for JoinHandle<T> {
 }
 impl<T> JoinHandle<T> {
     pub fn thread(&self) -> &super::Thread { &self.thread }
+    pub(crate) fn native_thread(&self) -> usize {
+        self.packet.join.thread.lock().unwrap().map_or(0, |id| id as usize)
+    }
+    /// Detaches nothing: the native thread stays joinable by its new owner.
+    pub(crate) fn into_native_thread(self) -> usize {
+        let id = self.packet.join.thread.lock().unwrap().take();
+        id.map_or(0, |id| id as usize)
+    }
     /// Panics abort in Flux; successful native joins therefore return Ok.
     pub fn join(self) -> super::Result<T> {
         self.packet.join.join();

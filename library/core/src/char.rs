@@ -492,3 +492,29 @@ impl Step for char {
         }
     }
 }
+
+/// Why parsing a `char` failed: the string was empty or held several characters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseCharError { kind: CharErrorKind }
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum CharErrorKind { EmptyString, TooManyChars }
+impl crate::fmt::Display for ParseCharError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad(match self.kind {
+            CharErrorKind::EmptyString => "cannot parse char from empty string",
+            CharErrorKind::TooManyChars => "too many characters in string",
+        })
+    }
+}
+impl crate::error::Error for ParseCharError {}
+impl crate::str::FromStr for char {
+    type Err = ParseCharError;
+    fn from_str(s: &str) -> Result<char, ParseCharError> {
+        let mut chars = s.chars();
+        match (chars.next(), chars.next()) {
+            (None, _) => Err(ParseCharError { kind: CharErrorKind::EmptyString }),
+            (Some(c), None) => Ok(c),
+            _ => Err(ParseCharError { kind: CharErrorKind::TooManyChars }),
+        }
+    }
+}

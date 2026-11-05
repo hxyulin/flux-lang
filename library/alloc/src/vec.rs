@@ -348,6 +348,53 @@ impl<T> Vec<T> {
         if f(last) { self.pop() } else { None }
     }
 
+    /// Removes each element that `same_bucket(element, previous kept)` accepts.
+    pub fn dedup_by<F: FnMut(&mut T, &mut T) -> bool>(&mut self, mut same_bucket: F) {
+        let len = self.len;
+        if len <= 1 {
+            return;
+        }
+        let mut write = 1;
+        // SAFETY: indices stay below len; removed elements are dropped once
+        // and kept ones move down without overlap.
+        unsafe {
+            let base = self.as_mut_ptr();
+            for read in 1..len {
+                if same_bucket(&mut *base.add(read), &mut *base.add(write - 1)) {
+                    ptr::drop_in_place(base.add(read));
+                } else {
+                    if read != write {
+                        ptr::copy_nonoverlapping(base.add(read), base.add(write), 1);
+                    }
+                    write += 1;
+                }
+            }
+            self.len = write;
+        }
+    }
+
+    /// Removes consecutive elements with equal keys, keeping the first of each run.
+    pub fn dedup_by_key<K: PartialEq, F: FnMut(&mut T) -> K>(&mut self, mut key: F) {
+        self.dedup_by(|a, b| key(a) == key(b))
+    }
+
+    /// The unused capacity, as uninitialized slots.
+    pub fn spare_capacity_mut(&mut self) -> &mut [core::mem::MaybeUninit<T>] {
+        let len = self.len;
+        let spare = self.capacity() - len;
+        // SAFETY: the allocation holds capacity slots; those from len on are
+        // unused and may hold anything a MaybeUninit permits.
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr().add(len) as *mut core::mem::MaybeUninit<T>, spare) }
+    }
+
+    /// Gives up the vector's allocation, returning its elements for 'a.
+    pub fn leak<'a>(self) -> &'a mut [T] {
+        let mut this = core::mem::ManuallyDrop::new(self);
+        let len = this.len;
+        // SAFETY: the allocation is never freed, so the elements live for 'a.
+        unsafe { core::slice::from_raw_parts_mut(this.as_mut_ptr(), len) }
+    }
+
     /// Removes consecutive equal elements, keeping the first of each run.
     pub fn dedup(&mut self)
     where

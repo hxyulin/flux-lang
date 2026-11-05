@@ -1,5 +1,7 @@
 //! `str`'s methods that allocate.
 
+pub use core::str::*;
+
 use crate::string::String;
 
 mod lowercase;

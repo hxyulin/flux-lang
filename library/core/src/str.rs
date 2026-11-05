@@ -2056,3 +2056,24 @@ impl str {
 }
 
 impl crate::error::Error for Utf8Error {}
+
+/// Why parsing a `bool` failed: the string was neither "true" nor "false".
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ParseBoolError;
+impl crate::fmt::Display for ParseBoolError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad("provided string was not `true` or `false`")
+    }
+}
+impl crate::error::Error for ParseBoolError {}
+impl FromStr for bool {
+    type Err = ParseBoolError;
+    fn from_str(s: &str) -> Result<bool, ParseBoolError> {
+        match s {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(ParseBoolError),
+        }
+    }
+}
