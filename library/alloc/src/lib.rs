@@ -21,4 +21,5 @@ pub mod slice;
 pub mod str;
 pub mod string;
 pub mod sync;
+pub mod task;
 pub mod vec;

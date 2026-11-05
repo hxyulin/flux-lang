@@ -279,6 +279,10 @@ const ALLOC_FILES: &[(&str, &str)] = &[
         "sync.rs",
         include_str!("../../../library/alloc/src/sync.rs"),
     ),
+    (
+        "task.rs",
+        include_str!("../../../library/alloc/src/task.rs"),
+    ),
 ];
 
 /// `library/core/src`, relative to [`CORE_ROOT`].

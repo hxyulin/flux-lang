@@ -6,9 +6,9 @@ extern crate alloc as alloc_crate;
 #[macro_use]
 mod macros;
 
-pub use crate::alloc_crate::{alloc, borrow, boxed, fmt, format, prelude, rc, string, vec};
+pub use crate::alloc_crate::{alloc, borrow, boxed, fmt, format, prelude, rc, string, task, vec};
 pub use core::{
-    any, array, cell, char, clone, cmp, convert, default, error, future, pin, task, hint, iter, marker,
+    any, array, cell, char, clone, cmp, convert, default, error, future, pin, hint, iter, marker,
     mem, num, ops, option, ptr, result,
 };
 pub use core::{dbg, eprint, eprintln, print, println, stringify, write};
