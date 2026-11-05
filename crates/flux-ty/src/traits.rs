@@ -599,6 +599,28 @@ pub fn check_impls(
                                     && !predicate.self_ty.has_aliases()
                                     && !predicate.self_ty.has_opaques())
                         };
+                        // `T: 'a` in `impl<'a, T: Sync + 'a> Sync for Guard<'a,
+                        // T>` where `Guard`'s fields already require it: every
+                        // well-formed instance of the self type meets it, so
+                        // the erased selection decides the impl exactly.
+                        let mut implied = Vec::new();
+                        crate::regions::implied_outlives_with_static(
+                            items,
+                            sigs,
+                            sigs.impls[id],
+                            &r.self_ty,
+                            Some(Region::Static),
+                            &mut implied,
+                        );
+                        let implied_bound = |bound: &Outlives<Region>| match *bound {
+                            Outlives::Region(a, b) => a == b || implied.contains(bound),
+                            Outlives::Type(ty, b) => implied.iter().any(|i| {
+                                matches!(*i, Outlives::Type(u, c) if c == b
+                                    && (u == ty
+                                        || crate::regions::outlives_type_components(sigs, u)
+                                            .contains(&ty)))
+                            }),
+                        };
                         // Named and elided header lifetimes are both universal.
                         // Accept a permutation of distinct binder parameters;
                         // constants and repeated parameters specialize the impl.
@@ -609,8 +631,9 @@ pub fn check_impls(
                                     && !r.self_ty[..i].contains(region)
                             })
                             // The signature solver erases regions. It cannot
-                            // decide applicability of a region-bearing bound.
-                            && r.bounds.is_empty()
+                            // decide applicability of a region-bearing bound
+                            // that the self type does not imply.
+                            && r.bounds.iter().all(implied_bound)
                             && r.bound_selfs.len() == sigs.impl_predicates.get(id).map_or(0, |p| p.len())
                             && r.bound_traits.len() == r.bound_selfs.len()
                             && r.projections.len() == sigs.impl_projections.get(id).map_or(0, |p| p.len())
@@ -621,10 +644,7 @@ pub fn check_impls(
                             })
                             && r.projections.iter().all(|r| r.is_empty())
                     });
-                    if !regular_lifetimes
-                        || !imp.generics.outlives.is_empty()
-                        || !imp.generics.type_outlives.is_empty()
-                    {
+                    if !regular_lifetimes {
                         error(
                             imp.self_range,
                             "lifetime specialization and bounds in auto trait impls are not supported yet".into(),

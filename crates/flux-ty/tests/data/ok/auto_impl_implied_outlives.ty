@@ -1,0 +1,14 @@
+struct Raw {}
+struct Mutex<R, T> { raw: R, data: UnsafeCell<T> }
+struct MutexGuard<'a, R, T> { mutex: &Mutex<R, T>, marker: PhantomData<(&mut T, <R as RawMutex>::GuardMarker)> }
+struct MappedGuard<'a, R, T> { raw: &R, data: *mut T, marker: PhantomData<&mut T> }
+fn is_sync<T>(&T) -> bool
+fn is_send<T>(&T) -> bool
+fn generic<'a, T>(&MappedGuard<u8, T>) -> bool
+    g@0: &MappedGuard<u8, T>
+fn main() -> ()
+    m@0: Mutex<Raw, u8>
+    g@1: MutexGuard<Raw, u8>
+    x@2: u8
+    raw@3: u8
+    mg@4: MappedGuard<u8, u8>

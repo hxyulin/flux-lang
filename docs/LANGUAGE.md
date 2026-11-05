@@ -898,8 +898,12 @@ lifetimes, the bound holds for some lifetime exactly when it holds with
 lifetimes erased. A bound that names a lifetime other than `'static` is
 not checked where it is written, as in rustc, so
 `where (PhantomData<&'__pin ()>, PhantomPinned): Unpin` only keeps the
-implementation from applying. Other lifetime specialization/bounds in
-marker implementations and custom auto traits remain unsupported. Recursive structural proofs are conservatively
+implementation from applying. Outlives bounds that the self type's fields
+already require, `R: 'a` and `T: 'a` in lock_api's `unsafe impl<'a, R:
+RawMutex + Sync + 'a, T: ?Sized + Sync + 'a> Sync for MutexGuard<'a, R,
+T>`, are met by every instance and are accepted too. Other lifetime
+specialization/bounds in marker implementations and custom auto traits
+remain unsupported. Recursive structural proofs are conservatively
 depth-limited; no threading APIs are implied by these markers.
 `Unpin` also propagates structurally. `PhantomPinned` prevents that propagation;
 references, raw pointers, Box, Rc, Arc and Arc's Weak remain Unpin regardless of
