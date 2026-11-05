@@ -3478,11 +3478,13 @@ impl Lower<'_, '_, '_> {
             // one, upcast, the pointer and the supertrait's vtable, which
             // the subtrait's has.
             Rvalue::Unsize(operand, to)
-                if flux_ty::arc_pointee(&self.ctx.hir.items, *to).is_some() =>
+                if flux_ty::shared_pointee(&self.ctx.hir.items, *to).is_some() =>
             {
                 let from = self.body.operand_ty(operand, self.sigs);
-                let source = flux_ty::arc_pointee(&self.ctx.hir.items, from).expect("Arc source");
-                let target = flux_ty::arc_pointee(&self.ctx.hir.items, *to).expect("Arc target");
+                let source =
+                    flux_ty::shared_pointee(&self.ctx.hir.items, from).expect("Arc or Rc source");
+                let target =
+                    flux_ty::shared_pointee(&self.ctx.hir.items, *to).expect("Arc or Rc target");
                 // Header and data addresses survive the ownership transfer.
                 let values = self.operand(operand);
                 let metadata = match (source.kind(), target.kind()) {
@@ -3514,7 +3516,7 @@ impl Lower<'_, '_, '_> {
                         let data = self.b.import_data(&name);
                         self.b.ins().symbol_addr(keel_ir::Symbol::Data(data))
                     }
-                    _ => unreachable!("represented Arc unsizing"),
+                    _ => unreachable!("represented Arc or Rc unsizing"),
                 };
                 smallvec![values[0], values[1], metadata]
             }
@@ -4883,9 +4885,10 @@ impl Lower<'_, '_, '_> {
     }
 
     /// A call of trait method `func` on a trait object: the method is
-    /// the vtable's, called through a pointer with C's convention, and
-    /// the receiver, a pointer to the object, is passed as its address
-    /// alone, as the method's `&self` for the type behind it is.
+    /// the vtable's, called through a pointer with C's convention. The
+    /// receiver (`&self`, `Box<Self>`, `Rc<Self>`, `Pin<&mut Self>`...)
+    /// ends with the object's vtable; its other leaves are what the
+    /// method's receiver for the type behind it has.
     fn virtual_call(
         &mut self,
         func: FunctionId,
@@ -4900,9 +4903,11 @@ impl Lower<'_, '_, '_> {
         let index = flux_mir::vtable::method_index(items, sigs, object, func)
             .expect("a trait object's method has a slot");
         let sig = flux_solve::traits::instance_sig(items, sigs, func, generic_args);
-        // The receiver as a thin pointer.
+        let receiver = self.operand(&args[0]);
+        let (&vtable, thin_receiver) = receiver.split_last().expect("an object receiver");
+        // The receiver's leaves but the vtable, as addresses.
         let mut params = sig.params.to_vec();
-        params[0] = address_leaf();
+        params[0] = Ty::tuple(&vec![address_leaf(); thin_receiver.len()]);
         let thin = FnSig {
             params: params.into(),
             ret: sig.ret,
@@ -4910,20 +4915,19 @@ impl Lower<'_, '_, '_> {
         let sig_ref =
             self.b
                 .import_signature(signature(self.sigs, &self.ctx.layouts, &thin, false));
-        let receiver = self.operand(&args[0]);
-        let address = self.offset(receiver[1], 8 * index as u64);
+        let address = self.offset(vtable, 8 * index as u64);
         let pointer = self.b.ins().load_with_flags(
             Type::Ptr,
             address,
             address_flags(&self.address_align, address, Type::Ptr),
         );
-        let data = receiver[0];
-        let rest = &args[1..];
-        let mut leaves = Values::new();
-        for arg in rest {
+        let mut leaves: Values = thin_receiver.iter().copied().collect();
+        for arg in &args[1..] {
             leaves.extend(self.rust_argument(arg));
         }
-        self.call_values(sig.ret, data, leaves, dest, target, |b, values| {
+        let (&first, rest) = leaves.split_first().expect("a receiver address");
+        let rest: Values = rest.iter().copied().collect();
+        self.call_values(sig.ret, first, rest, dest, target, |b, values| {
             b.ins().call_indirect(sig_ref, pointer, values)
         });
     }

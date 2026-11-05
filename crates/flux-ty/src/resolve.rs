@@ -2027,16 +2027,29 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
     }
 }
 
-/// The payload of the trusted alloc Arc, whose library representation is
-/// shared with array-owner unsizing. User types with the same name do not
-/// acquire this coercion, including in item trees without embedded libraries.
-pub fn arc_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
-    static ARC: std::sync::OnceLock<Symbol> = std::sync::OnceLock::new();
+/// The payload of the trusted alloc `Arc` or `Rc`, whose library
+/// representations (a header address, then the data's) are shared with
+/// array-owner and trait-object unsizing. User types with the same name do
+/// not acquire this coercion, including in item trees without embedded
+/// libraries.
+pub fn shared_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     let TyKind::Adt(adt, args) = ty.kind() else {
         return None;
     };
-    let name = ARC.get_or_init(|| Symbol::intern("arc"));
-    (args.len() == 1 && items.lang_enums.get(name) == Some(&adt.strukt)).then(|| args[0])
+    let shared = flux_solve::is_lang_struct(items, adt.strukt, "arc")
+        || flux_solve::is_lang_struct(items, adt.strukt, "rc");
+    (args.len() == 1 && shared).then(|| args[0])
+}
+
+/// The payloads of `from` and `to`, if both are the same one of `Arc` and
+/// `Rc`, as [`shared_pointee`] reads them.
+pub fn shared_pointees(items: &ItemTree, from: Ty, to: Ty) -> Option<(Ty, Ty)> {
+    match (from.kind(), to.kind()) {
+        (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a.strukt == b.strukt => {
+            shared_pointee(items, from).zip(shared_pointee(items, to))
+        }
+        _ => None,
+    }
 }
 
 /// Integer representation of a trusted core nonzero wrapper.

@@ -2255,7 +2255,9 @@ impl Collector<'_> {
                     };
                     params.push(Param {
                         ty,
-                        range,
+                        // `self: Box<Self>`'s type, where rustc reports an
+                        // invalid one.
+                        range: param.ty().map_or(range, |ty| ty.syntax().text_range()),
                         whole: range,
                         name: Some(kw::SelfLower),
                     });

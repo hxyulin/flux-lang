@@ -2207,14 +2207,15 @@ pub fn resolve_instance(items: &ItemTree, sigs: &Signatures, instance: Instance)
     instance
 }
 
-/// Whether method `f` takes `self` by value (not `&self` or `&mut
-/// self`).
+/// Whether method `f` takes `Self` itself by value: `self`, not `&self`
+/// or a pointer such as `self: Box<Self>`, which a trait object's vtable
+/// can still dispatch on.
 pub fn self_by_value(items: &ItemTree, f: FunctionId) -> bool {
     let function = &items.functions[f];
     function.has_self
-        && !matches!(
+        && matches!(
             function.params.first().map(|p| &p.ty),
-            Some(flux_hir::TypeRef::Ref { .. })
+            Some(flux_hir::TypeRef::Path(path)) if path.as_name() == Some(kw::SelfUpper)
         )
 }
 

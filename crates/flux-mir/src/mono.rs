@@ -801,7 +801,7 @@ pub(crate) fn value_functions<'a>(
 fn pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     match ty.kind() {
         TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => Some(t),
-        _ => flux_solve::box_pointee(ty).or_else(|| flux_ty::arc_pointee(items, ty)),
+        _ => flux_solve::box_pointee(ty).or_else(|| flux_ty::shared_pointee(items, ty)),
     }
 }
 

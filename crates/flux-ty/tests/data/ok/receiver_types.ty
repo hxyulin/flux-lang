@@ -1,0 +1,33 @@
+struct Counter { n: i32 }
+struct Holder { inner: Arc<Counter> }
+fn by_arc(Arc<Counter>) -> i32
+    self@0: Arc<Counter>
+fn by_arc_ref(&Arc<Counter>) -> Arc<Counter>
+    self@0: &Arc<Counter>
+fn by_rc(Rc<Counter>) -> i32
+    self@0: Rc<Counter>
+fn by_pin_box_ref(&Pin<Box<Counter>>) -> i32
+    self@0: &Pin<Box<Counter>>
+fn get(&Counter) -> i32
+    self@0: &Counter
+fn wake(Arc<Self>) -> i32
+fn wake_by_ref(&Arc<Self>) -> i32
+    self@0: &Arc<Self>
+fn wake(Arc<Counter>) -> i32
+    self@0: Arc<Counter>
+fn generic<W>(Arc<W>) -> i32
+    w@0: Arc<W>
+fn main() -> ()
+    a@0: Arc<Counter>
+    b@1: Arc<Counter>
+    args@2: (&i32,)
+    args@3: (&i32,)
+    h@4: Holder
+    args@5: (&i32,)
+    r@6: &Arc<Counter>
+    args@7: (&i32,)
+    args@8: (&i32,)
+    p@9: Pin<Box<Counter>>
+    args@10: (&i32,)
+    args@11: (&i32,)
+    args@12: (&i32,)

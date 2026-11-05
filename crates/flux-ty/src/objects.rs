@@ -23,7 +23,7 @@ use crate::{Ty, TyKind, TypeScope};
 pub fn unsize_trait(items: &ItemTree, target: Ty) -> Option<TraitId> {
     let pointee = match target.kind() {
         TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) => pointee,
-        _ => flux_solve::box_pointee(target).or_else(|| crate::arc_pointee(items, target))?,
+        _ => flux_solve::box_pointee(target).or_else(|| crate::shared_pointee(items, target))?,
     };
     match pointee.kind() {
         TyKind::Dynamic(object) => Some(object.trait_),

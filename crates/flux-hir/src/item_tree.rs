@@ -861,7 +861,7 @@ pub struct Param {
     /// The binding's name, if the pattern is one: `x` in `x: i32`,
     /// `self`.
     pub name: Option<Symbol>,
-    /// The type's range; `self`'s whole.
+    /// The type's range; `self`'s whole, if its type is not written.
     pub range: TextRange,
     /// `x: i32`
     pub whole: TextRange,
