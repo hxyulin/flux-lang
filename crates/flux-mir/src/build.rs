@@ -189,6 +189,14 @@ fn build_file_inner(
     ));
     let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true, imported);
     diagnostics.extend(found);
+    // Each function's closures, grouped once rather than searched per body.
+    let mut closures_of: rustc_hash::FxHashMap<FunctionId, Vec<_>> =
+        rustc_hash::FxHashMap::default();
+    for entry @ ((c, _), _) in &closures {
+        if let ClosureOwner::Function(owner) = c.owner {
+            closures_of.entry(owner).or_default().push(entry);
+        }
+    }
     for (id, body) in bodies.iter() {
         let data = &hir.items.functions[id];
         if let Some(provider) = shared(ClosureOwner::Function(id)) {
@@ -203,12 +211,11 @@ fn build_file_inner(
             // Its closures' own bodies first, innermost first, for what
             // they require of the bodies that make them; shims need no
             // checks.
-            let mut own: Vec<_> = closures
-                .iter()
-                .filter(|((c, kind), _)| {
-                    c.owner == ClosureOwner::Function(id)
-                        && typed.bodies[id].closures[c.expr].kind == *kind
-                })
+            let mut own: Vec<_> = closures_of
+                .remove(&id)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|((c, kind), _)| typed.bodies[id].closures[c.expr].kind == *kind)
                 .collect();
             own.sort_by_key(|((c, _), _)| c.expr.into_raw());
             let mut requirements = crate::borrowck::Requirements::default();
