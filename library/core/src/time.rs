@@ -1,5 +1,5 @@
 //! Nonnegative time spans available without an allocator or operating system.
-use crate::ops::{Add, Sub};
+use crate::ops::{Add, AddAssign, Sub, SubAssign};
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 
@@ -105,6 +105,24 @@ impl Duration {
     }
 }
 
+impl Duration {
+    /// `self + rhs`, or [`Duration::MAX`] on overflow.
+    pub const fn saturating_add(self, rhs: Self) -> Self {
+        match self.checked_add(rhs) {
+            Some(sum) => sum,
+            None => Self::MAX,
+        }
+    }
+
+    /// `self - rhs`, or [`Duration::ZERO`] when `rhs` is larger.
+    pub const fn saturating_sub(self, rhs: Self) -> Self {
+        match self.checked_sub(rhs) {
+            Some(difference) => difference,
+            None => Self::ZERO,
+        }
+    }
+}
+
 impl Default for Duration {
     fn default() -> Self {
         Self::ZERO
@@ -122,6 +140,17 @@ impl Sub for Duration {
     fn sub(self, rhs: Self) -> Self {
         self.checked_sub(rhs)
             .expect("overflow when subtracting durations")
+    }
+}
+
+impl AddAssign for Duration {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+impl SubAssign for Duration {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
     }
 }
 
