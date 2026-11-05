@@ -851,7 +851,8 @@ impl Ctx<'_> {
         // what is unknown is likely so because of them.
         let tainted = !self.diagnostics.is_empty()
             || self.expr_types.iter().any(|(_, &t)| t == Ty::ERROR)
-            || self.pat_types.iter().any(|(_, &t)| t == Ty::ERROR);
+            || self.pat_types.iter().any(|(_, &t)| t == Ty::ERROR)
+            || self.expected.iter().any(|(_, &t)| t == Ty::ERROR);
         self.tainted = tainted;
         for ob in std::mem::take(&mut self.obligations) {
             if tainted {
