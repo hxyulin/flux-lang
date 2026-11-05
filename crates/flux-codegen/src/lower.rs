@@ -2671,6 +2671,24 @@ impl Lower<'_, '_, '_> {
                 let in_niche = self.b.ins().icmp(IntCC::Ule, relative, span);
                 let untagged_bits = self.ctx.discriminant(strukt, untagged);
                 let mut result = self.int_const(untagged_bits, leaf);
+                // Discriminants that are the variants' indices, as they
+                // are without explicit ones: the niche's offset plus the
+                // first index, unless it is the untagged variant's.
+                if (first..=last)
+                    .chain([untagged])
+                    .all(|v| self.ctx.discriminant(strukt, v) == u128::from(v))
+                {
+                    let mut is = in_niche;
+                    if (first..=last).contains(&untagged) {
+                        let index = self.int_const(u128::from(untagged - first), int);
+                        let other = self.b.ins().icmp(IntCC::Ne, relative, index);
+                        is = self.b.ins().and(is, other);
+                    }
+                    let index = widen(self, relative, false);
+                    let first = self.int_const(u128::from(first), leaf);
+                    let value = self.b.ins().iadd(index, first);
+                    return self.b.ins().select(is, value, result);
+                }
                 for v in first..=last {
                     if v == untagged {
                         continue;
