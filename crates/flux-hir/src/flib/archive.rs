@@ -389,7 +389,7 @@ pub fn read_items(
         if let Some(origin) = record.expansion_of {
             staged.expansion_files.insert(file, origin);
         }
-        staged.files.insert(file, Arc::new(record));
+        staged.insert_file(file, Arc::new(record));
     }
     let valid_file = |id: FileId| staged.files.contains_key(&id);
     for &index in &indices.modules {

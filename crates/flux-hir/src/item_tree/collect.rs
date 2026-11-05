@@ -258,7 +258,7 @@ impl Collector<'_> {
             no_std: false,
         });
         if let Some(exports) = self.db.proc_macros(root) {
-            self.items.files.insert(root, self.db.shared(root));
+            self.items.insert_file(root, self.db.shared(root));
             self.items.crates[krate.0 as usize].no_std = true;
             for host in exports {
                 let name = host.name;
@@ -299,7 +299,7 @@ impl Collector<'_> {
     fn collect_file(&mut self, module: ModuleId, file: FileId) {
         let start = self.items.diagnostics.len();
         let shared = self.db.shared(file);
-        self.items.files.insert(file, Arc::clone(&shared));
+        self.items.insert_file(file, Arc::clone(&shared));
         let tree = shared.parse.tree();
         let source = ast::SourceFile::cast(tree.root()).expect("the root is a SOURCE_FILE");
         let is_core = self.items.is_core(module);
@@ -723,7 +723,7 @@ impl Collector<'_> {
             self.items.expansion_files.insert(file, real);
             file
         };
-        self.items.files.insert(file, self.db.shared(file));
+        self.items.insert_file(file, self.db.shared(file));
         let shared = self.db.shared(file);
         let items: Vec<NodeId> = shared
             .parse
@@ -1949,7 +1949,7 @@ impl Collector<'_> {
             file
         };
         let shared = self.db.shared(file);
-        self.items.files.insert(file, Arc::clone(&shared));
+        self.items.insert_file(file, Arc::clone(&shared));
         let nodes: Vec<_> = shared
             .parse
             .tree()
@@ -2638,7 +2638,7 @@ impl Collector<'_> {
                 },
             );
             let shared = self.db.shared(file);
-            self.items.files.insert(file, Arc::clone(&shared));
+            self.items.insert_file(file, Arc::clone(&shared));
             self.expansion_depth += 1;
             self.collect_body_node(Ctx { file, ..ctx }, shared.parse.tree().root(), function);
             self.expansion_depth -= 1;
