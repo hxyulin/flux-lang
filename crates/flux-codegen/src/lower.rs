@@ -456,6 +456,7 @@ fn lower_inner(
         reified: collected.reified,
         uses_abort: false,
         locations: FxHashMap::default(),
+        line_starts: FxHashMap::default(),
         strings: FxHashMap::default(),
         vtables: FxHashMap::default(),
         promoted: FxHashMap::default(),
@@ -1158,6 +1159,8 @@ struct Ctx<'a> {
     /// The data object of each `Location` a `#[track_caller]` function
     /// is passed, by file and offset.
     locations: FxHashMap<(flux_hir::FileId, u32), String>,
+    /// Where each line of a file of a `Location` starts.
+    line_starts: FxHashMap<flux_hir::FileId, Box<[u32]>>,
     /// The data object holding each distinct C string, by its bytes.
     strings: FxHashMap<Box<[u8]>, String>,
     /// The vtable of each type as each trait object: `(object, type)`.
@@ -1322,10 +1325,14 @@ impl Ctx<'_> {
                 while !text.is_char_boundary(at) {
                     at -= 1;
                 }
-                let before = &text[..at];
-                let line = before.matches('\n').count() + 1;
-                let line_start = before.rfind('\n').map_or(0, |i| i + 1);
-                let column = before[line_start..].chars().count() + 1;
+                let starts = self.line_starts.entry(file).or_insert_with(|| {
+                    let ends = text.match_indices('\n').map(|(i, _)| i as u32 + 1);
+                    std::iter::once(0).chain(ends).collect()
+                });
+                // The lines that start at or before `at`; the first starts at 0.
+                let line = starts.partition_point(|&start| start as usize <= at);
+                let line_start = starts[line - 1] as usize;
+                let column = text[line_start..at].chars().count() + 1;
                 (source.path.display().to_string(), line, column)
             }
             None => (String::new(), 1, 1),
