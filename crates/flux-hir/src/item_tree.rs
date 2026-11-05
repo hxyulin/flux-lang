@@ -199,6 +199,9 @@ pub(crate) struct BodyExpansion {
     pub file: FileId,
     pub ctxts: Vec<(u32, u32)>,
     pub fragment: flux_syntax::parser::Fragment,
+    /// Whether the item tree has the anonymous constants in `file`: those
+    /// of an expansion in a function's body.
+    pub anon_consts: bool,
 }
 
 /// How many items of each kind an [`ItemTree`] has: where the items a

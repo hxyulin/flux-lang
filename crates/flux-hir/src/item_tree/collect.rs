@@ -71,6 +71,7 @@ impl ItemTree {
             pending_items: Vec::new(),
             pending_body_macros: Vec::new(),
             legacy_calls: Vec::new(),
+            body_expansion_consts: Vec::new(),
         };
         collector.collect_crate(root, name, is_core, dependencies);
         collector.collect_pending_items(from);
@@ -79,6 +80,7 @@ impl ItemTree {
         collector.make_ctors();
         let macro_paths = std::mem::take(&mut collector.macro_paths);
         crate::def_map::resolve(collector.items, from);
+        collector.collect_body_expansion_consts();
         collector.collect_legacy_consts();
         self.resolve_sized_dispatch(from);
         // Early predecessor lookup must agree with completed scopes. A local
@@ -150,8 +152,19 @@ struct LegacyCall {
     macro_scope: Option<MacroScopeId>,
 }
 
+/// A retained expansion of a macro call in `function`'s body, whose
+/// anonymous constants are collected once the function's are.
+struct BodyExpansionConsts {
+    /// The expansion's file and the module of the block it is in.
+    ctx: Ctx,
+    /// The call, by the file it is in.
+    call: (FileId, NodeId),
+    function: FunctionId,
+}
+
 struct Collector<'a> {
     legacy_calls: Vec<LegacyCall>,
+    body_expansion_consts: Vec<BodyExpansionConsts>,
     pending_items: Vec<PendingItem>,
     pending_body_macros: Vec<PendingBodyMacro>,
     collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
@@ -2673,8 +2686,16 @@ impl Collector<'_> {
                     file,
                     ctxts: expansion.ctxts,
                     fragment,
+                    anon_consts: false,
                 },
             );
+            if let Some(function) = function {
+                self.body_expansion_consts.push(BodyExpansionConsts {
+                    ctx: Ctx { file, ..ctx },
+                    call: (ctx.file, node.id()),
+                    function,
+                });
+            }
             let shared = self.db.shared(file);
             self.items.insert_file(file, Arc::clone(&shared));
             self.expansion_depth += 1;
@@ -2684,6 +2705,54 @@ impl Collector<'_> {
         }
         for child in node.children() {
             self.collect_body_node(ctx, child, function);
+        }
+    }
+
+    /// The anonymous constants of retained body expansions, in the scope
+    /// of their function as [`Self::anon_walk`] would give it, numbered
+    /// after the function's own.
+    fn collect_body_expansion_consts(&mut self) {
+        if self.body_expansion_consts.is_empty() {
+            return;
+        }
+        let mut counts = rustc_hash::FxHashMap::default();
+        for (_, konst) in self.items.consts.iter() {
+            if let Some(anon) = konst.anon {
+                let count = counts.entry(anon.item).or_insert(0);
+                *count = (*count).max(anon.index + 1);
+            }
+        }
+        for pending in std::mem::take(&mut self.body_expansion_consts) {
+            let function = &self.items.functions[pending.function];
+            let owner_generics = self.items.owner_generics(function.owner);
+            let generic_self = matches!(function.owner, Some(Owner::Trait(_)))
+                || owner_generics.is_some_and(|g| !g.params.is_empty() || !g.lifetimes.is_empty());
+            let generics = owner_generics
+                .into_iter()
+                .chain(Some(&function.generics))
+                .flat_map(|g| g.params.iter().map(|p| (p.name, p.is_const())))
+                .collect();
+            let mut scope = AnonScope {
+                self_adt: None,
+                module: pending.ctx.module,
+                owner: function.owner.filter(|_| !generic_self),
+                generics,
+                generic_self,
+                function: Some(pending.function),
+                item: function.name,
+            };
+            let shared = self.db.shared(pending.ctx.file);
+            let start = self.items.diagnostics.len();
+            self.anon_walk(
+                pending.ctx.file,
+                shared.parse.tree().root(),
+                &mut scope,
+                &mut counts,
+            );
+            self.tag(start, pending.ctx.file);
+            if let Some(expansion) = self.items.body_expansions.get_mut(&pending.call) {
+                expansion.anon_consts = true;
+            }
         }
     }
 

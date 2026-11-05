@@ -1,0 +1,10 @@
+fn generic<const N: usize>() -> () {
+    let _: [u8; {const}] = [0; 4];
+}
+
+fn main() -> () {
+    let _: [u8; {const}] = [0; 4];
+    generic::<3>();
+}
+
+error 125..126: generic parameters may not be used in const operations

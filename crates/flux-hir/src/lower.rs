@@ -2039,6 +2039,13 @@ struct Ctx<'a> {
 
 /// A macro defined in the body being lowered, with how many bindings
 /// and loops were in scope at its definition.
+/// What lowering a macro expansion in a body changed, to restore after.
+struct ExpansionScope {
+    outer_file: Option<FileId>,
+    /// Types in the expansion are lowered from its file, while it lives.
+    types: Option<crate::item_tree::TypesFile>,
+}
+
 struct LocalMacro {
     def: MacroDef,
     bindings: usize,
@@ -2209,6 +2216,35 @@ impl<'a> Ctx<'a> {
     }
 
     /// The file whose node identities `node` uses, if it was retained.
+    /// Starts lowering the expansion of `call`, in `file` if collection
+    /// retained it. Types there use the anonymous constants collection
+    /// found in it; others cannot have any.
+    fn enter_expansion(&mut self, call: SyntaxNode<'_>, file: Option<FileId>) -> ExpansionScope {
+        let types = file
+            .filter(|_| {
+                self.syntax_file(call)
+                    .and_then(|outer| self.items.body_expansions.get(&(outer, call.id())))
+                    .is_some_and(|expansion| expansion.anon_consts)
+            })
+            .map(crate::item_tree::TypesFile::enter);
+        if types.is_none() {
+            crate::item_tree::body_expansion(1);
+        }
+        self.expansion_depth += 1;
+        ExpansionScope {
+            outer_file: std::mem::replace(&mut self.expansion_file, file),
+            types,
+        }
+    }
+
+    fn leave_expansion(&mut self, scope: ExpansionScope) {
+        self.expansion_file = scope.outer_file;
+        self.expansion_depth -= 1;
+        if scope.types.is_none() {
+            crate::item_tree::body_expansion(-1);
+        }
+    }
+
     fn syntax_file(&self, node: SyntaxNode<'_>) -> Option<FileId> {
         self.expansion_file
             .filter(|file| std::ptr::eq(node.tree(), self.items.files[file].parse.tree()))
@@ -2412,9 +2448,7 @@ impl<'a> Ctx<'a> {
         };
         let root = parse.tree().root();
         let expr = root.children().find_map(ast::Expr::cast);
-        self.expansion_depth += 1;
-        crate::item_tree::body_expansion(1);
-        let outer_file = std::mem::replace(&mut self.expansion_file, file);
+        let expansion = self.enter_expansion(m.syntax(), file);
         let id = if pin {
             let value = self.lower_opt(expr, root);
             self.alloc_expr(Expr::Pin(value), range)
@@ -2462,9 +2496,7 @@ impl<'a> Ctx<'a> {
         } else {
             self.lower_opt(expr, root)
         };
-        self.expansion_file = outer_file;
-        self.expansion_depth -= 1;
-        crate::item_tree::body_expansion(-1);
+        self.leave_expansion(expansion);
         id
     }
 
@@ -2508,9 +2540,7 @@ impl<'a> Ctx<'a> {
             return None;
         };
         let root = ast::MacroStmts::cast(parse.tree().root())?;
-        self.expansion_depth += 1;
-        crate::item_tree::body_expansion(1);
-        let outer_file = std::mem::replace(&mut self.expansion_file, file);
+        let expansion = self.enter_expansion(m.syntax(), file);
         let outer_tail = self.macro_tail_is_expr;
         self.macro_tail_is_expr |= is_tail
             && !semicolon
@@ -2518,9 +2548,7 @@ impl<'a> Ctx<'a> {
                 .is_some_and(|tt| tt.l_curly_token().is_none());
         let tail = self.lower_stmts(root.syntax(), root.tail_expr());
         self.macro_tail_is_expr = outer_tail;
-        self.expansion_file = outer_file;
-        self.expansion_depth -= 1;
-        crate::item_tree::body_expansion(-1);
+        self.leave_expansion(expansion);
         match tail {
             Some(tail) if is_tail && !semicolon => Some(tail),
             Some(tail) => {
