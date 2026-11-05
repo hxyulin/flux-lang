@@ -28,7 +28,9 @@ fn too_many<'a>(x: &'a u8) -> W<'a, u8> {
 fn unsupported<'a>(w: W<'a, u8>, x: &'a u8) -> usize {
     let _ = w.get::<'a>(x);
     g::<'a>();
-    let _ = <u8 as Tr<'a>>::f();
+    let _ = <u8 as Tr<'a, 'a>>::f();
+    let h = <u8 as Tr<'a>>::f;
+    let _ = h();
     let W::<'a, u8> { r: _ } = w;
     let f = Some::<&'a u8>;
     let _ = f(x);

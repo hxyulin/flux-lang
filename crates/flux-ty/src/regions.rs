@@ -36,8 +36,9 @@ pub use flux_ty_ir::fn_regions::instantiate as instantiate_fn_pointer;
 pub use flux_ty_ir::regions::{
     AliasRegions, CallbackBinder, FamilyRegions, FnRegions, IMPL_SELF_ARG, ImplRegions,
     LifetimeName, OpaqueBoundRegions, OpaqueRegions, Outlives, ProjectionSelection, Region,
-    RegionSigs, StructRegions, TraitRefRegions, TraitRegions, TypeArgRegions, Variance,
-    has_projection_inputs, instantiate, object_associated_range, object_region_types, slots,
+    RegionSigs, StructRegions, TRAIT_LIFETIMES_ARG, TraitRefRegions, TraitRegions, TypeArgRegions,
+    Variance, has_projection_inputs, instantiate, object_associated_range, object_region_types,
+    slots,
 };
 
 pub use crate::fn_regions::variances as fn_pointer_variances;

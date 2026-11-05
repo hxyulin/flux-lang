@@ -69,4 +69,36 @@ fn vec_type_argument<'a, T>(data: &'a mut [T]) -> Vec<&'static mut [T]> {
     out
 }
 
+struct Input<'a> {
+    data: &'a [u8],
+}
+
+trait Arb<'a>: Sized {
+    fn arb(u: &mut Input<'a>) -> Self;
+    fn keep(u: &'a [u8]) -> &'a [u8];
+}
+
+impl<'a> Arb<'a> for u8 {
+    fn arb(u: &mut Input<'a>) -> Self {
+        u.data[0]
+    }
+    fn keep(u: &'a [u8]) -> &'a [u8] {
+        u
+    }
+}
+
+fn trait_other<'a, 'b>(u: &mut Input<'a>) -> u8 {
+    <u8 as Arb<'b>>::arb(u)
+}
+
+fn trait_escape<'a>(x: &'a [u8]) -> &'static [u8] {
+    <u8 as Arb<'a>>::keep(x)
+}
+
+fn trait_static() -> u8 {
+    let bytes = [3];
+    let mut u = Input { data: &bytes };
+    <u8 as Arb<'static>>::arb(&mut u)
+}
+
 fn main() {}

@@ -1590,6 +1590,16 @@ impl Ctx<'_> {
                 // Written in the path's type, which `call_regions` has, or
                 // reported where it is resolved.
                 Expr::Path(Res::Assoc { trait_: None, .. }) => (false, true),
+                // The trait's, which `call_regions` has at a call of one of
+                // its functions.
+                Expr::Path(Res::Assoc {
+                    trait_: Some(t), ..
+                }) if calls.get(expr).is_some_and(|i| {
+                    self.items.functions[i.function].owner == Some(flux_hir::Owner::Trait(t))
+                }) =>
+                {
+                    (false, true)
+                }
                 _ => (false, false),
             };
             for (args, ok) in [(item, item_ok), (ty, ty_ok)] {
@@ -1705,6 +1715,38 @@ impl Ctx<'_> {
             "lifetime arguments in expressions are not supported yet",
         );
         true
+    }
+
+    /// The regions of the lifetime arguments `written` for trait `t`, as
+    /// many as it has: inferred if none is written.
+    fn written_trait_lifetimes(
+        &mut self,
+        t: flux_hir::TraitId,
+        written: &SegmentArgs,
+    ) -> Option<Box<[crate::regions::Region]>> {
+        let got = written.lifetimes.len();
+        if got == 0 || self.unrepresented_lifetimes(&written.lifetimes) {
+            return None;
+        }
+        let want = self.items.traits[t].generics.lifetimes.len();
+        if got != want {
+            let verb = if got == 1 { "was" } else { "were" };
+            let plural = |n: usize| if n == 1 { "" } else { "s" };
+            self.error(
+                written.segment,
+                format!(
+                    "trait takes {want} lifetime argument{} but {got} lifetime argument{} {verb} supplied",
+                    plural(want),
+                    plural(got)
+                ),
+            );
+            return None;
+        }
+        let mut walker = self.body_walker();
+        let regions = written.lifetimes.iter().map(|&l| walker.named(l)).collect();
+        let errors = walker.errors;
+        self.report_walker_errors(errors);
+        Some(regions)
     }
 
     /// The lifetimes written in generic arguments `written`, `'_` aside.
@@ -6791,6 +6833,16 @@ impl Ctx<'_> {
                     .zip(self.items.impl_of(instance.function)),
                 _ => None,
             };
+            if let Expr::Path(Res::Assoc {
+                trait_: Some(t), ..
+            }) = self.body.exprs[expr]
+                && let Some(written) = self.body.generic_args.get(expr).and_then(|g| g.ty.as_ref())
+                && self.items.functions[instance.function].owner == Some(flux_hir::Owner::Trait(t))
+                && let Some(regions) = self.written_trait_lifetimes(t, written)
+                && regions.iter().any(|r| *r != crate::regions::Region::Erased)
+            {
+                tables.push((crate::regions::TRAIT_LIFETIMES_ARG, regions));
+            }
             if impl_self.is_some() || segment_self.is_some() {
                 let imp = impl_self.map_or_else(|| segment_self.unwrap().1, |(imp, _)| imp);
                 let count = self.items.impls[imp].generics.len();

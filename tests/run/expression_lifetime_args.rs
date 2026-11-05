@@ -85,6 +85,34 @@ impl<'a, T> W<'a, T> {
     }
 }
 
+struct Input<'a> {
+    data: &'a [u8],
+}
+
+trait Arb<'a>: Sized {
+    fn arb(u: &mut Input<'a>) -> Self;
+}
+
+impl<'a> Arb<'a> for u8 {
+    fn arb(u: &mut Input<'a>) -> Self {
+        let (first, rest) = u.data.split_first().unwrap();
+        u.data = rest;
+        *first
+    }
+}
+
+struct Two<A>(A, A);
+
+impl<'a, A: Arb<'a>> Arb<'a> for Two<A> {
+    fn arb(u: &mut Input<'a>) -> Self {
+        Two(<A as Arb<'a>>::arb(u), A::arb(u))
+    }
+}
+
+fn via_trait_path<'a>(u: &mut Input<'a>) -> u8 {
+    Arb::<'a>::arb(u)
+}
+
 fn main() {
     let data = [1, 2, 3];
     let s = Scope::new(&data);
@@ -110,4 +138,8 @@ fn main() {
     let x = 4u8;
     let r = &x;
     println!("{}", **nested(&r).r);
+    let bytes = [3, 4, 5];
+    let mut input = Input { data: &bytes };
+    let two = <Two<u8> as Arb>::arb(&mut input);
+    println!("{} {} {}", two.0, two.1, via_trait_path(&mut input));
 }

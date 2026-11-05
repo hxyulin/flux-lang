@@ -181,6 +181,88 @@ fn vec_type_argument<'a, T>(_1: &mut [T]) -> Vec<&mut [T]> {
     }
 }
 
+fn <u8 as Arb<'a>>::arb(_1: &mut Input) -> u8 {
+    let mut _0: u8;
+    let _2: usize;
+    let _3: usize;
+    let _4: bool;
+
+    bb0: {
+        _2 = const 0_usize;
+        _3 = Len((*(*_1).0));
+        _4 = Lt(copy _2, copy _3);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*(*_1).0)[_2];
+        return;
+    }
+}
+
+fn <u8 as Arb<'a>>::keep(_1: &[u8]) -> &[u8] {
+    let mut _0: &[u8];
+
+    bb0: {
+        _0 = copy _1;
+        return;
+    }
+}
+
+fn trait_other<'a, 'b>(_1: &mut Input) -> u8 {
+    let mut _0: u8;
+    let _2: &mut Input;
+
+    bb0: {
+        _2 = &two_phase (*_1);
+        _0 = arb::<u8>(move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn trait_escape<'a>(_1: &[u8]) -> &[u8] {
+    let mut _0: &[u8];
+    let _2: &[u8];
+
+    bb0: {
+        _2 = copy _1;
+        _0 = keep::<u8>(copy _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn trait_static() -> u8 {
+    let mut _0: u8;
+    let _1: [u8; 1]; // bytes
+    let mut _2: Input; // u
+    let _3: &[u8];
+    let _4: &[u8; 1];
+    let _5: &mut Input;
+    let _6: &mut Input;
+
+    bb0: {
+        _1 = [const 3_u8];
+        _4 = &_1;
+        _3 = copy _4 as &[u8] (unsize);
+        _2 = Input { data: copy _3 };
+        _6 = &mut _2;
+        _5 = &mut (*_6);
+        _0 = arb::<u8>(move _5) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        StorageDead(_1);
+        return;
+    }
+}
+
 fn main() -> () {
     let mut _0: ();
 
@@ -214,3 +296,7 @@ error 937..952: lifetime may not live long enough
 error 1037..1039: `x` does not live long enough
 error 1125..1154: borrowed data escapes outside of function
 error 1325..1328: lifetime may not live long enough
+error 1679..1702: lifetime may not live long enough
+error 1679..1702: lifetime may not live long enough
+error 1762..1786: lifetime may not live long enough
+error 1867..1873: `bytes` does not live long enough

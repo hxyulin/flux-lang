@@ -57,7 +57,33 @@ fn covariant_result() -> usize {
     v.len()
 }
 
+struct Input<'a> {
+    data: &'a [u8],
+}
+
+trait Arb<'a>: Sized {
+    fn arb(u: &mut Input<'a>) -> Self;
+}
+
+impl<'a> Arb<'a> for u8 {
+    fn arb(u: &mut Input<'a>) -> Self {
+        u.data[0]
+    }
+}
+
+fn qualified<'a>(u: &mut Input<'a>) -> u8 {
+    let first: u8 = Arb::<'a>::arb(u);
+    first + <u8 as Arb<'a>>::arb(u)
+}
+
+fn generic<'a, A: Arb<'a>>(u: &mut Input<'a>) -> A {
+    <A as Arb<'a>>::arb(u)
+}
+
 fn main() {
+    let bytes = [1u8];
+    let _ = qualified(&mut Input { data: &bytes });
+    let _: u8 = generic(&mut Input { data: &bytes });
     let data = [1, 2, 3];
     let _ = Scope::new(&data);
     let _ = with_new(&data);

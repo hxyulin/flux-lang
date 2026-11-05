@@ -161,93 +161,189 @@ fn covariant_result() -> usize {
     }
 }
 
-fn main() -> () {
-    let mut _0: ();
-    let _1: [i32; 3]; // data
-    let _2: Scope;
-    let _3: &[i32];
-    let _4: &[i32; 3];
-    let _5: Scope;
-    let _6: &[i32];
-    let _7: &[i32; 3];
-    let _8: Choice<i32>;
-    let _9: &i32;
-    let _10: Choice<u8>;
-    let _11: Pair<i32>;
-    let _12: Option<&u8>;
-    let _13: &u8;
-    let mut _14: [i32; 2]; // v
-    let _15: Vec<&mut [i32]>;
-    let _16: &mut [i32];
-    let _17: &mut [i32; 2];
-    let _18: &mut [i32; 2];
-    let _19: Pair<i32>;
-    let _20: &i32;
-    let _21: usize;
+fn <u8 as Arb<'a>>::arb(_1: &mut Input) -> u8 {
+    let mut _0: u8;
+    let _2: usize;
+    let _3: usize;
+    let _4: bool;
 
     bb0: {
-        _1 = [const 1_i32, const 2_i32, const 3_i32];
-        _4 = &_1;
-        _3 = copy _4 as &[i32] (unsize);
-        _2 = new(copy _3) -> bb1;
+        _2 = const 0_usize;
+        _3 = Len((*(*_1).0));
+        _4 = Lt(copy _2, copy _3);
+        assert(copy _4, "index out of bounds") -> bb1;
+    }
+
+    bb1: {
+        _0 = copy (*(*_1).0)[_2];
+        return;
+    }
+}
+
+fn qualified<'a>(_1: &mut Input) -> u8 {
+    let mut _0: u8;
+    let _2: u8; // first
+    let _3: &mut Input;
+    let _4: u8;
+    let _5: u8;
+    let _6: &mut Input;
+
+    bb0: {
+        _3 = &two_phase (*_1);
+        _2 = arb::<u8>(move _3) -> bb1;
+    }
+
+    bb1: {
+        _4 = copy _2;
+        _6 = &two_phase (*_1);
+        _5 = arb::<u8>(move _6) -> bb2;
+    }
+
+    bb2: {
+        _0 = Add(copy _4, copy _5);
+        StorageDead(_2);
+        return;
+    }
+}
+
+fn generic<'a, A>(_1: &mut Input) -> A {
+    let mut _0: A;
+    let _2: &mut Input;
+
+    bb0: {
+        _2 = &two_phase (*_1);
+        _0 = arb::<A>(move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+    let _1: [u8; 1]; // bytes
+    let _2: u8;
+    let _3: &mut Input;
+    let _4: &mut Input;
+    let _5: Input;
+    let _6: &[u8];
+    let _7: &[u8; 1];
+    let _8: u8;
+    let _9: &mut Input;
+    let _10: &mut Input;
+    let _11: Input;
+    let _12: &[u8];
+    let _13: &[u8; 1];
+    let _14: [i32; 3]; // data
+    let _15: Scope;
+    let _16: &[i32];
+    let _17: &[i32; 3];
+    let _18: Scope;
+    let _19: &[i32];
+    let _20: &[i32; 3];
+    let _21: Choice<i32>;
+    let _22: &i32;
+    let _23: Choice<u8>;
+    let _24: Pair<i32>;
+    let _25: Option<&u8>;
+    let _26: &u8;
+    let mut _27: [i32; 2]; // v
+    let _28: Vec<&mut [i32]>;
+    let _29: &mut [i32];
+    let _30: &mut [i32; 2];
+    let _31: &mut [i32; 2];
+    let _32: Pair<i32>;
+    let _33: &i32;
+    let _34: usize;
+
+    bb0: {
+        _1 = [const 1_u8];
+        _7 = &_1;
+        _6 = copy _7 as &[u8] (unsize);
+        _5 = Input { data: copy _6 };
+        _4 = &mut _5;
+        _3 = &mut (*_4);
+        _2 = qualified(move _3) -> bb1;
     }
 
     bb1: {
         StorageDead(_2);
-        _7 = &_1;
-        _6 = copy _7 as &[i32] (unsize);
-        _5 = with_new(copy _6) -> bb2;
+        StorageDead(_5);
+        _13 = &_1;
+        _12 = copy _13 as &[u8] (unsize);
+        _11 = Input { data: copy _12 };
+        _10 = &mut _11;
+        _9 = &mut (*_10);
+        _8 = generic::<u8>(move _9) -> bb2;
     }
 
     bb2: {
-        StorageDead(_5);
-        _9 = const &promoted[0];
-        _8 = pick::<i32>(copy _9) -> bb3;
+        StorageDead(_8);
+        StorageDead(_11);
+        _14 = [const 1_i32, const 2_i32, const 3_i32];
+        _17 = &_14;
+        _16 = copy _17 as &[i32] (unsize);
+        _15 = new(copy _16) -> bb3;
     }
 
     bb3: {
-        StorageDead(_8);
-        _10 = neither() -> bb4;
+        StorageDead(_15);
+        _20 = &_14;
+        _19 = copy _20 as &[i32] (unsize);
+        _18 = with_new(copy _19) -> bb4;
     }
 
     bb4: {
-        StorageDead(_10);
-        _11 = statics() -> bb5;
+        StorageDead(_18);
+        _22 = const &promoted[0];
+        _21 = pick::<i32>(copy _22) -> bb5;
     }
 
     bb5: {
-        StorageDead(_11);
-        _13 = const &promoted[1];
-        _12 = shorter(copy _13) -> bb6;
+        StorageDead(_21);
+        _23 = neither() -> bb6;
     }
 
     bb6: {
-        StorageDead(_12);
-        _14 = [const 1_i32, const 2_i32];
-        _18 = &mut _14;
-        _17 = &mut (*_18);
-        _16 = move _17 as &mut [i32] (unsize);
-        _15 = chunks::<i32>(move _16) -> bb7;
+        StorageDead(_23);
+        _24 = statics() -> bb7;
     }
 
     bb7: {
-        drop(_15) -> bb8;
+        StorageDead(_24);
+        _26 = const &promoted[1];
+        _25 = shorter(copy _26) -> bb8;
     }
 
     bb8: {
-        StorageDead(_15);
-        _20 = const &promoted[2];
-        _19 = anon(copy _20) -> bb9;
+        StorageDead(_25);
+        _27 = [const 1_i32, const 2_i32];
+        _31 = &mut _27;
+        _30 = &mut (*_31);
+        _29 = move _30 as &mut [i32] (unsize);
+        _28 = chunks::<i32>(move _29) -> bb9;
     }
 
     bb9: {
-        StorageDead(_19);
-        _21 = covariant_result() -> bb10;
+        drop(_28) -> bb10;
     }
 
     bb10: {
-        StorageDead(_21);
+        StorageDead(_28);
+        _33 = const &promoted[2];
+        _32 = anon(copy _33) -> bb11;
+    }
+
+    bb11: {
+        StorageDead(_32);
+        _34 = covariant_result() -> bb12;
+    }
+
+    bb12: {
+        StorageDead(_34);
         _0 = const ();
+        StorageDead(_27);
         StorageDead(_14);
         StorageDead(_1);
         return;

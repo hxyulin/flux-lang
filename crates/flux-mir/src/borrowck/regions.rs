@@ -5311,6 +5311,29 @@ impl<'a> Cx<'a> {
         {
             self.impl_self_annotation(func, table, &mut map, generic_args, &type_vars, range);
         }
+        // `<T as Tr<'a>>::f`: the trait's lifetimes, the first of `func`'s.
+        if let Some((_, table)) = written
+            .iter()
+            .find(|(index, _)| *index == flux_ty::regions::TRAIT_LIFETIMES_ARG)
+        {
+            if regions.owner as usize != table.len() {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "lifetime arguments of this trait are not supported yet",
+                ));
+            } else {
+                for (&var, region) in lifetimes.iter().zip(table.iter()) {
+                    let declared = match *region {
+                        Region::Static => Some(STATIC),
+                        Region::Param(i) => Some(1 + i),
+                        Region::Erased | Region::Late(_) => None,
+                    };
+                    if let Some(declared) = declared {
+                        self.equate(var, declared, Category::CallArgument, range);
+                    }
+                }
+            }
+        }
         let mut inputs: Vec<Var> = Vec::new();
         let mut unmatched_inputs: Vec<Var> = Vec::new();
         for (i, op) in args.iter().enumerate() {

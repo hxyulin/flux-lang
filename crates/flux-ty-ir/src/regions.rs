@@ -35,6 +35,11 @@ pub type TypeArgRegions = Vec<(u32, Box<[Region]>)>;
 /// `impl` block's self type, not of one of its generic arguments.
 pub const IMPL_SELF_ARG: u32 = u32::MAX;
 
+/// The [`TypeArgRegions`] index of the trait lifetime arguments written in
+/// a path to a trait's function, `'a` in `<T as Tr<'a>>::f`: the callee's
+/// owner lifetimes, not the slots of a type.
+pub const TRAIT_LIFETIMES_ARG: u32 = u32::MAX - 1;
+
 /// How a type's subtyping depends on one of its parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variance {
