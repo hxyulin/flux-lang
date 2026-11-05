@@ -504,8 +504,35 @@ impl Ctx<'_> {
         }
     }
 
+    /// The `Fn`-family trait (the first of `Fn`, `FnMut` and `FnOnce`)
+    /// that `base`, a type parameter, alias, opaque type or trait object,
+    /// is bound by, and the bound.
+    fn fn_bound(&mut self, base: Ty) -> Option<(ClosureKind, TraitRef)> {
+        let items = self.items;
+        // An opaque type's bounds are its own, and a trait object's its
+        // trait.
+        let own = match base.kind() {
+            TyKind::Opaque(opaque) => flux_solve::traits::opaque_bounds(self.sigs, opaque),
+            TyKind::Dynamic(d) => flux_solve::traits::dyn_bounds(self.sigs, base, d),
+            _ => Vec::new(),
+        };
+        [ClosureKind::Fn, ClosureKind::FnMut, ClosureKind::FnOnce]
+            .into_iter()
+            .find_map(|kind| {
+                let t = crate::fn_trait(items, kind)?;
+                let bound = self
+                    .param_env
+                    .iter()
+                    .chain(&own)
+                    .find(|p| p.trait_ref.trait_ == t && p.self_ty == base)?;
+                Some((kind, bound.trait_ref))
+            })
+    }
+
     /// A call of a value, `f(x)`: of a closure, or of a type parameter
-    /// with a `Fn`-family bound, through references.
+    /// or trait object with a `Fn`-family bound, through references and
+    /// other dereferences (`Box<dyn Fn()>`, `&Arc<dyn Fn()>`), as rustc
+    /// autoderefs the callee.
     pub(super) fn infer_value_call(
         &mut self,
         id: ExprId,
@@ -513,15 +540,49 @@ impl Ctx<'_> {
         callee_ty: Ty,
         args: &[ExprId],
     ) -> Ty {
-        let (base, derefs) = self.autoderef(callee_ty);
         if let Some(context) = self.const_context {
             self.error(
                 self.range(id),
                 format!("cannot call non-const closure in {context}"),
             );
         }
+        let range = self.range(callee);
+        let mut base = self.shallow(callee_ty);
+        let mut derefs = 0;
+        let mut steps: Vec<OverloadedDeref> = Vec::new();
+        // Whether a step past references reached `base`.
+        let mut through_pointer = false;
+        let found = loop {
+            match base.kind() {
+                TyKind::Closure(..) => break None,
+                TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_) => {
+                    base = self.known(base);
+                    if let Some(found) = self.fn_bound(base) {
+                        break Some(found);
+                    }
+                }
+                _ => {}
+            }
+            let is_ref = matches!(base.kind(), TyKind::Ref(..));
+            match self.deref_step(base, range).filter(|_| derefs < 128) {
+                Some((next, overloaded)) => {
+                    if overloaded {
+                        steps.push(OverloadedDeref {
+                            step: derefs,
+                            mutability: Mutability::Not,
+                            ty: base,
+                            target: next,
+                        });
+                    }
+                    through_pointer |= !is_ref;
+                    base = next;
+                    derefs += 1;
+                }
+                None => break None,
+            }
+        };
         match base.kind() {
-            TyKind::Closure(_, closure_args) => {
+            TyKind::Closure(_, closure_args) if !through_pointer => {
                 let parts = ClosureArgs::split(closure_args);
                 let params = match self.shallow(parts.params()).kind() {
                     TyKind::Tuple(list) => list,
@@ -535,39 +596,27 @@ impl Ctx<'_> {
                 });
                 parts.ret()
             }
-            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_) => {
+            _ if let Some((kind, trait_ref)) = found => {
                 let items = self.items;
-                // An opaque type's bounds are its own, and a trait
-                // object's its trait.
-                let base = self.known(base);
-                let own = match base.kind() {
-                    TyKind::Opaque(opaque) => flux_solve::traits::opaque_bounds(self.sigs, opaque),
-                    TyKind::Dynamic(d) => flux_solve::traits::dyn_bounds(self.sigs, base, d),
-                    _ => Vec::new(),
-                };
-                let found = [ClosureKind::Fn, ClosureKind::FnMut, ClosureKind::FnOnce]
-                    .into_iter()
-                    .find_map(|kind| {
-                        let t = crate::fn_trait(items, kind)?;
-                        let bound = self
-                            .param_env
-                            .iter()
-                            .chain(&own)
-                            .find(|p| p.trait_ref.trait_ == t && p.self_ty == base)?;
-                        Some((kind, bound.trait_ref))
-                    });
-                let Some((kind, trait_ref)) = found else {
-                    self.not_callable(callee, callee_ty);
+                if kind == ClosureKind::FnOnce && base.is_dyn() {
+                    self.error(range, "calling a `dyn FnOnce` value is not supported yet");
                     self.infer_args(args);
                     return Ty::ERROR;
-                };
+                }
+                // A bound's arguments may name projections that an
+                // `impl` decides (`F: FnOnce(&Self::Item)`).
                 let tupled = trait_ref.args.first().copied().unwrap_or(Ty::ERROR);
+                let tupled = self.normalize(tupled, range);
                 let params = match tupled.kind() {
                     TyKind::Tuple(list) => list,
                     _ => &[],
                 };
                 self.check_value_call_args(callee, params, args);
                 self.record_fn_call(id, kind, base, tupled, derefs);
+                self.record_overloaded_derefs(id, &steps);
+                if kind == ClosureKind::FnMut && !steps.is_empty() {
+                    self.make_derefs_mutable(id, range);
+                }
                 let Some(once) = crate::fn_trait(items, ClosureKind::FnOnce) else {
                     return Ty::ERROR;
                 };
@@ -580,8 +629,16 @@ impl Ctx<'_> {
                     flux_solve::traits::alias_of(self.items, once, base, Symbol::intern("Output"));
                 self.normalize(Ty::alias(output), self.range(id))
             }
+            TyKind::Closure(..) => {
+                self.error(
+                    range,
+                    "calling a closure behind a smart pointer is not supported yet",
+                );
+                self.infer_args(args);
+                Ty::ERROR
+            }
             TyKind::Infer(var) if !self.unknown(var).0 => {
-                self.annotations_needed(callee, var, self.range(callee));
+                self.annotations_needed(callee, var, range);
                 self.infer_args(args);
                 Ty::ERROR
             }
