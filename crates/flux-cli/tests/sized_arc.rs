@@ -129,7 +129,7 @@ fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
 "#,
         );
     let source = dir.join("panic.rs");
-    std::fs::write(&source, format!("mod implementation {{\n{library}\n}}\n{}", r#"
+    std::fs::write(&source, format!("#[allow(unused_imports)]\nuse std::{{borrow, string}};\nmod implementation {{\n{library}\n}}\n{}", r#"
 use implementation::Arc;
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -671,7 +671,7 @@ fn checked_counter_limits_abort_without_wrapping() {
             ("flux", library.clone()),
         ] {
             let source = dir.join(format!("{name}-{compiler}.rs"));
-            std::fs::write(&source, format!("mod implementation {{\n{body}{tail}\n}}\nfn main() {{ implementation::exercise(); }}\n")).unwrap();
+            std::fs::write(&source, format!("#[allow(unused_imports)]\nuse std::{{borrow, string}};\nmod implementation {{\n{body}{tail}\n}}\nfn main() {{ implementation::exercise(); }}\n")).unwrap();
             for optimized in [false, true] {
                 let executable = dir.join(format!("{name}-{compiler}-{optimized}"));
                 let mut command = if compiler == "rustc" {

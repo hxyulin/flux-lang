@@ -101,7 +101,10 @@ fn actual_implementations_host_contention_and_poison() {
         .unwrap();
     let dir = root.join("out/sync-runtime/host");
     std::fs::create_dir_all(&dir).unwrap();
-    let mut source = String::from("pub use std::thread;\nmod implementation {\n");
+    // The crate-root names the library modules reach through `crate::`.
+    let mut source = String::from(
+        "extern crate alloc as alloc_crate;\npub use std::{thread, time};\nmod sync { pub use crate::implementation::OnceLock; }\nmod implementation {\n",
+    );
     for module in ["once_lock", "lazy_lock", "mutex", "rwlock", "poison"] {
         source.push_str(&format!(
             "#[path = {:?}] mod {module};\n",
