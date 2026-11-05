@@ -7012,6 +7012,17 @@ impl Ctx<'_> {
                 {
                     places.insert(receiver);
                 }
+                // A method a trait object cannot have is reported alone,
+                // not also its receiver's size (`(*r).peekable()`).
+                Expr::MethodCall { receiver, .. }
+                    if self.expr_types.get(id) == Some(&Ty::ERROR)
+                        && self
+                            .expr_types
+                            .get(receiver)
+                            .is_some_and(|t| matches!(t.kind(), TyKind::Dynamic(_))) =>
+                {
+                    places.insert(receiver);
+                }
                 // Comparisons borrow their operands, even if trait selection
                 // failed. Do not add a spurious unsized-move diagnostic then.
                 Expr::Binary {
