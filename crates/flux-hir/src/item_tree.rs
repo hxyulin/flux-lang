@@ -2749,7 +2749,11 @@ fn lower_bounds(
 ) {
     for bound in list.bounds() {
         let range = bound.syntax().text_range();
-        let what = if let Some(lifetime) = bound.lifetime() {
+        let what = if bound.lifetime().is_some() && bound.l_paren_token().is_some() {
+            let message = "lifetime bounds may not be parenthesized";
+            diagnostics.push(Diagnostic::new(range, message));
+            continue;
+        } else if let Some(lifetime) = bound.lifetime() {
             match lifetimes.as_deref_mut() {
                 Some(lifetimes) => {
                     lifetimes.push(lower_lifetime(lifetime));
@@ -2789,8 +2793,6 @@ fn lower_bounds(
                 }
                 Relaxed::Unsupported => "`?Sized` bounds",
             }
-        } else if bound.l_paren_token().is_some() {
-            "parenthesized bounds"
         } else {
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
@@ -2830,7 +2832,12 @@ fn lower_dyn(d: ast::DynTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> Typ
     for bound in d.type_bound_list().into_iter().flat_map(|l| l.bounds()) {
         let bound_range = bound.syntax().text_range();
         if let Some(l) = bound.lifetime() {
-            if lifetime.is_some() {
+            if bound.l_paren_token().is_some() {
+                diagnostics.push(Diagnostic::new(
+                    bound_range,
+                    "lifetime bounds may not be parenthesized",
+                ));
+            } else if lifetime.is_some() {
                 diagnostics.push(Diagnostic::new(
                     bound_range,
                     "only a single explicit lifetime bound is permitted",
@@ -2850,8 +2857,6 @@ fn lower_dyn(d: ast::DynTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> Typ
             "`use` bounds in trait objects"
         } else if bound.for_token().is_some() {
             "higher-ranked bounds"
-        } else if bound.l_paren_token().is_some() {
-            "parenthesized bounds"
         } else {
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
@@ -2926,7 +2931,7 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
             captures = Some(list.into());
             continue;
         }
-        let what = if bound.question_token().is_some() {
+        if bound.question_token().is_some() {
             let name = bound
                 .path_type()
                 .and_then(|p| p.path())
@@ -2974,8 +2979,6 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
                 }
             }
             continue;
-        } else if bound.l_paren_token().is_some() {
-            "parenthesized bounds"
         } else {
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
@@ -2989,9 +2992,7 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
                 names.push(collapse(bound.syntax().text()));
             }
             continue;
-        };
-        unsupported(diagnostics, bound_range, what);
-        return TypeRef::Error;
+        }
     }
     if bounds.is_empty() {
         diagnostics.push(Diagnostic::new(
