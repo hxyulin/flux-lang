@@ -238,3 +238,8 @@ impl core::fmt::Debug for SystemTime {
             .finish()
     }
 }
+impl core::fmt::Debug for Instant {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Instant").field("tv_sec", &self.secs).field("tv_nsec", &self.nanos).finish()
+    }
+}

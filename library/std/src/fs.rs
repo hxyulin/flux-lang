@@ -202,6 +202,18 @@ impl File {
         // negative offset and the kernel rejects it without modifying the file.
         if unsafe{native::ftruncate(self.raw_fd(),length as i64)}<0{Err(Error::last_os_error())}else{Ok(())}
     }
+    /// Flushes file contents to the device; on macOS this is sync_all.
+    pub fn sync_data(&self)->Result<()>{
+        #[cfg(target_os = "linux")]
+        {
+            unsafe extern "C" { fn fdatasync(fd: i32) -> i32; }
+            // SAFETY: fd remains owned for the complete synchronization call.
+            if unsafe{fdatasync(self.raw_fd())}<0{return Err(Error::last_os_error());}
+            Ok(())
+        }
+        #[cfg(target_os = "macos")]
+        { self.sync_all() }
+    }
     pub fn sync_all(&self)->Result<()>{
         // SAFETY: fd remains owned for the complete synchronization call.
         if unsafe{native::fsync(self.raw_fd())}<0{Err(Error::last_os_error())}else{Ok(())}
@@ -311,9 +323,9 @@ impl Seek for &File{fn seek(&mut self,position:SeekFrom)->Result<u64>{self.seek_
 
 /// Options applied atomically when opening a file.
 #[derive(Clone,Debug)]
-pub struct OpenOptions { read:bool, write:bool, append:bool, truncate:bool, create:bool, create_new:bool }
+pub struct OpenOptions { read:bool, write:bool, append:bool, truncate:bool, create:bool, create_new:bool, pub(crate) custom_flags:i32, pub(crate) mode:u32 }
 impl OpenOptions{
-    pub fn new()->Self{Self{read:false,write:false,append:false,truncate:false,create:false,create_new:false}}
+    pub fn new()->Self{Self{read:false,write:false,append:false,truncate:false,create:false,create_new:false,custom_flags:0,mode:0o666}}
     pub fn read(&mut self,enabled:bool)->&mut Self{self.read=enabled;self}
     pub fn write(&mut self,enabled:bool)->&mut Self{self.write=enabled;self}
     pub fn append(&mut self,enabled:bool)->&mut Self{self.append=enabled;self}
@@ -324,7 +336,7 @@ impl OpenOptions{
         if !(self.read||self.write||self.append)
             || (!(self.write||self.append)&&(self.create||self.create_new||self.truncate))
             || (self.append&&self.truncate&&!self.create_new){return Err(ErrorKind::InvalidInput.into());}
-        let mut flags=READ_FLAGS;
+        let mut flags=READ_FLAGS|(self.custom_flags&!3);
         flags|=if self.read&&(self.write||self.append){2}else if self.write||self.append{1}else{0};
         if self.append{flags|=APPEND_FLAG;}
         if self.create_new{flags|=CREATE_FLAG|EXCLUSIVE_FLAG;}else{
@@ -335,7 +347,7 @@ impl OpenOptions{
         loop{
             // SAFETY: path is NUL-terminated, flags select a checked access
             // mode, and variadic mode uses C's promoted unsigned-int width.
-            let fd=unsafe{native::open(name.as_ptr() as *const core::ffi::c_char,flags,0o666u32)};
+            let fd=unsafe{native::open(name.as_ptr() as *const core::ffi::c_char,flags,self.mode)};
             if fd>=0{return Ok(File{descriptor:Descriptor(fd)});}
             let error=Error::last_os_error();if error.kind()!=ErrorKind::Interrupted{return Err(error);}
         }
@@ -357,6 +369,30 @@ impl Metadata{
     pub fn is_dir(&self)->bool{self.mode&0xf000==0x4000}
     pub fn permissions(&self)->Permissions{Permissions{mode:self.mode}}
     pub fn file_type(&self)->FileType{FileType{mode:self.mode}}
+    pub fn is_symlink(&self)->bool{self.mode&0xf000==0xa000}
+    /// The last modification time.
+    pub fn modified(&self)->Result<crate::time::SystemTime>{
+        use crate::os::unix::fs::MetadataExt;
+        Ok(system_time(self.mtime(),self.mtime_nsec()))
+    }
+    /// The last access time.
+    pub fn accessed(&self)->Result<crate::time::SystemTime>{
+        #[cfg(target_os="macos")]
+        { Ok(system_time(self.native[4] as i64,self.native[5] as i64)) }
+        #[cfg(target_os="linux")]
+        { Ok(system_time(self.native[9] as i64,self.native[10] as i64)) }
+    }
+    /// The creation time, which macOS records and Linux's stat does not.
+    pub fn created(&self)->Result<crate::time::SystemTime>{
+        #[cfg(target_os="macos")]
+        { Ok(system_time(self.native[10] as i64,self.native[11] as i64)) }
+        #[cfg(target_os="linux")]
+        { Err(Error::new(ErrorKind::Unsupported,"creation time is not available on this platform currently")) }
+    }
+}
+fn system_time(secs:i64,nanos:i64)->crate::time::SystemTime{
+    let since=crate::time::Duration::new(secs.unsigned_abs(),nanos as u32);
+    if secs>=0{crate::time::UNIX_EPOCH+since}else{crate::time::UNIX_EPOCH-crate::time::Duration::from_secs(secs.unsigned_abs())+crate::time::Duration::new(0,nanos as u32)}
 }
 fn metadata_record(storage:&[u64;32])->Metadata{
     let pointer=storage.as_ptr() as *const u8;
@@ -415,7 +451,7 @@ pub fn remove_file<P:AsRef<Path>>(path:P)->Result<()>{
 
 /// The kind of a directory entry, without following symbolic links.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FileType { mode: u32 }
+pub struct FileType { pub(crate) mode: u32 }
 impl FileType {
     pub fn is_file(&self) -> bool { self.mode & 0xf000 == 0x8000 }
     pub fn is_dir(&self) -> bool { self.mode & 0xf000 == 0x4000 }
@@ -444,7 +480,7 @@ pub fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
 
 /// An owned directory entry; it remains usable after its iterator is dropped.
 #[derive(Debug)]
-pub struct DirEntry { path: PathBuf, name: OsString }
+pub struct DirEntry { path: PathBuf, name: OsString, pub(crate) ino: u64 }
 impl DirEntry {
     pub fn path(&self) -> PathBuf { self.path.clone() }
     pub fn file_name(&self) -> OsString { self.name.clone() }
@@ -517,7 +553,9 @@ impl Iterator for ReadDir {
                 OsString { bytes: bytes[..end].to_vec() }
             };
             if name.as_os_str() == crate::ffi::OsStr::new(".") || name.as_os_str() == crate::ffi::OsStr::new("..") { continue; }
-            return Some(Ok(DirEntry { path: self.path.join(&name), name }));
+            // SAFETY: both records start with the 64-bit inode number.
+            let ino = unsafe { *(entry as *const u64) };
+            return Some(Ok(DirEntry { path: self.path.join(&name), name, ino }));
         }
     }
 }
@@ -654,3 +692,59 @@ fn remove_directory_contents(fd: Descriptor) -> Result<()> {
     }
     Ok(())
 }
+
+/// Creates a hard link `link` naming the same file as `original`.
+pub fn hard_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> {
+    unsafe extern "C" { fn linkat(from_dir: i32, from: *const u8, to_dir: i32, to: *const u8, flags: i32) -> i32; }
+    #[cfg(target_os = "macos")]
+    const CURRENT_DIRECTORY: i32 = -2;
+    #[cfg(target_os = "linux")]
+    const CURRENT_DIRECTORY: i32 = -100;
+    let original = c_path(original.as_ref())?;
+    let link = c_path(link.as_ref())?;
+    // SAFETY: both byte paths are terminated and retained throughout the call.
+    if unsafe { linkat(CURRENT_DIRECTORY, original.as_ptr(), CURRENT_DIRECTORY, link.as_ptr(), 0) } < 0 { Err(Error::last_os_error()) } else { Ok(()) }
+}
+
+/// Reads the target of a symbolic link without following it.
+pub fn read_link<P: AsRef<Path>>(path: P) -> Result<PathBuf> {
+    unsafe extern "C" { fn readlink(path: *const u8, buffer: *mut u8, size: usize) -> isize; }
+    let path = c_path(path.as_ref())?;
+    let mut buffer: Vec<u8> = Vec::with_capacity(256);
+    loop {
+        // SAFETY: path is terminated; buffer has the writable capacity passed.
+        let count = unsafe { readlink(path.as_ptr(), buffer.as_mut_ptr(), buffer.capacity()) };
+        if count < 0 { return Err(Error::last_os_error()); }
+        let count = count as usize;
+        if count < buffer.capacity() {
+            // SAFETY: readlink initialized the first count bytes.
+            unsafe { buffer.set_len(count); }
+            return Ok(PathBuf::from(OsString { bytes: buffer }));
+        }
+        buffer.reserve(buffer.capacity());
+    }
+}
+
+/// Whether the path exists, following symbolic links; other errors are returned.
+pub fn exists<P: AsRef<Path>>(path: P) -> Result<bool> { path.as_ref().try_exists() }
+
+/// Copies a regular file's contents and permissions to `to`, returning the
+/// number of bytes copied.
+pub fn copy<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> Result<u64> {
+    let mut reader = File::open(from.as_ref())?;
+    let metadata = reader.metadata()?;
+    if !metadata.is_file() {
+        return Err(Error::new(ErrorKind::InvalidInput, "the source path is neither a regular file nor a symlink to a regular file"));
+    }
+    let permissions = metadata.permissions();
+    let mut options = OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    options.mode = permissions.mode;
+    let mut writer = options.open(to.as_ref())?;
+    writer.set_permissions(permissions)?;
+    crate::io::copy(&mut reader, &mut writer)
+}
+
+/// Deprecated name for std::os::unix::fs::symlink.
+#[deprecated(note = "replaced with std::os::unix::fs::symlink")]
+pub fn soft_link<P: AsRef<Path>, Q: AsRef<Path>>(original: P, link: Q) -> Result<()> { symlink(original.as_ref(), link.as_ref()) }

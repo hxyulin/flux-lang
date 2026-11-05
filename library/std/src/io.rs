@@ -3,7 +3,7 @@ use crate::alloc_crate::string::String;
 use crate::alloc_crate::vec::Vec;
 
 mod buffered;
-pub use buffered::{BufRead, BufReader, Bytes, Take};
+pub use buffered::{BufRead, BufReader, BufWriter, Bytes, IntoInnerError, LineWriter, Lines, Split, Take, WriterPanicked};
 mod stdio;
 pub use stdio::{stdin, stdout, stderr, Stdin, StdinLock, Stdout, StdoutLock, Stderr, StderrLock, IsTerminal};
 
@@ -86,6 +86,13 @@ impl Error {
     }
     pub fn from_raw_os_error(code: i32) -> Error { Error { custom_error: None, code, message: None, custom_kind: None } }
     pub fn raw_os_error(&self) -> Option<i32> { if self.custom_kind.is_none() { Some(self.code) } else { None } }
+    /// A custom error of kind Other.
+    pub fn other<E>(error: E) -> Error
+        where E: Into<crate::alloc_crate::boxed::Box<dyn core::error::Error + Send + Sync>>
+    {
+        Error::new(ErrorKind::Other, error)
+    }
+    pub(crate) fn write_zero(message: &'static str) -> Error { Error { custom_error: None, code: 0, message: Some(message), custom_kind: Some(ErrorKind::WriteZero) } }
     pub(crate) fn nul_path() -> Error { Error { custom_error: None, code: 0, message: Some("file name contained an unexpected NUL byte"), custom_kind: Some(ErrorKind::InvalidInput) } }
     pub(crate) fn invalid_utf8() -> Error { Error { custom_error: None, code: 0, message: Some("stream did not contain valid UTF-8"), custom_kind: Some(ErrorKind::InvalidData) } }
     pub fn kind(&self) -> ErrorKind { self.custom_kind.unwrap_or_else(|| error_kind(self.code)) }
@@ -336,9 +343,57 @@ impl ErrorKind {
     }
 }
 
+/// A mutable byte buffer for vectored reads, with the Unix iovec layout.
+#[repr(transparent)]
+pub struct IoSliceMut<'a> { bytes: &'a mut [u8] }
+impl<'a> IoSliceMut<'a> {
+    pub fn new(bytes: &'a mut [u8]) -> Self { Self { bytes } }
+    pub fn advance(&mut self, count: usize) {
+        let bytes = core::mem::take(&mut self.bytes);
+        self.bytes = &mut bytes[count..];
+    }
+    pub fn advance_slices(buffers: &mut &mut [Self], mut count: usize) {
+        let mut consumed = 0;
+        for buffer in buffers.iter() {
+            if count < buffer.len() { break; }
+            count -= buffer.len();
+            consumed += 1;
+        }
+        *buffers = &mut core::mem::take(buffers)[consumed..];
+        if buffers.is_empty() {
+            assert!(count == 0, "advancing io slices beyond their length");
+        } else {
+            buffers[0].advance(count);
+        }
+    }
+    pub fn into_slice(self) -> &'a mut [u8] { self.bytes }
+}
+impl core::ops::Deref for IoSliceMut<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { self.bytes }
+}
+impl core::ops::DerefMut for IoSliceMut<'_> {
+    fn deref_mut(&mut self) -> &mut [u8] { self.bytes }
+}
+impl core::fmt::Debug for IoSliceMut<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Debug::fmt(&*self.bytes, f) }
+}
+impl<'a> IoSlice<'a> {
+    pub fn as_slice(self) -> &'a [u8] { self.bytes }
+}
+
 /// A source of bytes. A successful read may return fewer bytes than requested.
 pub trait Read {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize>;
+
+    /// Reads into the first nonempty buffer unless the reader overrides it.
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize> {
+        for buffer in bufs {
+            if !buffer.is_empty() { return self.read(buffer); }
+        }
+        self.read(&mut [])
+    }
+    fn chain<R: Read>(self, next: R) -> Chain<Self, R> where Self: Sized { Chain { first: self, second: next, done_first: false } }
 
     fn read_exact(&mut self, mut buf: &mut [u8]) -> Result<()> {
         while !buf.is_empty() {
@@ -383,6 +438,7 @@ pub trait Read {
 
 impl<R: Read + ?Sized> Read for &mut R {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize> { (**self).read(buf) }
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize> { (**self).read_vectored(bufs) }
     fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> { (**self).read_exact(buf) }
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> Result<usize> { (**self).read_to_end(buf) }
     fn read_to_string(&mut self, buf: &mut String) -> Result<usize> { (**self).read_to_string(buf) }
@@ -394,6 +450,14 @@ impl Read for &[u8] {
         buf[..count].copy_from_slice(&self[..count]);
         *self = &self[count..];
         Ok(count)
+    }
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> Result<usize> {
+        let mut total = 0;
+        for buf in bufs {
+            total += self.read(buf)?;
+            if self.is_empty() { break; }
+        }
+        Ok(total)
     }
 }
 
@@ -597,4 +661,96 @@ impl<const N: usize> Write for Cursor<[u8; N]> {
 impl Write for Cursor<crate::alloc_crate::boxed::Box<[u8]>> {
     fn write(&mut self, buf: &[u8]) -> Result<usize> { cursor_write_slice(&mut self.pos, &mut self.inner, buf) }
     fn flush(&mut self) -> Result<()> { Ok(()) }
+}
+
+/// Reads one source to its end, then the next.
+#[derive(Debug)]
+pub struct Chain<T, U> { first: T, second: U, done_first: bool }
+impl<T, U> Chain<T, U> {
+    pub fn into_inner(self) -> (T, U) { (self.first, self.second) }
+    pub fn get_ref(&self) -> (&T, &U) { (&self.first, &self.second) }
+    pub fn get_mut(&mut self) -> (&mut T, &mut U) { (&mut self.first, &mut self.second) }
+}
+impl<T: Read, U: Read> Read for Chain<T, U> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        if !self.done_first {
+            match self.first.read(buf)? {
+                0 if !buf.is_empty() => self.done_first = true,
+                n => return Ok(n),
+            }
+        }
+        self.second.read(buf)
+    }
+}
+impl<T: BufRead, U: BufRead> BufRead for Chain<T, U> {
+    fn fill_buf(&mut self) -> Result<&[u8]> {
+        if !self.done_first {
+            match self.first.fill_buf()? {
+                buf if buf.is_empty() => self.done_first = true,
+                buf => return Ok(buf),
+            }
+        }
+        self.second.fill_buf()
+    }
+    fn consume(&mut self, amt: usize) {
+        if !self.done_first { self.first.consume(amt) } else { self.second.consume(amt) }
+    }
+}
+
+/// A reader that is always at its end.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Empty;
+pub const fn empty() -> Empty { Empty }
+impl Read for Empty {
+    fn read(&mut self, _buf: &mut [u8]) -> Result<usize> { Ok(0) }
+}
+impl BufRead for Empty {
+    fn fill_buf(&mut self) -> Result<&[u8]> { Ok(&[]) }
+    fn consume(&mut self, _amt: usize) {}
+}
+impl Write for Empty {
+    fn write(&mut self, buf: &[u8]) -> Result<usize> { Ok(buf.len()) }
+    fn flush(&mut self) -> Result<()> { Ok(()) }
+}
+impl Seek for Empty {
+    fn seek(&mut self, _pos: SeekFrom) -> Result<u64> { Ok(0) }
+}
+
+/// A reader that yields one byte forever.
+#[derive(Debug)]
+pub struct Repeat { byte: u8 }
+pub const fn repeat(byte: u8) -> Repeat { Repeat { byte } }
+impl Read for Repeat {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        for slot in &mut *buf { *slot = self.byte; }
+        Ok(buf.len())
+    }
+}
+
+/// Copies the reader to its end into the writer, returning the byte count.
+pub fn copy<R: Read + ?Sized, W: Write + ?Sized>(reader: &mut R, writer: &mut W) -> Result<u64> {
+    let mut buffer = [0u8; 8192];
+    let mut total = 0u64;
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) => return Ok(total),
+            Ok(count) => count,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        writer.write_all(&buffer[..count])?;
+        total += count as u64;
+    }
+}
+
+/// Reads the whole source into a new string.
+pub fn read_to_string<R: Read>(mut reader: R) -> Result<String> {
+    let mut buf = String::new();
+    reader.read_to_string(&mut buf)?;
+    Ok(buf)
+}
+
+/// The traits most byte-stream code uses.
+pub mod prelude {
+    pub use super::{BufRead, Read, Seek, Write};
 }

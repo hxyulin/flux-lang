@@ -147,3 +147,21 @@ impl Layout {
         unsafe { crate::ptr::NonNull::new_unchecked(self.align.0 as *mut u8) }
     }
 }
+
+impl Layout {
+    /// A layout for this value followed by `next`, and the offset of `next`.
+    pub const fn extend(&self, next: Layout) -> Result<(Layout, usize), LayoutError> {
+        let new_align = if self.align.0 > next.align.0 { self.align.0 } else { next.align.0 };
+        let offset = (self.size + (next.align.0 - 1)) & !(next.align.0 - 1);
+        let new_size = match offset.checked_add(next.size) { Some(size) => size, None => return Err(LayoutError) };
+        match Layout::from_size_align(new_size, new_align) {
+            Ok(layout) => Ok((layout, offset)),
+            Err(error) => Err(error),
+        }
+    }
+    /// The same size with at least `align` alignment.
+    pub const fn align_to(&self, align: usize) -> Result<Layout, LayoutError> {
+        let align = if self.align.0 > align { self.align.0 } else { align };
+        Layout::from_size_align(self.size, align)
+    }
+}

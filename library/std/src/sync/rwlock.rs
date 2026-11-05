@@ -133,3 +133,49 @@ impl<T: ?Sized> Drop for RwLockWriteGuard<'_, T> {
 
 impl<T: ?Sized> core::panic::UnwindSafe for RwLock<T> {}
 impl<T: ?Sized> core::panic::RefUnwindSafe for RwLock<T> {}
+
+impl<T: ?Sized> RwLock<T> {
+    /// Acquires shared access only if no writer holds the lock.
+    pub fn try_read(&self) -> super::TryLockResult<RwLockReadGuard<'_, T>> {
+        let state = self.state.load(Relaxed);
+        if state >= WRITE - 1 || self.state.compare_exchange(state, state + 1, Acquire, Relaxed).is_err() {
+            return Err(super::TryLockError::WouldBlock);
+        }
+        let guard = RwLockReadGuard { lock: self, marker: PhantomData };
+        if self.is_poisoned() { Err(super::TryLockError::Poisoned(PoisonError::new(guard))) } else { Ok(guard) }
+    }
+    /// Acquires exclusive access only if no reader or writer holds the lock.
+    pub fn try_write(&self) -> super::TryLockResult<RwLockWriteGuard<'_, T>> {
+        if self.state.compare_exchange(0, WRITE, Acquire, Relaxed).is_err() {
+            return Err(super::TryLockError::WouldBlock);
+        }
+        let guard = RwLockWriteGuard { lock: self, panicking: crate::thread::panicking(), marker: PhantomData };
+        if self.is_poisoned() { Err(super::TryLockError::Poisoned(PoisonError::new(guard))) } else { Ok(guard) }
+    }
+}
+impl<T> From<T> for RwLock<T> {
+    fn from(value: T) -> RwLock<T> { RwLock::new(value) }
+}
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for RwLock<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut debug = f.debug_struct("RwLock");
+        match self.try_read() {
+            Ok(guard) => { debug.field("data", &&*guard); }
+            Err(super::TryLockError::Poisoned(error)) => { debug.field("data", &&**error.get_ref()); }
+            Err(super::TryLockError::WouldBlock) => { debug.field("data", &format_args!("<locked>")); }
+        }
+        debug.field("poisoned", &self.is_poisoned()).finish_non_exhaustive()
+    }
+}
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for RwLockReadGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Debug::fmt(&**self, f) }
+}
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for RwLockWriteGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Debug::fmt(&**self, f) }
+}
+impl<T: ?Sized + core::fmt::Display> core::fmt::Display for RwLockReadGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Display::fmt(&**self, f) }
+}
+impl<T: ?Sized + core::fmt::Display> core::fmt::Display for RwLockWriteGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Display::fmt(&**self, f) }
+}

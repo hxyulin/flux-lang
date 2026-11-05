@@ -139,6 +139,21 @@ macro_rules! include_bytes {
     ($($t:tt)*) => {{ /* compiler built-in */ }};
 }
 
+/// Unwraps a `Result` or returns its converted error: the `?` operator's
+/// predecessor, callable as `try!` in editions before 2018.
+#[macro_export]
+#[deprecated(note = "use the `?` operator instead")]
+macro_rules! r#try {
+    ($expr:expr $(,)?) => {
+        match $expr {
+            $crate::result::Result::Ok(val) => val,
+            $crate::result::Result::Err(err) => {
+                return $crate::result::Result::Err($crate::convert::From::from(err));
+            }
+        }
+    };
+}
+
 #[macro_export]
 macro_rules! matches {
     ($expression:expr, $pattern:pat $(if $guard:expr)? $(,)?) => {

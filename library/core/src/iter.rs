@@ -3060,3 +3060,83 @@ impl<T, U: Product<T>, E> Product<Result<T, E>> for Result<U, E> {
         }
     }
 }
+
+// Debug for adapters, with std's field names; closures are not shown.
+macro_rules! debug_fields {
+    ($name:ident <$($p:ident),*> [$($bound:ident),*] { $($field:ident),* }) => {
+        impl<$($p),*> crate::fmt::Debug for $name<$($p),*> where $($bound: crate::fmt::Debug),* {
+            fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+                f.debug_struct(stringify!($name))$(.field(stringify!($field), &self.$field))*.finish()
+            }
+        }
+    };
+}
+debug_fields!(Filter<I, P> [I] { iter });
+debug_fields!(FilterMap<I, F> [I] { iter });
+// std shows no fields when both sides have trusted random access.
+impl<A: Iterator + crate::fmt::Debug, B: Iterator + crate::fmt::Debug> crate::fmt::Debug for Zip<A, B> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        if A::__RANDOM_ACCESS && B::__RANDOM_ACCESS {
+            f.debug_struct("Zip").finish()
+        } else {
+            f.debug_struct("Zip").field("a", &self.a).field("b", &self.b).finish()
+        }
+    }
+}
+debug_fields!(Chain<A, B> [A, B] { a, b });
+debug_fields!(Take<I> [I] { iter, n });
+debug_fields!(Skip<I> [I] { iter, n });
+debug_fields!(TakeWhile<I, P> [I] { iter, flag });
+debug_fields!(SkipWhile<I, P> [I] { iter, flag });
+debug_fields!(Rev<I> [I] { iter });
+debug_fields!(Copied<I> [I] { it });
+debug_fields!(Inspect<I, F> [I] { iter });
+debug_fields!(Scan<I, St, F> [I, St] { iter, state });
+debug_fields!(MapWhile<I, P> [I] { iter });
+debug_fields!(Cycle<I> [I] { orig, iter });
+debug_fields!(Successors<T, F> [T] { next });
+impl<I: Iterator + crate::fmt::Debug> crate::fmt::Debug for Peekable<I> where I::Item: crate::fmt::Debug {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("Peekable").field("iter", &self.iter).field("peeked", &self.peeked).finish()
+    }
+}
+impl<F> crate::fmt::Debug for OnceWith<F> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        if self.make.is_some() { f.write_str("OnceWith(Some(_))") } else { f.write_str("OnceWith(None)") }
+    }
+}
+impl<F> crate::fmt::Debug for RepeatWith<F> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result { f.debug_struct("RepeatWith").finish_non_exhaustive() }
+}
+impl<A: crate::fmt::Debug> crate::fmt::Debug for RepeatN<A> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("RepeatN").field("count", &self.count).field("element", &self.element.as_ref()).finish()
+    }
+}
+impl<F> crate::fmt::Debug for FromFn<F> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result { f.debug_struct("FromFn").finish() }
+}
+
+// Float sums start from -0.0, as std's do, so an empty sum is -0.0.
+macro_rules! float_sum_product {
+    ($($a:ident)*) => ($(
+        impl Sum for $a {
+            fn sum<I: Iterator<Item = $a>>(iter: I) -> $a { iter.fold(-0.0, |a, b| a + b) }
+        }
+        impl Product for $a {
+            fn product<I: Iterator<Item = $a>>(iter: I) -> $a { iter.fold(1.0, |a, b| a * b) }
+        }
+        impl<'a> Sum<&'a $a> for $a {
+            fn sum<I: Iterator<Item = &'a $a>>(iter: I) -> $a { iter.fold(-0.0, |a, b| a + b) }
+        }
+        impl<'a> Product<&'a $a> for $a {
+            fn product<I: Iterator<Item = &'a $a>>(iter: I) -> $a { iter.fold(1.0, |a, b| a * b) }
+        }
+    )*);
+}
+float_sum_product! { f32 f64 }
+
+/// Pairs the items of two iterables: `a.into_iter().zip(b)`.
+pub fn zip<A: IntoIterator, B: IntoIterator>(a: A, b: B) -> Zip<A::IntoIter, B::IntoIter> {
+    a.into_iter().zip(b)
+}

@@ -921,7 +921,150 @@ impl str {
     pub fn split_whitespace(&self) -> SplitWhitespace<'_> {
         SplitWhitespace { rest: self }
     }
+
+    /// Splits at runs of ASCII whitespace, skipping empty pieces.
+    pub fn split_ascii_whitespace(&self) -> SplitAsciiWhitespace<'_> {
+        SplitAsciiWhitespace { rest: self.as_bytes() }
+    }
+
+    #[deprecated(note = "superseded by `trim_start`")]
+    pub fn trim_left(&self) -> &str { self.trim_start() }
+    #[deprecated(note = "superseded by `trim_end`")]
+    pub fn trim_right(&self) -> &str { self.trim_end() }
+    #[deprecated(note = "superseded by `trim_start_matches`")]
+    pub fn trim_left_matches<P: Pattern>(&self, pat: P) -> &str { self.trim_start_matches(pat) }
+    #[deprecated(note = "superseded by `trim_end_matches`")]
+    pub fn trim_right_matches<P: Pattern>(&self, pat: P) -> &str { self.trim_end_matches(pat) }
+
+    /// The string's characters, each escaped as `char::escape_debug` would,
+    /// except that only a leading combining character is escaped.
+    pub fn escape_debug(&self) -> EscapeDebug<'_> {
+        EscapeDebug { chars: self.chars(), current: None, first: true }
+    }
+    /// The string's characters, each escaped as `char::escape_default`.
+    pub fn escape_default(&self) -> EscapeDefault<'_> {
+        EscapeDefault { chars: self.chars(), current: None }
+    }
+    /// The string as UTF-16 code units.
+    pub fn encode_utf16(&self) -> EncodeUtf16<'_> {
+        EncodeUtf16 { chars: self.chars(), extra: 0 }
+    }
+    /// Removes leading ASCII whitespace.
+    pub fn trim_ascii_start(&self) -> &str {
+        // SAFETY: removing ASCII bytes from the front keeps valid UTF-8.
+        unsafe { from_utf8_unchecked(self.as_bytes().trim_ascii_start()) }
+    }
+    /// Removes trailing ASCII whitespace.
+    pub fn trim_ascii_end(&self) -> &str {
+        // SAFETY: removing ASCII bytes from the back keeps valid UTF-8.
+        unsafe { from_utf8_unchecked(self.as_bytes().trim_ascii_end()) }
+    }
 }
+
+/// Pieces of a string between runs of ASCII whitespace.
+#[derive(Clone, Debug)]
+pub struct SplitAsciiWhitespace<'a> { rest: &'a [u8] }
+impl<'a> Iterator for SplitAsciiWhitespace<'a> {
+    type Item = &'a str;
+    fn next(&mut self) -> Option<&'a str> {
+        let rest = self.rest.trim_ascii_start();
+        if rest.is_empty() { self.rest = rest; return None; }
+        let end = rest.iter().position(|byte| byte.is_ascii_whitespace()).unwrap_or(rest.len());
+        self.rest = &rest[end..];
+        // SAFETY: splitting at ASCII bytes keeps valid UTF-8.
+        Some(unsafe { from_utf8_unchecked(&rest[..end]) })
+    }
+}
+impl<'a> DoubleEndedIterator for SplitAsciiWhitespace<'a> {
+    fn next_back(&mut self) -> Option<&'a str> {
+        let rest = self.rest.trim_ascii_end();
+        if rest.is_empty() { self.rest = rest; return None; }
+        let start = rest.iter().rposition(|byte| byte.is_ascii_whitespace()).map_or(0, |index| index + 1);
+        self.rest = &rest[..start];
+        // SAFETY: splitting at ASCII bytes keeps valid UTF-8.
+        Some(unsafe { from_utf8_unchecked(&rest[start..]) })
+    }
+}
+impl crate::iter::FusedIterator for SplitAsciiWhitespace<'_> {}
+
+/// What [`str::escape_debug`] gives.
+#[derive(Clone)]
+pub struct EscapeDebug<'a> { chars: Chars<'a>, current: Option<crate::char::EscapeDebug>, first: bool }
+impl<'a> Iterator for EscapeDebug<'a> {
+    type Item = char;
+    fn next(&mut self) -> Option<char> {
+        loop {
+            if let Some(current) = &mut self.current {
+                if let Some(c) = current.next() { return Some(c); }
+            }
+            let c = self.chars.next()?;
+            // Only a leading grapheme extender is escaped, as std does.
+            let literal = match crate::fmt::escape_debug(c, true, true) {
+                None => true,
+                Some(crate::fmt::Escape::Backslash(_)) => false,
+                Some(crate::fmt::Escape::Unicode(_)) => {
+                    !self.first && crate::unicode::is_grapheme_extended(c) && crate::unicode::is_printable(c)
+                }
+            };
+            self.first = false;
+            self.current = Some(if literal { crate::char::EscapeDebug::literal(c) } else { c.escape_debug() });
+        }
+    }
+}
+impl crate::iter::FusedIterator for EscapeDebug<'_> {}
+impl crate::fmt::Display for EscapeDebug<'_> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        for c in self.clone() { crate::fmt::Write::write_char(f, c)?; }
+        Ok(())
+    }
+}
+
+/// What [`str::escape_default`] gives.
+#[derive(Clone)]
+pub struct EscapeDefault<'a> { chars: Chars<'a>, current: Option<crate::char::EscapeDefault> }
+impl<'a> Iterator for EscapeDefault<'a> {
+    type Item = char;
+    fn next(&mut self) -> Option<char> {
+        loop {
+            if let Some(current) = &mut self.current {
+                if let Some(c) = current.next() { return Some(c); }
+            }
+            self.current = Some(self.chars.next()?.escape_default());
+        }
+    }
+}
+impl crate::iter::FusedIterator for EscapeDefault<'_> {}
+impl crate::fmt::Display for EscapeDefault<'_> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        for c in self.clone() { crate::fmt::Write::write_char(f, c)?; }
+        Ok(())
+    }
+}
+
+/// What [`str::encode_utf16`] gives.
+#[derive(Clone)]
+pub struct EncodeUtf16<'a> { chars: Chars<'a>, extra: u16 }
+impl<'a> Iterator for EncodeUtf16<'a> {
+    type Item = u16;
+    fn next(&mut self) -> Option<u16> {
+        if self.extra != 0 {
+            let unit = self.extra;
+            self.extra = 0;
+            return Some(unit);
+        }
+        let code = self.chars.next()? as u32;
+        if code < 0x10000 { return Some(code as u16); }
+        let code = code - 0x10000;
+        self.extra = 0xDC00 | (code & 0x3FF) as u16;
+        Some(0xD800 | (code >> 10) as u16)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (low, high) = self.chars.size_hint();
+        let extra = if self.extra == 0 { 0 } else { 1 };
+        (low + extra, high.and_then(|n| n.checked_mul(2)).and_then(|n| n.checked_add(extra)))
+    }
+}
+impl crate::iter::FusedIterator for EncodeUtf16<'_> {}
 
 fn get_substr(s: &str, start: usize, end: usize) -> Option<&str> {
     if start <= end && s.is_char_boundary(start) && s.is_char_boundary(end) {
@@ -1913,3 +2056,24 @@ impl str {
 }
 
 impl crate::error::Error for Utf8Error {}
+
+/// Why parsing a `bool` failed: the string was neither "true" nor "false".
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ParseBoolError;
+impl crate::fmt::Display for ParseBoolError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad("provided string was not `true` or `false`")
+    }
+}
+impl crate::error::Error for ParseBoolError {}
+impl FromStr for bool {
+    type Err = ParseBoolError;
+    fn from_str(s: &str) -> Result<bool, ParseBoolError> {
+        match s {
+            "true" => Ok(true),
+            "false" => Ok(false),
+            _ => Err(ParseBoolError),
+        }
+    }
+}

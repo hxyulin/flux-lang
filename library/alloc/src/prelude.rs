@@ -18,3 +18,14 @@ pub mod rust_2018 {
     pub use crate::string::{String, ToString};
     pub use crate::vec::Vec;
 }
+
+/// The edition-independent prelude, which the 2015 and 2018 editions use.
+pub mod v1 {
+    pub use super::rust_2018::*;
+}
+pub mod rust_2015 {
+    pub use super::rust_2018::*;
+}
+pub mod rust_2021 {
+    pub use super::rust_2024::*;
+}

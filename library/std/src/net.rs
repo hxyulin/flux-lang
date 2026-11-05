@@ -732,3 +732,11 @@ impl FromStr for SocketAddr {
         }
     }
 }
+
+/// Which halves of a socket connection to shut down.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Shutdown {
+    Read,
+    Write,
+    Both,
+}

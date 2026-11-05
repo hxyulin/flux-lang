@@ -20,6 +20,18 @@ impl OsString {
         unsafe { Box::from_raw(Box::into_raw(bytes) as *mut OsStr) }
     }
     pub fn new() -> Self { Self { bytes: Vec::new() } }
+    pub fn with_capacity(capacity: usize) -> Self { Self { bytes: Vec::with_capacity(capacity) } }
+    pub fn capacity(&self) -> usize { self.bytes.capacity() }
+    pub fn clear(&mut self) { self.bytes.clear() }
+    pub fn reserve(&mut self, additional: usize) { self.bytes.reserve(additional) }
+    pub fn reserve_exact(&mut self, additional: usize) { self.bytes.reserve_exact(additional) }
+    pub fn shrink_to_fit(&mut self) { self.bytes.shrink_to_fit() }
+    /// Appends the bytes of `value`.
+    pub fn push<T: AsRef<OsStr>>(&mut self, value: T) { self.bytes.extend_from_slice(value.as_ref().as_encoded_bytes()) }
+    pub fn into_encoded_bytes(self) -> Vec<u8> { self.bytes }
+    /// # Safety
+    /// On Unix every byte sequence is a valid OS string.
+    pub unsafe fn from_encoded_bytes_unchecked(bytes: Vec<u8>) -> Self { Self { bytes } }
     pub fn to_str(&self) -> Option<&str> { core::str::from_utf8(&self.bytes).ok() }
     pub fn to_string_lossy(&self) -> Cow<'_, str> { String::from_utf8_lossy(&self.bytes) }
     pub fn as_encoded_bytes(&self) -> &[u8] { &self.bytes }
@@ -32,7 +44,7 @@ impl OsString {
 }
 impl Default for OsString { fn default() -> Self { Self::new() } }
 impl From<String> for OsString { fn from(value: String) -> Self { Self { bytes: value.into_bytes() } } }
-impl From<&str> for OsString { fn from(value: &str) -> Self { Self { bytes: value.as_bytes().to_vec() } } }
+impl<T: ?Sized + AsRef<OsStr>> From<&T> for OsString { fn from(value: &T) -> Self { Self { bytes: value.as_ref().as_encoded_bytes().to_vec() } } }
 impl core::fmt::Debug for OsString {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("\"")?;

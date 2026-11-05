@@ -64,6 +64,57 @@ nonzero_impl!(NonZeroU64, u64, "nonzero_u64");
 nonzero_impl!(NonZeroU128, u128, "nonzero_u128");
 nonzero_impl!(NonZeroUsize, usize, "nonzero_usize");
 
+// Methods whose results stay nonzero, for each signedness.
+macro_rules! nonzero_common {
+    ($($name:ident $t:ty),*) => {$(
+        impl $name {
+            pub const BITS: u32 = <$t>::BITS;
+            pub const fn checked_mul(self, other: Self) -> Option<Self> {
+                match self.0.checked_mul(other.0) { Some(value) => Some(Self(value)), None => None }
+            }
+            pub const fn saturating_mul(self, other: Self) -> Self { Self(self.0.saturating_mul(other.0)) }
+            pub const fn checked_pow(self, exp: u32) -> Option<Self> {
+                match self.0.checked_pow(exp) { Some(value) => Some(Self(value)), None => None }
+            }
+        }
+    )*};
+}
+nonzero_common!(NonZeroI8 i8, NonZeroI16 i16, NonZeroI32 i32, NonZeroI64 i64, NonZeroI128 i128, NonZeroIsize isize,
+    NonZeroU8 u8, NonZeroU16 u16, NonZeroU32 u32, NonZeroU64 u64, NonZeroU128 u128, NonZeroUsize usize);
+macro_rules! nonzero_unsigned {
+    ($($name:ident $t:ty),*) => {$(
+        impl $name {
+            pub const MIN: Self = Self(1);
+            pub const MAX: Self = Self(<$t>::MAX);
+            pub const fn checked_add(self, other: $t) -> Option<Self> {
+                match self.0.checked_add(other) { Some(value) => Some(Self(value)), None => None }
+            }
+            pub const fn saturating_add(self, other: $t) -> Self { Self(self.0.saturating_add(other)) }
+            pub const fn is_power_of_two(self) -> bool { self.0.is_power_of_two() }
+            pub const fn ilog2(self) -> u32 { <$t>::BITS - 1 - self.0.leading_zeros() }
+            pub const fn ilog10(self) -> u32 { self.0.ilog10() }
+            pub const fn checked_next_power_of_two(self) -> Option<Self> {
+                match self.0.checked_next_power_of_two() { Some(value) => Some(Self(value)), None => None }
+            }
+        }
+    )*};
+}
+nonzero_unsigned!(NonZeroU8 u8, NonZeroU16 u16, NonZeroU32 u32, NonZeroU64 u64, NonZeroU128 u128, NonZeroUsize usize);
+macro_rules! nonzero_signed {
+    ($($name:ident $t:ty),*) => {$(
+        impl $name {
+            pub const MIN: Self = Self(<$t>::MIN);
+            pub const MAX: Self = Self(<$t>::MAX);
+            pub const fn is_negative(self) -> bool { self.0 < 0 }
+            pub const fn is_positive(self) -> bool { self.0 > 0 }
+            pub const fn checked_abs(self) -> Option<Self> {
+                match self.0.checked_abs() { Some(value) => Some(Self(value)), None => None }
+            }
+        }
+    )*};
+}
+nonzero_signed!(NonZeroI8 i8, NonZeroI16 i16, NonZeroI32 i32, NonZeroI64 i64, NonZeroI128 i128, NonZeroIsize isize);
+
 /// Why an integer is not of another integer type: what `TryFrom`
 /// gives where the value is out of its range, too large or too small.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]

@@ -108,6 +108,15 @@ impl char {
     pub fn to_uppercase(self) -> ToUppercase { case::upper(self) }
     pub fn is_alphabetic(self) -> bool { crate::char_properties::has_property(self, 1) }
     pub fn is_alphanumeric(self) -> bool { crate::char_properties::has_property(self, 2) }
+    /// Decodes UTF-16, reporting each unpaired surrogate.
+    pub fn decode_utf16<I: IntoIterator<Item = u16>>(iter: I) -> DecodeUtf16<I::IntoIter> { decode_utf16(iter) }
+    /// Whether the character has the Unicode general category Nd, Nl or No.
+    pub fn is_numeric(self) -> bool {
+        match self {
+            '0'..='9' => true,
+            c => c > '\x7f' && crate::char_properties::has_property(c, 16),
+        }
+    }
     pub fn escape_debug(self) -> EscapeDebug {
         let escape = crate::fmt::escape_debug(self, true, true);
         let literal = if escape.is_none() { Some(self) } else { None };
@@ -371,6 +380,13 @@ pub struct EscapeDefault { chars: [char; 10], front: usize, back: usize }
 
 #[derive(Clone)]
 pub struct EscapeDebug { inner: EscapeDefault, literal: Option<char> }
+impl EscapeDebug {
+    /// The character itself, unescaped.
+    pub(crate) fn literal(c: char) -> EscapeDebug {
+        let mut chars = ['\0'; 10]; chars[0] = c;
+        EscapeDebug { inner: EscapeDefault { chars, front: 0, back: 1 }, literal: Some(c) }
+    }
+}
 impl Iterator for EscapeDebug {
     type Item = char;
     fn next(&mut self) -> Option<char> { self.inner.next() }
@@ -475,6 +491,32 @@ impl Step for char {
             (count as usize, Some(count as usize))
         } else {
             (0, None)
+        }
+    }
+}
+
+/// Why parsing a `char` failed: the string was empty or held several characters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParseCharError { kind: CharErrorKind }
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum CharErrorKind { EmptyString, TooManyChars }
+impl crate::fmt::Display for ParseCharError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad(match self.kind {
+            CharErrorKind::EmptyString => "cannot parse char from empty string",
+            CharErrorKind::TooManyChars => "too many characters in string",
+        })
+    }
+}
+impl crate::error::Error for ParseCharError {}
+impl crate::str::FromStr for char {
+    type Err = ParseCharError;
+    fn from_str(s: &str) -> Result<char, ParseCharError> {
+        let mut chars = s.chars();
+        match (chars.next(), chars.next()) {
+            (None, _) => Err(ParseCharError { kind: CharErrorKind::EmptyString }),
+            (Some(c), None) => Ok(c),
+            _ => Err(ParseCharError { kind: CharErrorKind::TooManyChars }),
         }
     }
 }

@@ -4,7 +4,7 @@ use crate::ops::{Deref, DerefMut};
 
 #[lang = "pin"]
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct Pin<Ptr> { pointer: Ptr }
 
 impl<Ptr: Deref> Pin<Ptr> {
@@ -75,3 +75,30 @@ impl<Ptr:DerefMut> DerefMut for Pin<Ptr> where Ptr::Target:Unpin {
 #[macro_export]
 macro_rules! pin { ($value:expr $(,)?) => {} }
 pub use crate::pin;
+
+impl<Ptr: crate::fmt::Debug> crate::fmt::Debug for Pin<Ptr> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result { crate::fmt::Debug::fmt(&self.pointer, f) }
+}
+impl<Ptr: crate::fmt::Display> crate::fmt::Display for Pin<Ptr> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result { crate::fmt::Display::fmt(&self.pointer, f) }
+}
+impl<Ptr: crate::fmt::Pointer> crate::fmt::Pointer for Pin<Ptr> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result { crate::fmt::Pointer::fmt(&self.pointer, f) }
+}
+impl<Ptr: Deref, Q: Deref> crate::cmp::PartialEq<Pin<Q>> for Pin<Ptr>
+where Ptr::Target: crate::cmp::PartialEq<Q::Target> {
+    fn eq(&self, other: &Pin<Q>) -> bool { Ptr::Target::eq(&*self.pointer, &*other.pointer) }
+}
+impl<Ptr: Deref> crate::cmp::Eq for Pin<Ptr> where Ptr::Target: crate::cmp::Eq {}
+impl<Ptr: Deref, Q: Deref> crate::cmp::PartialOrd<Pin<Q>> for Pin<Ptr>
+where Ptr::Target: crate::cmp::PartialOrd<Q::Target> {
+    fn partial_cmp(&self, other: &Pin<Q>) -> crate::option::Option<crate::cmp::Ordering> {
+        Ptr::Target::partial_cmp(&*self.pointer, &*other.pointer)
+    }
+}
+impl<Ptr: Deref> crate::cmp::Ord for Pin<Ptr> where Ptr::Target: crate::cmp::Ord {
+    fn cmp(&self, other: &Self) -> crate::cmp::Ordering { Ptr::Target::cmp(&*self.pointer, &*other.pointer) }
+}
+impl<Ptr: Deref> crate::hash::Hash for Pin<Ptr> where Ptr::Target: crate::hash::Hash {
+    fn hash<H: crate::hash::Hasher>(&self, state: &mut H) { Ptr::Target::hash(&*self.pointer, state) }
+}

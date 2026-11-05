@@ -188,6 +188,58 @@ impl String {
 
     /// Removes the character at byte `idx`, which must start one.
     #[track_caller]
+    /// Keeps only the characters `f` accepts, in order.
+    pub fn retain<F: FnMut(char) -> bool>(&mut self, mut f: F) {
+        let mut kept = String::with_capacity(self.len());
+        for c in self.chars() { if f(c) { kept.push(c); } }
+        *self = kept;
+    }
+
+    /// Removes the range and returns its characters.
+    ///
+    /// # Panics
+    /// Panics if the range is out of bounds or not on character boundaries.
+    pub fn drain<R: core::ops::RangeBounds<usize>>(&mut self, range: R) -> Drain<'_> {
+        let core::ops::Range { start, end } = core::slice::range(range, ..self.len());
+        assert!(self.is_char_boundary(start));
+        assert!(self.is_char_boundary(end));
+        let removed = String::from(&self[start..end]);
+        self.replace_range(start..end, "");
+        Drain { chars: removed, front: 0, marker: core::marker::PhantomData }
+    }
+
+    /// Appends a copy of the given range of the string.
+    pub fn extend_from_within<R: core::ops::RangeBounds<usize>>(&mut self, src: R) {
+        let core::ops::Range { start, end } = core::slice::range(src, ..self.len());
+        assert!(self.is_char_boundary(start));
+        assert!(self.is_char_boundary(end));
+        self.vec.extend_from_within(start..end);
+    }
+
+    /// Gives up the string's allocation, returning its text for 'a.
+    pub fn leak<'a>(self) -> &'a mut str {
+        let bytes = self.vec.leak();
+        // SAFETY: the bytes were valid UTF-8 in the string.
+        unsafe { core::str::from_utf8_unchecked_mut(bytes) }
+    }
+
+    /// Decodes UTF-16, failing on an unpaired surrogate.
+    pub fn from_utf16(v: &[u16]) -> Result<String, FromUtf16Error> {
+        let mut result = String::with_capacity(v.len());
+        for c in core::char::decode_utf16(v.iter().copied()) {
+            match c {
+                Ok(c) => result.push(c),
+                Err(_) => return Err(FromUtf16Error(())),
+            }
+        }
+        Ok(result)
+    }
+
+    /// Decodes UTF-16, replacing each unpaired surrogate with U+FFFD.
+    pub fn from_utf16_lossy(v: &[u16]) -> String {
+        core::char::decode_utf16(v.iter().copied()).map(|r| r.unwrap_or(core::char::REPLACEMENT_CHARACTER)).collect()
+    }
+
     pub fn remove(&mut self, idx: usize) -> char {
         let ch = match self[idx..].chars().next() {
             Some(ch) => ch,
@@ -547,5 +599,76 @@ impl core::str::Pattern for &String {
     }
     fn suffix_len(&mut self, haystack: &str) -> Option<usize> {
         core::str::Pattern::suffix_len(&mut self.as_str(), haystack)
+    }
+}
+
+impl core::str::FromStr for String {
+    type Err = core::convert::Infallible;
+    fn from_str(s: &str) -> Result<String, core::convert::Infallible> { Ok(String::from(s)) }
+}
+
+/// The error from String::from_utf16: an unpaired surrogate.
+#[derive(Debug)]
+pub struct FromUtf16Error(());
+impl fmt::Display for FromUtf16Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt("invalid utf-16: lone surrogate found", f)
+    }
+}
+impl core::error::Error for FromUtf16Error {}
+
+/// The characters removed by String::drain.
+pub struct Drain<'a> { chars: String, front: usize, marker: core::marker::PhantomData<&'a mut String> }
+impl Drain<'_> {
+    pub fn as_str(&self) -> &str { &self.chars[self.front..] }
+}
+impl Iterator for Drain<'_> {
+    type Item = char;
+    fn next(&mut self) -> Option<char> {
+        let c = self.chars[self.front..].chars().next()?;
+        self.front += c.len_utf8();
+        Some(c)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.chars[self.front..].chars().size_hint() }
+}
+impl DoubleEndedIterator for Drain<'_> {
+    fn next_back(&mut self) -> Option<char> {
+        if self.front == self.chars.len() { return None; }
+        let c = self.chars[self.front..].chars().next_back()?;
+        let len = self.chars.len() - c.len_utf8();
+        self.chars.truncate(len);
+        Some(c)
+    }
+}
+impl core::iter::FusedIterator for Drain<'_> {}
+impl fmt::Debug for Drain<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.debug_tuple("Drain").field(&self.as_str()).finish() }
+}
+
+impl From<&mut str> for String {
+    fn from(value: &mut str) -> String { String::from(&*value) }
+}
+impl<'a> Extend<crate::borrow::Cow<'a, str>> for String {
+    fn extend<I: IntoIterator<Item = crate::borrow::Cow<'a, str>>>(&mut self, iter: I) {
+        for s in iter { self.push_str(&s); }
+    }
+}
+impl Extend<crate::boxed::Box<str>> for String {
+    fn extend<I: IntoIterator<Item = crate::boxed::Box<str>>>(&mut self, iter: I) {
+        for s in iter { self.push_str(&s); }
+    }
+}
+impl<'a> FromIterator<crate::borrow::Cow<'a, str>> for String {
+    fn from_iter<I: IntoIterator<Item = crate::borrow::Cow<'a, str>>>(iter: I) -> String {
+        let mut s = String::new();
+        s.extend(iter);
+        s
+    }
+}
+impl FromIterator<crate::boxed::Box<str>> for String {
+    fn from_iter<I: IntoIterator<Item = crate::boxed::Box<str>>>(iter: I) -> String {
+        let mut s = String::new();
+        s.extend(iter);
+        s
     }
 }

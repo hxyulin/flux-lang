@@ -838,9 +838,12 @@ impl Debug for () {
     }
 }
 
-impl<T> Debug for PhantomData<T> {
+/// `PhantomData<T>` with the type's name, as std's shows it.
+impl<T: ?Sized> Debug for PhantomData<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        f.write_str("PhantomData")
+        f.write_str("PhantomData<")?;
+        f.write_str(crate::any::type_name::<T>())?;
+        f.write_str(">")
     }
 }
 

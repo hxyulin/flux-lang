@@ -239,3 +239,10 @@ impl core::fmt::Display for FromVecWithNulError {
     }
 }
 impl core::error::Error for FromVecWithNulError {}
+
+impl CStr {
+    /// Its bytes as a string, with each invalid UTF-8 sequence replaced by U+FFFD.
+    pub fn to_string_lossy(&self) -> crate::borrow::Cow<'_, str> { String::from_utf8_lossy(self.to_bytes()) }
+    /// The boxed C string as an owned one.
+    pub fn into_c_string(self: Box<CStr>) -> CString { CString::from(self) }
+}

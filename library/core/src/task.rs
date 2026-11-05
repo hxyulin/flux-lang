@@ -1,6 +1,9 @@
 //! Poll results and reference-counted wake callbacks.
 use crate::marker::PhantomData;
 use crate::mem::ManuallyDrop;
+use crate::convert::From;
+use crate::option::Option::{None, Some};
+use crate::result::Result::{Err, Ok};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[lang = "Poll"]
@@ -78,4 +81,57 @@ pub struct Context<'a> { waker:&'a Waker, invariant:PhantomData<&'a mut &'a ()>,
 impl<'a> Context<'a> {
     pub const fn from_waker(waker:&'a Waker)->Self { Self{waker,invariant:PhantomData,not_send_sync:PhantomData} }
     pub const fn waker(&self)->&'a Waker { self.waker }
+}
+
+/// Extracts a Ready value, or returns Pending from the enclosing function.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __task_ready {
+    ($e:expr $(,)?) => {
+        match $e {
+            $crate::task::Poll::Ready(t) => t,
+            $crate::task::Poll::Pending => {
+                return $crate::task::Poll::Pending;
+            }
+        }
+    };
+}
+pub use crate::__task_ready as ready;
+
+impl<T, E> Poll<crate::result::Result<T, E>> {
+    pub fn map_ok<U, F: FnOnce(T) -> U>(self, f: F) -> Poll<crate::result::Result<U, E>> {
+        match self {
+            Poll::Ready(Ok(t)) => Poll::Ready(Ok(f(t))),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+    pub fn map_err<U, F: FnOnce(E) -> U>(self, f: F) -> Poll<crate::result::Result<T, U>> {
+        match self {
+            Poll::Ready(Ok(t)) => Poll::Ready(Ok(t)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(f(e))),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+impl<T, E> Poll<crate::option::Option<crate::result::Result<T, E>>> {
+    pub fn map_ok<U, F: FnOnce(T) -> U>(self, f: F) -> Poll<crate::option::Option<crate::result::Result<U, E>>> {
+        match self {
+            Poll::Ready(Some(Ok(t))) => Poll::Ready(Some(Ok(f(t)))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+    pub fn map_err<U, F: FnOnce(E) -> U>(self, f: F) -> Poll<crate::option::Option<crate::result::Result<T, U>>> {
+        match self {
+            Poll::Ready(Some(Ok(t))) => Poll::Ready(Some(Ok(t))),
+            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(f(e)))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+impl<T> From<T> for Poll<T> {
+    fn from(t: T) -> Poll<T> { Poll::Ready(t) }
 }

@@ -322,3 +322,53 @@ impl crate::convert::From<i32> for f64 { fn from(value:i32)->f64 {value as f64} 
 
 impl crate::fmt::Display for f32 {fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits() as u64,true,f,false)}}
 impl crate::fmt::Display for f64 {fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits(),false,f,false)}}
+
+macro_rules! float_bits_impl {
+    ($t:ident, $u:ty, $s:ty, $n:expr, $shift:expr, $degrees:expr) => {
+        impl $t {
+            /// Converts radians to degrees.
+            pub const fn to_degrees(self) -> Self { self * $degrees }
+            /// Converts degrees to radians.
+            pub const fn to_radians(self) -> Self {
+                const RADS_PER_DEG: $t = crate::$t::consts::PI / 180.0;
+                self * RADS_PER_DEG
+            }
+            /// 1.0 with this value's sign, or NaN for NaN.
+            pub const fn signum(self) -> Self {
+                if self.is_nan() { Self::NAN } else { (1.0 as $t).copysign(self) }
+            }
+            /// Restricts the value to `min..=max`; NaN stays NaN.
+            ///
+            /// # Panics
+            /// Panics if `min > max`, or either is NaN.
+            pub fn clamp(mut self, min: Self, max: Self) -> Self {
+                if !(min <= max) { panic!("min > max, or either was NaN. min = {min:?}, max = {max:?}"); }
+                if self < min { self = min; }
+                if self > max { self = max; }
+                self
+            }
+            /// The IEEE 754 total order: negative NaN, -inf, ..., -0, +0, ..., inf, NaN.
+            pub const fn total_cmp(&self, other: &Self) -> Ordering {
+                let mut left = self.to_bits() as $s;
+                let mut right = other.to_bits() as $s;
+                left ^= (((left >> $shift) as $u) >> 1) as $s;
+                right ^= (((right >> $shift) as $u) >> 1) as $s;
+                if left < right { Ordering::Less } else if left > right { Ordering::Greater } else { Ordering::Equal }
+            }
+            /// The average of two values, without intermediate overflow.
+            pub const fn midpoint(self, other: Self) -> Self {
+                const HI: $t = <$t>::MAX * 0.5;
+                let (a, b) = (self, other);
+                if a.abs() <= HI && b.abs() <= HI { (a + b) * 0.5 } else { (a * 0.5) + (b * 0.5) }
+            }
+            pub const fn to_be_bytes(self) -> [u8; $n] { self.to_bits().to_be_bytes() }
+            pub const fn to_le_bytes(self) -> [u8; $n] { self.to_bits().to_le_bytes() }
+            pub const fn to_ne_bytes(self) -> [u8; $n] { self.to_bits().to_ne_bytes() }
+            pub const fn from_be_bytes(bytes: [u8; $n]) -> Self { Self::from_bits(<$u>::from_be_bytes(bytes)) }
+            pub const fn from_le_bytes(bytes: [u8; $n]) -> Self { Self::from_bits(<$u>::from_le_bytes(bytes)) }
+            pub const fn from_ne_bytes(bytes: [u8; $n]) -> Self { Self::from_bits(<$u>::from_ne_bytes(bytes)) }
+        }
+    };
+}
+float_bits_impl!(f32, u32, i32, 4, 31, 57.2957795130823208767981548141051703_f32);
+float_bits_impl!(f64, u64, i64, 8, 63, 180.0 / crate::f64::consts::PI);

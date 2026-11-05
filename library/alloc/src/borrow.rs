@@ -141,3 +141,73 @@ impl<'a> From<&'a String> for Cow<'a, str> {
 impl From<String> for Cow<'_, str> {
     fn from(value: String) -> Self { Cow::Owned(value) }
 }
+
+impl<'a, T: Clone> From<&'a [T]> for Cow<'a, [T]> {
+    fn from(value: &'a [T]) -> Self { Cow::Borrowed(value) }
+}
+impl<'a, T: Clone, const N: usize> From<&'a [T; N]> for Cow<'a, [T]> {
+    fn from(value: &'a [T; N]) -> Self { Cow::Borrowed(value as &[T]) }
+}
+impl<'a, T: Clone> From<&'a Vec<T>> for Cow<'a, [T]> {
+    fn from(value: &'a Vec<T>) -> Self { Cow::Borrowed(value.as_slice()) }
+}
+impl<'a> From<Cow<'a, str>> for String {
+    fn from(value: Cow<'a, str>) -> String { value.into_owned() }
+}
+impl<'a, T: Clone> From<Cow<'a, [T]>> for Vec<T> {
+    fn from(value: Cow<'a, [T]>) -> Vec<T> { value.into_owned() }
+}
+impl<'a> From<Cow<'a, str>> for crate::boxed::Box<str> {
+    fn from(value: Cow<'a, str>) -> crate::boxed::Box<str> { value.into_owned().into_boxed_str() }
+}
+impl<'a, T: Clone> From<Cow<'a, [T]>> for crate::boxed::Box<[T]> {
+    fn from(value: Cow<'a, [T]>) -> crate::boxed::Box<[T]> { value.into_owned().into_boxed_slice() }
+}
+impl<'a, T: Clone> FromIterator<T> for Cow<'a, [T]> {
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Cow<'a, [T]> { Cow::Owned(iter.into_iter().collect()) }
+}
+impl<'a> FromIterator<char> for Cow<'a, str> {
+    fn from_iter<I: IntoIterator<Item = char>>(iter: I) -> Cow<'a, str> { Cow::Owned(iter.into_iter().collect()) }
+}
+impl<'a, 'b> FromIterator<&'b str> for Cow<'a, str> {
+    fn from_iter<I: IntoIterator<Item = &'b str>>(iter: I) -> Cow<'a, str> { Cow::Owned(iter.into_iter().collect()) }
+}
+impl<'a> FromIterator<String> for Cow<'a, str> {
+    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Cow<'a, str> { Cow::Owned(iter.into_iter().collect()) }
+}
+impl<B: ToOwned + ?Sized> Default for Cow<'_, B> where B::Owned: Default {
+    fn default() -> Self { Cow::Owned(<B::Owned as Default>::default()) }
+}
+impl<'a, B: ToOwned + PartialOrd + ?Sized> PartialOrd for Cow<'a, B> {
+    fn partial_cmp(&self, other: &Cow<'a, B>) -> Option<core::cmp::Ordering> { PartialOrd::partial_cmp(&**self, &**other) }
+}
+impl<B: ToOwned + Ord + ?Sized> Ord for Cow<'_, B> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering { Ord::cmp(&**self, &**other) }
+}
+impl<B: ToOwned + core::hash::Hash + ?Sized> core::hash::Hash for Cow<'_, B> {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) { core::hash::Hash::hash(&**self, state) }
+}
+impl PartialEq<String> for Cow<'_, str> {
+    fn eq(&self, other: &String) -> bool { **self == **other }
+}
+impl PartialEq<Cow<'_, str>> for String {
+    fn eq(&self, other: &Cow<'_, str>) -> bool { **self == **other }
+}
+impl<'a> core::ops::Add<&'a str> for Cow<'a, str> {
+    type Output = Cow<'a, str>;
+    fn add(mut self, rhs: &'a str) -> Cow<'a, str> { self += rhs; self }
+}
+impl<'a> core::ops::AddAssign<&'a str> for Cow<'a, str> {
+    fn add_assign(&mut self, rhs: &'a str) {
+        if self.is_empty() {
+            *self = Cow::Borrowed(rhs)
+        } else if !rhs.is_empty() {
+            if let Cow::Borrowed(lhs) = *self {
+                let mut s = String::with_capacity(lhs.len() + rhs.len());
+                s.push_str(lhs);
+                *self = Cow::Owned(s);
+            }
+            self.to_mut().push_str(rhs);
+        }
+    }
+}

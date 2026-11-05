@@ -113,6 +113,70 @@ impl<T> ManuallyDrop<T> {
     pub const fn into_inner(slot: ManuallyDrop<T>) -> T {
         slot.value
     }
+
+    /// Moves the value out, leaving the slot logically uninitialized.
+    ///
+    /// # Safety
+    /// The slot must not be used again, except to be overwritten.
+    pub unsafe fn take(slot: &mut ManuallyDrop<T>) -> T {
+        // SAFETY: the caller guarantees the slot is not used afterwards.
+        unsafe { crate::ptr::read(&slot.value) }
+    }
+}
+
+impl<T: ?Sized> ManuallyDrop<T> {
+    /// Drops the value in place.
+    ///
+    /// # Safety
+    /// The value must not be used or dropped again afterwards.
+    pub unsafe fn drop(slot: &mut ManuallyDrop<T>) {
+        // SAFETY: the caller guarantees the value is not used again.
+        unsafe { crate::ptr::drop_in_place(&mut slot.value) }
+    }
+}
+
+// rustc's ManuallyDrop holds its value in a MaybeDangling wrapper, which its
+// derived Debug shows.
+struct MaybeDangling<'a, T: ?Sized>(&'a T);
+impl<T: ?Sized + crate::fmt::Debug> crate::fmt::Debug for MaybeDangling<'_, T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_tuple("MaybeDangling").field(&self.0).finish()
+    }
+}
+impl<T: ?Sized + crate::fmt::Debug> crate::fmt::Debug for ManuallyDrop<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("ManuallyDrop").field("value", &MaybeDangling(&self.value)).finish()
+    }
+}
+impl<T: crate::default::Default> crate::default::Default for ManuallyDrop<T> {
+    fn default() -> ManuallyDrop<T> { ManuallyDrop::new(T::default()) }
+}
+impl<T: ?Sized + crate::cmp::PartialEq> crate::cmp::PartialEq for ManuallyDrop<T> {
+    fn eq(&self, other: &Self) -> bool { self.value == other.value }
+}
+impl<T: ?Sized + crate::cmp::Eq> crate::cmp::Eq for ManuallyDrop<T> {}
+impl<T: ?Sized + crate::cmp::PartialOrd> crate::cmp::PartialOrd for ManuallyDrop<T> {
+    fn partial_cmp(&self, other: &Self) -> crate::option::Option<crate::cmp::Ordering> { self.value.partial_cmp(&other.value) }
+}
+impl<T: ?Sized + crate::cmp::Ord> crate::cmp::Ord for ManuallyDrop<T> {
+    fn cmp(&self, other: &Self) -> crate::cmp::Ordering { self.value.cmp(&other.value) }
+}
+impl<T: ?Sized + crate::hash::Hash> crate::hash::Hash for ManuallyDrop<T> {
+    fn hash<H: crate::hash::Hasher>(&self, state: &mut H) { self.value.hash(state) }
+}
+
+/// A value whose bytes are all 0x01, as std fills them.
+///
+/// # Safety
+/// Those bytes must form a valid `T`; use MaybeUninit instead.
+#[deprecated(note = "use `mem::MaybeUninit` instead")]
+pub unsafe fn uninitialized<T>() -> T {
+    let mut value = MaybeUninit::<T>::uninit();
+    // SAFETY: the caller guarantees that 0x01 bytes are a valid T.
+    unsafe {
+        crate::ptr::write_bytes(value.as_mut_ptr(), 0x01, 1);
+        value.assume_init()
+    }
 }
 
 /// A value whose bytes are all zero.
@@ -206,6 +270,13 @@ impl<T> MaybeUninit<T> {
     /// Drops the value, which must have been written.
     pub unsafe fn assume_init_drop(&mut self) {
         unsafe { crate::ptr::drop_in_place(self.as_mut_ptr()) }
+    }
+}
+
+/// Shows the type's name, as std's does, since the value may be uninitialized.
+impl<T> crate::fmt::Debug for MaybeUninit<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.pad(crate::any::type_name::<Self>())
     }
 }
 

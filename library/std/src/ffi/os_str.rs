@@ -26,6 +26,32 @@ impl OsStr {
     pub fn to_os_string(&self) -> OsString { OsString { bytes: self.inner.to_vec() } }
     pub fn is_empty(&self) -> bool { self.inner.is_empty() }
     pub fn len(&self) -> usize { self.inner.len() }
+    pub fn into_os_string(self: crate::alloc_crate::boxed::Box<OsStr>) -> OsString {
+        use crate::alloc_crate::boxed::Box;
+        // SAFETY: transparent OsStr has exactly [u8]'s layout and metadata.
+        let bytes = unsafe { Box::from_raw(Box::into_raw(self) as *mut [u8]) };
+        OsString { bytes: bytes.into_vec() }
+    }
+    pub fn to_ascii_lowercase(&self) -> OsString { let mut bytes = self.inner.to_vec(); bytes.make_ascii_lowercase(); OsString { bytes } }
+    pub fn to_ascii_uppercase(&self) -> OsString { let mut bytes = self.inner.to_vec(); bytes.make_ascii_uppercase(); OsString { bytes } }
+    pub fn make_ascii_lowercase(&mut self) { self.inner.make_ascii_lowercase() }
+    pub fn make_ascii_uppercase(&mut self) { self.inner.make_ascii_uppercase() }
+    pub fn is_ascii(&self) -> bool { self.inner.is_ascii() }
+    pub fn eq_ignore_ascii_case<S: AsRef<OsStr>>(&self, other: S) -> bool {
+        self.inner.eq_ignore_ascii_case(other.as_ref().as_encoded_bytes())
+    }
+    pub fn display(&self) -> Display<'_> { Display { os_str: self } }
+}
+
+/// Formats an OS string lossily, replacing invalid UTF-8 with U+FFFD.
+pub struct Display<'a> { os_str: &'a OsStr }
+impl core::fmt::Display for Display<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(&self.os_str.to_string_lossy(), f)
+    }
+}
+impl core::fmt::Debug for Display<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Debug::fmt(self.os_str, f) }
 }
 impl core::fmt::Debug for OsStr {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { self.to_os_string().fmt(f) }
@@ -44,10 +70,8 @@ impl Deref for OsString {
     fn deref(&self) -> &OsStr { self.as_os_str() }
 }
 impl OsString { pub fn as_os_str(&self) -> &OsStr { OsStr::from_unix_bytes(&self.bytes) } }
-impl From<&OsStr> for OsString { fn from(value: &OsStr) -> Self { value.to_os_string() } }
 
 impl Default for &OsStr { fn default() -> Self { OsStr::new("") } }
-impl From<&String> for OsString { fn from(value: &String) -> Self { Self::from(value.as_str()) } }
 impl Clone for crate::alloc_crate::boxed::Box<OsStr> {
     fn clone(&self) -> Self { self.to_os_string().into_boxed_os_str() }
 }
@@ -73,3 +97,67 @@ os_str_eq!(OsString, OsStr);
 os_str_eq!(OsStr, OsString);
 os_str_eq!(OsString, &OsStr);
 os_str_eq!(&OsStr, OsString);
+
+use crate::alloc_crate::boxed::Box;
+use crate::alloc_crate::rc::Rc;
+use crate::alloc_crate::sync::Arc;
+impl From<&OsStr> for Box<OsStr> {
+    fn from(value: &OsStr) -> Box<OsStr> { value.to_os_string().into_boxed_os_str() }
+}
+impl From<OsString> for Box<OsStr> {
+    fn from(value: OsString) -> Box<OsStr> { value.into_boxed_os_str() }
+}
+impl From<Box<OsStr>> for OsString {
+    fn from(value: Box<OsStr>) -> OsString { value.into_os_string() }
+}
+impl From<Cow<'_, OsStr>> for Box<OsStr> {
+    fn from(value: Cow<'_, OsStr>) -> Box<OsStr> { value.into_owned().into_boxed_os_str() }
+}
+impl Default for Box<OsStr> {
+    fn default() -> Box<OsStr> { OsString::new().into_boxed_os_str() }
+}
+impl From<&OsStr> for Arc<OsStr> {
+    fn from(value: &OsStr) -> Arc<OsStr> {
+        let bytes: Arc<[u8]> = Arc::from(value.as_encoded_bytes());
+        // SAFETY: transparent OsStr has exactly [u8]'s layout and metadata.
+        unsafe { Arc::from_raw(Arc::into_raw(bytes) as *const OsStr) }
+    }
+}
+impl From<OsString> for Arc<OsStr> {
+    fn from(value: OsString) -> Arc<OsStr> { Arc::from(value.as_os_str()) }
+}
+impl From<&OsStr> for Rc<OsStr> {
+    fn from(value: &OsStr) -> Rc<OsStr> {
+        let bytes: Rc<[u8]> = Rc::from(value.as_encoded_bytes());
+        // SAFETY: transparent OsStr has exactly [u8]'s layout and metadata.
+        unsafe { Rc::from_raw(Rc::into_raw(bytes) as *const OsStr) }
+    }
+}
+impl From<OsString> for Rc<OsStr> {
+    fn from(value: OsString) -> Rc<OsStr> { Rc::from(value.as_os_str()) }
+}
+impl<'a> From<&'a OsStr> for Cow<'a, OsStr> {
+    fn from(value: &'a OsStr) -> Cow<'a, OsStr> { Cow::Borrowed(value) }
+}
+impl<'a> From<OsString> for Cow<'a, OsStr> {
+    fn from(value: OsString) -> Cow<'a, OsStr> { Cow::Owned(value) }
+}
+impl<'a> From<&'a OsString> for Cow<'a, OsStr> {
+    fn from(value: &'a OsString) -> Cow<'a, OsStr> { Cow::Borrowed(value.as_os_str()) }
+}
+impl<'a> From<Cow<'a, OsStr>> for OsString {
+    fn from(value: Cow<'a, OsStr>) -> OsString { value.into_owned() }
+}
+impl<S: Borrow<OsStr>> crate::alloc_crate::slice::Join<&OsStr> for [S] {
+    type Output = OsString;
+    fn join(slice: &Self, separator: &OsStr) -> OsString {
+        let mut result = OsString::new();
+        let mut first = true;
+        for value in slice {
+            if !first { result.push(separator); }
+            first = false;
+            result.push(value.borrow());
+        }
+        result
+    }
+}

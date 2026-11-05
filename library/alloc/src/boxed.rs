@@ -339,3 +339,33 @@ impl<T: ?Sized> core::marker::Unpin for Box<T> {}
 
 impl<T: ?Sized + core::panic::UnwindSafe> core::panic::UnwindSafe for Box<T> {}
 impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Box<T> {}
+
+impl<T> Box<T> {
+    /// Moves `x` to the heap and pins it there.
+    pub fn pin(x: T) -> core::pin::Pin<Box<T>> {
+        Box::into_pin(Box::new(x))
+    }
+}
+impl<T: ?Sized> Box<T> {
+    /// Pins the boxed value, which the box keeps at one address.
+    pub fn into_pin(boxed: Box<T>) -> core::pin::Pin<Box<T>> {
+        // SAFETY: the value lives in its own allocation, which the pinned box
+        // never moves or frees before dropping the value.
+        unsafe { core::pin::Pin::new_unchecked(boxed) }
+    }
+}
+impl<T: ?Sized> From<Box<T>> for core::pin::Pin<Box<T>> {
+    fn from(boxed: Box<T>) -> core::pin::Pin<Box<T>> { Box::into_pin(boxed) }
+}
+impl<T: ?Sized> fmt::Pointer for Box<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ptr: *const T = &**self;
+        fmt::Pointer::fmt(&ptr, f)
+    }
+}
+impl<F: core::future::Future + core::marker::Unpin + ?Sized> core::future::Future for Box<F> {
+    type Output = F::Output;
+    fn poll(mut self: core::pin::Pin<&mut Self>, context: &mut core::task::Context<'_>) -> core::task::Poll<F::Output> {
+        F::poll(core::pin::Pin::new(&mut **self), context)
+    }
+}

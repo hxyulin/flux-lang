@@ -502,3 +502,126 @@ impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::UnwindSafe for Arc<T> 
 impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Arc<T> {}
 impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::UnwindSafe for Weak<T> {}
 impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Weak<T> {}
+
+// The payload starts at the header size rounded up to its alignment, as
+// allocate places it; the value's own metadata gives that alignment.
+unsafe fn header_of<T: ?Sized>(data: *const T) -> NonNull<Header> {
+    // SAFETY: the caller passes a payload pointer that allocate produced.
+    unsafe {
+        let align = Layout::for_value_raw(data).align();
+        let offset = (core::mem::size_of::<Header>() + align - 1) & !(align - 1);
+        NonNull::new_unchecked((data as *const u8).sub(offset) as *mut Header)
+    }
+}
+
+impl<T: ?Sized> Arc<T> {
+    /// Consumes the handle, keeping its strong count, and returns the payload pointer.
+    pub fn into_raw(this: Self) -> *const T {
+        let data = this.data.as_ptr() as *const T;
+        core::mem::forget(this);
+        data
+    }
+    /// Rebuilds a handle from `into_raw`'s pointer, taking over its strong count.
+    ///
+    /// # Safety
+    /// `ptr` must come from `Arc::into_raw` for the same payload type, and its
+    /// strong count must not have been reclaimed already.
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
+        // SAFETY: forwarded from the caller's contract.
+        unsafe { Arc { ptr: header_of(ptr), data: NonNull::new_unchecked(ptr as *mut T), owner: PhantomData } }
+    }
+    /// # Safety
+    /// `ptr` must come from `Arc::into_raw` and its allocation must be alive.
+    pub unsafe fn increment_strong_count(ptr: *const T) {
+        // SAFETY: forwarded from the caller's contract.
+        increment(unsafe { &(*header_of(ptr).as_ptr()).strong });
+    }
+    /// # Safety
+    /// `ptr` must come from `Arc::into_raw`, and the call releases one strong count.
+    pub unsafe fn decrement_strong_count(ptr: *const T) {
+        // SAFETY: forwarded from the caller's contract.
+        drop(unsafe { Arc::from_raw(ptr) });
+    }
+    /// A snapshot of the current number of weak owners.
+    pub fn weak_count(this: &Self) -> usize {
+        // SAFETY: a strong owner pins its allocation header.
+        let weak = unsafe { (*this.ptr.as_ptr()).weak.load(Acquire) };
+        // The implicit weak owner is not counted; usize::MAX marks get_mut's probe.
+        if weak == usize::MAX { 0 } else { weak - 1 }
+    }
+}
+
+// Moves the bytes into an Arc<[u8]> and reinterprets them as the target
+// payload, which must have the same layout and metadata as [u8].
+fn bytes_arc(bytes: &[u8]) -> Arc<[u8]> { Arc::from(bytes) }
+impl From<&str> for Arc<str> {
+    fn from(value: &str) -> Arc<str> {
+        let bytes = bytes_arc(value.as_bytes());
+        // SAFETY: the bytes are valid UTF-8, and str has [u8]'s layout and metadata.
+        unsafe { Arc::from_raw(Arc::into_raw(bytes) as *const str) }
+    }
+}
+impl From<&mut str> for Arc<str> {
+    fn from(value: &mut str) -> Arc<str> { Arc::from(&*value) }
+}
+impl From<crate::string::String> for Arc<str> {
+    fn from(value: crate::string::String) -> Arc<str> { Arc::from(value.as_str()) }
+}
+impl From<&crate::string::String> for Arc<str> {
+    fn from(value: &crate::string::String) -> Arc<str> { Arc::from(value.as_str()) }
+}
+impl<'a, B: crate::borrow::ToOwned + ?Sized> From<crate::borrow::Cow<'a, B>> for Arc<B>
+where Arc<B>: From<&'a B> + From<B::Owned> {
+    fn from(value: crate::borrow::Cow<'a, B>) -> Arc<B> {
+        match value {
+            crate::borrow::Cow::Borrowed(value) => Arc::from(value),
+            crate::borrow::Cow::Owned(value) => Arc::from(value),
+        }
+    }
+}
+impl From<Arc<str>> for Arc<[u8]> {
+    fn from(value: Arc<str>) -> Arc<[u8]> {
+        // SAFETY: str has [u8]'s layout and metadata, and any bytes are valid.
+        unsafe { Arc::from_raw(Arc::into_raw(value) as *const [u8]) }
+    }
+}
+impl<T> From<T> for Arc<T> {
+    fn from(value: T) -> Arc<T> { Arc::new(value) }
+}
+impl<T: Clone> From<&mut [T]> for Arc<[T]> {
+    fn from(values: &mut [T]) -> Self { Arc::from(values.to_vec()) }
+}
+impl<T, const N: usize> From<[T; N]> for Arc<[T]> {
+    fn from(values: [T; N]) -> Self { Arc::from(Vec::from(values)) }
+}
+impl Default for Arc<str> {
+    fn default() -> Self { Arc::from("") }
+}
+impl<T: ?Sized + core::fmt::Display> core::fmt::Display for Arc<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Display::fmt(&**self, f) }
+}
+impl<T: ?Sized> core::fmt::Pointer for Arc<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Pointer::fmt(&(self.data.as_ptr() as *const T), f)
+    }
+}
+impl<T: ?Sized + core::cmp::PartialOrd> core::cmp::PartialOrd for Arc<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> { (**self).partial_cmp(&**other) }
+}
+impl<T: ?Sized + core::cmp::Ord> core::cmp::Ord for Arc<T> {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering { (**self).cmp(&**other) }
+}
+impl<T: ?Sized> core::borrow::Borrow<T> for Arc<T> {
+    fn borrow(&self) -> &T { &**self }
+}
+impl<T: ?Sized + core::error::Error> core::error::Error for Arc<T> {
+    #[allow(deprecated)]
+    fn description(&self) -> &str { core::error::Error::description(&**self) }
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> { core::error::Error::source(&**self) }
+}
+impl<T: ?Sized> core::fmt::Debug for Weak<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.write_str("(Weak)") }
+}
+impl<T> Default for Weak<T> {
+    fn default() -> Self { Weak::new() }
+}

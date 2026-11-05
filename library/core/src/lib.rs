@@ -79,6 +79,54 @@ pub mod isize {
     pub const MIN: isize = -MAX - 1;
 }
 
+/// Legacy integer constants used by existing Rust libraries.
+pub mod i8 {
+    pub const MIN: i8 = <i8>::MIN;
+    pub const MAX: i8 = <i8>::MAX;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod i16 {
+    pub const MIN: i16 = <i16>::MIN;
+    pub const MAX: i16 = <i16>::MAX;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod i32 {
+    pub const MIN: i32 = <i32>::MIN;
+    pub const MAX: i32 = <i32>::MAX;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod i64 {
+    pub const MIN: i64 = <i64>::MIN;
+    pub const MAX: i64 = <i64>::MAX;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod i128 {
+    pub const MIN: i128 = <i128>::MIN;
+    pub const MAX: i128 = <i128>::MAX;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod u16 {
+    pub const MIN: u16 = <u16>::MIN;
+    pub const MAX: u16 = <u16>::MAX;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod u64 {
+    pub const MIN: u64 = <u64>::MIN;
+    pub const MAX: u64 = <u64>::MAX;
+}
+
+/// Legacy integer constants used by existing Rust libraries.
+pub mod u128 {
+    pub const MIN: u128 = <u128>::MIN;
+    pub const MAX: u128 = <u128>::MAX;
+}
+
 /// Legacy floating-point constants.
 pub mod f32 {
     pub const NAN: f32 = <f32>::NAN;
@@ -88,6 +136,36 @@ pub mod f32 {
     pub const MAX: f32 = <f32>::MAX;
     pub const MIN_POSITIVE: f32 = <f32>::MIN_POSITIVE;
     pub const EPSILON: f32 = <f32>::EPSILON;
+    pub const RADIX: u32 = <f32>::RADIX;
+    pub const MANTISSA_DIGITS: u32 = <f32>::MANTISSA_DIGITS;
+    pub const DIGITS: u32 = <f32>::DIGITS;
+    pub const MIN_EXP: i32 = <f32>::MIN_EXP;
+    pub const MAX_EXP: i32 = <f32>::MAX_EXP;
+    pub const MIN_10_EXP: i32 = <f32>::MIN_10_EXP;
+    pub const MAX_10_EXP: i32 = <f32>::MAX_10_EXP;
+
+    /// Mathematical constants, rounded to f32.
+    pub mod consts {
+        pub const PI: f32 = 3.14159265358979323846264338327950288_f32;
+        pub const TAU: f32 = 6.28318530717958647692528676655900577_f32;
+        pub const FRAC_PI_2: f32 = 1.57079632679489661923132169163975144_f32;
+        pub const FRAC_PI_3: f32 = 1.04719755119659774615421446109316763_f32;
+        pub const FRAC_PI_4: f32 = 0.785398163397448309615660845819875721_f32;
+        pub const FRAC_PI_6: f32 = 0.52359877559829887307710723054658381_f32;
+        pub const FRAC_PI_8: f32 = 0.39269908169872415480783042290993786_f32;
+        pub const FRAC_1_PI: f32 = 0.318309886183790671537767526745028724_f32;
+        pub const FRAC_2_PI: f32 = 0.636619772367581343075535053490057448_f32;
+        pub const FRAC_2_SQRT_PI: f32 = 1.12837916709551257389615890312154517_f32;
+        pub const SQRT_2: f32 = 1.41421356237309504880168872420969808_f32;
+        pub const FRAC_1_SQRT_2: f32 = 0.707106781186547524400844362104849039_f32;
+        pub const E: f32 = 2.71828182845904523536028747135266250_f32;
+        pub const LOG2_E: f32 = 1.44269504088896340735992468100189214_f32;
+        pub const LOG2_10: f32 = 3.32192809488736234787031942948939018_f32;
+        pub const LOG10_E: f32 = 0.434294481903251827651128918916605082_f32;
+        pub const LOG10_2: f32 = 0.301029995663981195213738894724493027_f32;
+        pub const LN_2: f32 = 0.693147180559945309417232121458176568_f32;
+        pub const LN_10: f32 = 2.30258509299404568401799145468436421_f32;
+    }
 }
 
 /// Legacy floating-point constants.
@@ -99,6 +177,36 @@ pub mod f64 {
     pub const MAX: f64 = <f64>::MAX;
     pub const MIN_POSITIVE: f64 = <f64>::MIN_POSITIVE;
     pub const EPSILON: f64 = <f64>::EPSILON;
+    pub const RADIX: u32 = <f64>::RADIX;
+    pub const MANTISSA_DIGITS: u32 = <f64>::MANTISSA_DIGITS;
+    pub const DIGITS: u32 = <f64>::DIGITS;
+    pub const MIN_EXP: i32 = <f64>::MIN_EXP;
+    pub const MAX_EXP: i32 = <f64>::MAX_EXP;
+    pub const MIN_10_EXP: i32 = <f64>::MIN_10_EXP;
+    pub const MAX_10_EXP: i32 = <f64>::MAX_10_EXP;
+
+    /// Mathematical constants, rounded to f64.
+    pub mod consts {
+        pub const PI: f64 = 3.14159265358979323846264338327950288_f64;
+        pub const TAU: f64 = 6.28318530717958647692528676655900577_f64;
+        pub const FRAC_PI_2: f64 = 1.57079632679489661923132169163975144_f64;
+        pub const FRAC_PI_3: f64 = 1.04719755119659774615421446109316763_f64;
+        pub const FRAC_PI_4: f64 = 0.785398163397448309615660845819875721_f64;
+        pub const FRAC_PI_6: f64 = 0.52359877559829887307710723054658381_f64;
+        pub const FRAC_PI_8: f64 = 0.39269908169872415480783042290993786_f64;
+        pub const FRAC_1_PI: f64 = 0.318309886183790671537767526745028724_f64;
+        pub const FRAC_2_PI: f64 = 0.636619772367581343075535053490057448_f64;
+        pub const FRAC_2_SQRT_PI: f64 = 1.12837916709551257389615890312154517_f64;
+        pub const SQRT_2: f64 = 1.41421356237309504880168872420969808_f64;
+        pub const FRAC_1_SQRT_2: f64 = 0.707106781186547524400844362104849039_f64;
+        pub const E: f64 = 2.71828182845904523536028747135266250_f64;
+        pub const LOG2_10: f64 = 3.32192809488736234787031942948939018_f64;
+        pub const LOG2_E: f64 = 1.44269504088896340735992468100189214_f64;
+        pub const LOG10_2: f64 = 0.301029995663981195213738894724493027_f64;
+        pub const LOG10_E: f64 = 0.434294481903251827651128918916605082_f64;
+        pub const LN_2: f64 = 0.693147180559945309417232121458176568_f64;
+        pub const LN_10: f64 = 2.30258509299404568401799145468436421_f64;
+    }
 }
 
 // Separate aliases avoid self-referential names while exposing ordinary

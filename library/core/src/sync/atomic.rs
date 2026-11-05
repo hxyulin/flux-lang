@@ -731,3 +731,41 @@ impl crate::fmt::Debug for AtomicU32 {
         crate::fmt::Debug::fmt(&self.load(Relaxed), f)
     }
 }
+
+impl crate::default::Default for AtomicUsize { fn default() -> Self { Self::new(0) } }
+impl crate::convert::From<usize> for AtomicUsize { fn from(value: usize) -> Self { Self::new(value) } }
+impl crate::default::Default for AtomicU32 { fn default() -> Self { Self::new(0) } }
+impl crate::convert::From<u32> for AtomicU32 { fn from(value: u32) -> Self { Self::new(value) } }
+impl<T> crate::default::Default for AtomicPtr<T> { fn default() -> Self { Self::new(crate::ptr::null_mut()) } }
+impl<T> crate::convert::From<*mut T> for AtomicPtr<T> { fn from(value: *mut T) -> Self { Self::new(value) } }
+impl<T> crate::fmt::Debug for AtomicPtr<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Debug::fmt(&self.load(Relaxed), f)
+    }
+}
+impl<T> crate::fmt::Pointer for AtomicPtr<T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        crate::fmt::Pointer::fmt(&self.load(Relaxed), f)
+    }
+}
+
+/// A fence for the compiler's reordering only. Flux emits a full fence of
+/// the same order, which is at least as strong. Relaxed is invalid and panics.
+#[track_caller]
+pub fn compiler_fence(order: Ordering) {
+    match order {
+        Relaxed => panic("there is no such thing as a relaxed fence"),
+        order => fence(order),
+    }
+}
+
+/// Signals a spin-wait loop to the processor.
+#[deprecated(note = "use hint::spin_loop instead")]
+pub fn spin_loop_hint() { crate::hint::spin_loop() }
+
+#[deprecated(note = "the `new` function is now preferred")]
+pub const ATOMIC_BOOL_INIT: AtomicBool = AtomicBool::new(false);
+#[deprecated(note = "the `new` function is now preferred")]
+pub const ATOMIC_USIZE_INIT: AtomicUsize = AtomicUsize::new(0);
+#[deprecated(note = "the `new` function is now preferred")]
+pub const ATOMIC_ISIZE_INIT: AtomicIsize = AtomicIsize::new(0);

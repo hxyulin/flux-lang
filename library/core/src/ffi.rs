@@ -59,6 +59,22 @@ impl CStr {
         }
     }
 
+    /// A pointer to its first byte, valid while the borrow lasts.
+    #[inline(always)]
+    pub const fn as_ptr(&self) -> *const c_char {
+        self as *const CStr as *const c_char
+    }
+
+    /// The C string `bytes` is, without checking it.
+    ///
+    /// # Safety
+    /// `bytes` must end in a NUL and contain no other NUL.
+    pub const unsafe fn from_bytes_with_nul_unchecked(bytes: &[u8]) -> &CStr {
+        // SAFETY: a CStr reference has a byte slice's pointer and length
+        // (with the NUL), and the caller guarantees a sole trailing NUL.
+        unsafe { &*(bytes as *const [u8] as *const CStr) }
+    }
+
     /// Its length in bytes, without the NUL.
     pub fn count_bytes(&self) -> usize {
         crate::mem::size_of_val(self) - 1

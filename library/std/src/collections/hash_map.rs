@@ -1,6 +1,6 @@
 //! Linear probing with cached hashes, tombstones and keyed default hashing.
 use crate::alloc_crate::vec::{IntoIter as VecIntoIter, Vec};
-pub use crate::hash::DefaultHasher;
+pub use crate::hash::{DefaultHasher, RandomState};
 use core::borrow::Borrow;
 use core::hash::{BuildHasher, Hash};
 use core::iter::FusedIterator;
