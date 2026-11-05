@@ -23,7 +23,8 @@ use std::path::{Path, PathBuf};
 pub use keel_ir::Target;
 pub use keel_opt::OptimizationTier;
 pub use lower::{
-    Compilation, LoweredCrate, OutputKind, lower_crate, lower_crate_with_requirements, lower_module,
+    Compilation, LoweredCrate, LoweringTimings, OutputKind, lower_crate,
+    lower_crate_with_requirements, lower_module, lower_with_timings,
 };
 
 /// Verifies, optimizes and compiles `module` to an object file for

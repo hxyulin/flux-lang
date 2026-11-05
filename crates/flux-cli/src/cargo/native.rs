@@ -1230,8 +1230,12 @@ fn git_source_matches(source: &str, url: &str, spec: &Table) -> bool {
         .is_some_and(|(locked, _)| locked == identity)
 }
 
-pub(super) fn prepare(options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
-    execute::run(make_plan(options)?, options, optimize)
+pub(super) fn prepare(options: &Options, build: Option<crate::BuildOptions>) -> Result<ExitCode> {
+    let start = build
+        .is_some_and(|b| b.timings)
+        .then(std::time::Instant::now);
+    let plan = make_plan(options)?;
+    execute::run(plan, options, build, start)
 }
 
 fn cached_source(home: &Path, package: &Locked) -> Result<Option<PathBuf>> {

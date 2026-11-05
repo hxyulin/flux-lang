@@ -30,6 +30,9 @@ pub(crate) enum Command {
         options: Options,
         #[arg(short = 'O')]
         optimize: bool,
+        /// Print host preparation and compilation timings.
+        #[arg(long)]
+        timings: bool,
     },
 }
 
@@ -199,11 +202,16 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         unreachable!("native planning returned above")
     };
     if !options.cargo {
-        let optimize = match command {
-            Command::Build { optimize, .. } => Some(*optimize),
+        let build = match command {
+            Command::Build {
+                optimize, timings, ..
+            } => Some(crate::BuildOptions {
+                optimize: *optimize,
+                timings: *timings,
+            }),
             _ => None,
         };
-        return native::prepare(options, optimize);
+        return native::prepare(options, build);
     }
     if matches!(
         options.macro_host_compiler,
@@ -285,7 +293,10 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         plan.host_proc_macros.len(),
         path.display()
     );
-    let Command::Build { optimize, .. } = command else {
+    let Command::Build {
+        optimize, timings, ..
+    } = command
+    else {
         return Ok(ExitCode::SUCCESS);
     };
     if !plan.blockers.is_empty() {
@@ -369,7 +380,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         sources: &sources,
         options: crate::BuildOptions {
             optimize: *optimize,
-            timings: false,
+            timings: *timings,
         },
     })?;
     Ok(if ok {

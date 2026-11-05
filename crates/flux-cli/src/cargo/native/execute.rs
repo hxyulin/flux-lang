@@ -32,7 +32,14 @@ struct Prepared {
     outputs: Vec<Output>,
 }
 
-pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
+/// Prepares host tools, then builds the plan's binary when `build` is given.
+/// `start`, set when timings are requested, is when planning began.
+pub(super) fn run(
+    plan: Plan,
+    options: &Options,
+    build: Option<crate::BuildOptions>,
+    start: Option<std::time::Instant>,
+) -> Result<ExitCode> {
     let native_macros = matches!(
         options.macro_host_compiler,
         crate::package::MacroHostCompiler::Flux
@@ -183,10 +190,18 @@ pub(super) fn run(plan: Plan, options: &Options, optimize: Option<bool>) -> Resu
         "prepared native host tools without Cargo: {}",
         path.display()
     );
-    if let Some(optimize) = optimize {
-        build(&prepared, optimize)
-    } else {
-        Ok(ExitCode::SUCCESS)
+    match build {
+        Some(options) => {
+            if let Some(start) = start {
+                eprintln!(
+                    "{:<38}  {:>10.2?}",
+                    "planning + native host preparation",
+                    start.elapsed()
+                );
+            }
+            compile_plan(&prepared, options)
+        }
+        None => Ok(ExitCode::SUCCESS),
     }
 }
 
@@ -930,7 +945,7 @@ fn parse_script(text: &str, out_dir: PathBuf) -> Result<ScriptOutput> {
     Ok(output)
 }
 
-fn build(prepared: &Prepared, optimize: bool) -> Result<ExitCode> {
+fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<ExitCode> {
     let plan = &prepared.plan;
     let mut sources = Vec::new();
     let mut indices = BTreeMap::new();
@@ -1022,10 +1037,7 @@ fn build(prepared: &Prepared, optimize: bool) -> Result<ExitCode> {
         crate_name: &sources[root].name,
         output: &output,
         sources: &sources,
-        options: crate::BuildOptions {
-            optimize,
-            timings: false,
-        },
+        options,
     })?;
     Ok(if success {
         ExitCode::SUCCESS

@@ -345,6 +345,24 @@ dependencies=["shared"]
     // Only the generated file changes, so only rustc's dep-info sees it.
     let stderr = rerun("edited-generated", b"100\n");
     assert!(stderr.contains("rustc host macros proc-macro"), "{stderr}");
+    let output = f.run(
+        "build",
+        "timed",
+        &["-O", "--features", "derive", "--timings"],
+    );
+    support::oracle::success(&output, "timed native host build");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for scope in [
+        "planning + native host preparation",
+        "mono collection",
+        "body substitution",
+        "mir validation",
+        "keel lowering",
+        "backend (inclusive)",
+        "compile scoped elapsed",
+    ] {
+        assert!(stderr.contains(scope), "missing {scope}: {stderr}");
+    }
     assert_eq!(std::fs::read(f.root.join("Cargo.lock")).unwrap(), lock);
     assert!(!f.root.join("cargo-was-called").exists());
     for (label, source, error) in [
