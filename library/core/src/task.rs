@@ -3,6 +3,7 @@ use crate::marker::PhantomData;
 use crate::mem::ManuallyDrop;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[lang = "Poll"]
 pub enum Poll<T> { Ready(T), Pending }
 impl<T> Poll<T> {
     pub const fn is_ready(&self)->bool { matches!(self,Self::Ready(_)) }

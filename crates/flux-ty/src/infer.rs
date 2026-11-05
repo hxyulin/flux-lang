@@ -3376,6 +3376,43 @@ impl Ctx<'_> {
             TyKind::Adt(adt, args) if Some(adt.strukt) == control_flow => {
                 (arg(args, 1), TryResidual::Break(arg(args, 0)))
             }
+            // `Poll<Result<T, E>>` gives `Poll<T>`, and
+            // `Poll<Option<Result<T, E>>>` gives `Poll<Option<T>>`; both
+            // break with the error.
+            TyKind::Adt(adt, args) if Some(adt.strukt) == lang("Poll") => {
+                let inner = self.normalize(arg(args, 0), whole);
+                let inner = self.shallow(inner);
+                let poll = |ty: Ty| Ty::adt(adt.strukt, adt.name, &[ty]);
+                match inner.kind() {
+                    TyKind::Adt(r, r_args) if Some(r.strukt) == result => {
+                        (poll(arg(r_args, 0)), TryResidual::Result(arg(r_args, 1)))
+                    }
+                    TyKind::Adt(o, o_args) if Some(o.strukt) == option => {
+                        let some = self.normalize(arg(o_args, 0), whole);
+                        match self.shallow(some).kind() {
+                            TyKind::Adt(r, r_args) if Some(r.strukt) == result => (
+                                poll(Ty::adt(o.strukt, o.name, &[arg(r_args, 0)])),
+                                TryResidual::Result(arg(r_args, 1)),
+                            ),
+                            _ => {
+                                self.error(
+                                    whole,
+                                    "the `?` operator can only be applied to values that implement `Try`",
+                                );
+                                return Ty::ERROR;
+                            }
+                        }
+                    }
+                    TyKind::Error => return Ty::ERROR,
+                    _ => {
+                        self.error(
+                            whole,
+                            "the `?` operator can only be applied to values that implement `Try`",
+                        );
+                        return Ty::ERROR;
+                    }
+                }
+            }
             TyKind::Error => return Ty::ERROR,
             TyKind::Infer(var) if !self.unknown(var).0 => {
                 self.annotations_needed(operand, var, self.range(operand));
@@ -3421,6 +3458,33 @@ impl Ctx<'_> {
         let (option, result, control_flow) = (lang("Option"), lang("Result"), lang("ControlFlow"));
         let arg = |args: &[Ty], i: usize| args.get(i).copied().unwrap_or(Ty::ERROR);
         let ret = self.shallow(ret);
+        let general = "the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)";
+        // `Poll<Result<_, E>>` and `Poll<Option<Result<_, E>>>` take an
+        // error as the `Result` inside them does, and nothing else.
+        let polled = match ret.kind() {
+            TyKind::Adt(adt, args) if Some(adt.strukt) == lang("Poll") => {
+                let inner = self.normalize(arg(args, 0), whole);
+                let inner = self.shallow(inner);
+                match inner.kind() {
+                    TyKind::Adt(o, o_args) if Some(o.strukt) == option => {
+                        let inner = self.normalize(arg(o_args, 0), whole);
+                        let inner = self.shallow(inner);
+                        match inner.kind() {
+                            TyKind::Adt(r, _) if Some(r.strukt) == result => inner,
+                            _ => ret,
+                        }
+                    }
+                    TyKind::Adt(r, _) if Some(r.strukt) == result => inner,
+                    _ => ret,
+                }
+            }
+            _ => ret,
+        };
+        if polled != ret && !matches!(residual, TryResidual::Result(_)) {
+            self.error(question, general);
+            return;
+        }
+        let ret = polled;
         let ret_adt = match ret.kind() {
             TyKind::Error => return,
             TyKind::Adt(adt, args) => Some((adt.strukt, args)),
@@ -3481,10 +3545,7 @@ impl Ctx<'_> {
                 question,
                 "the `?` operator can only be used on `Option`s, not `Result`s, in a function that returns `Option`",
             ),
-            _ => self.error(
-                question,
-                "the `?` operator can only be used in a function that returns `Result` or `Option` (or another type that implements `FromResidual`)",
-            ),
+            _ => self.error(question, general),
         }
     }
 
