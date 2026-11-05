@@ -298,6 +298,53 @@ dependencies=["shared"]
         assert_eq!(shared.len(), 2);
         assert_ne!(shared[0], shared[1]);
     }
+    // A second preparation reuses fresh rustc artifacts at the same paths, and
+    // rebuilds a library and its dependents when a source or generated file
+    // it read changes.
+    let report = |label: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(f.root.join(format!("{label}.json"))).unwrap())
+            .unwrap()
+    };
+    let executable = || std::fs::read(f.root.join("target/flux/app")).unwrap();
+    let optimized = executable();
+    let rerun = |label: &str, expected: &[u8]| -> String {
+        let output = f.run("build", label, &["-O", "--features", "derive"]);
+        support::oracle::success(&output, "repeated native host build");
+        let actual = Command::new(f.root.join("target/flux/app"))
+            .output()
+            .unwrap();
+        assert_eq!(actual.stdout, expected);
+        String::from_utf8(output.stderr).unwrap()
+    };
+    let stderr = rerun("optimized-again", b"100\n");
+    for unit in ["shared lib", "macros proc-macro"] {
+        assert!(stderr.contains(&format!("fresh host {unit}")), "{stderr}");
+    }
+    assert!(!stderr.contains("rustc host"), "{stderr}");
+    assert_eq!(
+        report("optimized")["outputs"],
+        report("optimized-again")["outputs"]
+    );
+    assert_eq!(executable(), optimized, "repeated builds must be identical");
+    f.write(
+        "shared/src/lib.rs",
+        &std::fs::read_to_string(f.root.join("shared/src/lib.rs"))
+            .unwrap()
+            .replace("pub const ENV", "// edited\npub const ENV"),
+    );
+    let stderr = rerun("edited-source", b"100\n");
+    for unit in ["shared lib", "macros proc-macro"] {
+        assert!(stderr.contains(&format!("rustc host {unit}")), "{stderr}");
+    }
+    f.write(
+        "shared/build.rs",
+        &std::fs::read_to_string(f.root.join("shared/build.rs"))
+            .unwrap()
+            .replace("\"pub fn value", "\"// generated\\npub fn value"),
+    );
+    // Only the generated file changes, so only rustc's dep-info sees it.
+    let stderr = rerun("edited-generated", b"100\n");
+    assert!(stderr.contains("rustc host macros proc-macro"), "{stderr}");
     assert_eq!(std::fs::read(f.root.join("Cargo.lock")).unwrap(), lock);
     assert!(!f.root.join("cargo-was-called").exists());
     for (label, source, error) in [
