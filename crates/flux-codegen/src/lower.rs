@@ -163,6 +163,7 @@ fn lower_inner(
     compilation: Option<Compilation<'_>>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
     let _shapes = shapes::scope(&typed.sigs);
+    let _fields = flux_solve::remember_field_types(&typed.sigs);
     let monomorphic = |id: FunctionId| {
         let function = &hir.items.functions[id];
         let instance = Instance {

@@ -47,6 +47,8 @@ fn build_file_inner(
     imported: Option<&crate::imported::ImportedMir>,
     required_functions: &[FunctionId],
 ) -> FileMir {
+    // Signatures are final once type checking is done.
+    let _fields = flux_solve::remember_field_types(&typed.sigs);
     let mut diagnostics = crate::alignment::check_declarations(&hir.items, &typed.sigs);
     let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
         let (found, own) = check_body(hir, typed, body, is_const, requirements);
