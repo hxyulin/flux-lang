@@ -359,6 +359,22 @@ class Planning(unittest.TestCase):
         self.assertEqual(executables[binary], Path("/target/tool"))
         self.assertEqual(executables[runner.RUNNER], Path(sys.executable))
 
+    def test_profile_applies_to_test_binaries_and_the_staged_compiler(self):
+        target = runner.Target("flux-mir", "mir", "test", "/fixture/tests/mir.rs", "mir-id")
+        message = {"reason": "compiler-artifact", "package_id": "mir-id", "profile": {"test": True},
+                   "target": {"name": "mir", "kind": ["test"], "src_path": target.source},
+                   "executable": "/fixture/target/stage0/deps/mir"}
+        result = SimpleNamespace(stdout=json.dumps(message), returncode=0)
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(runner.subprocess, "run", return_value=result) as run, \
+                patch.object(runner, "build_compiler", return_value=Path("/fixture/target/stage0/fluxc")) as compiler, \
+                patch.object(runner, "stage_builtins"):
+            directory = Path(temporary)
+            runner.build("cargo", [target], directory, require_compiler=True, profile="stage0")
+            self.assertEqual(run.call_args[0][0][:6], ["cargo", "test", "--no-run", "--message-format=json",
+                                                       "--profile", "stage0"])
+            compiler.assert_called_once_with("cargo", directory, "stage0")
+
     def test_workspace_artifacts_with_same_name_keep_their_package_identity(self):
         first = runner.Target("first", "shared", "test", "/first/tests/shared.rs", "first-id")
         second = runner.Target("second", "shared", "test", "/second/tests/shared.rs", "second-id")
@@ -410,7 +426,7 @@ class Planning(unittest.TestCase):
                 patch.object(runner, "stage_builtins") as stage:
             directory = Path(temporary)
             runner.build("cargo", [target], directory, require_compiler=True)
-            compiler.assert_called_once_with("cargo", directory)
+            compiler.assert_called_once_with("cargo", directory, "test")
             stage.assert_called_once_with(Path("/fixture/target/debug/fluxc"), directory)
 
     def test_shared_source_file_still_has_distinct_package_artifacts(self):

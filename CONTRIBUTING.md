@@ -197,6 +197,15 @@ CARGO_PROFILE_TEST_OPT_LEVEL=0 cargo test -p flux-mir --test mir
 CARGO_PROFILE_TEST_OPT_LEVEL=0 python3 scripts/test.py borrowing --target mir
 ```
 
+Self-host source graphs compile large crate graphs inside the test binary.
+`--profile stage0` builds the test binaries and the staged compiler with the
+`stage0` profile (release optimization, debug assertions and overflow checks
+on) instead; see [compiling Flux with Flux](docs/SELF_HOSTING.md#building-the-stages):
+
+```sh
+python3 scripts/test.py graphs --profile stage0
+```
+
 Every parser change needs a fixture. Put valid Rust in
 `crates/flux-syntax/tests/data/parser/ok/` and invalid Rust in `err/`, run
 `just snapshots`, and review the `.rast` diff: a snapshot passing only

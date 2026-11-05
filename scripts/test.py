@@ -306,13 +306,15 @@ def affected(metadata: dict, paths: list[str], available: list[Target],
 
 
 def build(cargo: str, selected: list[Target], directory: Path, complete: bool = False,
-          require_compiler: bool = False) -> dict[Target, Path]:
-    """Build every selected Cargo target with one command."""
+          require_compiler: bool = False, profile: str | None = None) -> dict[Target, Path]:
+    """Build every selected Cargo target with one command, in `profile` if given."""
     executables = {t: Path(sys.executable) for t in selected if t.kind == "python"}
     selected = [t for t in selected if t.kind != "python"]
     if not selected:
         return executables
     command = [cargo, "test", "--no-run", "--message-format=json"]
+    if profile is not None:
+        command += ["--profile", profile]
     if complete:
         # Preserve Cargo's normal example-build checks as well as test targets.
         command += ["--workspace"]
@@ -353,15 +355,15 @@ def build(cargo: str, selected: list[Target], directory: Path, complete: bool = 
     if missing:
         raise RuntimeError(f"missing test executables: {missing}")
     if compiler is None and require_compiler:
-        compiler = build_compiler(cargo, directory)
+        compiler = build_compiler(cargo, directory, profile or "test")
     if compiler is not None:
         stage_builtins(compiler, directory)
     return executables
 
 
-def build_compiler(cargo: str, directory: Path) -> Path:
-    """Prepare the test-profile compiler when a focused plan does not build it."""
-    result = subprocess.run([cargo, "build", "--profile", "test", "-p", "flux-cli", "--bin", "fluxc",
+def build_compiler(cargo: str, directory: Path, profile: str = "test") -> Path:
+    """Prepare the plan's compiler when a focused plan does not build it."""
+    result = subprocess.run([cargo, "build", "--profile", profile, "-p", "flux-cli", "--bin", "fluxc",
                              "--message-format=json"], cwd=ROOT, stdout=subprocess.PIPE, text=True)
     (directory / "compiler-build.jsonl").write_text(result.stdout)
     if result.returncode:
@@ -560,6 +562,8 @@ def main() -> int:
                         f"or {TIMEOUT_UNKNOWN} without one)")
     parser.add_argument("--keep-runs", type=int, default=10, help="run directories kept under out/test-runs (default 10)")
     parser.add_argument("--cargo", default="cargo", help="Cargo command (local builds may use mbx)")
+    parser.add_argument("--profile", help="Cargo profile for test binaries and the staged compiler "
+                        "(default: test); use stage0 for self-host graphs")
     parser.add_argument("--list", action="store_true", help="print the plan without compiling or running")
     args = parser.parse_args()
     if args.group == "fast":
@@ -622,10 +626,12 @@ def main() -> int:
     print(f"Logs: {directory}", flush=True)
     (directory / "plan.json").write_text(json.dumps({
         "group": args.group, "fast": args.fast, "jobs": args.jobs, "case": args.case, "filter": args.filter,
+        "profile": args.profile,
         "selections": {t.label: {"filter": settings[t].filter, "case": settings[t].case} for t in selected},
         "targets": [t.label for t in pool + exclusive],
     }, indent=2) + "\n")
-    executables = build(args.cargo, selected, directory, complete=selected == available, require_compiler=True)
+    executables = build(args.cargo, selected, directory, complete=selected == available, require_compiler=True,
+                        profile=args.profile)
     deduplicate = owns_native_sweep(selected, args)
     records = []
 

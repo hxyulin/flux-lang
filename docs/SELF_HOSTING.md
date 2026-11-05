@@ -889,6 +889,29 @@ with warnings denied, formatting, 43 runner unit tests and workspace/example
 source checks before this guarded retry.
 
 
+## Building the stages
+
+Build the stage-0 compiler with rustc in the `stage0` profile: release code
+generation with debug assertions and overflow checks still on. The `test`
+profile (optimization level 1) made stage 0 take about twice as long to build
+stage 1. Stage 0 then builds stage 1 with Flux:
+
+```sh
+cargo build --offline --profile stage0 -p flux-cli
+target/stage0/fluxc build-builtins
+target/stage0/flux build --offline -O -p flux-cli --bin fluxc --timings
+```
+
+Stage 1 is written to `target/flux/fluxc`. With `-O`, the stage-1 build takes
+debug assertions from `[profile.release]`, which leaves them off, as Cargo
+does. Run the self-host source graphs and the compiler audit with the same
+stage-0 profile:
+
+```sh
+python3 scripts/test.py graphs --profile stage0
+cargo test --profile stage0 -p flux-cli --test flux_compiler_readiness -- --ignored --nocapture
+```
+
 ## Profiling generated compilers
 
 Set `FLUX_COMPILER_SAVE_OBJECTS=1` when running `flux_compiler_readiness` to save
