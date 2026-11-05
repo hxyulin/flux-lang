@@ -70,6 +70,7 @@ impl<T> RawVec<T> {
         }
     }
 
+    #[inline(always)]
     pub(crate) fn ptr(&self) -> *mut T {
         self.ptr.as_ptr()
     }

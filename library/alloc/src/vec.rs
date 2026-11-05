@@ -134,18 +134,22 @@ impl<T> Vec<T> {
         unsafe { drop_range(self.as_mut_ptr(), len, old) };
     }
 
+    #[inline(always)]
     pub fn as_slice(&self) -> &[T] {
         self
     }
 
+    #[inline(always)]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         self
     }
 
+    #[inline(always)]
     pub fn as_ptr(&self) -> *const T {
         self.buf.ptr() as *const T
     }
 
+    #[inline(always)]
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self.buf.ptr()
     }
@@ -593,12 +597,14 @@ unsafe impl<#[may_dangle] T> Drop for Vec<T> {
 impl<T> Deref for Vec<T> {
     type Target = [T];
 
+    #[inline(always)]
     fn deref(&self) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 }
 
 impl<T> DerefMut for Vec<T> {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut [T] {
         unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len) }
     }

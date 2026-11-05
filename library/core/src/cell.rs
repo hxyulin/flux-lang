@@ -31,6 +31,7 @@ pub struct UnsafeCell<T: ?Sized> {
 
 impl<T> UnsafeCell<T> {
     /// A cell holding `value`.
+    #[inline(always)]
     pub const fn new(value: T) -> UnsafeCell<T> {
         UnsafeCell { value }
     }
@@ -44,11 +45,13 @@ impl<T> UnsafeCell<T> {
 impl<T: ?Sized> UnsafeCell<T> {
     /// A raw pointer to the value. Dereferencing it requires `unsafe`.
     /// Calling this in constants is not supported yet.
+    #[inline(always)]
     pub fn get(&self) -> *mut T {
         self as *const UnsafeCell<T> as *mut T
     }
 
     /// Exclusive access to the value.
+    #[inline(always)]
     pub fn get_mut(&mut self) -> &mut T {
         &mut self.value
     }

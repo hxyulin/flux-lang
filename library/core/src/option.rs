@@ -51,6 +51,7 @@ impl<T> Option<T> {
     /// # Safety
     /// `self` must be `Some`. Calling this on `None` is undefined behavior.
     #[rustc_const_unstable]
+    #[inline(always)]
     pub unsafe fn unwrap_unchecked(self) -> T {
         match self {
             Some(value) => value,
@@ -230,6 +231,7 @@ impl<T> Option<T> {
     }
 
     /// A reference to the value, if any.
+    #[inline(always)]
     pub const fn as_ref(&self) -> Option<&T> {
         match self {
             Some(value) => Some(value),
@@ -315,6 +317,7 @@ impl<T> Option<T> {
 
 impl<T> Option<&T> {
     /// `Some` with a copy of the value it refers to, or `None`.
+    #[inline(always)]
     pub const fn copied(self) -> Option<T>
     where
         T: crate::marker::Copy,
@@ -339,6 +342,7 @@ impl<T> Option<&T> {
 
 impl<T> Option<&mut T> {
     /// `Some` with a copy of the value it refers to, or `None`.
+    #[inline(always)]
     pub const fn copied(self) -> Option<T>
     where
         T: crate::marker::Copy,
