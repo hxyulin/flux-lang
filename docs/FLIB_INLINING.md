@@ -5,6 +5,12 @@ Every library keeps its `.flib` and owning object. Optimized downstream
 compilations may emit local copies of selected non-generic functions for direct
 calls. Generic instances retain their shared ODR linkage.
 
+HIR already records `#[inline]`, `#[inline(always)]`, `#[inline(never)]` and
+`#[cold]` on each function (`Function::inline` and `Function::cold`), and the
+HIR metadata codec keeps them. Code generation sets keel's `inlinehint`,
+`alwaysinline`, `noinline` and `cold` on the definitions it emits, so they
+apply to calls within one object.
+
 ## Eligibility
 
 Record an inline policy on each function: unspecified, hint, always or never.

@@ -1210,6 +1210,16 @@ impl Ctx<'_> {
         );
         function.local = self.compilation.is_none();
         function.attrs = attrs(sig);
+        if !pointer_wrapper {
+            let data = &self.hir.items.functions[instance.function];
+            match data.inline {
+                Some(flux_hir::InlineHint::Hint) => function.attrs.inlinehint = true,
+                Some(flux_hir::InlineHint::Always) => function.attrs.alwaysinline = true,
+                Some(flux_hir::InlineHint::Never) => function.attrs.noinline = true,
+                None => {}
+            }
+            function.attrs.cold = data.cold;
+        }
         if cfg!(target_arch = "x86_64") {
             let owner = body.owner.unwrap_or(instance.function);
             let features = self.hir.items.functions[owner]
