@@ -1263,6 +1263,94 @@ pub fn select_impl(
     sigs: &Signatures,
     goal: Predicate,
 ) -> Option<(ImplId, Vec<Ty>)> {
+    // Judging bounds normalizes their associated types, which selects
+    // blocks again. A repeated goal cannot establish an inductive proof;
+    // growing goals retain the depth limit.
+    let sigs_id = std::ptr::from_ref(sigs) as usize;
+    let entered = SELECTION.with_borrow_mut(|s| {
+        let depth = s.active.len();
+        if depth == 0 {
+            s.sigs = sigs_id;
+        }
+        if depth > 32 {
+            s.cut = 0;
+            return Err(None);
+        }
+        if let Some(start) = s.active.iter().position(|p| *p == goal) {
+            s.cut = s.cut.min(start);
+            return Err(None);
+        }
+        let remember = s.sigs == sigs_id;
+        if remember && let Some(known) = s.memo.get(&goal) {
+            return Err(known.clone());
+        }
+        Ok((depth, remember, std::mem::replace(&mut s.cut, usize::MAX)))
+    });
+    let (depth, remember, outer) = match entered {
+        Ok(entered) => entered,
+        Err(known) => return known,
+    };
+    let guard = Selecting;
+    let chosen = select_uncached(items, sigs, goal);
+    std::mem::forget(guard);
+    SELECTION.with_borrow_mut(|s| {
+        s.active.pop();
+        // An answer that a cycle through a goal below this one cut
+        // depends on the goals being selected, not on `goal` alone. The
+        // outermost goal is not asked again.
+        if remember && s.cut >= depth && depth > 0 {
+            s.memo.insert(goal, chosen.clone());
+        }
+        s.cut = s.cut.min(outer);
+        if depth == 0 && !s.memo.is_empty() {
+            s.memo.clear();
+        }
+    });
+    chosen
+}
+
+/// The goals [`select_impl`] is selecting a block for, outermost first,
+/// and the answers it found meanwhile. Answers do not outlive the
+/// outermost selection: `Signatures` grows between them.
+struct Selection {
+    active: Vec<Predicate>,
+    /// The lowest index in `active` that a cycle or the depth limit cut
+    /// at since the innermost selection started.
+    cut: usize,
+    memo: rustc_hash::FxHashMap<Predicate, Option<(ImplId, Vec<Ty>)>>,
+    /// The `Signatures` the outermost selection is in, by address; a
+    /// nested one in others (none so far) neither reads nor writes `memo`.
+    sigs: usize,
+}
+
+thread_local! {
+    static SELECTION: std::cell::RefCell<Selection> = std::cell::RefCell::new(Selection {
+        active: Vec::new(),
+        cut: usize::MAX,
+        memo: rustc_hash::FxHashMap::default(),
+        sigs: 0,
+    });
+}
+
+/// Resets [`SELECTION`] when a selection unwinds, so that a caught panic
+/// leaves no goal behind as being selected.
+struct Selecting;
+
+impl Drop for Selecting {
+    fn drop(&mut self) {
+        SELECTION.with_borrow_mut(|s| {
+            s.active.clear();
+            s.memo.clear();
+            s.cut = usize::MAX;
+        });
+    }
+}
+
+fn select_uncached(
+    items: &ItemTree,
+    sigs: &Signatures,
+    goal: Predicate,
+) -> Option<(ImplId, Vec<Ty>)> {
     let impls = sigs
         .impl_index
         .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
@@ -1270,16 +1358,7 @@ pub fn select_impl(
         .filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)))
         .collect();
     let rigid_self = is_rigid(goal.self_ty);
-    // Judging bounds normalizes their associated types, which selects
-    // blocks again. A repeated goal cannot establish an inductive proof;
-    // growing goals retain the depth limit.
-    thread_local! {
-        static ACTIVE: std::cell::RefCell<Vec<Predicate>> = const { std::cell::RefCell::new(Vec::new()) };
-    }
-    if ACTIVE.with_borrow(|active| active.len() > 32 || active.contains(&goal)) {
-        return None;
-    }
-    ACTIVE.with_borrow_mut(|active| active.push(goal));
+    SELECTION.with_borrow_mut(|s| s.active.push(goal));
     // Selection needs only the number and index of eligible candidates.
     // Keep the header-matching and bounds-checking passes in their original
     // order: checking a bound can recursively select another impl.
@@ -1295,7 +1374,6 @@ pub fn select_impl(
             }
         }
     }
-    ACTIVE.with_borrow_mut(|active| active.pop());
     let chosen = if definite_count == 1 {
         definite_index
     } else if !rigid_self && definite_count == 0 && judged_count == 1 {

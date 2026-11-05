@@ -199,3 +199,27 @@ fn shared_field_types_child() {
     text.push_str("static S: Option<A0> = None;\nfn main() { let _s = &S; }\n");
     build(&typed(text));
 }
+
+/// Each `Map` adapter's `Iterator` impl needs its inner iterator's, and
+/// the borrow check's proofs of those bounds selected the inner impls
+/// again for every candidate: 61 s for 14 adapters in a release build.
+#[test]
+fn nested_iterator_adapters() {
+    bounded(
+        "nested_iterator_adapters_child",
+        14,
+        std::time::Duration::from_secs(20),
+    );
+}
+
+#[test]
+#[ignore = "run by nested_iterator_adapters in a bounded subprocess"]
+fn nested_iterator_adapters_child() {
+    let Some(n) = bounded_size() else {
+        return;
+    };
+    let adapters = ".map(|x| x + 1)".repeat(n);
+    build(&typed(format!(
+        "fn total(n: u32) -> u32 {{ (0..n){adapters}.sum() }}\nfn main() {{ let _t = total(3); }}\n"
+    )));
+}
