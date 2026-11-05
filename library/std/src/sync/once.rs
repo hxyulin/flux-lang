@@ -46,3 +46,7 @@ impl Once {
         });
     }
 }
+
+/// A Once in its initial state.
+#[deprecated(note = "the `Once::new()` function is now preferred")]
+pub const ONCE_INIT: Once = Once::new();

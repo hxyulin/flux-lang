@@ -3,7 +3,7 @@ pub mod unix {
     /// The Unix extension traits most code imports together.
     pub mod prelude {
         pub use super::ffi::{OsStrExt, OsStringExt};
-        pub use super::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        pub use super::fs::{DirEntryExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
         pub use super::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
     }
     /// Native pthread handles of spawned threads.
@@ -66,6 +66,73 @@ pub mod unix {
         impl OpenOptionsExt for crate::fs::OpenOptions {
             fn mode(&mut self, mode: u32) -> &mut Self { self.mode = mode; self }
             fn custom_flags(&mut self, flags: i32) -> &mut Self { self.custom_flags = flags; self }
+        }
+        /// Unix file kinds beyond files, directories and links.
+        pub trait FileTypeExt {
+            fn is_block_device(&self) -> bool;
+            fn is_char_device(&self) -> bool;
+            fn is_fifo(&self) -> bool;
+            fn is_socket(&self) -> bool;
+        }
+        impl FileTypeExt for crate::fs::FileType {
+            fn is_block_device(&self) -> bool { self.mode & 0xf000 == 0x6000 }
+            fn is_char_device(&self) -> bool { self.mode & 0xf000 == 0x2000 }
+            fn is_fifo(&self) -> bool { self.mode & 0xf000 == 0x1000 }
+            fn is_socket(&self) -> bool { self.mode & 0xf000 == 0xc000 }
+        }
+        /// The inode number of a directory entry.
+        pub trait DirEntryExt {
+            fn ino(&self) -> u64;
+        }
+        impl DirEntryExt for crate::fs::DirEntry {
+            fn ino(&self) -> u64 { self.ino }
+        }
+        /// Reads and writes at an offset, without moving the file cursor.
+        pub trait FileExt {
+            fn read_at(&self, buf: &mut [u8], offset: u64) -> crate::io::Result<usize>;
+            fn write_at(&self, buf: &[u8], offset: u64) -> crate::io::Result<usize>;
+            fn read_exact_at(&self, mut buf: &mut [u8], mut offset: u64) -> crate::io::Result<()> {
+                while !buf.is_empty() {
+                    match self.read_at(buf, offset) {
+                        Ok(0) => break,
+                        Ok(n) => { let tmp = buf; buf = &mut tmp[n..]; offset += n as u64; }
+                        Err(ref e) if e.kind() == crate::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                if !buf.is_empty() {
+                    Err(crate::io::Error::new(crate::io::ErrorKind::UnexpectedEof, "failed to fill whole buffer"))
+                } else {
+                    Ok(())
+                }
+            }
+            fn write_all_at(&self, mut buf: &[u8], mut offset: u64) -> crate::io::Result<()> {
+                while !buf.is_empty() {
+                    match self.write_at(buf, offset) {
+                        Ok(0) => return Err(crate::io::Error::new(crate::io::ErrorKind::WriteZero, "failed to write whole buffer")),
+                        Ok(n) => { buf = &buf[n..]; offset += n as u64 }
+                        Err(ref e) if e.kind() == crate::io::ErrorKind::Interrupted => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(())
+            }
+        }
+        impl FileExt for crate::fs::File {
+            fn read_at(&self, buf: &mut [u8], offset: u64) -> crate::io::Result<usize> {
+                unsafe extern "C" { fn pread(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize; }
+                use super::io::AsRawFd;
+                // SAFETY: the descriptor is open and buf is writable for its length.
+                let count = unsafe { pread(self.as_raw_fd(), buf.as_mut_ptr(), buf.len().min(isize::MAX as usize), offset as i64) };
+                if count < 0 { Err(crate::io::Error::last_os_error()) } else { Ok(count as usize) }
+            }
+            fn write_at(&self, buf: &[u8], offset: u64) -> crate::io::Result<usize> {
+                unsafe extern "C" { fn pwrite(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize; }
+                use super::io::AsRawFd;
+                // SAFETY: the descriptor is open and buf is readable for its length.
+                let count = unsafe { pwrite(self.as_raw_fd(), buf.as_ptr(), buf.len().min(isize::MAX as usize), offset as i64) };
+                if count < 0 { Err(crate::io::Error::last_os_error()) } else { Ok(count as usize) }
+            }
         }
         pub fn symlink<P: AsRef<crate::path::Path>, Q: AsRef<crate::path::Path>>(original: P, link: Q) -> crate::io::Result<()> {
             crate::fs::symlink(original.as_ref(), link.as_ref())

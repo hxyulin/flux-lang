@@ -363,3 +363,9 @@ impl<T: ?Sized> fmt::Pointer for Box<T> {
         fmt::Pointer::fmt(&ptr, f)
     }
 }
+impl<F: core::future::Future + core::marker::Unpin + ?Sized> core::future::Future for Box<F> {
+    type Output = F::Output;
+    fn poll(mut self: core::pin::Pin<&mut Self>, context: &mut core::task::Context<'_>) -> core::task::Poll<F::Output> {
+        F::poll(core::pin::Pin::new(&mut **self), context)
+    }
+}

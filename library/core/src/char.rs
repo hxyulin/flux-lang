@@ -108,6 +108,8 @@ impl char {
     pub fn to_uppercase(self) -> ToUppercase { case::upper(self) }
     pub fn is_alphabetic(self) -> bool { crate::char_properties::has_property(self, 1) }
     pub fn is_alphanumeric(self) -> bool { crate::char_properties::has_property(self, 2) }
+    /// Decodes UTF-16, reporting each unpaired surrogate.
+    pub fn decode_utf16<I: IntoIterator<Item = u16>>(iter: I) -> DecodeUtf16<I::IntoIter> { decode_utf16(iter) }
     /// Whether the character has the Unicode general category Nd, Nl or No.
     pub fn is_numeric(self) -> bool {
         match self {

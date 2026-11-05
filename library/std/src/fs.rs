@@ -451,7 +451,7 @@ pub fn remove_file<P:AsRef<Path>>(path:P)->Result<()>{
 
 /// The kind of a directory entry, without following symbolic links.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FileType { mode: u32 }
+pub struct FileType { pub(crate) mode: u32 }
 impl FileType {
     pub fn is_file(&self) -> bool { self.mode & 0xf000 == 0x8000 }
     pub fn is_dir(&self) -> bool { self.mode & 0xf000 == 0x4000 }
@@ -480,7 +480,7 @@ pub fn symlink_metadata<P: AsRef<Path>>(path: P) -> Result<Metadata> {
 
 /// An owned directory entry; it remains usable after its iterator is dropped.
 #[derive(Debug)]
-pub struct DirEntry { path: PathBuf, name: OsString }
+pub struct DirEntry { path: PathBuf, name: OsString, pub(crate) ino: u64 }
 impl DirEntry {
     pub fn path(&self) -> PathBuf { self.path.clone() }
     pub fn file_name(&self) -> OsString { self.name.clone() }
@@ -553,7 +553,9 @@ impl Iterator for ReadDir {
                 OsString { bytes: bytes[..end].to_vec() }
             };
             if name.as_os_str() == crate::ffi::OsStr::new(".") || name.as_os_str() == crate::ffi::OsStr::new("..") { continue; }
-            return Some(Ok(DirEntry { path: self.path.join(&name), name }));
+            // SAFETY: both records start with the 64-bit inode number.
+            let ino = unsafe { *(entry as *const u64) };
+            return Some(Ok(DirEntry { path: self.path.join(&name), name, ino }));
         }
     }
 }

@@ -71,7 +71,7 @@ impl<T: Default> Default for Mutex<T> {
     fn default() -> Mutex<T> { Mutex::new(T::default()) }
 }
 
-impl<T: core::fmt::Debug> core::fmt::Debug for Mutex<T> {
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for Mutex<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let mut debug = f.debug_struct("Mutex");
         if self.locked.compare_exchange(0, 1, Acquire, Relaxed).is_ok() {
@@ -80,9 +80,9 @@ impl<T: core::fmt::Debug> core::fmt::Debug for Mutex<T> {
                 panicking: crate::thread::panicking(),
                 marker: PhantomData,
             };
-            debug.field("data", &*guard);
+            debug.field("data", &&*guard);
         } else {
-            debug.field("data", &"<locked>");
+            debug.field("data", &format_args!("<locked>"));
         }
         debug.field("poisoned", &self.is_poisoned()).finish_non_exhaustive()
     }

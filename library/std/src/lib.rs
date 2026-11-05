@@ -8,7 +8,7 @@ mod macros;
 
 pub use crate::alloc_crate::{alloc, borrow, boxed, fmt, format, prelude, rc, string, vec};
 pub use core::{
-    any, array, ascii, cell, char, clone, cmp, convert, default, error, future, pin, task, hint, iter, marker,
+    any, array, cell, char, clone, cmp, convert, default, error, future, pin, task, hint, iter, marker,
     mem, num, ops, option, ptr, result,
 };
 pub use core::{dbg, eprint, eprintln, print, println, stringify, write};
@@ -38,6 +38,64 @@ pub mod panic {
 }
 
 pub mod arch;
+
+/// ASCII operations, and the deprecated AsciiExt trait.
+pub mod ascii {
+    pub use core::ascii::*;
+    use crate::alloc_crate::{string::String, vec::Vec};
+
+    /// ASCII case operations, now inherent on the implementing types.
+    #[deprecated(note = "use inherent methods instead")]
+    pub trait AsciiExt {
+        type Owned;
+        fn is_ascii(&self) -> bool;
+        fn to_ascii_uppercase(&self) -> Self::Owned;
+        fn to_ascii_lowercase(&self) -> Self::Owned;
+        fn eq_ignore_ascii_case(&self, other: &Self) -> bool;
+        fn make_ascii_uppercase(&mut self);
+        fn make_ascii_lowercase(&mut self);
+    }
+    #[allow(deprecated)]
+    impl AsciiExt for u8 {
+        type Owned = u8;
+        fn is_ascii(&self) -> bool { u8::is_ascii(self) }
+        fn to_ascii_uppercase(&self) -> u8 { u8::to_ascii_uppercase(self) }
+        fn to_ascii_lowercase(&self) -> u8 { u8::to_ascii_lowercase(self) }
+        fn eq_ignore_ascii_case(&self, other: &u8) -> bool { u8::eq_ignore_ascii_case(self, other) }
+        fn make_ascii_uppercase(&mut self) { u8::make_ascii_uppercase(self) }
+        fn make_ascii_lowercase(&mut self) { u8::make_ascii_lowercase(self) }
+    }
+    #[allow(deprecated)]
+    impl AsciiExt for char {
+        type Owned = char;
+        fn is_ascii(&self) -> bool { char::is_ascii(self) }
+        fn to_ascii_uppercase(&self) -> char { char::to_ascii_uppercase(self) }
+        fn to_ascii_lowercase(&self) -> char { char::to_ascii_lowercase(self) }
+        fn eq_ignore_ascii_case(&self, other: &char) -> bool { char::eq_ignore_ascii_case(self, other) }
+        fn make_ascii_uppercase(&mut self) { char::make_ascii_uppercase(self) }
+        fn make_ascii_lowercase(&mut self) { char::make_ascii_lowercase(self) }
+    }
+    #[allow(deprecated)]
+    impl AsciiExt for [u8] {
+        type Owned = Vec<u8>;
+        fn is_ascii(&self) -> bool { <[u8]>::is_ascii(self) }
+        fn to_ascii_uppercase(&self) -> Vec<u8> { let mut bytes = self.to_vec(); bytes.make_ascii_uppercase(); bytes }
+        fn to_ascii_lowercase(&self) -> Vec<u8> { let mut bytes = self.to_vec(); bytes.make_ascii_lowercase(); bytes }
+        fn eq_ignore_ascii_case(&self, other: &[u8]) -> bool { <[u8]>::eq_ignore_ascii_case(self, other) }
+        fn make_ascii_uppercase(&mut self) { <[u8]>::make_ascii_uppercase(self) }
+        fn make_ascii_lowercase(&mut self) { <[u8]>::make_ascii_lowercase(self) }
+    }
+    #[allow(deprecated)]
+    impl AsciiExt for str {
+        type Owned = String;
+        fn is_ascii(&self) -> bool { str::is_ascii(self) }
+        fn to_ascii_uppercase(&self) -> String { str::to_ascii_uppercase(self) }
+        fn to_ascii_lowercase(&self) -> String { str::to_ascii_lowercase(self) }
+        fn eq_ignore_ascii_case(&self, other: &str) -> bool { str::eq_ignore_ascii_case(self, other) }
+        fn make_ascii_uppercase(&mut self) { str::make_ascii_uppercase(self) }
+        fn make_ascii_lowercase(&mut self) { str::make_ascii_lowercase(self) }
+    }
+}
 
 /// Stack backtraces. Flux cannot capture frames: a capture that the
 /// environment enables, or that is forced, reports Unsupported.
@@ -121,7 +179,8 @@ pub mod sync {
     pub use self::rwlock::{RwLock, RwLockReadGuard, RwLockWriteGuard};
     pub use self::poison::{LockResult, PoisonError, TryLockError, TryLockResult};
     pub use self::once_lock::OnceLock;
-    pub use self::once::{Once, OnceState};
+    #[allow(deprecated)]
+    pub use self::once::{Once, OnceState, ONCE_INIT};
     pub use crate::alloc_crate::sync::{Arc, Weak};
     pub use core::sync::atomic;
 }
