@@ -301,6 +301,28 @@ fn collect_output(mut stdout: Option<File>, mut stderr: Option<File>) -> io::Res
     Ok((out, err))
 }
 
+/// The arguments of a [`Command`], from [`Command::get_args`].
+#[derive(Debug)]
+pub struct CommandArgs<'a> { inner: core::slice::Iter<'a, OsString> }
+impl<'a> Iterator for CommandArgs<'a> {
+    type Item = &'a OsStr;
+    fn next(&mut self) -> Option<&'a OsStr> { self.inner.next().map(|arg| arg.as_os_str()) }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<'a> ExactSizeIterator for CommandArgs<'a> { fn len(&self) -> usize { self.inner.len() } }
+
+/// The environment changes of a [`Command`], from [`Command::get_envs`].
+#[derive(Debug)]
+pub struct CommandEnvs<'a> { inner: crate::alloc_crate::collections::btree_map::Iter<'a, OsString, Option<OsString>> }
+impl<'a> Iterator for CommandEnvs<'a> {
+    type Item = (&'a OsStr, Option<&'a OsStr>);
+    fn next(&mut self) -> Option<(&'a OsStr, Option<&'a OsStr>)> {
+        self.inner.next().map(|(name, value)| (name.as_os_str(), value.as_ref().map(|value| value.as_os_str())))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<'a> ExactSizeIterator for CommandEnvs<'a> { fn len(&self) -> usize { self.inner.len() } }
+
 /// A reusable child-process description. Environment changes never mutate the parent.
 pub struct Command {
     program: OsString, arguments: Vec<OsString>, environment: BTreeMap<OsString, Option<OsString>>, clear_environment: bool,
@@ -319,6 +341,10 @@ impl Command {
     pub fn stdout<T: Into<Stdio>>(&mut self, stream: T) -> &mut Self { self.stdout = Some(stream.into()); self }
     pub fn stderr<T: Into<Stdio>>(&mut self, stream: T) -> &mut Self { self.stderr = Some(stream.into()); self }
     pub fn get_program(&self) -> &OsStr { self.program.as_os_str() }
+    /// The arguments after the program, in the order they were added.
+    pub fn get_args(&self) -> CommandArgs<'_> { CommandArgs { inner: self.arguments.iter() } }
+    /// The explicit environment changes, sorted by name: `None` marks a removal.
+    pub fn get_envs(&self) -> CommandEnvs<'_> { CommandEnvs { inner: self.environment.iter() } }
     pub fn get_current_dir(&self) -> Option<&Path> { self.directory.as_deref() }
     pub fn spawn(&mut self) -> io::Result<Child> { self.spawn_inner(false) }
     pub fn status(&mut self) -> io::Result<ExitStatus> { self.spawn()?.wait() }

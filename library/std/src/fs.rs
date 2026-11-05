@@ -19,6 +19,7 @@ mod native {
         pub fn ftruncate(fd: i32, length: i64) -> i32;
         pub fn fsync(fd: i32) -> i32;
         pub fn fcntl(fd: i32, command: i32, ...) -> i32;
+        pub fn flock(fd: i32, operation: i32) -> i32;
         pub fn fchmod(fd: i32, mode: Mode) -> i32;
         pub fn chmod(path: *const core::ffi::c_char, mode: Mode) -> i32;
         pub fn mkdir(path: *const core::ffi::c_char, mode: Mode) -> i32;
@@ -220,6 +221,71 @@ impl File {
         if unsafe{native::fchmod(self.raw_fd(),permissions.mode as native::Mode)}<0{Err(Error::last_os_error())}else{Ok(())}
     }
 }
+// flock operations, identical on Darwin and Linux.
+const LOCK_SHARED: i32 = 1;
+const LOCK_EXCLUSIVE: i32 = 2;
+const LOCK_NONBLOCKING: i32 = 4;
+const LOCK_RELEASE: i32 = 8;
+#[cfg(target_os = "macos")]
+const WOULD_BLOCK: i32 = 35;
+#[cfg(target_os = "linux")]
+const WOULD_BLOCK: i32 = 11;
+
+/// Advisory whole-file locks through `flock`, held by the open file
+/// description: duplicated handles share them, and closing it releases them.
+impl File {
+    pub fn lock(&self) -> Result<()> { self.flock(LOCK_EXCLUSIVE) }
+    pub fn lock_shared(&self) -> Result<()> { self.flock(LOCK_SHARED) }
+    pub fn try_lock(&self) -> core::result::Result<(), TryLockError> { self.try_flock(LOCK_EXCLUSIVE) }
+    pub fn try_lock_shared(&self) -> core::result::Result<(), TryLockError> { self.try_flock(LOCK_SHARED) }
+    pub fn unlock(&self) -> Result<()> { self.flock(LOCK_RELEASE) }
+    fn flock(&self, operation: i32) -> Result<()> {
+        // SAFETY: this owner keeps the descriptor live for the call; flock takes
+        // no pointers.
+        if unsafe { native::flock(self.raw_fd(), operation) } < 0 { Err(Error::last_os_error()) } else { Ok(()) }
+    }
+    fn try_flock(&self, operation: i32) -> core::result::Result<(), TryLockError> {
+        match self.flock(operation | LOCK_NONBLOCKING) {
+            Ok(()) => Ok(()),
+            Err(error) if error.raw_os_error() == Some(WOULD_BLOCK) => Err(TryLockError::WouldBlock),
+            Err(error) => Err(TryLockError::Error(error)),
+        }
+    }
+}
+
+/// Why [`File::try_lock`] or [`File::try_lock_shared`] did not take the lock.
+pub enum TryLockError {
+    /// The lock could not be acquired because of an I/O error.
+    Error(Error),
+    /// Another handle holds a conflicting lock.
+    WouldBlock,
+}
+impl core::fmt::Debug for TryLockError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            TryLockError::Error(error) => core::fmt::Debug::fmt(error, f),
+            TryLockError::WouldBlock => core::fmt::Debug::fmt("WouldBlock", f),
+        }
+    }
+}
+impl core::fmt::Display for TryLockError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            TryLockError::Error(_) => "lock acquisition failed due to I/O error",
+            TryLockError::WouldBlock => "lock acquisition failed because the operation would block",
+        })
+    }
+}
+impl core::error::Error for TryLockError {}
+impl From<TryLockError> for Error {
+    fn from(error: TryLockError) -> Error {
+        match error {
+            TryLockError::Error(error) => error,
+            TryLockError::WouldBlock => ErrorKind::WouldBlock.into(),
+        }
+    }
+}
+
 impl core::fmt::Debug for File{
     fn fmt(&self,f:&mut core::fmt::Formatter<'_>)->core::fmt::Result{f.debug_struct("File").field("fd",&self.raw_fd()).finish()}
 }

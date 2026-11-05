@@ -11,4 +11,4 @@ pub fn id()->u32 {
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 pub(crate) mod command;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-pub use self::command::{Child, ChildStdin, ChildStdout, ChildStderr, Command, Output, ExitStatus, Stdio};
+pub use self::command::{Child, ChildStdin, ChildStdout, ChildStderr, Command, CommandArgs, CommandEnvs, Output, ExitStatus, Stdio};
