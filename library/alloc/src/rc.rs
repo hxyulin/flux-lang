@@ -12,7 +12,9 @@ struct Header {
 }
 
 /// Shared ownership confined to one thread. NonNull keeps Rc !Send and !Sync.
-#[lang = "rc"]
+// `rc_ownership` compiles this file with rustc as a test, where `test` is set
+// and `lang` items are unstable.
+#[cfg_attr(not(test), lang = "rc")]
 pub struct Rc<T: ?Sized> {
     ptr: NonNull<Header>,
     data: NonNull<T>,
