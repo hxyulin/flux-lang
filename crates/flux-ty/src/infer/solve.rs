@@ -1831,7 +1831,7 @@ impl Ctx<'_> {
     ) -> Option<(AssocItem, Option<Ty>, Option<Vec<Ty>>)> {
         let segment = self.source_map.segments.get(callee).copied();
         let segment = segment.unwrap_or_else(|| self.range(callee));
-        let self_ty = ty.map(|t| self.resolve_path_type(t));
+        let self_ty = ty.map(|t| self.resolve_path_type(t, true));
         if self_ty == Some(Ty::ERROR) {
             return None;
         }
@@ -2058,7 +2058,9 @@ impl Ctx<'_> {
     /// that a generic struct or alias without arguments (`W::f`) gets new
     /// variables for its parameters. Expanding the alias preserves fixed
     /// arguments such as a hasher chosen by `FxHashMap`.
-    pub(super) fn resolve_path_type(&mut self, ty: flux_hir::TypeRefId) -> Ty {
+    /// The lifetimes of the type before an associated item (`argument`)
+    /// are left to the call's regions, or reported after inference.
+    pub(super) fn resolve_path_type(&mut self, ty: flux_hir::TypeRefId, argument: bool) -> Ty {
         let items = self.items;
         if let flux_hir::TypeRef::Path(path) = &self.body.types[ty]
             && path.qself.is_none()
@@ -2091,13 +2093,18 @@ impl Ctx<'_> {
             );
             return template.subst(&args);
         }
-        // Qualified reference receivers are recorded as the selected trait
-        // method's Self argument after inference, alongside written turbofish
-        // types. Other body types retain their existing annotation checks.
+        // The written type is recorded as the selected trait method's Self
+        // argument, or an inherent method's `impl` self type, after
+        // inference, alongside written turbofish types; other uses report
+        // its named lifetimes then.
         self.resolve_body_type(
             ty,
             false,
-            matches!(self.body.types[ty], flux_hir::TypeRef::Ref { .. }),
+            argument
+                && matches!(
+                    self.body.types[ty],
+                    flux_hir::TypeRef::Ref { .. } | flux_hir::TypeRef::Path(_)
+                ),
         )
     }
 

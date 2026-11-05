@@ -249,16 +249,14 @@ impl Printer<'_> {
         let Some(generics) = self.body.generic_args.get(id) else {
             return;
         };
-        let list = |types: &[crate::TypeRefId]| {
-            let types: Vec<String> = types
-                .iter()
-                .map(|&t| type_ref(&self.body.types[t]))
-                .collect();
-            types.join(", ")
+        let list = |args: &crate::SegmentArgs| {
+            let lifetimes = args.lifetimes.iter().map(|l| l.name.to_string());
+            let types = args.types.iter().map(|&t| type_ref(&self.body.types[t]));
+            lifetimes.chain(types).collect::<Vec<_>>().join(", ")
         };
         let (item, ty) = (
-            generics.item.as_ref().map(|a| list(&a.types)),
-            generics.ty.as_ref().map(|a| list(&a.types)),
+            generics.item.as_ref().map(list),
+            generics.ty.as_ref().map(list),
         );
         if let Some(item) = item {
             write!(self.out, "::<{item}>").unwrap();

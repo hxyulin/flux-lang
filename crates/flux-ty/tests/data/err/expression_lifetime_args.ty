@@ -1,0 +1,22 @@
+struct W<'a, T> { r: &T }
+fn get<'b>(&W<T>, &u8) -> &u8
+    self@0: &W<T>
+    x@1: &u8
+fn f() -> u8
+fn f() -> u8
+fn g<'a>() -> ()
+fn too_many<'a>(&u8) -> W<u8>
+    x@0: &u8
+fn unsupported<'a>(W<u8>, &u8) -> usize
+    w@0: W<u8>
+    x@1: &u8
+    f@2: fn(&u8) -> Option<&u8> {Option::Some::<&u8>}
+fn main() -> ()
+const N: usize
+error 310..311: struct takes 1 lifetime argument but 2 lifetime arguments were supplied
+error 413..415: lifetime arguments in expressions are not supported yet
+error 429..431: lifetime arguments in expressions are not supported yet
+error 458..460: lifetime arguments in expressions are not supported yet
+error 481..483: lifetime arguments in patterns are not supported yet
+error 515..529: lifetimes in function item values are not supported yet
+error 557..559: named lifetimes in types in bodies are not supported yet

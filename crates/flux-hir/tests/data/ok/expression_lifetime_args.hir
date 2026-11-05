@@ -1,0 +1,24 @@
+struct W<'a, T> { r: &'a T }
+
+enum E<'a> { A(&'a u8) = 0, B = 1 }
+
+impl<'a, T> W<'a, T>;
+
+fn W::new(r@0: &'a T) -> Self {
+    W { r: r@0 }
+}
+
+fn build<'a>(x@0: &'a u8) -> u8 {
+    let w@1 = W::<'a, u8> { r: x@0 };
+    let n@2 = <W<'a, u8>>::new[Self<'a, u8>](x@0);
+    let e@3 = E::A[Self<'a>](x@0);
+    let b@4 = E::B::<'static>;
+    let o@5 = Option::Some::<&'a u8>(x@0);
+    let _ = (e@3, b@4, o@5);
+    ((*w@1.r) + (*n@2.r))
+}
+
+fn main() -> () {
+    let _ = build((&1));
+}
+

@@ -1394,11 +1394,23 @@ Direct function and method calls accept named, impl-owned and static lifetimes
 inside written type arguments, such as `nth_child::<Expr<'t>>(node)`.
 The borrow checker enforces these written regions and their well-formedness
 constraints, including when the return value is unused. Named arguments in
-closures and function-item values remain unsupported; constructor paths and
-general named local annotations are outside this extension.
+closures and function-item values remain unsupported; general named local
+annotations are outside this extension.
 Direct trait calls on a qualified reference type, such as
 `<&'a Self>::try_from(value)`, preserve the written Self lifetime row too.
 Named inherent reference paths and function-item values remain unsupported.
+Constructor paths may write lifetimes and lifetime-bearing type arguments:
+`Scope::<'env> { .. }`, `Pair::<'a, T>(x, y)`, `E::<'a>::A`,
+`Some::<&'a u8>(x)`. As in rustc, the constructed value has exactly the
+written type, which the borrow checker relates invariantly, and then may
+become a subtype where it is used. The type before an associated function
+may write them too: `Scope::<'a>::new(x)`, `Vec::<&'a mut [T]>::new()`,
+`Holder::<'a>::default()`. They fix the lifetimes of the inherent `impl`
+block's self type, or of a trait method's `Self`, for that call. A wrong
+count of lifetime arguments is E0107. Lifetime arguments on functions and
+methods themselves (`f::<'a>()`), on traits in qualified paths
+(`<T as Tr<'a>>::f`), on associated constants' types, in patterns, and named
+ones in closures are not supported yet.
 Concrete qualified associated types in struct fields can normalize through a
 selected impl while retaining their written input lifetimes. This covers owned
 and borrowed `IntoIterator::IntoIter` fields, including nested fields. Selection

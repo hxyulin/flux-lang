@@ -30,6 +30,11 @@ pub enum Region {
 /// Entries with entirely inferred slots need no additional call constraint.
 pub type TypeArgRegions = Vec<(u32, Box<[Region]>)>;
 
+/// The [`TypeArgRegions`] index of the type written before an inherent
+/// associated function, `S<'a>` in `S::<'a>::f`: the slots of the callee's
+/// `impl` block's self type, not of one of its generic arguments.
+pub const IMPL_SELF_ARG: u32 = u32::MAX;
+
 /// How a type's subtyping depends on one of its parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variance {

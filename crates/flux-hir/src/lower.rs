@@ -3029,6 +3029,7 @@ impl<'a> Ctx<'a> {
                         item: Some(SegmentArgs {
                             segment,
                             range: at,
+                            lifetimes: Box::new([]),
                             types: Box::new([ty]),
                         }),
                         ..PathGenerics::default()
@@ -4590,12 +4591,6 @@ impl<'a> Ctx<'a> {
 
     /// Generic arguments in an expression, as types of the body.
     fn segment_args(&mut self, segment: TextRange, args: &GenericArgs) -> SegmentArgs {
-        if let (Some(first), Some(last)) = (args.lifetimes.first(), args.lifetimes.last()) {
-            self.unsupported(
-                TextRange::new(first.range.start(), last.range.end()),
-                "lifetime arguments in expressions",
-            );
-        }
         let types = args
             .types
             .iter()
@@ -4609,6 +4604,7 @@ impl<'a> Ctx<'a> {
         SegmentArgs {
             segment,
             range: args.range,
+            lifetimes: args.lifetimes.clone(),
             types,
         }
     }
