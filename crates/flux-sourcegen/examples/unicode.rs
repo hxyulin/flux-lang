@@ -1,4 +1,4 @@
-//! Generate core's Unicode alphabetic, alphanumeric and case property intervals.
+//! Generate core's Unicode alphabetic, alphanumeric, numeric and case property intervals.
 //! Run `cargo run -p flux-sourcegen --example unicode` with the selected
 //! toolchain, or add `-- --check` to verify the committed tables.
 use std::fmt::Write;
@@ -22,7 +22,7 @@ pub fn generate() -> String {
                 if case {
                     (u8::from(c.is_lowercase()) << 2) | (u8::from(c.is_uppercase()) << 3)
                 } else {
-                    u8::from(c.is_alphabetic()) | (u8::from(c.is_alphanumeric()) << 1)
+                    u8::from(c.is_alphabetic()) | (u8::from(c.is_alphanumeric()) << 1) | (u8::from(c.is_numeric()) << 4)
                 }
             });
             if flags != previous {

@@ -316,8 +316,6 @@ impl AsRef<Path> for OsStr { fn as_ref(&self) -> &Path { Path::new(self) } }
 impl AsRef<Path> for OsString { fn as_ref(&self) -> &Path { Path::new(self) } }
 impl AsRef<OsStr> for Path { fn as_ref(&self) -> &OsStr { self.as_os_str() } }
 impl AsRef<OsStr> for PathBuf { fn as_ref(&self) -> &OsStr { self.inner.as_os_str() } }
-impl From<&Path> for PathBuf { fn from(value: &Path) -> Self { value.to_path_buf() } }
-impl From<&PathBuf> for PathBuf { fn from(value: &PathBuf) -> Self { value.clone() } }
 impl Clone for crate::alloc_crate::boxed::Box<Path> {
     fn clone(&self) -> Self { self.to_path_buf().into_boxed_path() }
 }
@@ -325,10 +323,9 @@ impl PartialEq<Path> for PathBuf { fn eq(&self, other: &Path) -> bool { self.as_
 impl PartialEq<PathBuf> for Path { fn eq(&self, other: &PathBuf) -> bool { self == other.as_path() } }
 impl PartialEq<&Path> for PathBuf { fn eq(&self, other: &&Path) -> bool { self.as_path() == *other } }
 impl PartialEq<PathBuf> for &Path { fn eq(&self, other: &PathBuf) -> bool { *self == other.as_path() } }
-impl From<&str> for PathBuf { fn from(value: &str) -> Self { Self { inner: OsString::from(value) } } }
+impl<T: ?Sized + AsRef<OsStr>> From<&T> for PathBuf { fn from(value: &T) -> Self { Self { inner: value.as_ref().to_os_string() } } }
 impl From<String> for PathBuf { fn from(value: String) -> Self { Self { inner: OsString::from(value) } } }
 impl From<OsString> for PathBuf { fn from(value: OsString) -> Self { Self { inner: value } } }
-impl From<&OsStr> for PathBuf { fn from(value: &OsStr) -> Self { Self { inner: value.to_os_string() } } }
 
 impl PartialEq for Path { fn eq(&self, other: &Path) -> bool { self.cmp(other) == Ordering::Equal } }
 impl Eq for Path {}
@@ -501,7 +498,6 @@ impl<'a> Iterator for Ancestors<'a> {
 }
 impl core::iter::FusedIterator for Ancestors<'_> {}
 
-impl From<&String> for PathBuf {fn from(value:&String)->Self {Self::from(value.as_str())}}
 
 use crate::alloc_crate::borrow::Cow;
 use crate::alloc_crate::boxed::Box;

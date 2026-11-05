@@ -108,6 +108,13 @@ impl char {
     pub fn to_uppercase(self) -> ToUppercase { case::upper(self) }
     pub fn is_alphabetic(self) -> bool { crate::char_properties::has_property(self, 1) }
     pub fn is_alphanumeric(self) -> bool { crate::char_properties::has_property(self, 2) }
+    /// Whether the character has the Unicode general category Nd, Nl or No.
+    pub fn is_numeric(self) -> bool {
+        match self {
+            '0'..='9' => true,
+            c => c > '\x7f' && crate::char_properties::has_property(c, 16),
+        }
+    }
     pub fn escape_debug(self) -> EscapeDebug {
         let escape = crate::fmt::escape_debug(self, true, true);
         let literal = if escape.is_none() { Some(self) } else { None };
@@ -371,6 +378,13 @@ pub struct EscapeDefault { chars: [char; 10], front: usize, back: usize }
 
 #[derive(Clone)]
 pub struct EscapeDebug { inner: EscapeDefault, literal: Option<char> }
+impl EscapeDebug {
+    /// The character itself, unescaped.
+    pub(crate) fn literal(c: char) -> EscapeDebug {
+        let mut chars = ['\0'; 10]; chars[0] = c;
+        EscapeDebug { inner: EscapeDefault { chars, front: 0, back: 1 }, literal: Some(c) }
+    }
+}
 impl Iterator for EscapeDebug {
     type Item = char;
     fn next(&mut self) -> Option<char> { self.inner.next() }

@@ -44,7 +44,7 @@ impl OsString {
 }
 impl Default for OsString { fn default() -> Self { Self::new() } }
 impl From<String> for OsString { fn from(value: String) -> Self { Self { bytes: value.into_bytes() } } }
-impl From<&str> for OsString { fn from(value: &str) -> Self { Self { bytes: value.as_bytes().to_vec() } } }
+impl<T: ?Sized + AsRef<OsStr>> From<&T> for OsString { fn from(value: &T) -> Self { Self { bytes: value.as_ref().as_encoded_bytes().to_vec() } } }
 impl core::fmt::Debug for OsString {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("\"")?;

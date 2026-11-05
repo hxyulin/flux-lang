@@ -57,6 +57,24 @@ impl<T: ?Sized> UnsafeCell<T> {
     }
 }
 
+impl<T: ?Sized> UnsafeCell<T> {
+    /// A raw pointer to the value of the cell `this` points to.
+    pub const fn raw_get(this: *const Self) -> *mut T {
+        this as *const T as *mut T
+    }
+}
+impl<T: Default> Default for UnsafeCell<T> {
+    fn default() -> UnsafeCell<T> { UnsafeCell::new(T::default()) }
+}
+impl<T> From<T> for UnsafeCell<T> {
+    fn from(t: T) -> UnsafeCell<T> { UnsafeCell::new(t) }
+}
+impl<T: ?Sized> Debug for UnsafeCell<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UnsafeCell").finish_non_exhaustive()
+    }
+}
+
 /// A mutable place behind `value`, which a shared reference reaches.
 fn as_mut<T: ?Sized>(value: &T) -> &mut T {
     unsafe { &mut *(value as *const T as *mut T) }
@@ -108,6 +126,13 @@ impl<T> Cell<T> {
     /// A pointer to the value.
     pub const fn as_ptr(&self) -> *mut T {
         &self.value as *const T as *mut T
+    }
+
+    /// The exclusively borrowed value, viewed as a cell.
+    pub fn from_mut(t: &mut T) -> &Cell<T> {
+        // SAFETY: a cell has its value's layout, and the exclusive borrow
+        // prevents other access for the returned lifetime.
+        unsafe { &*(t as *mut T as *const Cell<T>) }
     }
 }
 

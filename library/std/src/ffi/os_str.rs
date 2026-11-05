@@ -70,10 +70,8 @@ impl Deref for OsString {
     fn deref(&self) -> &OsStr { self.as_os_str() }
 }
 impl OsString { pub fn as_os_str(&self) -> &OsStr { OsStr::from_unix_bytes(&self.bytes) } }
-impl From<&OsStr> for OsString { fn from(value: &OsStr) -> Self { value.to_os_string() } }
 
 impl Default for &OsStr { fn default() -> Self { OsStr::new("") } }
-impl From<&String> for OsString { fn from(value: &String) -> Self { Self::from(value.as_str()) } }
 impl Clone for crate::alloc_crate::boxed::Box<OsStr> {
     fn clone(&self) -> Self { self.to_os_string().into_boxed_os_str() }
 }

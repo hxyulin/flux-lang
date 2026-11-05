@@ -151,6 +151,20 @@ impl [u8] {
         crate::slice::EscapeAscii::new(self)
     }
     /// Whether every byte is ASCII.
+    /// The bytes without leading ASCII whitespace.
+    pub fn trim_ascii_start(&self) -> &[u8] {
+        let mut start = 0;
+        while start < self.len() && self[start].is_ascii_whitespace() { start += 1; }
+        &self[start..]
+    }
+    /// The bytes without trailing ASCII whitespace.
+    pub fn trim_ascii_end(&self) -> &[u8] {
+        let mut end = self.len();
+        while end > 0 && self[end - 1].is_ascii_whitespace() { end -= 1; }
+        &self[..end]
+    }
+    /// The bytes without leading and trailing ASCII whitespace.
+    pub fn trim_ascii(&self) -> &[u8] { self.trim_ascii_start().trim_ascii_end() }
     pub const fn is_ascii(&self) -> bool {
         let mut i = 0;
         while i < self.len() {

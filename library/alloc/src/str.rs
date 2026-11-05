@@ -8,6 +8,13 @@ impl str {
     /// Returns Unicode default lowercase, including contextual final sigma.
     pub fn to_lowercase(&self) -> String { lowercase::convert(self) }
 
+    /// Returns Unicode default uppercase, mapping each character on its own.
+    pub fn to_uppercase(&self) -> String {
+        let mut result = String::with_capacity(self.len());
+        for c in self.chars() { result.extend(c.to_uppercase()); }
+        result
+    }
+
     /// Copies the string, converting ASCII uppercase bytes to lowercase.
     pub fn to_ascii_lowercase(&self) -> String {
         let mut bytes = self.as_bytes().to_vec();
