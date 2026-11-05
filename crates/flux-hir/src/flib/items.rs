@@ -5,9 +5,10 @@ use crate::def_map::{Binding, BindingKind, Def, Scope};
 use crate::item_tree::{
     AnonConst, ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Block, Bound, Const, Derive,
     Discriminant, DynRef, Field, Function, GenericArgs, GenericParam, Generics, Impl, ImplTarget,
-    ImplTraitRef, ImplType, ItemLoc, LifetimeParam, LifetimeRef, Module, OutlivesPredicate, Owner,
-    Param, ParamKind, Path, PathAnchor, QSelf, Struct, StructKind, Trait, TraitType, TypeAlias,
-    TypeOutlives, TypeRef, Use, UseCapture, UseKind, Variant, Visibility, WherePredicate,
+    ImplTraitRef, ImplType, InlineHint, ItemLoc, LifetimeParam, LifetimeRef, Module,
+    OutlivesPredicate, Owner, Param, ParamKind, Path, PathAnchor, QSelf, Struct, StructKind, Trait,
+    TraitType, TypeAlias, TypeOutlives, TypeRef, Use, UseCapture, UseKind, Variant, Visibility,
+    WherePredicate,
 };
 
 macro_rules! record {
@@ -187,6 +188,8 @@ record!(Function {
     intrinsic,
     legacy_const_generic,
     track_caller,
+    inline,
+    cold,
     do_not_const_check,
     is_variadic,
     owner,
@@ -299,6 +302,7 @@ variants!(AssocItem {0=>Function(id),1=>Const(id)});
 variants!(ImplTarget {0=>Struct(id),1=>Primitive(name),2=>Object(id)});
 variants!(Discriminant {0=>Value(value),1=>Const{konst,offset}});
 variants!(StructKind {0=>Record,1=>Tuple,2=>Unit});
+variants!(InlineHint {0=>Hint,1=>Always,2=>Never});
 variants!(Derive {0=>Clone,1=>Copy,2=>PartialEq,3=>Eq,4=>PartialOrd,5=>Ord,6=>Default,7=>Debug,8=>Hash});
 variants!(ParamKind {0=>Type,1=>Const{ty,ty_range}});
 variants!(UseKind {0=>Named(name),1=>Anonymous{module_only},2=>Module(name),3=>Glob});

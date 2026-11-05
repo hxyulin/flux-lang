@@ -368,11 +368,9 @@ impl<T> [T] {
         if self.len() != src.len() {
             panic("copy_from_slice: source slice length does not match destination slice length")
         }
-        let mut i = 0;
-        while i < src.len() {
-            self[i] = src[i];
-            i += 1;
-        }
+        // SAFETY: both slices hold `len` elements, a shared and a mutable
+        // borrow cannot overlap, and `T` is `Copy`.
+        unsafe { crate::ptr::copy_nonoverlapping(src.as_ptr(), self.as_mut_ptr(), src.len()) }
     }
 
     /// Clones the elements of `src`, which must be as long (or this
@@ -384,6 +382,12 @@ impl<T> [T] {
     {
         if self.len() != src.len() {
             panic("destination and source slices have different lengths")
+        }
+        if crate::intrinsics::is_copy::<T>() {
+            // SAFETY: as in `copy_from_slice`; a `Copy` element has no
+            // drop to run on the value it overwrites.
+            unsafe { crate::ptr::copy_nonoverlapping(src.as_ptr(), self.as_mut_ptr(), src.len()) }
+            return;
         }
         let mut i = 0;
         while i < src.len() {

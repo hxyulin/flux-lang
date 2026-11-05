@@ -30,9 +30,7 @@ impl<T> [T] {
         T: Clone,
     {
         let mut v = Vec::with_capacity(self.len());
-        for x in self.iter() {
-            v.push(x.clone());
-        }
+        v.extend_from_slice(self);
         v
     }
 

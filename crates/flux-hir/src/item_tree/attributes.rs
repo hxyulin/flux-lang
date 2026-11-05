@@ -310,6 +310,30 @@ pub(super) fn target_feature_inline(attr: ast::Attr<'_>, diagnostics: &mut Vec<D
     }
 }
 
+/// The hint of a well-formed `#[inline]`, `#[inline(always)]` or
+/// `#[inline(never)]`.
+pub(super) fn inline_attr(attr: ast::Attr<'_>) -> Option<super::InlineHint> {
+    let meta = attr.meta()?;
+    if meta.unsafe_token().is_some() || meta.eq_token().is_some() {
+        return None;
+    }
+    let Some(tree) = meta.token_tree() else {
+        return Some(super::InlineHint::Hint);
+    };
+    let mut tokens = Vec::new();
+    macros::tt::tokens_of(tree.syntax(), &mut tokens);
+    match tokens.as_slice() {
+        [open, arg, close] if open.kind == T!['('] && close.kind == T![')'] => {
+            match arg.text.as_str() {
+                "always" => Some(super::InlineHint::Always),
+                "never" => Some(super::InlineHint::Never),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn attr_name(attr: ast::Attr<'_>) -> Option<&str> {
     attr.meta()
         .and_then(|m| m.path())

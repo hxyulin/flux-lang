@@ -945,3 +945,29 @@ fn sorted_map_allocation_keys_keep_aliases_in_the_main_namespace() {
         assert!(Arc::ptr_eq(&key.0, &value.0));
     }
 }
+
+#[test]
+fn inline_and_cold_attributes_survive_metadata_roundtrip() {
+    let (_db, items, loaded) = imported(
+        "#[inline] pub fn hinted() {} \
+         #[inline(always)] pub fn always() {} \
+         #[inline(never)] pub fn never() {} \
+         #[cold] pub fn cold() {} \
+         pub fn plain() {}",
+    );
+    let function = |name: &str| {
+        items
+            .functions
+            .iter()
+            .map(|(_, f)| f)
+            .find(|f| f.name.as_str() == name && items.modules[f.loc.module].krate == loaded)
+            .unwrap()
+    };
+    use flux_hir::InlineHint;
+    assert_eq!(function("hinted").inline, Some(InlineHint::Hint));
+    assert_eq!(function("always").inline, Some(InlineHint::Always));
+    assert_eq!(function("never").inline, Some(InlineHint::Never));
+    assert_eq!(function("plain").inline, None);
+    assert!(function("cold").cold);
+    assert!(!function("plain").cold);
+}

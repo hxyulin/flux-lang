@@ -48,6 +48,30 @@ pub(crate) fn is_copy<T>() -> bool {
     loop {}
 }
 
+/// The number of leading zero bits of the integer `x`: its width for 0.
+#[rustc_intrinsic]
+pub(crate) const fn ctlz<T>(x: T) -> u32 {
+    loop {}
+}
+
+/// The number of trailing zero bits of the integer `x`: its width for 0.
+#[rustc_intrinsic]
+pub(crate) const fn cttz<T>(x: T) -> u32 {
+    loop {}
+}
+
+/// The number of set bits of the integer `x`.
+#[rustc_intrinsic]
+pub(crate) const fn ctpop<T>(x: T) -> u32 {
+    loop {}
+}
+
+/// The integer `x` with its bytes in reverse order.
+#[rustc_intrinsic]
+pub(crate) const fn bswap<T>(x: T) -> T {
+    loop {}
+}
+
 /// The size of a `T` in bytes, as rustc lays it out.
 #[rustc_intrinsic]
 pub(crate) const fn size_of<T>() -> usize {

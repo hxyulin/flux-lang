@@ -271,6 +271,12 @@ fn derived_body(
         return derived_hash_body(items, function, strukt);
     }
     if s.is_enum() {
+        if derive == Derive::PartialEq
+            && s.variants.as_deref().is_some_and(|v| v.len() > 1)
+            && let Some(discriminant) = discriminant_value_fn(items, data.loc.module)
+        {
+            return derived_enum_eq_body(items, function, strukt, discriminant);
+        }
         return derived_enum_body(items, function, strukt, derive);
     }
     let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
@@ -476,6 +482,102 @@ fn assert_param_is_clone(items: &ItemTree, module: ModuleId) -> Res {
         Ok(Resolved::Def(Def::Function(f))) => Res::Function(f),
         _ => Res::Err,
     }
+}
+
+/// `core::intrinsics::discriminant_value`, which derived code calls from
+/// any crate, as rustc's derives do, though the module is private.
+fn discriminant_value_fn(items: &ItemTree, module: ModuleId) -> Option<FunctionId> {
+    let path = Path {
+        edition: None,
+        anchor: PathAnchor::DefinitionCrate(crate::CrateId(0)),
+        qself: None,
+        segments: ["intrinsics", "discriminant_value"]
+            .map(Symbol::intern)
+            .into(),
+        ranges: Box::default(),
+        anchor_ranges: Box::default(),
+        args: Box::default(),
+    };
+    match items.resolve(module, &path, Ns::Values) {
+        Ok(Resolved::Def(Def::Function(f)))
+        | Err(ResolveError::Private {
+            resolved: Resolved::Def(Def::Function(f)),
+            ..
+        }) => Some(f),
+        _ => None,
+    }
+}
+
+/// The discriminant of the enum `strukt` that `receiver` (a reference)
+/// points to, as a value of its `repr` type, for derived `Hash`,
+/// `PartialOrd` and `Ord`: `discriminant_value(receiver) as
+/// core::primitive::isize`, as rustc expands it, or else a `match` on
+/// the variants, `E::A(..) => 0isize`.
+fn derived_discriminant(
+    ctx: &mut Ctx<'_>,
+    strukt: StructId,
+    receiver: BindingId,
+    at: TextRange,
+) -> ExprId {
+    let items = ctx.items;
+    let s = &items.structs[strukt];
+    let repr = s.repr.unwrap_or_else(|| Symbol::intern("isize"));
+    let scrutinee = ctx.alloc_expr(Expr::Path(Res::Local(receiver)), at);
+    if let Some(function) = discriminant_value_fn(items, ctx.module) {
+        let callee = ctx.alloc_expr(Expr::Path(Res::Function(function)), at);
+        let bits = alloc_expr!(
+            ctx,
+            Expr::Call {
+                callee,
+                args: ctx.lists.alloc([scrutinee]),
+            },
+            at,
+        );
+        let ty = ctx.alloc_type(TypeRef::Path(Path {
+            edition: None,
+            anchor: PathAnchor::DefinitionCrate(crate::CrateId(0)),
+            qself: None,
+            segments: [Symbol::intern("primitive"), repr].into(),
+            ranges: Box::default(),
+            anchor_ranges: Box::default(),
+            args: Box::default(),
+        }));
+        return ctx.alloc_expr(Expr::Cast { expr: bits, ty }, at);
+    }
+    let mut arms = Vec::new();
+    for (v, variant) in s.variants.as_deref().unwrap_or_default().iter().enumerate() {
+        let at = variant.def_range;
+        let pat = match variant.kind {
+            StructKind::Tuple => Pat::TupleStruct {
+                strukt,
+                variant: v as u32,
+                pats: ctx.lists.alloc([]),
+                rest: Some(0),
+            },
+            StructKind::Record => Pat::Record {
+                strukt,
+                variant: v as u32,
+                fields: ctx.lists.alloc([]),
+                rest: true,
+            },
+            StructKind::Unit => Pat::Unit(strukt, v as u32),
+        };
+        let pat = ctx.alloc_pat(pat, at);
+        let body = discriminant(ctx, variant.discriminant, repr, at);
+        arms.push(MatchArm {
+            pat,
+            guard: None,
+            body,
+        });
+    }
+    alloc_expr!(
+        ctx,
+        Expr::Match {
+            scrutinee,
+            arms: ctx.lists.alloc(arms),
+        },
+        at,
+    )
 }
 
 /// The body of `default` that `#[derive(Default)]` makes for `strukt`:
@@ -778,44 +880,9 @@ fn derived_hash_body(items: &ItemTree, function: FunctionId, strukt: StructId) -
         }
         Some(variants) => {
             if variants.len() > 1 {
-                // `let __self_discr = match self { E::A(..) => 0isize, .. };
+                // `let __self_discr = discriminant_value(self) as isize;
                 // Hash::hash(&__self_discr, state);`
-                let repr = s.repr.unwrap_or_else(|| Symbol::intern("isize"));
-                let mut arms = Vec::new();
-                for (v, variant) in variants.iter().enumerate() {
-                    let at = variant.def_range;
-                    let pat = match variant.kind {
-                        StructKind::Tuple => Pat::TupleStruct {
-                            strukt,
-                            variant: v as u32,
-                            pats: ctx.lists.alloc([]),
-                            rest: Some(0),
-                        },
-                        StructKind::Record => Pat::Record {
-                            strukt,
-                            variant: v as u32,
-                            fields: ctx.lists.alloc([]),
-                            rest: true,
-                        },
-                        StructKind::Unit => Pat::Unit(strukt, v as u32),
-                    };
-                    let pat = ctx.alloc_pat(pat, at);
-                    let body = discriminant(&mut ctx, variant.discriminant, repr, at);
-                    arms.push(MatchArm {
-                        pat,
-                        guard: None,
-                        body,
-                    });
-                }
-                let scrutinee = ctx.alloc_expr(Expr::Path(Res::Local(bindings[0])), whole);
-                let init = alloc_expr!(
-                    ctx,
-                    Expr::Match {
-                        scrutinee,
-                        arms: ctx.lists.alloc(arms),
-                    },
-                    whole,
-                );
+                let init = derived_discriminant(&mut ctx, strukt, bindings[0], whole);
                 let binding = ctx.bindings.alloc(Binding {
                     name: Symbol::intern("__self_discr"),
                     mutable: false,
@@ -948,6 +1015,174 @@ fn ctor_body(
             is_unsafe: false,
         },
         at,
+    );
+    ctx.finish(params, root)
+}
+
+/// The body of `eq` that `#[derive(PartialEq)]` makes for an enum of more
+/// than one variant, as rustc expands it: the discriminants compared
+/// first, then the fields of the variants that have any.
+///
+/// ```text
+/// let __self_discr = discriminant_value(self);
+/// let __arg1_discr = discriminant_value(other);
+/// __self_discr == __arg1_discr
+///     && match self { E::A(a) => match other { E::A(b) => *a == *b, _ => true }, _ => true }
+/// ```
+fn derived_enum_eq_body(
+    items: &ItemTree,
+    function: FunctionId,
+    strukt: StructId,
+    discriminant: FunctionId,
+) -> LoweredBody {
+    let data = &items.functions[function];
+    let s = &items.structs[strukt];
+    let variants = s.variants.as_deref().unwrap_or_default();
+    let mut ctx = Ctx::new(items, data.loc.module, data.owner, Some(&data.generics));
+    let whole = s.name_range;
+    let mut params = Vec::new();
+    let mut receivers = Vec::new();
+    for name in [kw::SelfLower, Symbol::intern("other")] {
+        let binding = ctx.bindings.alloc(Binding {
+            name,
+            mutable: false,
+            by_ref: None,
+        });
+        params.push(ctx.alloc_pat(Pat::Bind { binding, sub: None }, data.def_range));
+        receivers.push(binding);
+    }
+    let local = |ctx: &mut Ctx<'_>, binding: BindingId, at: TextRange| {
+        ctx.alloc_expr(Expr::Path(Res::Local(binding)), at)
+    };
+    let binary = |ctx: &mut Ctx<'_>, op: BinaryOp, lhs: ExprId, rhs: ExprId, at: TextRange| {
+        let expr = ctx.alloc_expr(Expr::Binary { op, lhs, rhs }, at);
+        ctx.source_map.ops.insert(expr, at);
+        expr
+    };
+    let truth =
+        |ctx: &mut Ctx<'_>, at: TextRange| ctx.alloc_expr(Expr::Literal(Literal::Bool(true)), at);
+    let mut stmts = Vec::new();
+    let mut discriminants = Vec::new();
+    for (&receiver, name) in receivers.iter().zip(["__self_discr", "__arg1_discr"]) {
+        let callee = ctx.alloc_expr(Expr::Path(Res::Function(discriminant)), whole);
+        let arg = local(&mut ctx, receiver, whole);
+        let init = alloc_expr!(
+            ctx,
+            Expr::Call {
+                callee,
+                args: ctx.lists.alloc([arg]),
+            },
+            whole,
+        );
+        let binding = ctx.bindings.alloc(Binding {
+            name: Symbol::intern(name),
+            mutable: false,
+            by_ref: None,
+        });
+        let pat = ctx.alloc_pat(Pat::Bind { binding, sub: None }, whole);
+        stmts.push(Stmt::Let {
+            pat,
+            ty: None,
+            init: Some(init),
+            else_branch: None,
+        });
+        discriminants.push(local(&mut ctx, binding, whole));
+    }
+    let same = binary(
+        &mut ctx,
+        BinaryOp::Cmp(CmpOp::Eq),
+        discriminants[0],
+        discriminants[1],
+        whole,
+    );
+    let mut arms = Vec::new();
+    for (v, variant) in variants.iter().enumerate() {
+        if variant.fields.is_empty() {
+            continue;
+        }
+        let at = variant.def_range;
+        let (pat, mine) = variant_pat(&mut ctx, strukt, v as u32, "__self_");
+        let (other_pat, theirs) = variant_pat(&mut ctx, strukt, v as u32, "__arg1_");
+        let mut all: Option<ExprId> = None;
+        for ((f, &a), &b) in variant.fields.iter().zip(&mine).zip(&theirs) {
+            let at = f.def_range;
+            let [lhs, rhs] = [a, b].map(|binding| {
+                let operand = local(&mut ctx, binding, at);
+                ctx.alloc_expr(
+                    Expr::Unary {
+                        op: ast::UnaryOp::Deref,
+                        operand,
+                    },
+                    at,
+                )
+            });
+            let eq = binary(&mut ctx, BinaryOp::Cmp(CmpOp::Eq), lhs, rhs, at);
+            all = Some(match all {
+                None => eq,
+                Some(prev) => binary(&mut ctx, BinaryOp::Logic(LogicOp::And), prev, eq, at),
+            });
+        }
+        let equal = all.expect("a variant with fields");
+        // Another variant is not there: the discriminants are the same.
+        let wild = ctx.alloc_pat(Pat::Wild, at);
+        let unreached = truth(&mut ctx, at);
+        let other = local(&mut ctx, receivers[1], at);
+        let inner = [
+            MatchArm {
+                pat: other_pat,
+                guard: None,
+                body: equal,
+            },
+            MatchArm {
+                pat: wild,
+                guard: None,
+                body: unreached,
+            },
+        ];
+        let body = alloc_expr!(
+            ctx,
+            Expr::Match {
+                scrutinee: other,
+                arms: ctx.lists.alloc(inner),
+            },
+            at,
+        );
+        arms.push(MatchArm {
+            pat,
+            guard: None,
+            body,
+        });
+    }
+    let tail = if arms.is_empty() {
+        same
+    } else {
+        // The variants without fields are equal once their discriminants are.
+        let wild = ctx.alloc_pat(Pat::Wild, whole);
+        let body = truth(&mut ctx, whole);
+        arms.push(MatchArm {
+            pat: wild,
+            guard: None,
+            body,
+        });
+        let scrutinee = local(&mut ctx, receivers[0], whole);
+        let fields = alloc_expr!(
+            ctx,
+            Expr::Match {
+                scrutinee,
+                arms: ctx.lists.alloc(arms),
+            },
+            whole,
+        );
+        binary(&mut ctx, BinaryOp::Logic(LogicOp::And), same, fields, whole)
+    };
+    let root = alloc_expr!(
+        ctx,
+        Expr::Block {
+            stmts: ctx.lists.alloc(stmts),
+            tail: Some(tail),
+            is_unsafe: false,
+        },
+        whole,
     );
     ctx.finish(params, root)
 }
@@ -1389,7 +1624,7 @@ fn derived_ord_body(
             (Vec::new(), ctx.alloc_expr(empty, whole))
         }
         Some(variants) => {
-            // `let __self_discr = match self { E::A(..) => 0isize, .. };`,
+            // `let __self_discr = discriminant_value(self) as isize;`,
             // unless there is one variant.
             let single = variants.len() == 1;
             let names: &[&str] = if single {
@@ -1397,45 +1632,10 @@ fn derived_ord_body(
             } else {
                 &["__self_discr", "__arg1_discr"]
             };
-            let repr = s.repr.unwrap_or_else(|| Symbol::intern("isize"));
             let mut stmts = Vec::new();
             let mut discriminants = Vec::new();
             for (receiver, name) in receivers.iter().zip(names) {
-                let mut arms = Vec::new();
-                for (v, variant) in variants.iter().enumerate() {
-                    let at = variant.def_range;
-                    let pat = match variant.kind {
-                        StructKind::Tuple => Pat::TupleStruct {
-                            strukt,
-                            variant: v as u32,
-                            pats: ctx.lists.alloc([]),
-                            rest: Some(0),
-                        },
-                        StructKind::Record => Pat::Record {
-                            strukt,
-                            variant: v as u32,
-                            fields: ctx.lists.alloc([]),
-                            rest: true,
-                        },
-                        StructKind::Unit => Pat::Unit(strukt, v as u32),
-                    };
-                    let pat = ctx.alloc_pat(pat, at);
-                    let body = discriminant(&mut ctx, variant.discriminant, repr, at);
-                    arms.push(MatchArm {
-                        pat,
-                        guard: None,
-                        body,
-                    });
-                }
-                let scrutinee = local(&mut ctx, *receiver, whole);
-                let init = alloc_expr!(
-                    ctx,
-                    Expr::Match {
-                        scrutinee,
-                        arms: ctx.lists.alloc(arms),
-                    },
-                    whole,
-                );
+                let init = derived_discriminant(&mut ctx, strukt, *receiver, whole);
                 let binding = ctx.bindings.alloc(Binding {
                     name: Symbol::intern(name),
                     mutable: false,

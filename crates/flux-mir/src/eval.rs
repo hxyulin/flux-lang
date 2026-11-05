@@ -2058,6 +2058,24 @@ impl<'a> Evaluator<'a> {
                             None => return Err(error(range, "entering unreachable code".into())),
                         }
                     }
+                    if let Some(intrinsic) = self.items.functions[*func]
+                        .intrinsic
+                        .filter(|intrinsic| intrinsic.is_bit_count())
+                    {
+                        let Value::Int { bits, ty } =
+                            self.operand(locals, generics, &args[0], range)?
+                        else {
+                            unreachable!("typed integer argument");
+                        };
+                        write(locals, dest, bit_count(intrinsic, bits, ty), range)?;
+                        match target {
+                            Some(next) => {
+                                block = *next;
+                                continue;
+                            }
+                            None => return Err(error(range, "entering unreachable code".into())),
+                        }
+                    }
                     if self.is_type_intrinsic(*func) {
                         let call = (*func, *generic_args, generics);
                         block = self.type_intrinsic(call, locals, dest, *target, range)?;
@@ -3963,6 +3981,25 @@ pub fn show(value: &Value) -> String {
         Value::PointerView { ref pointer, .. } => show(pointer),
         Value::LocalRef { ref value, .. } => format!("&{}", show(value)),
         Value::Ref(ref pointee) | Value::InteriorRef(ref pointee) => format!("&{}", show(pointee)),
+    }
+}
+
+/// `ctlz`, `cttz`, `ctpop` or `bswap` of the integer `bits` of type `ty`,
+/// which are truncated to its width.
+fn bit_count(intrinsic: flux_hir::Intrinsic, bits: u128, ty: IntTy) -> Value {
+    let width = ty.bits();
+    let count = match intrinsic {
+        flux_hir::Intrinsic::Ctlz => bits.leading_zeros() - (128 - width),
+        flux_hir::Intrinsic::Cttz => bits.trailing_zeros().min(width),
+        flux_hir::Intrinsic::Ctpop => bits.count_ones(),
+        _ => {
+            let bits = bits.swap_bytes() >> (128 - width);
+            return Value::Int { bits, ty };
+        }
+    };
+    Value::Int {
+        bits: u128::from(count),
+        ty: IntTy::U32,
     }
 }
 

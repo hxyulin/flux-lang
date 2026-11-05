@@ -2012,6 +2012,8 @@ impl Collector<'_> {
         let mut sized_dispatch = None;
         let mut legacy_const_generic = None;
         let mut track_caller = false;
+        let mut inline = None;
+        let mut cold = false;
         let mut do_not_const_check = false;
         let mut lang = None;
         let mut link_name = None;
@@ -2046,6 +2048,11 @@ impl Collector<'_> {
                     &mut self.items.diagnostics,
                 ));
                 continue;
+            }
+            if attr_name(attr) == Some("inline") {
+                inline = super::attributes::inline_attr(attr).or(inline);
+            } else if attr_name(attr) == Some("cold") {
+                cold |= super::attributes::bare_attr(attr);
             }
             if has_target_feature && attr_name(attr) == Some("inline") {
                 target_feature_inline(attr, &mut self.items.diagnostics);
@@ -2416,6 +2423,8 @@ impl Collector<'_> {
             intrinsic,
             legacy_const_generic,
             track_caller,
+            inline,
+            cold,
             do_not_const_check,
             is_variadic,
             owner,
@@ -4109,6 +4118,8 @@ impl Collector<'_> {
                     legacy_const_generic: None,
                     is_variadic: false,
                     track_caller: false,
+                    inline: None,
+                    cold: false,
                     do_not_const_check: false,
                     owner: None,
                     has_self: false,
@@ -4428,6 +4439,8 @@ impl Collector<'_> {
             intrinsic: None,
             legacy_const_generic: None,
             track_caller: false,
+            inline: None,
+            cold: false,
             do_not_const_check: false,
             is_variadic: false,
             owner: Some(Owner::Impl(id)),

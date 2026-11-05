@@ -748,6 +748,15 @@ impl Struct {
     }
 }
 
+/// How a function asks to be inlined: `#[inline]`, `#[inline(always)]`
+/// or `#[inline(never)]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineHint {
+    Hint,
+    Always,
+    Never,
+}
+
 /// A function: one with a body, or one declared in an `extern` block.
 #[derive(Debug, Clone)]
 pub struct Function {
@@ -797,6 +806,10 @@ pub struct Function {
     /// `#[track_caller]`: code generation passes it where it is called
     /// from, which `Location::caller` and its panics report.
     pub track_caller: bool,
+    /// Its `#[inline]` attribute, which code generation passes to keel.
+    pub inline: Option<InlineHint>,
+    /// `#[cold]`: rarely called, so optimized for size and not inlined.
+    pub cold: bool,
     /// `#[rustc_do_not_const_check]`, which only `core` may write: a
     /// `const fn` whose body is not checked as one, as constant
     /// evaluation never runs it (`core`'s panics, which it reports).

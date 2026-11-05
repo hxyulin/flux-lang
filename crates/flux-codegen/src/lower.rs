@@ -1209,6 +1209,16 @@ impl Ctx<'_> {
         );
         function.local = self.compilation.is_none();
         function.attrs = attrs(sig);
+        if !pointer_wrapper {
+            let data = &self.hir.items.functions[instance.function];
+            match data.inline {
+                Some(flux_hir::InlineHint::Hint) => function.attrs.inlinehint = true,
+                Some(flux_hir::InlineHint::Always) => function.attrs.alwaysinline = true,
+                Some(flux_hir::InlineHint::Never) => function.attrs.noinline = true,
+                None => {}
+            }
+            function.attrs.cold = data.cold;
+        }
         if cfg!(target_arch = "x86_64") {
             let owner = body.owner.unwrap_or(instance.function);
             let features = self.hir.items.functions[owner]
@@ -2674,6 +2684,24 @@ impl Lower<'_, '_, '_> {
                 let in_niche = self.b.ins().icmp(IntCC::Ule, relative, span);
                 let untagged_bits = self.ctx.discriminant(strukt, untagged);
                 let mut result = self.int_const(untagged_bits, leaf);
+                // Discriminants that are the variants' indices, as they
+                // are without explicit ones: the niche's offset plus the
+                // first index, unless it is the untagged variant's.
+                if (first..=last)
+                    .chain([untagged])
+                    .all(|v| self.ctx.discriminant(strukt, v) == u128::from(v))
+                {
+                    let mut is = in_niche;
+                    if (first..=last).contains(&untagged) {
+                        let index = self.int_const(u128::from(untagged - first), int);
+                        let other = self.b.ins().icmp(IntCC::Ne, relative, index);
+                        is = self.b.ins().and(is, other);
+                    }
+                    let index = widen(self, relative, false);
+                    let first = self.int_const(u128::from(first), leaf);
+                    let value = self.b.ins().iadd(index, first);
+                    return self.b.ins().select(is, value, result);
+                }
                 for v in first..=last {
                     if v == untagged {
                         continue;
@@ -3950,6 +3978,41 @@ impl Lower<'_, '_, '_> {
                         .map(|arg| self.scalar(arg).expect("float argument"))
                         .collect();
                     let result = self.b.ins().fma(values[0], values[1], values[2]);
+                    self.write(dest, &[result]);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
+                if let Some(intrinsic) = items.functions[*func]
+                    .intrinsic
+                    .filter(|intrinsic| intrinsic.is_bit_count())
+                {
+                    let ty = keel_type(generic_args[0]).expect("an integer argument");
+                    let x = self.scalar(&args[0]).expect("an integer argument");
+                    let ins = self.b.ins();
+                    let result = match intrinsic {
+                        // A byte is its own reverse; keel's `bswap` needs two.
+                        flux_hir::Intrinsic::Bswap if ty == Type::I8 => x,
+                        flux_hir::Intrinsic::Bswap => ins.bswap(x),
+                        // Counts come in the argument's type, and are `u32`s.
+                        count => {
+                            let n = match count {
+                                flux_hir::Intrinsic::Ctlz => ins.clz(x),
+                                flux_hir::Intrinsic::Cttz => ins.ctz(x),
+                                _ => ins.popcnt(x),
+                            };
+                            match ty {
+                                Type::I32 => n,
+                                Type::I8 | Type::I16 => {
+                                    self.b.ins().convert(ConvertOp::Uext, Type::I32, n)
+                                }
+                                _ => self.b.ins().convert(ConvertOp::Trunc, Type::I32, n),
+                            }
+                        }
+                    };
                     self.write(dest, &[result]);
                     if let Some(target) = target {
                         self.b.ins().jump(self.blocks[target.index()], &[]);
