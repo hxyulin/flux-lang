@@ -6,8 +6,9 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
 extern crate alloc as alloc_crate;
-use alloc_crate::{alloc, vec};
+use alloc_crate::{alloc, borrow, boxed, string, vec};
 #[path = "../../../library/alloc/src/rc.rs"]
+#[allow(dead_code, reason = "library items the test does not call")]
 mod rc;
 
 #[test]

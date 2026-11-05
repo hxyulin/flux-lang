@@ -8,6 +8,7 @@ use std::process::{Command, Output};
 use std::time::Duration;
 extern crate alloc as alloc_crate;
 #[path = "../../../library/std/src/collections/hash_map.rs"]
+#[allow(unused_imports, reason = "std reexports the test does not use")]
 mod hash_map;
 
 #[test]
