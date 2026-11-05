@@ -2,7 +2,11 @@
 //! fields and enums' variants' fields, with the associated types they
 //! name normalized where their arguments make them known.
 
+use std::cell::RefCell;
+use std::marker::PhantomData;
+
 use flux_hir::{ImplId, StructId};
+use rustc_hash::FxHashMap;
 
 use crate::{ClosureArgs, Mutability, Predicate, Signatures, Ty, TyKind, max_param, traits, ty};
 
@@ -12,7 +16,7 @@ pub fn fields(sigs: &Signatures, ty: Ty) -> Option<&'static [Ty]> {
     match ty.kind() {
         TyKind::Tuple(elements) => Some(elements),
         TyKind::Adt(adt, _) if sigs.is_enum(adt.strukt) => None,
-        TyKind::Adt(adt, args) => Some(field_types(sigs, adt.strukt, args)),
+        TyKind::Adt(adt, args) => Some(adt_field_types(sigs, ty, adt.strukt, args)),
         TyKind::Closure(_, args) => Some(ClosureArgs::split(args).upvar_types()),
         _ => None,
     }
@@ -28,7 +32,7 @@ pub fn variant_fields(sigs: &Signatures, ty: Ty, variant: u32) -> Option<&'stati
                 *starts.get(variant as usize)? as usize,
                 *starts.get(variant as usize + 1)? as usize,
             );
-            Some(&field_types(sigs, adt.strukt, args)[start..end])
+            Some(&adt_field_types(sigs, ty, adt.strukt, args)[start..end])
         }
         _ => fields(sigs, ty),
     }
@@ -40,7 +44,7 @@ pub fn variant_fields(sigs: &Signatures, ty: Ty, variant: u32) -> Option<&'stati
 pub fn contents(sigs: &Signatures, ty: Ty) -> Option<&'static [Ty]> {
     match ty.kind() {
         TyKind::Tuple(elements) => Some(elements),
-        TyKind::Adt(adt, args) => Some(field_types(sigs, adt.strukt, args)),
+        TyKind::Adt(adt, args) => Some(adt_field_types(sigs, ty, adt.strukt, args)),
         TyKind::Closure(_, args) => Some(ClosureArgs::split(args).upvar_types()),
         _ => None,
     }
@@ -55,6 +59,87 @@ pub fn variants(sigs: &Signatures, ty: Ty) -> Option<Vec<&'static [Ty]>> {
     (0..count as u32)
         .map(|v| variant_fields(sigs, ty, v))
         .collect()
+}
+
+/// The field types of the structs and enums asked for so far, by type,
+/// for one set of signatures, while a [`FieldTypesScope`] is active.
+struct Remembered {
+    /// Identifies the signatures; never dereferenced.
+    sigs: *const Signatures,
+    fields: FxHashMap<Ty, &'static [Ty]>,
+}
+
+thread_local! {
+    static REMEMBERED: RefCell<Option<Remembered>> = const { RefCell::new(None) };
+}
+
+/// Keeps the field types that [`fields`], [`variant_fields`] and
+/// [`contents`] compute for one set of signatures on this thread until
+/// dropped, then restores the scope active before. See
+/// [`remember_field_types`].
+pub struct FieldTypesScope<'a> {
+    /// What to restore, unless a scope for the same signatures was
+    /// already active and this one leaves it be.
+    previous: Option<Option<Remembered>>,
+    _sigs: PhantomData<&'a Signatures>,
+}
+
+/// Remembers the field types of the structs and enums asked for with
+/// `sigs` until the scope drops: for the phases after type checking,
+/// whose signatures are final. The scope borrows `sigs`, so they cannot
+/// change while it is active.
+pub fn remember_field_types(sigs: &Signatures) -> FieldTypesScope<'_> {
+    let previous = REMEMBERED.with(|remembered| {
+        let mut remembered = remembered.borrow_mut();
+        if remembered
+            .as_ref()
+            .is_some_and(|r| std::ptr::eq(r.sigs, sigs))
+        {
+            return None;
+        }
+        Some(remembered.replace(Remembered {
+            sigs,
+            fields: FxHashMap::default(),
+        }))
+    });
+    FieldTypesScope {
+        previous,
+        _sigs: PhantomData,
+    }
+}
+
+impl Drop for FieldTypesScope<'_> {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.take() {
+            REMEMBERED.with(|remembered| *remembered.borrow_mut() = previous);
+        }
+    }
+}
+
+/// [`field_types`] of `ty`, `strukt` with arguments `args`, remembered
+/// while a scope for `sigs` is active.
+fn adt_field_types(sigs: &Signatures, ty: Ty, strukt: StructId, args: &[Ty]) -> &'static [Ty] {
+    match with_remembered(sigs, |fields| fields.get(&ty).copied()) {
+        Some(Some(found)) => found,
+        Some(None) => {
+            let computed = field_types(sigs, strukt, args);
+            with_remembered(sigs, |fields| fields.insert(ty, computed));
+            computed
+        }
+        None => field_types(sigs, strukt, args),
+    }
+}
+
+/// Runs `f` on the field types remembered for `sigs`, if a scope for
+/// them is active.
+fn with_remembered<R>(
+    sigs: &Signatures,
+    f: impl FnOnce(&mut FxHashMap<Ty, &'static [Ty]>) -> R,
+) -> Option<R> {
+    REMEMBERED.with(|remembered| match &mut *remembered.borrow_mut() {
+        Some(r) if std::ptr::eq(r.sigs, sigs) => Some(f(&mut r.fields)),
+        _ => None,
+    })
 }
 
 /// The types of the fields of `strukt` with generic arguments `args`,

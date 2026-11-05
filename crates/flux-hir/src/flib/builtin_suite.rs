@@ -291,7 +291,7 @@ fn read_records(
         if id.0 as usize >= db.files().count() {
             return Err(Error("invalid builtin source file"));
         }
-        if items.files.insert(id, db.shared(id)).is_some() {
+        if items.insert_file(id, db.shared(id)).is_some() {
             return Err(Error("duplicate builtin source"));
         }
     }

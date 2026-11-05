@@ -32,6 +32,7 @@
 
 mod abi;
 mod reachability;
+mod shapes;
 use abi::{
     Argument, Convention, Return, attrs, c_signature, check_c_abi, ctx_signature, signature,
 };
@@ -50,6 +51,7 @@ use flux_mir::{
     ProjectionElem, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
+use flux_ty_ir::type_identity::DefinitionKeys;
 use keel_frontend::{FunctionBuilder, Variable};
 use keel_ir::ConvertOp;
 use keel_ir::{
@@ -160,6 +162,8 @@ fn lower_inner(
     mir: &FileMir,
     compilation: Option<Compilation<'_>>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    let _shapes = shapes::scope(&typed.sigs);
+    let _fields = flux_solve::remember_field_types(&typed.sigs);
     let monomorphic = |id: FunctionId| {
         let function = &hir.items.functions[id];
         let instance = Instance {
@@ -291,20 +295,8 @@ fn lower_inner(
     }
     let mut module = Module::default();
     let items = &hir.items;
-    let function_ordinals = definition_ordinals(
-        items,
-        items
-            .functions
-            .iter()
-            .map(|(id, f)| (id.into_raw(), f.loc.module)),
-    );
-    let const_ordinals = definition_ordinals(
-        items,
-        items
-            .consts
-            .iter()
-            .map(|(id, c)| (id.into_raw(), c.loc.module)),
-    );
+    let identities = compilation.map_or(&[][..], |c| c.crate_hashes);
+    let definitions = std::cell::RefCell::new(DefinitionKeys::new(items, identities));
     let names: FxHashMap<FunctionId, String> = items
         .functions
         .iter()
@@ -350,13 +342,11 @@ fn lower_inner(
                 // the whole-program path retains its process-local suffix.
                 let identity;
                 if compilation.is_some() || id.index() >= items.core.functions as usize {
-                    identity = if let Some(c) = compilation {
+                    identity = if compilation.is_some() {
                         definition_symbol(
-                            items,
-                            c.crate_hashes,
+                            &mut definitions.borrow_mut(),
                             flux_hir::flib::IdKind::Function,
                             id.into_raw(),
-                            function_ordinals[&id.into_raw()],
                         )
                     } else {
                         format!("__flux_f{}", id.index())
@@ -371,8 +361,9 @@ fn lower_inner(
     let symbols = Symbols {
         names,
         separate: compilation.is_some(),
-        identities: compilation.map_or(&[], |c| c.crate_hashes),
+        definitions,
         type_keys: std::cell::RefCell::new(FxHashMap::default()),
+        instances: std::cell::RefCell::new(FxHashMap::default()),
     };
     let mut declared_abort = false;
     let mut declared = FxHashSet::default();
@@ -424,13 +415,11 @@ fn lower_inner(
             path.push(c.name.map_or("_", |n| n.as_str()));
             let identity;
             if compilation.is_some() || id.index() >= items.core.consts as usize {
-                identity = if let Some(cmp) = compilation {
+                identity = if compilation.is_some() {
                     definition_symbol(
-                        items,
-                        cmp.crate_hashes,
+                        &mut symbols.definitions.borrow_mut(),
                         flux_hir::flib::IdKind::Const,
                         id.into_raw(),
-                        const_ordinals[&id.into_raw()],
                     )
                 } else {
                     format!("__flux_s{}", id.index())
@@ -467,6 +456,7 @@ fn lower_inner(
         reified: collected.reified,
         uses_abort: false,
         locations: FxHashMap::default(),
+        line_starts: FxHashMap::default(),
         strings: FxHashMap::default(),
         vtables: FxHashMap::default(),
         promoted: FxHashMap::default(),
@@ -724,8 +714,11 @@ fn data_key(items: &[DataItem], align: u32) -> Vec<u8> {
 struct Symbols<'a> {
     names: FxHashMap<FunctionId, String>,
     separate: bool,
-    identities: &'a [(flux_hir::CrateId, [u8; 32])],
+    /// The keys of definitions, under the compilation's crate identities.
+    definitions: std::cell::RefCell<DefinitionKeys<'a>>,
     type_keys: std::cell::RefCell<FxHashMap<Ty, Vec<u8>>>,
+    /// The symbol of each instance named so far.
+    instances: std::cell::RefCell<FxHashMap<Instance, String>>,
 }
 
 impl std::ops::Index<&FunctionId> for Symbols<'_> {
@@ -735,32 +728,15 @@ impl std::ops::Index<&FunctionId> for Symbols<'_> {
     }
 }
 
-fn definition_ordinals(
-    items: &flux_hir::ItemTree,
-    entries: impl Iterator<Item = (u32, flux_hir::ModuleId)>,
-) -> FxHashMap<u32, u32> {
-    let mut counts: FxHashMap<flux_hir::CrateId, u32> = FxHashMap::default();
-    entries
-        .map(|(raw, module)| {
-            let next = counts.entry(items.modules[module].krate).or_default();
-            let ordinal = *next;
-            *next += 1;
-            (raw, ordinal)
-        })
-        .collect()
-}
-
 fn definition_symbol(
-    items: &flux_hir::ItemTree,
-    hashes: &[(flux_hir::CrateId, [u8; 32])],
+    definitions: &mut DefinitionKeys<'_>,
     kind: flux_hir::flib::IdKind,
     raw: u32,
-    ordinal: u32,
 ) -> String {
-    let key =
-        flux_ty_ir::type_identity::definition_key_with_ordinal(items, hashes, kind, raw, ordinal)
-            .expect("code generation uses valid definition identities");
-    content_symbol("definition", &key)
+    let key = definitions
+        .key(kind, raw)
+        .expect("code generation uses valid definition identities");
+    content_symbol("definition", key)
 }
 
 fn generic_instance(items: &flux_hir::ItemTree, instance: Instance) -> bool {
@@ -815,6 +791,15 @@ fn owns_static(
 /// or is in one of a generic struct's blocks, which may each have a
 /// function of its name. The hash covers the arguments and the block.
 fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> String {
+    if let Some(symbol) = symbols.instances.borrow().get(&instance) {
+        return symbol.clone();
+    }
+    let symbol = instance_symbol_uncached(hir, symbols, instance);
+    (symbols.instances.borrow_mut()).insert(instance, symbol.clone());
+    symbol
+}
+
+fn instance_symbol_uncached(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> String {
     let base = &symbols[&instance.function];
     let items = &hir.items;
     // A trait's blocks for different types each have its methods.
@@ -839,7 +824,7 @@ fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> Stri
         feed(&instance.function.into_raw().to_le_bytes());
     }
     for &arg in instance.args {
-        encode_type(arg, hir, symbols, &mut feed);
+        encode_type(arg, symbols, &mut feed);
     }
     use std::fmt::Write;
     let mut hash = String::new();
@@ -849,10 +834,10 @@ fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> Stri
     format!("{}65h{hash}E", &base[..base.len() - 1])
 }
 
-fn encode_type(ty: Ty, hir: &Hir, symbols: &Symbols<'_>, feed: &mut impl FnMut(&[u8])) {
+fn encode_type(ty: Ty, symbols: &Symbols<'_>, feed: &mut impl FnMut(&[u8])) {
     let mut keys = symbols.type_keys.borrow_mut();
     let key = keys.entry(ty).or_insert_with(|| {
-        flux_ty_ir::type_identity::stable_key(&hir.items, symbols.identities, ty)
+        (symbols.definitions.borrow_mut().stable_key(ty))
             .expect("code generation uses fully resolved types")
     });
     feed(key);
@@ -923,6 +908,10 @@ fn tag_int(bytes: u8) -> IntTy {
 
 /// Whether values of `ty` contain an array, so live in memory.
 fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
+    shapes::is_memory(sigs, ty, is_memory_uncached)
+}
+
+fn is_memory_uncached(sigs: &Signatures, ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Array(..) => true,
         TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt) => true,
@@ -975,6 +964,10 @@ fn address_leaf() -> Ty {
 /// variant's fields; the address of a value of a memory type; the
 /// address and length of a pointer to a slice.
 fn leaves(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
+    shapes::leaves(sigs, ty, out, leaves_uncached);
+}
+
+fn leaves_uncached(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
     if is_memory(sigs, ty) {
         out.push(address_leaf());
         return;
@@ -1013,6 +1006,10 @@ fn leaves_of(sigs: &Signatures, ty: Ty) -> TypeLeaves {
 }
 
 fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
+    shapes::leaf_count(sigs, ty, leaf_count_uncached)
+}
+
+fn leaf_count_uncached(sigs: &Signatures, ty: Ty) -> usize {
     if is_memory(sigs, ty) {
         return 1;
     }
@@ -1162,6 +1159,8 @@ struct Ctx<'a> {
     /// The data object of each `Location` a `#[track_caller]` function
     /// is passed, by file and offset.
     locations: FxHashMap<(flux_hir::FileId, u32), String>,
+    /// Where each line of a file of a `Location` starts.
+    line_starts: FxHashMap<flux_hir::FileId, Box<[u32]>>,
     /// The data object holding each distinct C string, by its bytes.
     strings: FxHashMap<Box<[u8]>, String>,
     /// The vtable of each type as each trait object: `(object, type)`.
@@ -1326,10 +1325,14 @@ impl Ctx<'_> {
                 while !text.is_char_boundary(at) {
                     at -= 1;
                 }
-                let before = &text[..at];
-                let line = before.matches('\n').count() + 1;
-                let line_start = before.rfind('\n').map_or(0, |i| i + 1);
-                let column = before[line_start..].chars().count() + 1;
+                let starts = self.line_starts.entry(file).or_insert_with(|| {
+                    let ends = text.match_indices('\n').map(|(i, _)| i as u32 + 1);
+                    std::iter::once(0).chain(ends).collect()
+                });
+                // The lines that start at or before `at`; the first starts at 0.
+                let line = starts.partition_point(|&start| start as usize <= at);
+                let line_start = starts[line - 1] as usize;
+                let column = text[line_start..at].chars().count() + 1;
                 (source.path.display().to_string(), line, column)
             }
             None => (String::new(), 1, 1),
@@ -1728,10 +1731,10 @@ impl Ctx<'_> {
             return name.clone();
         }
         let mut key = Vec::new();
-        encode_type(object, self.hir, self.symbols, &mut |bytes| {
+        encode_type(object, self.symbols, &mut |bytes| {
             key.extend_from_slice(bytes)
         });
-        encode_type(concrete, self.hir, self.symbols, &mut |bytes| {
+        encode_type(concrete, self.symbols, &mut |bytes| {
             key.extend_from_slice(bytes)
         });
         let name = content_symbol("vtable", &key);

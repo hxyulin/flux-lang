@@ -58,6 +58,50 @@ pub type TypeAliasId = Idx<TypeAlias>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CrateId(pub u32);
 
+/// The files with ranges of their own (included files), sorted by where
+/// their ranges start, so that finding the file of a range is a binary
+/// search rather than a scan of every file.
+#[derive(Debug, Clone)]
+struct SpanIndex {
+    /// How many files there were when it was built.
+    files: usize,
+    /// Each file's first offset, its last (its length past the first,
+    /// as `contains_range` allows an empty range at the end), and it.
+    spans: Box<[(u32, u32, FileId)]>,
+    /// Whether two files' ranges overlap: a range may then be in either,
+    /// and `source_span` keeps the scan's answer.
+    overlapping: bool,
+}
+
+impl SpanIndex {
+    fn new(files: &rustc_hash::FxHashMap<FileId, Arc<SourceFile>>) -> SpanIndex {
+        let mut spans: Vec<_> = files
+            .iter()
+            .filter(|(_, source)| source.range_base != 0)
+            .map(|(&id, source)| {
+                let start = source.range_base;
+                (start, start + source.text().len() as u32, id)
+            })
+            .collect();
+        spans.sort_unstable_by_key(|&(start, _, id)| (start, id.0));
+        let overlapping = spans.windows(2).any(|pair| pair[1].0 <= pair[0].1);
+        SpanIndex {
+            files: files.len(),
+            spans: spans.into(),
+            overlapping,
+        }
+    }
+
+    /// The file whose range contains `range`, if one does.
+    fn find(&self, range: TextRange) -> Option<FileId> {
+        let after = self
+            .spans
+            .partition_point(|&(start, _, _)| start <= range.start());
+        let &(_, end, file) = self.spans.get(after.checked_sub(1)?)?;
+        (range.end() <= end).then_some(file)
+    }
+}
+
 /// Every item of every crate, without bodies. `core`'s items are frozen
 /// in [`Core`](crate::Core)'s tree and shared by every program's.
 #[derive(Debug, Clone, Default)]
@@ -123,8 +167,11 @@ pub struct ItemTree {
     /// `core`'s exported macros, which every crate sees by name: rustc's
     /// `macro_use` prelude.
     pub macro_prelude: rustc_hash::FxHashMap<Symbol, MacroId>,
-    /// The files read, for `line!`, `column!` and `file!`.
+    /// The files read, for `line!`, `column!` and `file!`. Add them with
+    /// [`ItemTree::insert_file`], which keeps `span_index` current.
     pub files: rustc_hash::FxHashMap<FileId, Arc<SourceFile>>,
+    /// The ranges of the files that have their own, for `source_span`.
+    span_index: std::sync::OnceLock<SpanIndex>,
     /// Diagnostic files retained by decoded crates, including body-only includes.
     pub(crate) artifact_files: rustc_hash::FxHashMap<CrateId, Vec<FileId>>,
     /// The file each expansion of a macro call in item position is part
@@ -1698,16 +1745,35 @@ impl ItemTree {
         self.expansion_files.get(&file).copied().unwrap_or(file)
     }
 
+    /// Adds or replaces source file `id`.
+    pub(crate) fn insert_file(
+        &mut self,
+        id: FileId,
+        file: Arc<SourceFile>,
+    ) -> Option<Arc<SourceFile>> {
+        self.span_index.take();
+        self.files.insert(id, file)
+    }
+
     /// Resolves a body span across physical include boundaries.
     pub fn source_span(&self, file: FileId, range: TextRange) -> (FileId, TextRange) {
-        if let Some((&file, source)) = self
-            .files
-            .iter()
-            .find(|(_, source)| source.contains_range(range))
-        {
-            (file, source.local_range(range))
+        let index = self.span_index.get_or_init(|| SpanIndex::new(&self.files));
+        debug_assert_eq!(
+            index.files,
+            self.files.len(),
+            "files changed without insert_file"
+        );
+        let found = if index.overlapping || index.files != self.files.len() {
+            self.files
+                .iter()
+                .find(|(_, source)| source.contains_range(range))
+                .map(|(&file, _)| file)
         } else {
-            (self.real_file(file), range)
+            index.find(range)
+        };
+        match found {
+            Some(file) => (file, self.files[&file].local_range(range)),
+            None => (self.real_file(file), range),
         }
     }
 

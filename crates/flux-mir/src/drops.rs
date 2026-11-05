@@ -77,7 +77,16 @@ pub(crate) fn elaborate(
     }
     let paths = MovePaths::new(body, sigs, |local| roots.contains(&local));
     let entry = analyze(body, &paths, true);
-    let needs_drop = |ty| flux_solve::traits::needs_drop(items, sigs, env, ty);
+    // Each drop asks again for the types of the paths it opens.
+    let known = std::cell::RefCell::new(rustc_hash::FxHashMap::default());
+    let needs_drop = |ty| {
+        if let Some(&found) = known.borrow().get(&ty) {
+            return found;
+        }
+        let found = flux_solve::traits::needs_drop(items, sigs, env, ty);
+        known.borrow_mut().insert(ty, found);
+        found
+    };
 
     // What each drop becomes, and the flags that takes.
     let mut plans: Vec<(BasicBlock, usize, Vec<Step>)> = Vec::new();

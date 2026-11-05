@@ -386,7 +386,7 @@ impl Collector<'_> {
         if let Some(parse) = parse {
             let file = self.db.add_expansion(parse, real);
             self.items.expansion_files.insert(file, real);
-            self.items.files.insert(file, self.db.shared(file));
+            self.items.insert_file(file, self.db.shared(file));
             let shared = self.db.shared(file);
             let nodes = shared
                 .parse
