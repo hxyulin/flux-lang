@@ -1,0 +1,69 @@
+SOURCE_FILE@0..116
+  TYPE_ALIAS@0..109
+    COMMENT@0..72 "// The lookahead find ..."
+    WHITESPACE@72..73 "\n"
+    COMMENT@73..89 "// is ambiguous."
+    WHITESPACE@89..90 "\n"
+    TYPE_KW@90..94 "type"
+    WHITESPACE@94..95 " "
+    NAME@95..96
+      IDENT@95..96 "A"
+    WHITESPACE@96..97 " "
+    EQ@97..98 "="
+    WHITESPACE@98..99 " "
+    DYN_TRAIT_TYPE@99..109
+      TYPE_BOUND_LIST@99..109
+        TYPE_BOUND@99..105
+          PATH_TYPE@99..105
+            PATH@99..105
+              PATH_SEGMENT@99..105
+                NAME_REF@99..100
+                  IDENT@99..100 "X"
+                GENERIC_ARG_LIST@100..105
+                  L_ANGLE@100..101 "<"
+                  ASSOC_TYPE_ARG@101..105
+                    NAME_REF@101..102
+                      IDENT@101..102 "Y"
+                    GENERIC_ARG_LIST@102..105
+                      L_ANGLE@102..103 "<"
+                      TYPE_ARG@103..105
+                        REF_TYPE@103..105
+                          AMP@103..104 "&"
+                          PATH_TYPE@104..105
+                            PATH@104..105
+                              PATH_SEGMENT@104..105
+                                NAME_REF@104..105
+                                  IDENT@104..105 "Z"
+        WHITESPACE@105..106 " "
+        PLUS@106..107 "+"
+        WHITESPACE@107..108 " "
+        TYPE_BOUND@108..109
+          PATH_TYPE@108..109
+            PATH@108..109
+              PATH_SEGMENT@108..109
+                NAME_REF@108..109
+                  IDENT@108..109 "W"
+  ERROR@109..110
+    R_ANGLE@109..110 ">"
+  ERROR@110..111
+    COLON@110..111 ":"
+  WHITESPACE@111..112 " "
+  ERROR@112..113
+    PATH@112..113
+      PATH_SEGMENT@112..113
+        NAME_REF@112..113
+          IDENT@112..113 "V"
+  ERROR@113..114
+    R_ANGLE@113..114 ">"
+  ERROR@114..115
+    SEMICOLON@114..115 ";"
+  WHITESPACE@115..116 "\n"
+error 105..105: expected `>`
+error 105..105: expected `:`
+error 105..105: expected `>`
+error 109..109: expected `;`
+error 109..109: expected an item
+error 110..110: expected an item
+error 113..113: expected `!`
+error 113..113: expected an item
+error 114..114: expected an item

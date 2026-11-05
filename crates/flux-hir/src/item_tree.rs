@@ -2859,9 +2859,23 @@ fn lower_bounds(
     }
 }
 
-/// `dyn Tr + 'a`.
+/// `dyn Tr + 'a`, or `Tr + 'a` before edition 2021.
 fn lower_dyn(d: ast::DynTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
     let range = d.syntax().text_range();
+    if d.dyn_token().is_none()
+        && d.syntax()
+            .tokens()
+            .find(|t| !t.kind().is_trivia())
+            .is_some_and(|t| {
+                !matches!(
+                    t.edition(),
+                    flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+                )
+            })
+    {
+        diagnostics.push(Diagnostic::new(range, "expected a type, found a trait"));
+        return TypeRef::Error;
+    }
     let mut bounds = Vec::new();
     let mut lifetime: Option<LifetimeRef> = None;
     for bound in d.type_bound_list().into_iter().flat_map(|l| l.bounds()) {

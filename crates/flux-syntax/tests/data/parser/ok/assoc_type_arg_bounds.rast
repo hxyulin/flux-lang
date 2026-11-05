@@ -1,0 +1,93 @@
+SOURCE_FILE@0..115
+  TYPE_ALIAS@0..93
+    COMMENT@0..68 "// The lookahead find ..."
+    WHITESPACE@68..69 "\n"
+    TYPE_KW@69..73 "type"
+    WHITESPACE@73..74 " "
+    NAME@74..75
+      IDENT@74..75 "A"
+    WHITESPACE@75..76 " "
+    EQ@76..77 "="
+    WHITESPACE@77..78 " "
+    PATH_TYPE@78..92
+      PATH@78..92
+        PATH_SEGMENT@78..92
+          NAME_REF@78..79
+            IDENT@78..79 "X"
+          GENERIC_ARG_LIST@79..92
+            L_ANGLE@79..80 "<"
+            ASSOC_TYPE_ARG@80..91
+              NAME_REF@80..81
+                IDENT@80..81 "Y"
+              GENERIC_ARG_LIST@81..88
+                L_ANGLE@81..82 "<"
+                TYPE_ARG@82..87
+                  DYN_TRAIT_TYPE@82..87
+                    TYPE_BOUND_LIST@82..87
+                      TYPE_BOUND@82..83
+                        PATH_TYPE@82..83
+                          PATH@82..83
+                            PATH_SEGMENT@82..83
+                              NAME_REF@82..83
+                                IDENT@82..83 "Z"
+                      WHITESPACE@83..84 " "
+                      PLUS@84..85 "+"
+                      WHITESPACE@85..86 " "
+                      TYPE_BOUND@86..87
+                        PATH_TYPE@86..87
+                          PATH@86..87
+                            PATH_SEGMENT@86..87
+                              NAME_REF@86..87
+                                IDENT@86..87 "W"
+                R_ANGLE@87..88 ">"
+              COLON@88..89 ":"
+              WHITESPACE@89..90 " "
+              TYPE_BOUND_LIST@90..91
+                TYPE_BOUND@90..91
+                  PATH_TYPE@90..91
+                    PATH@90..91
+                      PATH_SEGMENT@90..91
+                        NAME_REF@90..91
+                          IDENT@90..91 "V"
+            R_ANGLE@91..92 ">"
+    SEMICOLON@92..93 ";"
+  WHITESPACE@93..94 "\n"
+  TYPE_ALIAS@94..114
+    TYPE_KW@94..98 "type"
+    WHITESPACE@98..99 " "
+    NAME@99..100
+      IDENT@99..100 "B"
+    WHITESPACE@100..101 " "
+    EQ@101..102 "="
+    WHITESPACE@102..103 " "
+    PATH_TYPE@103..113
+      PATH@103..113
+        PATH_SEGMENT@103..113
+          NAME_REF@103..104
+            IDENT@103..104 "X"
+          GENERIC_ARG_LIST@104..113
+            L_ANGLE@104..105 "<"
+            ASSOC_TYPE_ARG@105..112
+              NAME_REF@105..106
+                IDENT@105..106 "Y"
+              GENERIC_ARG_LIST@106..109
+                L_ANGLE@106..107 "<"
+                TYPE_ARG@107..108
+                  PATH_TYPE@107..108
+                    PATH@107..108
+                      PATH_SEGMENT@107..108
+                        NAME_REF@107..108
+                          IDENT@107..108 "Z"
+                R_ANGLE@108..109 ">"
+              COLON@109..110 ":"
+              WHITESPACE@110..111 " "
+              TYPE_BOUND_LIST@111..112
+                TYPE_BOUND@111..112
+                  PATH_TYPE@111..112
+                    PATH@111..112
+                      PATH_SEGMENT@111..112
+                        NAME_REF@111..112
+                          IDENT@111..112 "V"
+            R_ANGLE@112..113 ">"
+    SEMICOLON@113..114 ";"
+  WHITESPACE@114..115 "\n"

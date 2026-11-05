@@ -70,7 +70,24 @@ fn type_inner(p: &mut Parser<'_>, allow_bounds: bool) {
             bounds_for(p, allow_bounds);
             m.complete(p, DYN_TRAIT_TYPE);
         }
-        _ if paths::is_path_start(p) => path_or_macro_type(p),
+        _ if paths::is_path_start(p) => {
+            let (ty, kind) = path_or_macro_type(p);
+            // `Trait + Send`: a bare trait object, which only editions
+            // before 2021 accept, but every edition parses.
+            if allow_bounds && p.at(T![+]) && kind == PATH_TYPE {
+                let object = ty.precede(p);
+                let list = object.complete(p, TYPE_BOUND).precede(p);
+                while p.eat(T![+]) {
+                    if !p.at_ts(generics::BOUND_FIRST) {
+                        break;
+                    }
+                    generics::type_bound(p);
+                }
+                list.complete(p, TYPE_BOUND_LIST)
+                    .precede(p)
+                    .complete(p, DYN_TRAIT_TYPE);
+            }
+        }
         _ => p.err_recover(
             "expected a type",
             TokenSet::new(&[T![,], T![;], T![=], T![>], T![')'], T![']']]),
@@ -111,7 +128,7 @@ pub(super) fn path_type(p: &mut Parser<'_>) {
     m.complete(p, PATH_TYPE);
 }
 
-fn path_or_macro_type(p: &mut Parser<'_>) {
+fn path_or_macro_type(p: &mut Parser<'_>) -> (CompletedMarker, SyntaxKind) {
     let m = p.start();
     paths::type_path(p);
     if p.at(T![!]) && !p.at(T![!=]) {
@@ -121,9 +138,9 @@ fn path_or_macro_type(p: &mut Parser<'_>) {
         } else {
             p.error("expected `(`, `[` or `{`");
         }
-        m.complete(p, MACRO_TYPE);
+        (m.complete(p, MACRO_TYPE), MACRO_TYPE)
     } else {
-        m.complete(p, PATH_TYPE);
+        (m.complete(p, PATH_TYPE), PATH_TYPE)
     }
 }
 

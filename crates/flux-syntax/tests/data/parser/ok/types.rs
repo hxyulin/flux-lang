@@ -16,3 +16,9 @@ type Qualified = <Vec<u8> as IntoIterator>::Item;
 type Global = ::std::vec::Vec<u8>;
 type Turbofish = Vec::<u8>;
 type Macro = ty!(u8);
+// Bare trait objects, which editions 2015 and 2018 accept.
+type Bare = Box<Error + Send + Sync>;
+type BareFn = Box<Fn(u8) -> u8 + Send + 'static>;
+type BareParen<'a> = &'a (Trait + 'a);
+type BareTrailing = Box<Trait + Send +>;
+type BareRooted = Box<::std::error::Error + Send>;

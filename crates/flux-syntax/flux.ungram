@@ -270,8 +270,9 @@ Type =
 ArrayType =
   '[' Type ';' Expr ']'
 
+// Without `dyn`: `Trait + Send`, a bare trait object before edition 2021.
 DynTraitType =
-  'dyn' TypeBoundList
+  'dyn'? TypeBoundList
 
 FnPtrType =
   'unsafe'? Abi? 'fn' ParamList RetType?

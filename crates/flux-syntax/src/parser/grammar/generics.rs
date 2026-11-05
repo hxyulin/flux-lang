@@ -76,7 +76,7 @@ fn lifetime_bounds(p: &mut Parser<'_>) {
     list.complete(p, TYPE_BOUND_LIST);
 }
 
-const BOUND_FIRST: TokenSet = paths::PATH_FIRST.union(TokenSet::new(&[
+pub(super) const BOUND_FIRST: TokenSet = paths::PATH_FIRST.union(TokenSet::new(&[
     LIFETIME_IDENT,
     T![?],
     T![for],
@@ -96,7 +96,7 @@ pub(super) fn bounds(p: &mut Parser<'_>) {
     list.complete(p, TYPE_BOUND_LIST);
 }
 
-fn type_bound(p: &mut Parser<'_>) {
+pub(super) fn type_bound(p: &mut Parser<'_>) {
     let m = p.start();
     let parenthesized = p.eat(T!['(']);
     match p.current() {

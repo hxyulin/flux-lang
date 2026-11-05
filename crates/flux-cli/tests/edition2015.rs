@@ -229,6 +229,22 @@ fn ellipsis_range_patterns_until_2021() {
 }
 
 #[test]
+fn bare_trait_objects_with_bounds_until_2021() {
+    let case = Case::new();
+    let bounded = "use std::fmt;trait Value{fn value(&self)->u32;}impl Value for u32{fn value(&self)->u32{*self}}type Shared=Box<Value+Send+Sync+'static>;type Err=Box<::std::error::Error+Send+Sync>;fn sum<'a>(values:&'a [&'a (Value+'a)])->u32{values.iter().map(|v|v.value()).sum()}fn call(f:&(Fn(u32)->u32+Send))->u32{f(4)}fn main(){let shared:Shared=Box::new(5u32);let err:Err=From::from(\"bad\");let _:&fmt::Debug=&err;println!(\"{} {} {} {}\",shared.value(),sum(&[&1u32,&2u32]),call(&|x|x*3),err);}";
+    for edition in [Edition::E2015, Edition::E2018] {
+        case.check(bounded, edition, true);
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        assert_eq!(case.runtime(bounded, edition), b"5 3 12 bad\n");
+    }
+    case.check(bounded, Edition::E2021, false);
+    case.check("type T=Box<u8+Send>;fn main(){}", Edition::E2015, false);
+}
+
+#[test]
 fn shared_legacy_semantics_and_macro_imports() {
     let case = Case::new();
     let source = r#"macro_rules! route{($e:expr)=>{1};(_)=>{2};(const $e:expr)=>{3};}macro_rules! pats{($($p:pat)|+)=>{{let mut n=0;$(let _=stringify!($p);n+=1;)+n}};}fn main(){let values=[String::from("first"),String::from("second")];let mut iter=values.into_iter();let first:&String=iter.next().unwrap();println!("{} {} {} {} {}",first,values[1],route!(_),route!(const{3}),pats!(A|B));if false{panic!("literal {missing}");}}"#;

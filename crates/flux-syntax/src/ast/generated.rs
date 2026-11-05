@@ -702,7 +702,7 @@ impl<'t> AstNode<'t> for ContinueExpr<'t> {
 
 /// ```text
 /// DynTraitType =
-///   'dyn' TypeBoundList
+///   'dyn'? TypeBoundList
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DynTraitType<'t> {
