@@ -900,9 +900,9 @@ bytes to the saved object build before reusing an address map.
 
 When comparing compiler speed, use identical source graphs and program
 optimization options. Force `FLUX_BUILTINS_SOURCE=1` on both compilers to avoid
-comparing staged built-ins against source-library compilation. Flux currently
-enables debug assertions, so enable them in an optimized rustc-built reference
-as well. The generated compiler uses Flux's runtime libraries; that comparison
+comparing staged built-ins against source-library compilation. An optimized
+`flux build` takes debug assertions from the release profile, off by default
+as in Cargo; build the rustc reference with the same profile settings. The generated compiler uses Flux's runtime libraries; that comparison
 includes library implementation differences as well as generated instructions.
 
 ## Linux backend capability boundary

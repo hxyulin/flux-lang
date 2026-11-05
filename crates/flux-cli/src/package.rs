@@ -78,6 +78,10 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         let build_options = BuildOptions {
             optimize: options.optimize,
             timings: options.timings,
+            debug_assertions: Some(crate::cargo::profile_debug_assertions(
+                &options.manifest_path,
+                options.optimize,
+            )?),
         };
         let compiled = compile_libraries(&plan, build_options)?;
         (plan, compiled)

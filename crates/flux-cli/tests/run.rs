@@ -1,7 +1,11 @@
 //! Compiles every program in `tests/run` with rustc and with flux
 //! (unoptimized and with `-O`), runs each, and compares their output,
 //! panic messages and exit status. rustc gets `-C overflow-checks=off
-//! -C panic=abort`, the semantics flux implements. Both compilers are
+//! -C panic=abort`, the semantics flux implements. Debug assertions are
+//! on without `-O` and off with it in both compilers; a program that
+//! mentions them (`debug_assert*!`, `cfg(debug_assertions)`) gets a second
+//! rustc reference built with `-C debug-assertions=off`, while other
+//! programs cannot observe the setting and share one. Both compilers are
 //! given the program's path relative to the repository, which panic
 //! messages show; the thread id they show differs between runs.
 //!
@@ -217,6 +221,65 @@ fn compiler_modules_match_rustc() {
     compare_programs(&root, dir, &[internals]);
 }
 
+/// `-C debug-assertions` overrides the default that `-O` selects.
+#[test]
+fn debug_assertions_flag_overrides_optimization_default() {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
+        || !cases::selected("debug_assertions_flag")
+    {
+        return;
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let scratch = Scratch::new(std::env::temp_dir().join("flux-debug-assertions-flag"));
+    for (flags, expected) in [
+        (
+            &["-O", "-C", "debug-assertions"][..],
+            "debug assertions true true\n",
+        ),
+        (
+            &["-Cdebug-assertions=no"][..],
+            "no debug assertions false false\n",
+        ),
+        (
+            &["-C", "debug-assertions=off", "-C", "debug-assertions=yes"][..],
+            "debug assertions true true\n",
+        ),
+    ] {
+        let executable = scratch.path().join("program");
+        let mut flux = Command::new(env!("CARGO_BIN_EXE_fluxc"));
+        flux.current_dir(&root)
+            .arg("build")
+            .arg("tests/run/debug_assertions.rs")
+            .args(flags)
+            .arg("-o")
+            .arg(&executable);
+        compile(&mut flux, "flux").unwrap();
+        let outcome = run(&executable, TIME_LIMIT);
+        assert!(
+            outcome.stdout.starts_with(expected),
+            "{flags:?}: {}",
+            outcome.brief()
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .args([
+            "build",
+            "-C",
+            "opt-level=3",
+            "tests/run/debug_assertions.rs",
+        ])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("unsupported codegen option `opt-level`")
+    );
+}
+
 #[test]
 fn trait_required_lifetime_matches_rustc() {
     if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
@@ -277,29 +340,57 @@ fn compare_program(root: &Path, dir: &Path, program: &Path) -> Vec<String> {
     };
     // As given on the command line, which panic messages show.
     let program = program.strip_prefix(root).unwrap_or(program);
-    let reference = dir.join(format!("{name}-rustc"));
-    let result = compile(
-        Command::new("rustc")
-            .current_dir(root)
-            .args([
-                "--edition",
-                "2024",
-                "-C",
-                "overflow-checks=off",
-                "-C",
-                "panic=abort",
-            ])
-            .arg("-o")
-            .arg(&reference)
-            .arg(program),
-        "rustc",
-    );
-    if let Err(message) = result {
-        failures.push(format!("{name}: {message}"));
-        return failures;
-    }
-    let expected = run(&reference, time_limit);
+    let observes_assertions =
+        std::fs::read_to_string(root.join(program)).is_ok_and(|text| text.contains("debug_assert"));
+    let reference = |debug_assertions: bool| {
+        let suffix = if debug_assertions { "" } else { "-release" };
+        let reference = dir.join(format!("{name}-rustc{suffix}"));
+        compile(
+            Command::new("rustc")
+                .current_dir(root)
+                .args([
+                    "--edition",
+                    "2024",
+                    "-C",
+                    "overflow-checks=off",
+                    "-C",
+                    "panic=abort",
+                    "-C",
+                ])
+                .arg(format!(
+                    "debug-assertions={}",
+                    if debug_assertions { "on" } else { "off" }
+                ))
+                .arg("-o")
+                .arg(&reference)
+                .arg(program),
+            "rustc",
+        )
+        .map(|()| run(&reference, time_limit))
+    };
+    let debug = match reference(true) {
+        Ok(outcome) => outcome,
+        Err(message) => {
+            failures.push(format!("{name}: {message}"));
+            return failures;
+        }
+    };
+    let release = if observes_assertions {
+        match reference(false) {
+            Ok(outcome) => Some(outcome),
+            Err(message) => {
+                failures.push(format!("{name}: {message}"));
+                return failures;
+            }
+        }
+    } else {
+        None
+    };
     for optimize in [false, true] {
+        let expected = match &release {
+            Some(release) if optimize => release,
+            _ => &debug,
+        };
         let suffix = if optimize { "-O" } else { "" };
         let executable = dir.join(format!("{name}-flux{suffix}"));
         let mut flux = Command::new(env!("CARGO_BIN_EXE_fluxc"));
@@ -316,7 +407,7 @@ fn compare_program(root: &Path, dir: &Path, program: &Path) -> Vec<String> {
             continue;
         }
         let actual = run(&executable, time_limit);
-        if actual != expected {
+        if actual != *expected {
             failures.push(format!(
                 "{name}{suffix}: expected {}, got {}",
                 expected.brief(),

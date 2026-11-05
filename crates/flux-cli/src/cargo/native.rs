@@ -133,7 +133,10 @@ fn make_plan(options: &Options) -> Result<Plan> {
         return Err("native planning requires Cargo.lock version 3 or 4".into());
     }
     let host = crate::target::host()?.to_owned();
-    let cfg = crate::target::cfg()?.iter().map(|s| compact(s)).collect();
+    let cfg = crate::target::cfg(true)?
+        .iter()
+        .map(|s| compact(s))
+        .collect();
     let home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cargo")))

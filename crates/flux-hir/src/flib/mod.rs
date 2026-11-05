@@ -820,7 +820,8 @@ impl<K: Decode + Ord, V: Decode> Decode for BTreeMap<K, V> {
 impl Encode for flux_syntax::CfgOptions {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.names.encode(e)?;
-        self.values.encode(e)
+        self.values.encode(e)?;
+        self.debug_assertions.encode(e)
     }
 }
 impl Decode for flux_syntax::CfgOptions {
@@ -828,6 +829,7 @@ impl Decode for flux_syntax::CfgOptions {
         Ok(Self {
             names: Decode::decode(d)?,
             values: Decode::decode(d)?,
+            debug_assertions: Decode::decode(d)?,
         })
     }
 }

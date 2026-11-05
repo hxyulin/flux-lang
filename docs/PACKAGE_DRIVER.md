@@ -146,13 +146,14 @@ std/alloc types or printing macros. Explicit `extern crate alloc` or
 is not added: a no_std executable currently requires `extern crate std`.
 
 Package builds retain each crate's selected edition and use Flux's current
-host configuration: debug assertions enabled, panic abort, no user features, no test
-configuration and no emitted debug information. Backend optimization is off
-by default; `-O` enables Keel optimization without selecting a Cargo release
-profile or changing `cfg(debug_assertions)`. Cargo's
-default dev/release profiles are not applied. There is no configurable
-compilation mode in this milestone; a per-compilation HIR configuration
-API is deferred until a second configuration is supported.
+host configuration: panic abort, no user features, no test configuration and
+no emitted debug information. Backend optimization is off by default; `-O`
+enables Keel optimization. `cfg(debug_assertions)` follows the manifest's
+Cargo profile: `[profile.release] debug-assertions` with `-O` and
+`[profile.dev] debug-assertions` without, defaulting to off and on as Cargo
+does. `flux build` reads the same setting from the workspace manifest and also
+applies it to build scripts and their `CARGO_CFG_DEBUG_ASSERTIONS`. Other
+profile settings are not applied.
 
 The executable is written to `<package>/target/flux/<binary-name>`, separate
 from Cargo's own artifacts. Every invocation rebuilds, including all

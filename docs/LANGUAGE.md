@@ -374,8 +374,9 @@ a macro's definition writes is not the caller's, and the reverse,
 except that a macro defined in a function sees the locals in scope at
 its definition. Items a macro defines are found by name, from anywhere.
 `core` has rustc's `assert!`, `assert_eq!`, `assert_ne!`,
-`debug_assert!`, `debug_assert_eq!` and `debug_assert_ne!` (on: flux
-compiles as rustc does without `-O`), `panic!`, `unreachable!`,
+`debug_assert!`, `debug_assert_eq!` and `debug_assert_ne!` (on without
+`-O` and off with it, as in rustc; `-C debug-assertions[=yes|no]`
+overrides that), `panic!`, `unreachable!`,
 `todo!`, `unimplemented!`, `matches!`, `format_args!`, `write!`,
 `writeln!`, `concat!`, `stringify!`, `line!`, `column!`, `file!`,
 `module_path!`, `cfg!` (`debug_assertions`, `panic`, the target's

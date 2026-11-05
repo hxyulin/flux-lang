@@ -154,6 +154,7 @@ fn compile_inner(
     // `core`'s files are parsed with the database.
     let (mut db, root) = timings.time("database + root load/parse", || {
         let mut db = suite.map_or_else(SourceDb::new, |s| s.db.fork());
+        db.set_debug_assertions(options.debug_assertions());
         let edition = sources
             .last()
             .map_or(flux_syntax::Edition::E2024, |s| s.edition);
@@ -164,6 +165,10 @@ fn compile_inner(
         (db, root)
     });
     let root = root?;
+    if sources.is_empty() && !options.debug_assertions() {
+        // A lone root is otherwise left unconfigured, which keeps them on.
+        db.set_crate_cfg(root, flux_hir::CrateCfg::default())?;
+    }
     let graph = timings.time("source dependency load/parse", || {
         let mut graph = Vec::new();
         for source in sources {

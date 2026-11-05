@@ -32,7 +32,7 @@ pub(crate) fn run() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.len() == 2 && args[0] == "--print" && args[1] == "cfg" {
-        return finish(crate::target::cfg().map(|cfg| {
+        return finish(crate::target::cfg(true).map(|cfg| {
             for line in cfg {
                 println!("{line}");
             }
@@ -85,6 +85,7 @@ fn compile(probe: Probe) -> Result<(), String> {
     let options = crate::BuildOptions {
         optimize: false,
         timings: false,
+        debug_assertions: None,
     };
     if !crate::flib_build::library(
         &runtime.join("lib.rs"),

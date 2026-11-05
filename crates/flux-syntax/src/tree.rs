@@ -106,10 +106,22 @@ const _: () = assert!(size_of::<NodeData>() == 16);
 
 /// Conditional-compilation inputs attached by the source layer. Parsing
 /// preserves these inputs without interpreting or filtering the syntax.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CfgOptions {
     pub names: Box<[Box<str>]>,
     pub values: Box<[(Box<str>, Box<str>)]>,
+    /// Whether `cfg(debug_assertions)` holds: rustc's `-C debug-assertions`.
+    pub debug_assertions: bool,
+}
+
+impl Default for CfgOptions {
+    fn default() -> Self {
+        Self {
+            names: Box::default(),
+            values: Box::default(),
+            debug_assertions: true,
+        }
+    }
 }
 
 /// A parsed file: its text, tokens and nodes.

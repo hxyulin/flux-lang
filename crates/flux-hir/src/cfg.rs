@@ -84,8 +84,9 @@ fn cfg_predicate(
     }
     let os = std::env::consts::OS;
     Ok(match (name, value.as_deref()) {
-        // flux's equivalent of rustc without `-O`: debug assertions on.
-        ("debug_assertions", None) => true,
+        // On unless the crate was configured without them, as rustc's
+        // `-C debug-assertions`; the embedded libraries keep them on.
+        ("debug_assertions", None) => cfg.is_none_or(|cfg| cfg.debug_assertions),
         ("panic", Some(v)) => v == "abort",
         ("unix", None) => cfg!(unix),
         ("windows", None) => cfg!(windows),

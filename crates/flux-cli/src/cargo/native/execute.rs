@@ -56,7 +56,21 @@ pub(super) fn run(
     } else {
         String::new()
     };
-    let cfg = crate::target::cfg()?
+    // Build scripts and the target graph follow the Cargo profile: `release`
+    // with `-O`, `dev` otherwise. An explicit setting overrides it.
+    let optimize = build.is_some_and(|b| b.optimize);
+    let debug_assertions = match build.and_then(|b| b.debug_assertions) {
+        Some(enabled) => enabled,
+        None => crate::cargo::profile_debug_assertions(
+            &plan.workspace_root.join("Cargo.toml"),
+            optimize,
+        )?,
+    };
+    let build = build.map(|b| crate::BuildOptions {
+        debug_assertions: Some(debug_assertions),
+        ..b
+    });
+    let cfg = crate::target::cfg(debug_assertions)?
         .into_iter()
         .collect::<Vec<_>>()
         .join("\n");
@@ -127,16 +141,14 @@ pub(super) fn run(
                 (0..plan.units.len()).find(|&i| ready(&started, i) && (script(i) || native_macros));
             if let Some(index) = next.filter(|_| failure.is_none()) {
                 started[index] = true;
-                match flux_unit(
-                    &plan,
-                    &outputs,
-                    index,
-                    &root,
-                    &version,
-                    &cfg,
-                    &rustc,
+                let host = HostSettings {
+                    version: &version,
+                    cfg: &cfg,
+                    rustc: &rustc,
                     native_macros,
-                ) {
+                    debug_assertions,
+                };
+                match flux_unit(&plan, &outputs, index, &root, &host) {
                     Ok(output) => {
                         outputs[index] = output;
                         done[index] = true;
@@ -272,18 +284,30 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Settings shared by every host unit that Flux compiles.
+struct HostSettings<'a> {
+    version: &'a str,
+    cfg: &'a str,
+    rustc: &'a std::ffi::OsStr,
+    native_macros: bool,
+    debug_assertions: bool,
+}
+
 /// Compiles a build script with Flux and runs it, or builds a Flux macro host.
-#[allow(clippy::too_many_arguments)]
 fn flux_unit(
     plan: &Plan,
     outputs: &[Output],
     index: usize,
     root: &Path,
-    version: &str,
-    cfg: &str,
-    rustc: &std::ffi::OsStr,
-    native_macros: bool,
+    host: &HostSettings<'_>,
 ) -> Result<Output> {
+    let HostSettings {
+        version,
+        cfg,
+        rustc,
+        native_macros,
+        debug_assertions,
+    } = *host;
     let unit = &plan.units[index];
     let package = &plan.packages[unit.package];
     let directory = root.join(unit_name(plan, index, version));
@@ -319,6 +343,7 @@ fn flux_unit(
         options: crate::BuildOptions {
             optimize: false,
             timings: false,
+            debug_assertions: Some(debug_assertions),
         },
     })? {
         return Err(format!(

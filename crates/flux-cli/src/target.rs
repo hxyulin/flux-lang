@@ -9,10 +9,14 @@ pub(crate) fn host() -> Result<&'static str, String> {
     }
 }
 
-pub(crate) fn cfg() -> Result<BTreeSet<String>, String> {
+/// The target's cfg names and values, as `rustc --print cfg` prints them.
+pub(crate) fn cfg(debug_assertions: bool) -> Result<BTreeSet<String>, String> {
     host()?;
     let macos = std::env::consts::OS == "macos";
-    let mut result = BTreeSet::from(["debug_assertions".into(), "unix".into()]);
+    let mut result = BTreeSet::from(["unix".into()]);
+    if debug_assertions {
+        result.insert("debug_assertions".into());
+    }
     for (name, value) in [
         ("target_os", std::env::consts::OS),
         ("target_arch", std::env::consts::ARCH),

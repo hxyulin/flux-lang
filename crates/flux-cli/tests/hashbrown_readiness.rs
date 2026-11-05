@@ -314,7 +314,8 @@ fn compare_program(root: &Path, source: &Path) {
         let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(source).arg("-o").arg(&executable);
         if optimized {
-            command.arg("-O");
+            // One rustc reference, built with its default debug assertions.
+            command.args(["-O", "-C", "debug-assertions"]);
         }
         success(&command.output().unwrap());
         let actual = execute(&executable);

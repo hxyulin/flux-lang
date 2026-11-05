@@ -231,7 +231,9 @@ does not match `flux.ungram`.
 Programs in `tests/run` are compiled with rustc (`-C overflow-checks=off
 -C panic=abort`) and with flux, with and without `-O`, and must produce
 the same output, panic messages and exit status: `cargo test -p
-flux-cli --test run`. Both are given the program's path relative to the
+flux-cli --test run`. Debug assertions are on without `-O` and off with it;
+a program that mentions them gets a second rustc reference built with
+`-C debug-assertions=off` for the `-O` comparison. Both are given the program's path relative to the
 repository, which panic messages show.
 Shared CLI test mechanics live in `crates/flux-cli/tests/support`: `process`
 runs bounded commands with file-backed output, `oracle` compares ordinary native
