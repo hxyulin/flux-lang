@@ -5,8 +5,9 @@ use std::path::Path;
 
 use flux_hir::flib::{Decode, Decoder, Encode, Encoder, Error, digest};
 
+/// The stat fields that change whenever a file's content is replaced or written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Stamp {
+pub(crate) struct Stamp {
     device: u64,
     inode: u64,
     size: u64,
@@ -18,7 +19,7 @@ struct Stamp {
 
 impl Stamp {
     #[cfg(unix)]
-    fn of(metadata: &std::fs::Metadata) -> Self {
+    pub(crate) fn of(metadata: &std::fs::Metadata) -> Self {
         use std::os::unix::fs::MetadataExt;
         Self {
             device: metadata.dev(),
@@ -31,8 +32,18 @@ impl Stamp {
         }
     }
 
+    /// Whether the last change is old enough that a later write must give a
+    /// different change time. A coarse file-system clock can give two writes
+    /// within one tick the same stamp, so recent files are not trusted.
+    pub(crate) fn settled(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        cfg!(unix) && now - self.changed >= 2
+    }
+
     #[cfg(not(unix))]
-    fn of(metadata: &std::fs::Metadata) -> Self {
+    pub(crate) fn of(metadata: &std::fs::Metadata) -> Self {
         Self {
             device: 0,
             inode: 0,

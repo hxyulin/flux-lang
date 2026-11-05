@@ -1,11 +1,14 @@
 //! Fluxlib host descriptors. Files remain external and are checked before execution.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use flux_hir::flib::{Decode, Decoder, Encode, Encoder, digest};
 use flux_hir::{ProcMacroExpander, ProcMacroResolver};
+
+use crate::flib::executable::Stamp;
 
 use super::{Catalog, CatalogState, Host, Reply, SUPPORTED_COMMIT, Service, TIMEOUT, Task};
 
@@ -25,21 +28,21 @@ impl FileIdentity {
                 path.display()
             )
         })?;
-        let bytes = std::fs::read(&path)
+        let hash = hash_file(&path)
             .map_err(|e| format!("cannot read procedural macro host {}: {e}", path.display()))?;
-        Ok(Self {
-            path,
-            hash: digest(&bytes),
-        })
+        Ok(Self { path, hash })
     }
+    /// Checks that the file still has the recorded content. A file is hashed
+    /// once per process; later checks compare its stat fields, which change
+    /// whenever the file is written or replaced.
     fn verify(&self) -> Result<(), String> {
-        let bytes = std::fs::read(&self.path).map_err(|e| {
+        let hash = hash_file(&self.path).map_err(|e| {
             format!(
                 "cannot read procedural macro host {}: {e}; rebuild artifact",
                 self.path.display()
             )
         })?;
-        if digest(&bytes) != self.hash {
+        if hash != self.hash {
             return Err(format!(
                 "procedural macro host changed: {}; rebuild artifact",
                 self.path.display()
@@ -62,6 +65,36 @@ impl FileIdentity {
             .map_err(|_| "invalid procedural macro host hash")?;
         Ok(Self { path, hash })
     }
+}
+
+/// Host files hashed by this process, with the stat fields seen while hashing.
+static HASHED: Mutex<BTreeMap<PathBuf, (Stamp, [u8; 32])>> = Mutex::new(BTreeMap::new());
+
+/// The SHA-256 of `path`, reusing this process's earlier hash while every stat
+/// field (device, inode, size, modification and change times) is unchanged.
+fn hash_file(path: &Path) -> std::io::Result<[u8; 32]> {
+    let stamp = Stamp::of(&std::fs::metadata(path)?);
+    let hashed = HASHED.lock().expect("host hash cache poisoned");
+    if let Some((seen, hash)) = hashed.get(path)
+        && *seen == stamp
+    {
+        return Ok(*hash);
+    }
+    drop(hashed);
+    let mut file = std::fs::File::open(path)?;
+    let before = Stamp::of(&file.metadata()?);
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let hash = digest(&bytes);
+    // A file written while it was read, or so recently that another write
+    // could keep its stamp, is hashed again on the next check.
+    if before.settled() && Stamp::of(&file.metadata()?) == before {
+        HASHED
+            .lock()
+            .expect("host hash cache poisoned")
+            .insert(path.to_owned(), (before, hash));
+    }
+    Ok(hash)
 }
 
 #[derive(Debug, Clone)]
@@ -228,5 +261,27 @@ impl ProcMacroResolver for FlibHostResolver {
             name,
             identity,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_hash_follows_rewrites_of_the_same_size() {
+        let directory = std::env::temp_dir().join(format!("flux-host-hash-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("host");
+        std::fs::write(&path, b"first").unwrap();
+        let identity = FileIdentity::capture(&path).unwrap();
+        assert!(identity.verify().is_ok());
+        assert!(identity.verify().is_ok());
+        // Same size, written immediately: the change time may share a clock
+        // tick with the first write, so the cache must not hide the change.
+        std::fs::write(&path, b"other").unwrap();
+        let error = identity.verify().unwrap_err();
+        assert!(error.contains("host changed"), "{error}");
+        std::fs::remove_dir_all(&directory).unwrap();
     }
 }
