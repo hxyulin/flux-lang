@@ -157,16 +157,9 @@ fn <Wrapper<T> as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $cra
 }
 
 fn <Fieldless as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
-    match self@0 {
-        Fieldless::A => match other@1 {
-            Fieldless::A => true,
-            _ => false,
-        },
-        Fieldless::B => match other@1 {
-            Fieldless::B => true,
-            _ => false,
-        },
-    }
+    let __self_discr@2 = discriminant_value(self@0);
+    let __arg1_discr@3 = discriminant_value(other@1);
+    (__self_discr@2 == __arg1_discr@3)
 }
 
 fn <Fieldless as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
@@ -177,44 +170,31 @@ fn <Fieldless as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -
 }
 
 fn <Fieldless as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
-    let __self_discr@2 = match self@0 {
-        Fieldless::A => 0isize,
-        Fieldless::B => 1isize,
-    };
-    let __arg1_discr@3 = match other@1 {
-        Fieldless::A => 0isize,
-        Fieldless::B => 1isize,
-    };
+    let __self_discr@2 = (discriminant_value(self@0) as $crate0::primitive::isize);
+    let __arg1_discr@3 = (discriminant_value(other@1) as $crate0::primitive::isize);
     PartialOrd::partial_cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
 fn <Fieldless as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
-    let __self_discr@2 = match self@0 {
-        Fieldless::A => 0isize,
-        Fieldless::B => 1isize,
-    };
-    let __arg1_discr@3 = match other@1 {
-        Fieldless::A => 0isize,
-        Fieldless::B => 1isize,
-    };
+    let __self_discr@2 = (discriminant_value(self@0) as $crate0::primitive::isize);
+    let __arg1_discr@3 = (discriminant_value(other@1) as $crate0::primitive::isize);
     Ord::cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
 fn <Mixed as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
-    match self@0 {
-        Mixed::Unit => match other@1 {
-            Mixed::Unit => true,
-            _ => false,
+    let __self_discr@2 = discriminant_value(self@0);
+    let __arg1_discr@3 = discriminant_value(other@1);
+    ((__self_discr@2 == __arg1_discr@3) && match self@0 {
+        Mixed::Tuple(__self_0@4, __self_1@5) => match other@1 {
+            Mixed::Tuple(__arg1_0@6, __arg1_1@7) => (((*__self_0@4) == (*__arg1_0@6)) && ((*__self_1@5) == (*__arg1_1@7))),
+            _ => true,
         },
-        Mixed::Tuple(__self_0@2, __self_1@3) => match other@1 {
-            Mixed::Tuple(__other_0@4, __other_1@5) => (((*__self_0@2) == (*__other_0@4)) && ((*__self_1@3) == (*__other_1@5))),
-            _ => false,
+        Mixed::Record { a: __self_0@8 } => match other@1 {
+            Mixed::Record { a: __arg1_0@9 } => ((*__self_0@8) == (*__arg1_0@9)),
+            _ => true,
         },
-        Mixed::Record { a: __self_0@6 } => match other@1 {
-            Mixed::Record { a: __other_0@7 } => ((*__self_0@6) == (*__other_0@7)),
-            _ => false,
-        },
-    }
+        _ => true,
+    })
 }
 
 fn <Mixed as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
@@ -231,16 +211,8 @@ fn <Mixed as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> ()
 }
 
 fn <Mixed as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
-    let __self_discr@2 = match self@0 {
-        Mixed::Unit => 0isize,
-        Mixed::Tuple(..) => 1isize,
-        Mixed::Record { .. } => 2isize,
-    };
-    let __arg1_discr@3 = match other@1 {
-        Mixed::Unit => 0isize,
-        Mixed::Tuple(..) => 1isize,
-        Mixed::Record { .. } => 2isize,
-    };
+    let __self_discr@2 = (discriminant_value(self@0) as $crate0::primitive::isize);
+    let __arg1_discr@3 = (discriminant_value(other@1) as $crate0::primitive::isize);
     match self@0 {
         Mixed::Tuple(__self_0@4, __self_1@5) => match other@1 {
             Mixed::Tuple(__arg1_0@6, __arg1_1@7) => match PartialOrd::partial_cmp(__self_0@4, __arg1_0@6) {
@@ -258,16 +230,8 @@ fn <Mixed as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Sel
 }
 
 fn <Mixed as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
-    let __self_discr@2 = match self@0 {
-        Mixed::Unit => 0isize,
-        Mixed::Tuple(..) => 1isize,
-        Mixed::Record { .. } => 2isize,
-    };
-    let __arg1_discr@3 = match other@1 {
-        Mixed::Unit => 0isize,
-        Mixed::Tuple(..) => 1isize,
-        Mixed::Record { .. } => 2isize,
-    };
+    let __self_discr@2 = (discriminant_value(self@0) as $crate0::primitive::isize);
+    let __arg1_discr@3 = (discriminant_value(other@1) as $crate0::primitive::isize);
     match self@0 {
         Mixed::Tuple(__self_0@4, __self_1@5) => match other@1 {
             Mixed::Tuple(__arg1_0@6, __arg1_1@7) => match Ord::cmp(__self_0@4, __arg1_0@6) {
@@ -285,47 +249,21 @@ fn <Mixed as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::
 }
 
 fn <Signed as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
-    match self@0 {
-        Signed::Low => match other@1 {
-            Signed::Low => true,
-            _ => false,
-        },
-        Signed::High => match other@1 {
-            Signed::High => true,
-            _ => false,
-        },
-        Signed::Next => match other@1 {
-            Signed::Next => true,
-            _ => false,
-        },
-    }
+    let __self_discr@2 = discriminant_value(self@0);
+    let __arg1_discr@3 = discriminant_value(other@1);
+    (__self_discr@2 == __arg1_discr@3)
 }
 
 fn <Signed as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
-    let __self_discr@2 = match self@0 {
-        Signed::Low => (-1i8),
-        Signed::High => 5i8,
-        Signed::Next => 6i8,
-    };
-    let __arg1_discr@3 = match other@1 {
-        Signed::Low => (-1i8),
-        Signed::High => 5i8,
-        Signed::Next => 6i8,
-    };
+    let __self_discr@2 = (discriminant_value(self@0) as $crate0::primitive::i8);
+    let __arg1_discr@3 = (discriminant_value(other@1) as $crate0::primitive::i8);
     PartialOrd::partial_cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
 fn <Computed as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
-    match self@0 {
-        Computed::First => match other@1 {
-            Computed::First => true,
-            _ => false,
-        },
-        Computed::Second => match other@1 {
-            Computed::Second => true,
-            _ => false,
-        },
-    }
+    let __self_discr@2 = discriminant_value(self@0);
+    let __arg1_discr@3 = discriminant_value(other@1);
+    (__self_discr@2 == __arg1_discr@3)
 }
 
 fn <Computed as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {
@@ -336,26 +274,14 @@ fn <Computed as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) ->
 }
 
 fn <Computed as $crate0::cmp::PartialOrd>::partial_cmp(self@0: &Self, other@1: &Self) -> $crate0::option::Option<$crate0::cmp::Ordering> {
-    let __self_discr@2 = match self@0 {
-        Computed::First => _,
-        Computed::Second => (_ + 1isize),
-    };
-    let __arg1_discr@3 = match other@1 {
-        Computed::First => _,
-        Computed::Second => (_ + 1isize),
-    };
+    let __self_discr@2 = (discriminant_value(self@0) as $crate0::primitive::isize);
+    let __arg1_discr@3 = (discriminant_value(other@1) as $crate0::primitive::isize);
     PartialOrd::partial_cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 
 fn <Computed as $crate0::cmp::Ord>::cmp(self@0: &Self, other@1: &Self) -> $crate0::cmp::Ordering {
-    let __self_discr@2 = match self@0 {
-        Computed::First => _,
-        Computed::Second => (_ + 1isize),
-    };
-    let __arg1_discr@3 = match other@1 {
-        Computed::First => _,
-        Computed::Second => (_ + 1isize),
-    };
+    let __self_discr@2 = (discriminant_value(self@0) as $crate0::primitive::isize);
+    let __arg1_discr@3 = (discriminant_value(other@1) as $crate0::primitive::isize);
     Ord::cmp((&__self_discr@2), (&__arg1_discr@3))
 }
 

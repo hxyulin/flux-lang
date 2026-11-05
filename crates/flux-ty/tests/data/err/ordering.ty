@@ -78,10 +78,12 @@ fn cmp(&Bare, &Bare) -> Ordering
 fn eq(&Variants, &Variants) -> bool
     self@0: &Variants
     other@1: &Variants
-    __self_0@2: &OnlyEq
-    __other_0@3: &OnlyEq
-    __self_0@4: &i32
-    __other_0@5: &i32
+    __self_discr@2: u128
+    __arg1_discr@3: u128
+    __self_0@4: &OnlyEq
+    __arg1_0@5: &OnlyEq
+    __self_0@6: &i32
+    __arg1_0@7: &i32
 fn partial_cmp(&Variants, &Variants) -> Option<Ordering>
     self@0: &Variants
     other@1: &Variants

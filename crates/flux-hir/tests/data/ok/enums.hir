@@ -98,20 +98,9 @@ fn <Level as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
 }
 
 fn <Level as $crate0::cmp::PartialEq>::eq(self@0: &Self, other@1: &Self) -> bool {
-    match self@0 {
-        Level::Low => match other@1 {
-            Level::Low => true,
-            _ => false,
-        },
-        Level::Mid => match other@1 {
-            Level::Mid => true,
-            _ => false,
-        },
-        Level::High => match other@1 {
-            Level::High => true,
-            _ => false,
-        },
-    }
+    let __self_discr@2 = discriminant_value(self@0);
+    let __arg1_discr@3 = discriminant_value(other@1);
+    (__self_discr@2 == __arg1_discr@3)
 }
 
 fn <Level as $crate0::cmp::Eq>::assert_receiver_is_total_eq(self@0: &Self) -> () {

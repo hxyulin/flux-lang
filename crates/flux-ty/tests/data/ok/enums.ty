@@ -37,5 +37,7 @@ fn clone(&Small) -> Small
 fn eq(&Small, &Small) -> bool
     self@0: &Small
     other@1: &Small
+    __self_discr@2: u128
+    __arg1_discr@3: u128
 fn assert_receiver_is_total_eq(&Small) -> ()
     self@0: &Small

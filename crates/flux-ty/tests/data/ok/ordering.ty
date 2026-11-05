@@ -69,10 +69,12 @@ fn partial_cmp(&Labeled<T>, &Labeled<T>) -> Option<Ordering>
 fn eq(&Event, &Event) -> bool
     self@0: &Event
     other@1: &Event
-    __self_0@2: &u64
-    __other_0@3: &u64
-    __self_0@4: &i32
-    __other_0@5: &i32
+    __self_discr@2: u128
+    __arg1_discr@3: u128
+    __self_0@4: &u64
+    __arg1_0@5: &u64
+    __self_0@6: &i32
+    __arg1_0@7: &i32
 fn assert_receiver_is_total_eq(&Event) -> ()
     self@0: &Event
     __self_0@1: &u64
