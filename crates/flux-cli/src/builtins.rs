@@ -1,6 +1,6 @@
 //! Explicitly staged, compiler-owned built-in metadata for fresh CLI processes.
 
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -10,7 +10,7 @@ use flux_hir::{ItemTree, SourceDb};
 use flux_mir::FileMir;
 use flux_ty::Signatures;
 
-use crate::flib::executable::{CheckMethod, ExecutableIdentity};
+use crate::flib::executable::{CheckMethod, CheckedIdentity, ExecutableIdentity};
 use crate::flib::{Archive, write_atomic};
 
 const MAGIC: &[u8; 8] = b"FLUXSUIT";
@@ -66,6 +66,14 @@ pub fn initialize() -> Result<(), String> {
             None => {
                 if trace {
                     eprintln!("flux builtins: source (suite missing or compiler changed)");
+                } else if path.exists() && std::io::stderr().is_terminal() {
+                    // Only interactive runs get the note: piped stderr, which
+                    // tests compare, is unchanged in the slower source mode.
+                    eprintln!(
+                        "note: {} was staged by a different compiler; using library \
+                         sources instead. Run `fluxc build-builtins` to restage it.",
+                        path.display()
+                    );
                 }
                 None
             }
@@ -117,13 +125,23 @@ pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, Chec
     }
     let (identity, payload, checksum) =
         envelope(&archive.metadata).map_err(|e| invalid(path, e))?;
-    let checked =
-        measured("identity", || identity.check(executable)).map_err(|e| invalid(path, e))?;
+    let stamp = read_stamp(path);
+    let (checked, current) = measured("identity", || {
+        check_executable(&identity, stamp.as_ref(), executable)
+    })
+    .map_err(|e| invalid(path, e))?;
+    let cached = stamp
+        .as_ref()
+        .is_some_and(|stamp| stamp.suite.matches_metadata(&metadata));
     if checked.hash != identity.hash() {
+        // A stale suite: remember this executable's hash too, so later runs
+        // fall back to source mode without hashing it again.
+        if let (Some(stamp), Some(current)) = (stamp.filter(|_| cached), current) {
+            let _ = write_stamp_record(path, &stamp.suite, Some(current));
+        }
         return Ok(None);
     }
     measured("checksum", || {
-        let cached = cached_checksum(path, &metadata);
         if std::env::var_os("FLUX_BUILTINS_TRACE").is_some() {
             eprintln!(
                 "flux builtins: checksum={}",
@@ -136,21 +154,85 @@ pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, Chec
         Ok(())
     })
     .map_err(|e| invalid(path, e))?;
+    if !cached || current.is_some() {
+        // Both files matched by content. Record their current stat fields so
+        // the next process can skip hashing; a read-only install keeps working.
+        let (suite, seen) = match stamp {
+            Some(stamp) if cached => (stamp.suite, stamp.executable),
+            _ => (
+                ExecutableIdentity::from_metadata(&metadata, digest(&bytes)),
+                None,
+            ),
+        };
+        let _ = write_stamp_record(path, &suite, current.or(seen));
+    }
     // Staging type checked these exact bytes with this compiler.
     let mut suite = decode_payload(payload, archive.object, true).map_err(|e| invalid(path, e))?;
     suite.compiler = checked.hash;
     Ok(Some((suite, checked.method)))
 }
 
-fn cached_checksum(path: &Path, metadata: &std::fs::Metadata) -> bool {
-    let check = (|| {
-        let bytes = std::fs::read(path.with_extension("flib.stamp")).ok()?;
-        let mut d = Decoder::new(&bytes);
-        let identity = ExecutableIdentity::decode(&mut d).ok()?;
-        d.finish().ok()?;
-        Some(identity.matches_metadata(metadata))
-    })();
-    check.unwrap_or(false)
+/// The `.flib.stamp` record: the suite file's stat fields and hash, and the
+/// stat fields and hash of the executable that last loaded it.
+/// The suite header records the executable's stat fields at staging, but those
+/// change when the executable is copied, linked or has its metadata changed.
+struct SuiteStamp {
+    suite: ExecutableIdentity,
+    executable: Option<ExecutableIdentity>,
+}
+
+fn read_stamp(path: &Path) -> Option<SuiteStamp> {
+    let bytes = std::fs::read(path.with_extension("flib.stamp")).ok()?;
+    let mut d = Decoder::new(&bytes);
+    let suite = ExecutableIdentity::decode(&mut d).ok()?;
+    // Stamps written before the executable field existed end here.
+    let executable = if d.remaining() == 0 {
+        None
+    } else {
+        Option::<ExecutableIdentity>::decode(&mut d).ok()?
+    };
+    d.finish().ok()?;
+    Some(SuiteStamp { suite, executable })
+}
+
+fn write_stamp_record(
+    path: &Path,
+    suite: &ExecutableIdentity,
+    executable: Option<ExecutableIdentity>,
+) -> Result<(), String> {
+    let mut record = Encoder::new();
+    suite.encode(&mut record).map_err(|e| e.to_string())?;
+    executable.encode(&mut record).map_err(|e| e.to_string())?;
+    write_atomic(&path.with_extension("flib.stamp"), &record.into_bytes())
+        .map_err(|e| invalid(path, e))
+}
+
+/// Identifies the running executable for comparison with the suite header.
+/// Matching stat fields, from the header or from the stamp, skip the hash;
+/// otherwise the executable is hashed and its new identity returned as well.
+fn check_executable(
+    identity: &ExecutableIdentity,
+    stamp: Option<&SuiteStamp>,
+    executable: &Path,
+) -> Result<(CheckedIdentity, Option<ExecutableIdentity>), String> {
+    let metadata = std::fs::metadata(executable)
+        .map_err(|e| format!("cannot stat {}: {e}", executable.display()))?;
+    let seen = stamp
+        .and_then(|stamp| stamp.executable.as_ref())
+        .filter(|seen| seen.matches_metadata(&metadata));
+    if identity.matches_metadata(&metadata) || seen.is_some() {
+        let checked = CheckedIdentity {
+            hash: seen.unwrap_or(identity).hash(),
+            method: CheckMethod::Stat,
+        };
+        return Ok((checked, None));
+    }
+    let current = ExecutableIdentity::capture(executable)?;
+    let checked = CheckedIdentity {
+        hash: current.hash(),
+        method: CheckMethod::Hash,
+    };
+    Ok((checked, Some(current)))
 }
 
 fn envelope(
@@ -211,7 +293,7 @@ fn already_staged(
     check.ok().flatten()
 }
 
-fn write_stamp(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_stamp(path: &Path, bytes: &[u8], executable: &Path) -> Result<(), String> {
     let stamp = ExecutableIdentity::capture(path)?;
     if stamp.hash() != digest(bytes) {
         return Err(invalid(
@@ -219,10 +301,7 @@ fn write_stamp(path: &Path, bytes: &[u8]) -> Result<(), String> {
             "built-in suite changed while recording its stat fields",
         ));
     }
-    let mut record = Encoder::new();
-    stamp.encode(&mut record).map_err(|e| e.to_string())?;
-    write_atomic(&path.with_extension("flib.stamp"), &record.into_bytes())
-        .map_err(|e| invalid(path, e))
+    write_stamp_record(path, &stamp, ExecutableIdentity::capture(executable).ok())
 }
 
 fn decode_payload(
@@ -349,9 +428,18 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
         return Err("build-builtins requires an executable under target/ or out/".into());
     }
     if let Some(bytes) = already_staged(&path, &executable, native_object, optimized) {
-        let metadata = std::fs::metadata(&path).map_err(|e| invalid(&path, e))?;
-        if !cached_checksum(&path, &metadata) {
-            write_stamp(&path, &bytes)?;
+        // Restaging an unchanged suite repairs its stamp, so the next load
+        // takes the stat path for both the suite and the executable.
+        let suite = std::fs::metadata(&path).map_err(|e| invalid(&path, e))?;
+        let current = std::fs::metadata(&executable).map_err(|e| invalid(&path, e))?;
+        let fresh = read_stamp(&path).is_some_and(|stamp| {
+            stamp.suite.matches_metadata(&suite)
+                && stamp
+                    .executable
+                    .is_some_and(|seen| seen.matches_metadata(&current))
+        });
+        if !fresh {
+            write_stamp(&path, &bytes, &executable)?;
         }
         return Ok(path);
     }
@@ -446,7 +534,7 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     .encode()
     .map_err(|e| e.to_string())?;
     write_atomic(&path, &bytes).map_err(|e| invalid(&path, e))?;
-    write_stamp(&path, &bytes)?;
+    write_stamp(&path, &bytes, &executable)?;
     Ok(path)
 }
 

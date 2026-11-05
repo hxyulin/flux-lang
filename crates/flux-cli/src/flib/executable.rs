@@ -103,6 +103,14 @@ impl ExecutableIdentity {
         cfg!(unix) && Stamp::of(metadata) == self.stamp
     }
 
+    /// An identity for content already read through an open file.
+    pub fn from_metadata(metadata: &std::fs::Metadata, hash: [u8; 32]) -> Self {
+        Self {
+            stamp: Stamp::of(metadata),
+            hash,
+        }
+    }
+
     /// Records the complete executable content and its stat fields.
     pub fn capture(path: &Path) -> Result<Self, String> {
         fingerprint(path)
