@@ -85,11 +85,32 @@ impl ImplIndex {
         index
     }
 
-    /// [`ImplIndex::impls_for`], from the items this was made from.
-    pub fn impls_of_ty(&self, t: TraitId, ty: Ty) -> ImplsFor<'_> {
+    /// The `impl` blocks of `t` whose type may match `ty` with
+    /// `flux_solve::traits::match_ty`, which binds only the block's
+    /// parameters, in source order. Unlike [`ImplIndex::impls_for`],
+    /// whose callers may also unify, a type without a constructor (a
+    /// parameter, an associated type) matches only blocks for types
+    /// without one, such as `impl<T> Tr for T`; an error matches all.
+    pub fn matching<'s>(&'s self, items: &'s ItemTree, t: TraitId, ty: Ty) -> ImplsFor<'s> {
+        let impls = items.trait_impls.get(&t).map_or(&[][..], |v| v);
+        self.matching_in(impls, t, ty)
+    }
+
+    /// [`ImplIndex::matching`], from the items this was made from.
+    pub fn matching_of(&self, t: TraitId, ty: Ty) -> ImplsFor<'_> {
         let impls = self.impls.get(&t).map_or(&[][..], |v| v);
+        self.matching_in(impls, t, ty)
+    }
+
+    fn matching_in<'s>(&'s self, impls: &'s [ImplId], t: TraitId, ty: Ty) -> ImplsFor<'s> {
         match head(ty) {
             Some(head) => self.positions(impls, t, head, usize::MAX),
+            None if ty != Ty::ERROR => ImplsFor {
+                impls,
+                some: Some(&[]),
+                blanket: self.blanket.get(&t).map_or(&[][..], |v| v),
+                next: 0,
+            },
             None => ImplsFor {
                 impls,
                 some: None,

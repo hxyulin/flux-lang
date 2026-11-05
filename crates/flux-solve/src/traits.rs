@@ -380,7 +380,7 @@ impl SignatureImplProof<'_> {
         for imp in self
             .sigs
             .impl_index
-            .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+            .matching(self.items, goal.trait_ref.trait_, goal.self_ty)
         {
             let Some(args) = match_impl(self.items, self.sigs, imp, goal) else {
                 continue;
@@ -1353,7 +1353,7 @@ fn select_uncached(
 ) -> Option<(ImplId, Vec<Ty>)> {
     let impls = sigs
         .impl_index
-        .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
+        .matching(items, goal.trait_ref.trait_, goal.self_ty);
     let mut found: Vec<(ImplId, Vec<Ty>)> = impls
         .filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)))
         .collect();
@@ -1446,7 +1446,7 @@ fn may_hold(items: &ItemTree, sigs: &Signatures, p: Predicate, depth: u32) -> Op
     }
     let impls = sigs
         .impl_index
-        .impls_for(items, p.trait_ref.trait_, p.self_ty);
+        .matching(items, p.trait_ref.trait_, p.self_ty);
     let mut found = None;
     for imp in impls {
         let Some(args) = match_impl(items, sigs, imp, p) else {
@@ -1781,7 +1781,7 @@ impl Holds<'_> {
         }
         let mut impls = sigs
             .impl_index
-            .impls_for(items, goal.trait_ref.trait_, goal.self_ty);
+            .matching(items, goal.trait_ref.trait_, goal.self_ty);
         let holds = impls.any(|imp| {
             let Some(args) = match_impl(items, sigs, imp, goal) else {
                 return false;

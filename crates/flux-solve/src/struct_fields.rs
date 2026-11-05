@@ -158,7 +158,7 @@ fn may_hold(sigs: &Signatures, p: Predicate, depth: u32) -> Option<bool> {
     let mut args = vec![p.self_ty];
     args.extend_from_slice(p.trait_ref.args);
     let mut found = None;
-    for imp in sigs.impl_index.impls_of_ty(p.trait_ref.trait_, p.self_ty) {
+    for imp in sigs.impl_index.matching_of(p.trait_ref.trait_, p.self_ty) {
         let Some(binds) = match_header(sigs, imp, p.trait_ref.trait_, &args) else {
             continue;
         };
@@ -214,7 +214,7 @@ fn normalize_known(
             // bounds surely hold, else, for a type whose shape picks
             // it, the only one whose bounds may (on parameters).
             let mut judged = Vec::new();
-            for imp in sigs.impl_index.impls_of_ty(alias.trait_, args[0]) {
+            for imp in sigs.impl_index.matching_of(alias.trait_, args[0]) {
                 let Some(binds) = match_header(sigs, imp, alias.trait_, args) else {
                     continue;
                 };
