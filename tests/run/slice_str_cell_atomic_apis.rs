@@ -68,4 +68,13 @@ fn main() {
     static LEGACY: AtomicUsize = atomic::ATOMIC_USIZE_INIT;
     LEGACY.fetch_add(1, Ordering::SeqCst);
     println!("{:?} {} {:?} {}", counter, pointer.load(Ordering::Relaxed).is_null(), word, LEGACY.load(Ordering::SeqCst));
+
+    let mut data = [0u8; 13];
+    let (head, words, tail) = unsafe { data.align_to_mut::<u32>() };
+    for word in words.iter_mut() { *word = 0x01010101; }
+    let lens = (head.len(), words.len(), tail.len());
+    println!("{} {}", lens.0 + lens.1 * 4 + lens.2, lens.1 >= 2);
+    std::assert!(std::matches!(Some(1), Some(_)));
+    std::assert_eq!(std::concat!("a", 1), "a1");
+    println!("{} {}", std::cfg!(unix), std::line!());
 }

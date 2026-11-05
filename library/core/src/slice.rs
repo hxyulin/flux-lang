@@ -91,6 +91,29 @@ impl<T> [T] {
         }
     }
 
+    /// Splits mutably into an unaligned prefix, a middle of `U` values and a
+    /// suffix, as align_to does.
+    ///
+    /// # Safety
+    /// As for align_to: the middle's bytes must be valid `U` values, and
+    /// writes through either view must keep the other's values valid.
+    pub unsafe fn align_to_mut<U>(&mut self) -> (&mut [T], &mut [U], &mut [T]) {
+        let len = self.len();
+        let base = self.as_mut_ptr();
+        // SAFETY: the three shared pieces partition this exclusive borrow, so
+        // rebuilding them as mutable slices creates no overlapping access.
+        unsafe {
+            let (prefix, middle, suffix) = self.align_to::<U>();
+            let (prefix_len, middle_len, suffix_len) = (prefix.len(), middle.len(), suffix.len());
+            let middle_ptr = middle.as_ptr() as *mut U;
+            (
+                crate::slice::from_raw_parts_mut(base, prefix_len),
+                crate::slice::from_raw_parts_mut(middle_ptr, middle_len),
+                crate::slice::from_raw_parts_mut(base.add(len - suffix_len), suffix_len),
+            )
+        }
+    }
+
     /// The number of elements in the slice.
     pub const fn len(&self) -> usize {
         crate::intrinsics::raw_slice_len(self as *const [T])

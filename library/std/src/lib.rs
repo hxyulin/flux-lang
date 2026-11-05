@@ -12,6 +12,11 @@ pub use core::{
     mem, num, ops, option, ptr, result,
 };
 pub use core::{dbg, eprint, eprintln, print, println, stringify, write};
+pub use core::{
+    assert, assert_eq, assert_ne, cfg, column, compile_error, concat, debug_assert, debug_assert_eq, debug_assert_ne,
+    env, file, format_args, include, include_bytes, include_str, line, matches, module_path, option_env, r#try,
+    todo, unimplemented, unreachable, writeln,
+};
 pub use core::{slice, str, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize, f32, f64, primitive};
 
 mod float;
