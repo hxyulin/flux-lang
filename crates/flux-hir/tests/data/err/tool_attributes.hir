@@ -1,0 +1,16 @@
+struct Unsafe;
+
+fn bare_tool() -> () {}
+
+fn rooted() -> () {}
+
+fn not_a_tool() -> () {}
+
+fn main() -> () {}
+
+error 0..17: custom inner attributes are unstable
+error 30..54: custom inner attributes are unstable
+error 57..96: attributes like this are not supported yet
+error 112..121: the `clippy` attribute is not supported yet
+error 140..164: attributes like this are not supported yet
+error 180..199: attributes like this are not supported yet

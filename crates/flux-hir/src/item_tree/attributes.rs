@@ -368,6 +368,25 @@ pub(super) fn check_inert_attrs(
     }
 }
 
+/// Whether `path` names an attribute of a tool rustc registers by default
+/// (`#[clippy::has_significant_drop]`, `#[rustfmt::skip]`). rustc leaves
+/// these to the tool and accepts any input after the path.
+fn tool_attr_path(path: ast::Path<'_>) -> bool {
+    let Some(mut root) = path.qualifier() else {
+        return false;
+    };
+    while let Some(qualifier) = root.qualifier() {
+        root = qualifier;
+    }
+    root.segment().is_some_and(|s| {
+        s.colon2_token().is_none()
+            && s.generic_arg_list().is_none()
+            && s.name_ref().is_some_and(|n| {
+                matches!(n.text(), "clippy" | "rustfmt" | "miri" | "rust_analyzer")
+            })
+    })
+}
+
 pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
     const IGNORED: &[&str] = &[
         "allow", "warn", "deny", "forbid", "expect", "inline", "cold", "must_use", "doc",
@@ -431,20 +450,14 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
     }
     if let Some(meta) = attr.meta()
         && meta.unsafe_token().is_none()
-        && meta.token_tree().is_none()
-        && meta.eq_token().is_none()
-        && let Some(path) = meta.path()
-        && path
-            .segment()
-            .and_then(|s| s.name_ref())
-            .is_some_and(|n| n.text() == "skip")
-        && let Some(tool) = path.qualifier()
-        && tool.qualifier().is_none()
-        && tool
-            .segment()
-            .and_then(|s| s.name_ref())
-            .is_some_and(|n| n.text() == "rustfmt")
+        && meta.path().is_some_and(tool_attr_path)
     {
+        if attr.bang_token().is_some() {
+            diagnostics.push(Diagnostic::new(
+                attr.syntax().text_range(),
+                "custom inner attributes are unstable",
+            ));
+        }
         return;
     }
     if name == Some("cfg")
