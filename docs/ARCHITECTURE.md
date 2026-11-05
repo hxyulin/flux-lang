@@ -983,10 +983,15 @@ executable. No C compiler or system linker is involved.
   none.
 - A value that contains an array is indexed at run time, so it lives
   in memory whatever happens to it: its locals are stack slots, its
-  value is the address of one, copied with `memmove` where it is
-  assigned, it is passed to a function as that address (the callee
-  copies it) and returned through `sret` memory laid out as the value
-  is. An element is at its index times its size. A reference to a
+  value is the address of one, copied where it is assigned (with loads
+  and stores up to 128 bytes, else `memmove`), it is passed to a
+  function as that address (the callee copies it) and returned through
+  `sret` memory laid out as the value is. So does an enum of several
+  variants with more than 48 leaves, and whatever contains one: as
+  leaves it would carry every variant's fields. A temporary of a memory
+  type moved whole into an aggregate is stored in that aggregate's
+  field, so it is built there. An element is at its index times its
+  size. A reference to a
   slice is two leaves, the address of the first element and the
   length, which an unsizing coercion adds to a reference to an array
   and `len` and bounds checks read.

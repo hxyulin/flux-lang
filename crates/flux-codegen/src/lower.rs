@@ -953,8 +953,45 @@ fn is_memory_uncached(sigs: &Signatures, ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Array(..) => true,
         TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt) => true,
-        TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..) => flux_solve::contents(sigs, ty)
-            .is_some_and(|fields| fields.iter().any(|&f| is_memory(sigs, f))),
+        TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..) => {
+            flux_solve::contents(sigs, ty)
+                .is_some_and(|fields| fields.iter().any(|&f| is_memory(sigs, f)))
+                || is_large_enum(sigs, ty)
+        }
+        _ => false,
+    }
+}
+
+/// An enum with more leaves than this lives in memory. Held in variables,
+/// an enum carries every variant's fields, and each copy, argument and
+/// return moves all of them, though only one variant's mean anything.
+/// In memory, a copy moves its bytes instead, and a variable's value is
+/// a stack slot's. Measured on the self-built compiler, 40 to 64 put its
+/// largest enums (`TyKind`, MIR's `Rvalue`, `Result`s of whole crates) in
+/// memory and keep keel's small instruction enums in variables; 8 and 16
+/// made it slower.
+const ENUM_MEMORY_LEAVES: usize = 48;
+
+/// keel expands a `memmove` of up to this many bytes into loads and
+/// stores itself, after inlining, and calls the C library's for more.
+const KEEL_COPY_EXPAND_BYTES: u64 = 32;
+
+/// Larger copies of values of memory types, up to this many bytes, are
+/// loads and stores here rather than calls of `memmove`.
+const COPY_EXPAND_BYTES: u64 = 128;
+
+/// Whether `ty` is an enum of several variants with more than
+/// [`ENUM_MEMORY_LEAVES`] leaves, its discriminant included.
+fn is_large_enum(sigs: &Signatures, ty: Ty) -> bool {
+    match flux_solve::variants(sigs, ty) {
+        Some(variants) if variants.len() > 1 => {
+            let fields: usize = variants
+                .iter()
+                .flat_map(|fields| fields.iter())
+                .map(|&f| leaf_count(sigs, f))
+                .sum();
+            1 + fields > ENUM_MEMORY_LEAVES
+        }
         _ => false,
     }
 }
@@ -1310,6 +1347,7 @@ impl Ctx<'_> {
             slots: Vec::new(),
             sret: None,
             direct_sret: Vec::new(),
+            placed: Vec::new(),
             callees: FxHashMap::default(),
             address_align: FxHashMap::default(),
             panic_block: None,
@@ -1894,6 +1932,8 @@ struct Lower<'a, 'c, 'f> {
     sret: Option<(Value, Layout)>,
     /// Fresh, unborrowed locals whose storage can receive a call result.
     direct_sret: Vec<bool>,
+    /// Locals stored in the field of the aggregate they are moved into.
+    placed: Vec<bool>,
     callees: FxHashMap<Instance, FuncRef>,
     /// Reduced alignment of addresses derived from packed storage.
     address_align: FxHashMap<Value, u64>,
@@ -1901,15 +1941,38 @@ struct Lower<'a, 'c, 'f> {
     panic_block: Option<Block>,
 }
 
+/// Where locals of memory types are stored, from [`memory_storage`].
+struct MemoryStorage {
+    borrowed: Vec<bool>,
+    definitions: Vec<usize>,
+    /// The local whose storage each local shares.
+    roots: Vec<usize>,
+    /// Locals stored inside the aggregate they are an operand of: the
+    /// local, the aggregate's local and the operand's index in it.
+    fields: Vec<(usize, usize, FieldOf)>,
+}
+
+/// Which field of an aggregate an operand becomes.
+#[derive(Clone, Copy)]
+enum FieldOf {
+    /// Field `field` of variant `variant` (0 for a struct, tuple or closure).
+    Field { variant: u32, field: u32 },
+    /// Element `index` of an array of `elem`s.
+    Element { elem: Ty, index: u64 },
+}
+
 /// Coalesce an aggregate temporary with its sole consumer only when neither
 /// storage address escapes and both locals have one definition. Cyclic bodies
 /// keep separate slots because a later iteration can overlap their lifetimes.
-fn memory_storage(body: &Body, sigs: &Signatures) -> (Vec<bool>, Vec<usize>, Vec<usize>) {
+/// The same holds for a temporary moved whole into an aggregate built in
+/// memory: it is stored where that field is, so it is built there.
+fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
     let count = body.locals.len();
     let mut borrowed = vec![false; count];
     let mut definitions = vec![0; count];
     let mut uses = vec![0; count];
     let mut copies = Vec::new();
+    let mut operands = Vec::new();
     for param in body.params() {
         definitions[param.index()] += 1;
     }
@@ -1953,6 +2016,40 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> (Vec<bool>, Vec<usize>, Vec
                             && is_memory(sigs, body.locals[src.local].ty) =>
                     {
                         copies.push((src.local.index(), dest.local.index()))
+                    }
+                    Rvalue::Aggregate(kind, ops)
+                        if dest.projection.is_empty()
+                            && is_memory(sigs, body.locals[dest.local].ty) =>
+                    {
+                        for (i, op) in ops.iter().enumerate() {
+                            let (Operand::Copy(src) | Operand::Move(src)) = op else {
+                                continue;
+                            };
+                            if !src.projection.is_empty()
+                                || src.local == dest.local
+                                || !is_memory(sigs, body.locals[src.local].ty)
+                            {
+                                continue;
+                            }
+                            let field = match *kind {
+                                AggregateKind::Union(..) => continue,
+                                AggregateKind::Array(elem) => FieldOf::Element {
+                                    elem,
+                                    index: i as u64,
+                                },
+                                AggregateKind::Variant(_, variant) => FieldOf::Field {
+                                    variant,
+                                    field: i as u32,
+                                },
+                                AggregateKind::Tuple
+                                | AggregateKind::Struct(_)
+                                | AggregateKind::Closure => FieldOf::Field {
+                                    variant: 0,
+                                    field: i as u32,
+                                },
+                            };
+                            operands.push((src.local.index(), dest.local.index(), field));
+                        }
                     }
                     _ => {}
                 }
@@ -2000,7 +2097,8 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> (Vec<bool>, Vec<usize>, Vec
         }
         representative
     }
-    if queue.len() == body.blocks.len() {
+    let acyclic = queue.len() == body.blocks.len();
+    if acyclic {
         for (src, dest) in copies {
             if uses[src] == 1
                 && definitions[src] == 1
@@ -2019,10 +2117,73 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> (Vec<bool>, Vec<usize>, Vec
     for local in 0..count {
         roots[local] = root(local, &mut roots);
     }
-    (borrowed, definitions, roots)
+    // A temporary's only use builds the aggregate, after it is defined,
+    // and the aggregate's local is defined there alone, so their bytes
+    // are never live at once. Each is the last of its copy chain.
+    let mut fields = Vec::new();
+    if acyclic {
+        for (src, dest, field) in operands {
+            if uses[src] == 1
+                && definitions[src] == 1
+                && definitions[dest] == 1
+                && !borrowed[src]
+                && !borrowed[dest]
+                && src != Body::RETURN.index()
+                && roots[src] == src
+                && roots[dest] != src
+            {
+                fields.push((src, dest, field));
+            }
+        }
+    }
+    MemoryStorage {
+        borrowed,
+        definitions,
+        roots,
+        fields,
+    }
+}
+
+/// The storage of a body's locals, while [`Lower::body`] assigns it.
+struct Storage {
+    types: Vec<Ty>,
+    roots: Vec<usize>,
+    placed: Vec<Option<(usize, FieldOf)>>,
+    addresses: Vec<Option<Value>>,
 }
 
 impl Lower<'_, '_, '_> {
+    /// The address of the storage that local `root` and the locals
+    /// coalesced with it share: the caller's return memory, a field of
+    /// an aggregate's or a new stack slot.
+    fn storage(&mut self, root: usize, storage: &mut Storage) -> Value {
+        if let Some(address) = storage.addresses[root] {
+            return address;
+        }
+        let ty = storage.types[root];
+        let address = if let Some((dest, field)) = storage.placed[root] {
+            let base = self.storage(storage.roots[dest], storage);
+            let offset = match field {
+                FieldOf::Field { variant, field } => self
+                    .ctx
+                    .layouts
+                    .of(storage.types[dest])
+                    .field_offset(variant, field),
+                FieldOf::Element { elem, index } => self.ctx.layouts.of(elem).size * index,
+            };
+            self.offset(base, offset)
+        } else if root == Body::RETURN.index() && is_memory(self.sigs, ty) {
+            match &self.sret {
+                Some((pointer, _)) => *pointer,
+                None => self.new_slot(ty),
+            }
+        } else {
+            self.new_slot(ty)
+        };
+        storage.addresses[root] = Some(address);
+        address
+    }
+
     fn body(mut self) {
         let body = self.body;
         let sigs = self.sigs;
@@ -2030,7 +2191,17 @@ impl Lower<'_, '_, '_> {
         // take blocks of its own (an enum's variants), then `bb0` runs.
         let entry = self.b.create_block();
         self.blocks = body.blocks.iter().map(|_| self.b.create_block()).collect();
-        let (borrowed, definitions, roots) = memory_storage(body, sigs);
+        let MemoryStorage {
+            borrowed,
+            definitions,
+            roots,
+            fields,
+        } = memory_storage(body, sigs);
+        let mut placed = vec![None; body.locals.len()];
+        for &(src, dest, field) in &fields {
+            placed[src] = Some((dest, field));
+        }
+        self.placed = placed.iter().map(Option::is_some).collect();
         self.direct_sret = definitions
             .iter()
             .zip(&borrowed)
@@ -2046,27 +2217,16 @@ impl Lower<'_, '_, '_> {
             let pointer = self.b.append_block_param(entry, Type::Ptr);
             self.sret = Some((pointer, layout));
         }
-        let mut addresses = vec![None; body.locals.len()];
+        let mut storage = Storage {
+            types: body.locals.iter().map(|(_, decl)| decl.ty).collect(),
+            roots,
+            placed,
+            addresses: vec![None; body.locals.len()],
+        };
         for (local, decl) in body.locals.iter() {
             if borrowed[local.index()] || is_memory(sigs, decl.ty) {
-                let root = roots[local.index()];
-                let address = match addresses[root] {
-                    Some(address) => address,
-                    None => {
-                        let address = if root == Body::RETURN.index()
-                            && is_memory(sigs, body.locals[Body::RETURN].ty)
-                        {
-                            self.sret
-                                .as_ref()
-                                .map(|(pointer, _)| *pointer)
-                                .unwrap_or_else(|| self.new_slot(decl.ty))
-                        } else {
-                            self.new_slot(decl.ty)
-                        };
-                        addresses[root] = Some(address);
-                        address
-                    }
-                };
+                let root = storage.roots[local.index()];
+                let address = self.storage(root, &mut storage);
                 self.slots.push(Some(address));
                 self.vars.push(SliceId::default());
             } else {
@@ -2320,13 +2480,56 @@ impl Lower<'_, '_, '_> {
         result
     }
 
-    /// Copies `size` bytes of a value of a memory type from `from` to `to`.
-    fn copy(&mut self, to: Value, from: Value, size: u64) {
+    /// Copies a value of `ty`, a memory type, from `from` to `to`.
+    fn copy(&mut self, to: Value, from: Value, ty: Ty) {
+        let layout = self.ctx.layouts.of(ty);
+        let (size, align) = (layout.size, layout.align);
         if size == 0 || to == from {
+            return;
+        }
+        if (KEEL_COPY_EXPAND_BYTES + 1..=COPY_EXPAND_BYTES).contains(&size) {
+            // Every chunk is loaded before any is stored, as `memmove`.
+            let mut chunks = Vec::new();
+            let mut offset = 0;
+            for (bytes, ty) in [
+                (16, Type::Vector(keel_ir::VectorType::I8x16)),
+                (8, Type::I64),
+                (4, Type::I32),
+                (2, Type::I16),
+                (1, Type::I8),
+            ] {
+                while offset + bytes <= size {
+                    let at = self.offset(from, offset);
+                    let flags = self.chunk_flags(at, align, offset, bytes);
+                    chunks.push((offset, bytes, self.b.ins().load_with_flags(ty, at, flags)));
+                    offset += bytes;
+                }
+            }
+            for (offset, bytes, value) in chunks {
+                let at = self.offset(to, offset);
+                let flags = self.chunk_flags(at, align, offset, bytes);
+                self.b.ins().store_with_flags(value, at, flags);
+            }
             return;
         }
         let len = self.b.ins().iconst(Type::I64, size as i64);
         self.b.ins().intrinsic(Intrinsic::Memmove, &[to, from, len]);
+    }
+
+    /// Flags for `bytes` at `at`, `offset` bytes into a value aligned
+    /// to `align`.
+    fn chunk_flags(&mut self, at: Value, align: u64, offset: u64, bytes: u64) -> MemoryFlags {
+        let mut align = align.min(bytes);
+        if offset != 0 {
+            align = align.min(1 << offset.trailing_zeros());
+        }
+        if let Some(&known) = self.address_align.get(&at) {
+            align = align.min(known);
+        }
+        MemoryFlags {
+            align: align as u32,
+            ..MemoryFlags::default()
+        }
     }
 
     /// The leaves of the `ty` at `location`: for a memory type, its
@@ -2369,7 +2572,7 @@ impl Lower<'_, '_, '_> {
                 if let Some(&value) = values.first()
                     && size > 0
                 {
-                    self.copy(address, value, size);
+                    self.copy(address, value, ty);
                 }
             }
             Location::Memory(address) => self.store(address, ty, values),
@@ -2430,6 +2633,9 @@ impl Lower<'_, '_, '_> {
             Rvalue::Aggregate(AggregateKind::Array(elem), operands) => {
                 let size = self.ctx.layouts.of(*elem).size;
                 for (i, operand) in operands.iter().enumerate() {
+                    if self.is_placed(operand) {
+                        continue;
+                    }
                     let values = self.operand(operand);
                     let at = self.offset(address, size * i as u64);
                     self.store(at, *elem, &values);
@@ -2439,6 +2645,9 @@ impl Lower<'_, '_, '_> {
                 let layout = self.ctx.layouts.of(ty);
                 let fields = flux_solve::variant_fields(sigs, ty, *index).unwrap_or_default();
                 for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
+                    if self.is_placed(operand) {
+                        continue;
+                    }
                     let values = self.operand(operand);
                     let at = self.offset(address, layout.field_offset(*index, i as u32));
                     self.store(at, field, &values);
@@ -2449,6 +2658,9 @@ impl Lower<'_, '_, '_> {
                 let layout = self.ctx.layouts.of(ty);
                 let fields = flux_solve::fields(sigs, ty).unwrap_or_default();
                 for (i, (operand, &field)) in operands.iter().zip(fields).enumerate() {
+                    if self.is_placed(operand) {
+                        continue;
+                    }
                     let values = self.operand(operand);
                     let at = self.offset(address, layout.field_offset(0, i as u32));
                     self.store(at, field, &values);
@@ -2463,6 +2675,13 @@ impl Lower<'_, '_, '_> {
             }
             _ => unreachable!("only aggregates are built in memory"),
         }
+    }
+
+    /// Whether `operand` is a local already stored in the field of the
+    /// aggregate being built that it is moved into.
+    fn is_placed(&self, operand: &Operand) -> bool {
+        matches!(operand, Operand::Copy(p) | Operand::Move(p)
+            if p.projection.is_empty() && self.placed[p.local.index()])
     }
 
     /// Stores `values`, the leaves of a `ty`, at `address`, laid out as
@@ -2481,9 +2700,8 @@ impl Lower<'_, '_, '_> {
         }
         let sigs = self.sigs;
         if is_memory(sigs, ty) {
-            let size = self.ctx.layouts.of(ty).size;
             if let Some(&value) = values.first() {
-                self.copy(address, value, size);
+                self.copy(address, value, ty);
             }
             return;
         }
@@ -4340,8 +4558,7 @@ impl Lower<'_, '_, '_> {
                         self.b.ins().return_(&[]);
                     }
                     Some((pointer, _)) if is_memory(self.sigs, ret) => {
-                        let size = self.ctx.layouts.of(ret).size;
-                        self.copy(pointer, values[0], size);
+                        self.copy(pointer, values[0], ret);
                         self.b.ins().return_(&[]);
                     }
                     Some((pointer, layout)) => {
