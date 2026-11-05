@@ -37,3 +37,30 @@ impl<T> Display for PoisonError<T> {
         f.write_str("poisoned lock: another task failed inside")
     }
 }
+
+/// Why a non-blocking lock attempt failed.
+pub enum TryLockError<T> {
+    Poisoned(PoisonError<T>),
+    WouldBlock,
+}
+pub type TryLockResult<Guard> = core::result::Result<Guard, TryLockError<Guard>>;
+impl<T> From<PoisonError<T>> for TryLockError<T> {
+    fn from(error: PoisonError<T>) -> TryLockError<T> { TryLockError::Poisoned(error) }
+}
+impl<T> Debug for TryLockError<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self {
+            TryLockError::Poisoned(..) => f.write_str("Poisoned(..)"),
+            TryLockError::WouldBlock => f.write_str("WouldBlock"),
+        }
+    }
+}
+impl<T> Display for TryLockError<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        match self {
+            TryLockError::Poisoned(..) => f.write_str("poisoned lock: another task failed inside"),
+            TryLockError::WouldBlock => f.write_str("try_lock failed because the operation would block"),
+        }
+    }
+}
+impl<T> core::error::Error for TryLockError<T> {}

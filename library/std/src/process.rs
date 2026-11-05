@@ -12,3 +12,9 @@ pub fn id()->u32 {
 pub(crate) mod command;
 #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
 pub use self::command::{Child, ChildStdin, ChildStdout, ChildStderr, Command, CommandArgs, CommandEnvs, Output, ExitStatus, Stdio};
+
+/// Terminates the process abnormally with SIGABRT, without running
+/// destructors or flushing buffered output.
+pub fn abort() -> ! {
+    core::panicking::abort_now()
+}

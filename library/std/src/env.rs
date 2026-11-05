@@ -120,6 +120,13 @@ pub mod consts {
     #[cfg(target_os = "linux")]
     pub const OS: &str = "linux";
     pub const FAMILY: &str = "unix";
+    pub const DLL_PREFIX: &str = "lib";
+    #[cfg(target_os = "macos")]
+    pub const DLL_SUFFIX: &str = ".dylib";
+    #[cfg(target_os = "linux")]
+    pub const DLL_SUFFIX: &str = ".so";
+    pub const EXE_SUFFIX: &str = "";
+    pub const EXE_EXTENSION: &str = "";
     #[cfg(target_arch = "aarch64")]
     pub const ARCH: &str = "aarch64";
     #[cfg(target_arch = "x86_64")]

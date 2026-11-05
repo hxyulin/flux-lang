@@ -166,6 +166,7 @@ impl Path {
     pub fn metadata(&self) -> crate::io::Result<crate::fs::Metadata> { crate::fs::metadata(self) }
     pub fn symlink_metadata(&self) -> crate::io::Result<crate::fs::Metadata> { crate::fs::symlink_metadata(self) }
     pub fn read_dir(&self) -> crate::io::Result<crate::fs::ReadDir> { crate::fs::read_dir(self) }
+    pub fn read_link(&self) -> crate::io::Result<PathBuf> { crate::fs::read_link(self) }
     /// Whether the path names a symbolic link, without following it.
     pub fn is_symlink(&self) -> bool {
         crate::fs::symlink_metadata(self).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false)
