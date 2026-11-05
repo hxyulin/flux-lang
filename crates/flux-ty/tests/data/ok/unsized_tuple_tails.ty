@@ -1,0 +1,14 @@
+struct Wrapper<T> { 0: T }
+struct HeaderSlice<H, T> { header: H, slice: T }
+struct Marker<F, T> { marker: PhantomData<(F, T)>, n: u8 }
+struct Adapter<T> { writeable: T }
+fn ptrs<T>(*mut T) -> ()
+    p@0: *mut T
+fn main() -> ()
+    w@0: Wrapper<u8>
+    h@1: HeaderSlice<u8, [u8; 2]>
+    r@2: &HeaderSlice<u8, [u8]>
+    m@3: Marker<u8, str>
+    a@4: &Adapter<[u8]>
+    x@5: u32
+    args@6: (&u8, &usize, &u8, &&[u8])

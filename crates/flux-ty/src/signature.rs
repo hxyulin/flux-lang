@@ -783,11 +783,19 @@ pub(super) fn extend_signatures(
             }
             ty
         };
+        // A tuple struct's constructor has its fields' types, whose
+        // errors the struct reports.
+        let mut ctor_errors = Vec::new();
         let params: Box<[Ty]> = function
             .params
             .iter()
             .map(|p| {
-                let ty = resolve(items, function.loc, &p.ty, scope, p.range, &mut reported);
+                let errors = if function.ctor.is_some() {
+                    &mut ctor_errors
+                } else {
+                    &mut reported
+                };
+                let ty = resolve(items, function.loc, &p.ty, scope, p.range, errors);
                 sized(ty, p.range, &mut reported)
             })
             .collect();

@@ -338,6 +338,13 @@ impl<T> *const T {
 }
 
 impl<T: ?Sized> *mut T {
+    /// Drops the value the pointer points to.
+    /// # Safety
+    /// The pointee must be valid for dropping, as `ptr::drop_in_place` requires.
+    pub unsafe fn drop_in_place(self) {
+        unsafe { drop_in_place(self) }
+    }
+
     /// Replaces the data address while retaining pointer metadata.
     pub fn with_addr(self,address:usize)->Self {
         crate::intrinsics::ptr_with_addr(self as *const T,address) as *mut T
@@ -511,10 +518,6 @@ impl<T> *mut T {
         unsafe { swap(self, with) }
     }
 
-    /// Drops the value the pointer points to.
-    pub unsafe fn drop_in_place(self) {
-        unsafe { drop_in_place(self) }
-    }
 
     /// Sets `count` values' bytes to `value`.
     pub unsafe fn write_bytes(self, value: u8, count: usize) {

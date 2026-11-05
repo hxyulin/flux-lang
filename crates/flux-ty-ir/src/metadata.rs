@@ -19,7 +19,15 @@ pub fn tail(
     is_enum: impl Fn(flux_hir::StructId) -> bool,
 ) -> Ty {
     let mut seen = Vec::new();
-    while let TyKind::Adt(adt, args) = ty.kind() {
+    loop {
+        // A tuple is unsized as its last element is.
+        if let TyKind::Tuple([.., last]) = ty.kind() {
+            ty = *last;
+            continue;
+        }
+        let TyKind::Adt(adt, args) = ty.kind() else {
+            break;
+        };
         if is_enum(adt.strukt) {
             break;
         }

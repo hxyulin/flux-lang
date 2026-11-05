@@ -871,7 +871,10 @@ pub fn resolve_type(
             if fields.contains(&Ty::ERROR) {
                 return Ty::ERROR;
             }
-            if let Some(&field) = fields.iter().find(|&&f| scope.is_unsized(items, f)) {
+            // Only the last element may be unsized, as a struct's last
+            // field may.
+            let leading = &fields[..fields.len().saturating_sub(1)];
+            if let Some(&field) = leading.iter().find(|&&f| scope.is_unsized(items, f)) {
                 return fail(errors, range, unsized_error(field));
             }
             Ty::tuple(&fields)
@@ -1767,7 +1770,11 @@ pub(super) fn unsized_argument(items: &ItemTree, scope: TypeScope<'_>, ty: Ty) -
 }
 
 /// rustc's E0277 for a value of unsized type `ty`.
-pub fn unsized_error(ty: Ty) -> String {
+pub fn unsized_error(mut ty: Ty) -> String {
+    // rustc names a tuple's unsized last element.
+    while let TyKind::Tuple([.., last]) = ty.kind() {
+        ty = *last;
+    }
     format!("the size for values of type `{ty}` cannot be known at compilation time")
 }
 

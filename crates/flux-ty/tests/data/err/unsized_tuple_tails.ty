@@ -1,0 +1,7 @@
+struct Lead<T> { 0: {error} }
+fn tail<T>(&(u8, T)) -> ()
+fn by_value<T>({error}) -> ()
+    x@0: {error}
+fn main() -> ()
+error 161..168: the size for values of type `T` cannot be known at compilation time
+error 235..242: the size for values of type `T` cannot be known at compilation time
