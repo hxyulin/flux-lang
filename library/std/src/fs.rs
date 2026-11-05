@@ -37,6 +37,12 @@ mod native {
         #[link_name = "fstat"]
         pub fn metadata_fstat(fd: i32, buffer: *mut u8) -> i32;
         pub fn stat(path: *const u8, buffer: *mut u8) -> i32;
+        // Rust's std binds the extended version on macOS; the legacy one
+        // finds a relative path's directory by walking its parents.
+        #[cfg(target_os = "macos")]
+        #[link_name = "realpath$DARWIN_EXTSN"]
+        pub fn realpath(path: *const core::ffi::c_char, resolved: *mut core::ffi::c_char) -> *mut core::ffi::c_char;
+        #[cfg(not(target_os = "macos"))]
         pub fn realpath(path: *const core::ffi::c_char, resolved: *mut core::ffi::c_char) -> *mut core::ffi::c_char;
         pub fn free(pointer: *mut core::ffi::c_void);
     }
