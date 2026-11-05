@@ -106,6 +106,20 @@ pub(super) struct CallSite<'s> {
 }
 
 impl<'a> Ctx<'a> {
+    /// The `impl` blocks of `t` whose header may unify with `self_ty`,
+    /// resolved at the top: every block for a variable, which unifies
+    /// with any type; otherwise those [`ImplIndex::matching`] gives, as
+    /// a parameter or associated type unifies only with itself.
+    ///
+    /// [`ImplIndex::matching`]: crate::impl_index::ImplIndex::matching
+    fn candidate_impls(&self, t: TraitId, self_ty: Ty) -> crate::impl_index::ImplsFor<'a> {
+        let (items, index) = (self.items, &self.sigs.impl_index);
+        match self_ty.kind() {
+            TyKind::Infer(_) => index.impls_for(items, t, self_ty),
+            _ => index.matching(items, t, self_ty),
+        }
+    }
+
     /// The signature of `function` called with generic arguments `args`,
     /// its associated types normalized.
     pub(super) fn instance_sig(
@@ -687,8 +701,7 @@ impl Ctx<'_> {
         {
             return None;
         }
-        let (items, sigs) = (self.items, self.sigs);
-        let impls = sigs.impl_index.impls_for(items, alias.trait_, self_ty);
+        let impls = self.candidate_impls(alias.trait_, self_ty);
         let found: Vec<ImplId> = impls
             .filter(|&imp| self.probe(|cx| cx.unify_impl(imp, pred).is_some()))
             .collect();
@@ -1292,8 +1305,7 @@ impl Ctx<'_> {
             [] => {}
             _ => return Selection::Ambiguous,
         }
-        let (items, sigs) = (self.items, self.sigs);
-        let impls = sigs.impl_index.impls_for(items, t, self_ty);
+        let impls = self.candidate_impls(t, self_ty);
         let found: Vec<ImplId> = impls
             .filter(|&imp| self.probe(|cx| cx.unify_impl(imp, pred).is_some()))
             .collect();
@@ -1626,7 +1638,7 @@ impl Ctx<'_> {
                     )
                 });
         }
-        sigs.impl_index.impls_for(items, t, ty).any(|imp| {
+        self.candidate_impls(t, ty).any(|imp| {
             self.probe(|cx| {
                 let (Some(&self_ty), Some(&trait_ref)) =
                     (cx.sigs.impls.get(imp), cx.sigs.impl_traits.get(imp))
