@@ -935,7 +935,24 @@ fn eager_arguments(
             out.extend_from_slice(&toks[pos..]);
             break;
         };
-        let arg = &toks[pos..pos + n];
+        let written = &toks[pos..pos + n];
+        // A forwarded `expr` fragment keeps the invisible parentheses
+        // that hold it together; a macro call inside is expanded anyway.
+        let mut arg = written;
+        while let [open, inner @ .., close] = arg
+            && !inner.is_empty()
+            && open.kind == T!['(']
+            && close.kind == T![')']
+            && open.origin.range.is_empty()
+            && close.origin.range.is_empty()
+            && inner.iter().try_fold(0u32, |depth, t| match t.kind {
+                T!['('] => Some(depth + 1),
+                T![')'] => depth.checked_sub(1),
+                _ => Some(depth),
+            }) == Some(0)
+        {
+            arg = inner;
+        }
         let mut starts = Vec::new();
         let text = tt::write_text(arg, &mut starts);
         let origins: Vec<_> = starts
@@ -990,7 +1007,7 @@ fn eager_arguments(
             }
             out.extend(tokens);
         } else {
-            out.extend_from_slice(arg);
+            out.extend_from_slice(written);
         }
         pos += n;
         if only_first {
