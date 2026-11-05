@@ -74,4 +74,9 @@ fn main() {
     println!("{:?} {:?} {} {}", joined, joined_slice, words, strings);
     let collected: Cow<str> = "abc".chars().rev().collect();
     println!("{}", collected);
+
+    let mut pinned = Box::pin(5);
+    *pinned.as_mut() += 1;
+    let from: std::pin::Pin<Box<str>> = Box::<str>::from("pinned text").into();
+    println!("{} {:?} {} {}", pinned, from, pinned == Box::pin(6), format!("{:p}", Box::new(1)).starts_with("0x"));
 }
