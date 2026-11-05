@@ -11,6 +11,14 @@ use core::ptr;
 
 use crate::raw_vec::RawVec;
 
+/// Whether `T` is `Copy`, a constant once `T` is known: the copying
+/// methods then copy the elements' bytes at once, as rustc's
+/// specializations for `Copy` elements do.
+#[rustc_intrinsic]
+pub(crate) fn is_copy<T>() -> bool {
+    loop {}
+}
+
 pub struct Vec<T> {
     buf: RawVec<T>,
     len: usize,
@@ -396,6 +404,18 @@ impl<T> Vec<T> {
     {
         let core::ops::Range { start, end } = core::slice::range(range, ..self.len);
         self.reserve(end - start);
+        if is_copy::<T>() {
+            let count = end - start;
+            // SAFETY: `reserve` made room for `count` more elements past
+            // `len`, which the range below `len` cannot overlap, and a
+            // `Copy` element's clone is its bytes.
+            unsafe {
+                let base = self.as_mut_ptr();
+                ptr::copy_nonoverlapping(base.add(start), base.add(self.len), count);
+            }
+            self.len += count;
+            return;
+        }
         for index in start..end {
             let value = self[index].clone();
             self.push(value);
@@ -408,6 +428,17 @@ impl<T> Vec<T> {
         T: Clone,
     {
         self.reserve(other.len());
+        if is_copy::<T>() {
+            let count = other.len();
+            // SAFETY: `reserve` made room for `count` more elements, a
+            // shared slice cannot overlap this vector's spare capacity,
+            // and a `Copy` element's clone is its bytes.
+            unsafe {
+                ptr::copy_nonoverlapping(other.as_ptr(), self.as_mut_ptr().add(self.len), count);
+            }
+            self.len += count;
+            return;
+        }
         for x in other.iter() {
             let len = self.len;
             unsafe {
