@@ -29,31 +29,61 @@ pub fn compare_fixture(name: &str) {
     std::fs::create_dir_all(&directory).expect("create fixture artifacts");
     let source = repo.join(format!("tests/run/{name}.rs"));
     let limit = Duration::from_secs(60);
-    let reference = directory.join("rustc");
-    success(
-        &process::run(
-            Command::new("rustc")
-                .args([
-                    "--edition=2024",
-                    "-C",
-                    "panic=abort",
-                    "-C",
-                    "overflow-checks=off",
-                ])
-                .arg(&source)
-                .arg("-o")
-                .arg(&reference),
+    // Debug assertions follow flux's default: on without `-O`, off with it.
+    // Only a program that mentions them can observe the difference.
+    let observes_assertions = std::fs::read_to_string(&source)
+        .unwrap()
+        .contains("debug_assert");
+    let reference = |debug_assertions: bool| {
+        let label = if debug_assertions {
+            "rustc"
+        } else {
+            "rustc-release"
+        };
+        let reference = directory.join(label);
+        success(
+            &process::run(
+                Command::new("rustc")
+                    .args([
+                        "--edition=2024",
+                        "-C",
+                        "panic=abort",
+                        "-C",
+                        "overflow-checks=off",
+                        "-C",
+                        if debug_assertions {
+                            "debug-assertions=on"
+                        } else {
+                            "debug-assertions=off"
+                        },
+                    ])
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&reference),
+                &directory,
+                &format!("{label}-build"),
+                limit,
+            )
+            .completed(),
+            name,
+        );
+        let expected = process::run(
+            &mut Command::new(reference),
             &directory,
-            "rustc-build",
+            &format!("{label}-run"),
             limit,
         )
-        .completed(),
-        name,
-    );
-    let expected =
-        process::run(&mut Command::new(reference), &directory, "rustc-run", limit).completed();
-    success(&expected, name);
+        .completed();
+        success(&expected, name);
+        expected
+    };
+    let debug = reference(true);
+    let release = observes_assertions.then(|| reference(false));
     for optimized in [false, true] {
+        let expected = match &release {
+            Some(release) if optimized => release,
+            _ => &debug,
+        };
         let executable = directory.join(format!("flux-{optimized}"));
         let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         command.arg("build").arg(&source).arg("-o").arg(&executable);

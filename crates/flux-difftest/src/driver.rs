@@ -2,8 +2,10 @@
 //! classifying what happened.
 //!
 //! rustc is the oracle: it compiles with `--edition 2024 -C
-//! overflow-checks=off -C panic=abort`, the semantics flux implements.
-//! flux compiles twice, without and with `-O`. Every executable runs
+//! overflow-checks=off -C panic=abort`, the semantics flux implements,
+//! with rustc's default debug assertions. flux compiles twice, without
+//! and with `-O`; the `-O` build passes `-C debug-assertions` so that both
+//! builds match the one reference. Every executable runs
 //! under `gtimeout`; its stdout and exit status are compared (stderr,
 //! where panic messages go, is not).
 
@@ -371,7 +373,7 @@ fn flux_build(tools: &Tools, src: &Path, exe: &Path, mode: Mode) -> Result<(), F
     let mut cmd = gtimeout(tools.compile_timeout, &tools.flux);
     cmd.arg("build").arg(src).arg("-o").arg(exe);
     if mode == Mode::Opt {
-        cmd.arg("-O");
+        cmd.args(["-O", "-C", "debug-assertions"]);
     }
     let (status, out, err) = timed(&mut cmd, tools.compile_timeout)
         .map_err(|e| FluxOutcome::Crashed(format!("cannot start flux: {e}")))?;

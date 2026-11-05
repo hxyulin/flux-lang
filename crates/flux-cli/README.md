@@ -196,11 +196,18 @@ require ASCII. Unknown modern directives and custom
 linker arguments fail explicitly. Native linker directives can prepare rustc
 host tools; Flux target linking still rejects them.
 
-Each invocation recompiles host units and reruns build scripts. Host tools use
+Each invocation recompiles and reruns build scripts with Flux. A rustc host unit
+is reused when its command, its dependencies' fingerprints, and every source
+file and environment variable in its rustc dep-info are unchanged; otherwise it
+is rebuilt. Independent rustc units run in parallel, one per available core,
+while Flux compiles and runs build scripts on the driver thread. Host tools use
 optimization level 0 with debug assertions; `-O` selects Flux target optimization.
-Cargo profiles and rustc wrappers are not interpreted. Existing generated output
-is not reused. Artifacts and per-script stdout/stderr live under
-`target/flux/native-host/<run>/`. Preparation writes a separate version 1
+Cargo profiles and rustc wrappers are not interpreted. Paths depend only on the
+unit's package, target, features and rustc version, so repeated builds embed the
+same build-script output directories. rustc artifacts and their fingerprints live
+in `target/flux/native-host/deps/`; each unit's dep-info, build-script output
+directory and stdout/stderr live in `target/flux/native-host/<unit>-<hash>/`.
+A lock file serializes preparations of one workspace. Preparation writes a separate version 1
 `flux-native-prepared` report to `target/flux/native-prepared-plan.json`, or
 `--plan`. The report records rustc identity, the native graph, host artifact
 paths, generated directories, and parsed script output. It is an audit report,

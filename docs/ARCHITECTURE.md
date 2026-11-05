@@ -1137,9 +1137,11 @@ passed to keel's ELF linker.
 
 ### Compilation timings
 
-`fluxc build/run` and `flux package build/run` accept `--timings`. Reports go
-to stderr, including reached scopes on ordinary failures. Disabled timing
-performs no clock reads or phase-record allocations.
+`fluxc build/run`, `flux package build/run` and `flux build` accept
+`--timings`. Reports go to stderr, including reached scopes on ordinary
+failures. Disabled timing performs no clock reads or phase-record allocations.
+For a package graph, `flux build` first prints the wall time from planning
+through native host preparation, then the graph compilation's report.
 
 `compile scoped elapsed` covers the compilation driver, diagnostics and
 compile-local destruction. For packages, `package compile scoped elapsed`
@@ -1151,8 +1153,10 @@ These are scoped wall durations, not sums of phases or full process times.
 
 Planning includes nested manifest loading and validation for each source crate.
 Root and dependency loading scopes do not cover all parsing: HIR lowering also loads module files. Type checking includes constant
-evaluation; MIR construction and checking share one scope; Keel lowering
-includes monomorphization. The inclusive backend scope contains verification,
+evaluation; MIR construction and checking share one scope. The inclusive
+`mono + keel lowering` scope splits into mono collection (reachability and
+instance discovery), body substitution and MIR validation, each summed over
+all instances, and the remaining keel lowering. The inclusive backend scope contains verification,
 optimization, native code generation and assembly. Those child scopes measure
 the named calls and can exclude surrounding error formatting and destruction.
 Linking includes SDK discovery, output writing and signing. Never add nested

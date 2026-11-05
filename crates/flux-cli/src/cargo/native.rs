@@ -133,7 +133,10 @@ fn make_plan(options: &Options) -> Result<Plan> {
         return Err("native planning requires Cargo.lock version 3 or 4".into());
     }
     let host = crate::target::host()?.to_owned();
-    let cfg = crate::target::cfg()?.iter().map(|s| compact(s)).collect();
+    let cfg = crate::target::cfg(true)?
+        .iter()
+        .map(|s| compact(s))
+        .collect();
     let home = std::env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".cargo")))
@@ -1230,8 +1233,12 @@ fn git_source_matches(source: &str, url: &str, spec: &Table) -> bool {
         .is_some_and(|(locked, _)| locked == identity)
 }
 
-pub(super) fn prepare(options: &Options, optimize: Option<bool>) -> Result<ExitCode> {
-    execute::run(make_plan(options)?, options, optimize)
+pub(super) fn prepare(options: &Options, build: Option<crate::BuildOptions>) -> Result<ExitCode> {
+    let start = build
+        .is_some_and(|b| b.timings)
+        .then(std::time::Instant::now);
+    let plan = make_plan(options)?;
+    execute::run(plan, options, build, start)
 }
 
 fn cached_source(home: &Path, package: &Locked) -> Result<Option<PathBuf>> {

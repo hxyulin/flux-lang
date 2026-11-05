@@ -100,6 +100,37 @@ pub(crate) struct BuildOptions {
     /// Print scoped compilation timings (excludes execution of the program).
     #[arg(long)]
     pub(crate) timings: bool,
+    /// Codegen option, as rustc's: only `debug-assertions[=yes|no]`, which
+    /// is on by default without `-O` and off with it.
+    #[arg(
+        short = 'C',
+        value_name = "OPT[=VALUE]",
+        value_parser = parse_codegen_option,
+        overrides_with = "debug_assertions"
+    )]
+    pub(crate) debug_assertions: Option<bool>,
+}
+
+impl BuildOptions {
+    /// Whether `cfg(debug_assertions)` holds for the compiled crates.
+    pub(crate) fn debug_assertions(&self) -> bool {
+        self.debug_assertions.unwrap_or(!self.optimize)
+    }
+}
+
+/// Parses `-C debug-assertions[=VALUE]` with rustc's boolean spellings.
+fn parse_codegen_option(text: &str) -> Result<bool, String> {
+    let (name, value) = text.split_once('=').unwrap_or((text, "yes"));
+    if name != "debug-assertions" {
+        return Err(format!("unsupported codegen option `{name}`"));
+    }
+    match value {
+        "y" | "yes" | "on" | "true" => Ok(true),
+        "n" | "no" | "off" | "false" => Ok(false),
+        _ => Err(format!(
+            "expected `yes` or `no` for `debug-assertions`, found `{value}`"
+        )),
+    }
 }
 
 /// Run the source compiler CLI.
@@ -111,7 +142,7 @@ pub fn compiler_main() -> ExitCode {
     if let Command::Print { kind } = &cli.command {
         let result = match kind {
             PrintKind::Host => crate::target::host().map(|host| println!("{host}")),
-            PrintKind::Cfg => crate::target::cfg().map(|cfg| {
+            PrintKind::Cfg => crate::target::cfg(true).map(|cfg| {
                 for line in cfg {
                     println!("{line}");
                 }

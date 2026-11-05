@@ -56,3 +56,10 @@ undocumented_unsafe_blocks = "deny"
 opt-level = 1
 debug-assertions = true
 overflow-checks = true
+
+# The stage-0 compiler that builds Flux with itself: release code generation
+# with the development-time checks of the test profile still enabled.
+[profile.stage0]
+inherits = "release"
+debug-assertions = true
+overflow-checks = true

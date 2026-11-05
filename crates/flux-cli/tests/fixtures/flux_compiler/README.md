@@ -3,8 +3,12 @@
 Run the guarded audit on arm64 macOS:
 
 ```sh
-cargo test -p flux-cli --test flux_compiler_readiness -- --ignored --nocapture
+cargo test --profile stage0 -p flux-cli --test flux_compiler_readiness -- --ignored --nocapture
 ```
+
+The `stage0` profile is the release profile with debug assertions and overflow
+checks on. The audit compiles the graph inside this test binary, which is the
+stage-0 compiler; the default `test` profile builds it at optimization level 1.
 
 For a temporary backend experiment, apply Cargo path patches for all seven Keel
 crates in the ignored `.cargo/config.toml`, resolve the local lockfile, and set

@@ -30,6 +30,9 @@ pub(crate) enum Command {
         options: Options,
         #[arg(short = 'O')]
         optimize: bool,
+        /// Print host preparation and compilation timings.
+        #[arg(long)]
+        timings: bool,
     },
 }
 
@@ -199,11 +202,17 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         unreachable!("native planning returned above")
     };
     if !options.cargo {
-        let optimize = match command {
-            Command::Build { optimize, .. } => Some(*optimize),
+        let build = match command {
+            Command::Build {
+                optimize, timings, ..
+            } => Some(crate::BuildOptions {
+                optimize: *optimize,
+                timings: *timings,
+                debug_assertions: None,
+            }),
             _ => None,
         };
-        return native::prepare(options, optimize);
+        return native::prepare(options, build);
     }
     if matches!(
         options.macro_host_compiler,
@@ -285,7 +294,10 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         plan.host_proc_macros.len(),
         path.display()
     );
-    let Command::Build { optimize, .. } = command else {
+    let Command::Build {
+        optimize, timings, ..
+    } = command
+    else {
         return Ok(ExitCode::SUCCESS);
     };
     if !plan.blockers.is_empty() {
@@ -369,7 +381,11 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         sources: &sources,
         options: crate::BuildOptions {
             optimize: *optimize,
-            timings: false,
+            timings: *timings,
+            debug_assertions: Some(profile_debug_assertions(
+                &metadata.workspace_root.join("Cargo.toml"),
+                *optimize,
+            )?),
         },
     })?;
     Ok(if ok {
@@ -732,6 +748,31 @@ pub(crate) fn edition(value: &str) -> Result<flux_syntax::Edition, String> {
         _ => Err(format!("unsupported edition {value}")),
     }
 }
+/// The `debug-assertions` setting of the Cargo profile a build uses: `release`
+/// with `-O` and `dev` without, from the workspace manifest's `[profile]`
+/// table, with Cargo's defaults (on for `dev`, off for `release`).
+pub(crate) fn profile_debug_assertions(
+    manifest: &std::path::Path,
+    optimize: bool,
+) -> Result<bool, String> {
+    let name = if optimize { "release" } else { "dev" };
+    let text = std::fs::read_to_string(manifest)
+        .map_err(|e| format!("cannot read {}: {e}", manifest.display()))?;
+    let table: toml::Table = text
+        .parse()
+        .map_err(|e| format!("invalid manifest {}: {e}", manifest.display()))?;
+    let setting = table
+        .get("profile")
+        .and_then(|profiles| profiles.get(name))
+        .and_then(|profile| profile.get("debug-assertions"));
+    match setting {
+        None => Ok(!optimize),
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| format!("profile.{name}.debug-assertions must be a boolean")),
+    }
+}
+
 pub(crate) fn cfg(cfgs: &[String], features: &[String]) -> Result<flux_hir::CrateCfg, String> {
     use flux_intern::Symbol;
     let mut cfg = flux_hir::CrateCfg::default();
@@ -751,4 +792,30 @@ pub(crate) fn cfg(cfgs: &[String], features: &[String]) -> Result<flux_hir::Crat
         }
     }
     Ok(cfg)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn profile_debug_assertions_follow_cargo_defaults_and_overrides() {
+        let directory = std::env::temp_dir().join(format!("flux-profile-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let manifest = directory.join("Cargo.toml");
+        let check = |text: &str, optimize: bool| {
+            std::fs::write(&manifest, text).unwrap();
+            super::profile_debug_assertions(&manifest, optimize)
+        };
+        let package = "[package]\nname = \"p\"\nversion = \"0.1.0\"\n";
+        assert_eq!(check(package, false), Ok(true));
+        assert_eq!(check(package, true), Ok(false));
+        let set = format!(
+            "{package}[profile.dev]\ndebug-assertions = false\n\
+             [profile.release]\ndebug-assertions = true\n"
+        );
+        assert_eq!(check(&set, false), Ok(false));
+        assert_eq!(check(&set, true), Ok(true));
+        let invalid = format!("{package}[profile.release]\ndebug-assertions = 1\n");
+        assert!(check(&invalid, true).is_err());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 }

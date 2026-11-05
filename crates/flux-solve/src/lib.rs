@@ -110,18 +110,10 @@ fn trait_requires_sized(items: &ItemTree, root: flux_hir::TraitId) -> bool {
 /// which dereferences as a built-in pointer that owns its value does, as
 /// rustc's: moves out of `*b`, and `*b` is mutable where `b` is.
 pub fn box_pointee(ty: Ty) -> Option<Ty> {
-    static OWNED_BOX: std::sync::OnceLock<Option<StructId>> = std::sync::OnceLock::new();
     let TyKind::Adt(adt, args) = ty.kind() else {
         return None;
     };
-    let owned_box = OWNED_BOX.get_or_init(|| {
-        flux_hir::Core::get()
-            .items
-            .lang_enums
-            .get(&Symbol::intern("owned_box"))
-            .copied()
-    });
-    (Some(adt.strukt) == *owned_box)
+    (Some(adt.strukt) == flux_hir::owned_box())
         .then(|| args.first().copied())
         .flatten()
 }

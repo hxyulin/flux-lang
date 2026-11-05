@@ -232,6 +232,7 @@ pub fn read_builtin_suite(d: &mut Decoder<'_>) -> Result<(SourceDb, ItemTree), E
     roles(&items)?;
     items.core = items.counts();
     items.artifact_builtins = true;
+    crate::library::note_library(&items);
     macro_rules! freeze {($($field:ident),*)=>{$(items.$field.freeze();)*};}
     freeze!(
         modules,

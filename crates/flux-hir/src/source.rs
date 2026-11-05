@@ -89,6 +89,8 @@ pub struct SourceDb {
     metadata_proc_macros: bool,
     environments: rustc_hash::FxHashMap<FileId, Arc<std::collections::BTreeMap<String, String>>>,
     configured: rustc_hash::FxHashMap<(FileId, Option<Arc<flux_syntax::CfgOptions>>), FileId>,
+    /// Applied to crate roots configured after it is set; on by default.
+    debug_assertions: bool,
 }
 
 /// Where `core`'s files appear to be, in paths and messages.
@@ -524,6 +526,7 @@ impl SourceDb {
             metadata_proc_macros: self.metadata_proc_macros,
             environments: self.environments.clone(),
             configured: self.configured.clone(),
+            debug_assertions: self.debug_assertions,
         }
     }
 
@@ -552,7 +555,15 @@ impl SourceDb {
             metadata_proc_macros: false,
             environments: Default::default(),
             configured: Default::default(),
+            debug_assertions: true,
         }
+    }
+
+    /// Sets `cfg(debug_assertions)`, rustc's `-C debug-assertions`, for every
+    /// crate root configured afterwards with [`SourceDb::set_crate_cfg`].
+    /// Unconfigured roots and the embedded libraries keep it on.
+    pub fn set_debug_assertions(&mut self, enabled: bool) {
+        self.debug_assertions = enabled;
     }
 
     /// Sets the compiler invocation directory used by host procedural macros.
@@ -652,10 +663,11 @@ impl SourceDb {
         names.dedup();
         values.sort();
         values.dedup();
-        let cfg = (!names.is_empty() || !values.is_empty()).then(|| {
+        let cfg = (!names.is_empty() || !values.is_empty() || !self.debug_assertions).then(|| {
             Arc::new(flux_syntax::CfgOptions {
                 names: names.into(),
                 values: values.into(),
+                debug_assertions: self.debug_assertions,
             })
         });
         let mut source = (**source).clone();

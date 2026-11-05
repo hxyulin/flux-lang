@@ -290,6 +290,10 @@ fn suite_checksum_stat_cache_rechecks_a_replaced_file() {
     let output = staged.compiler(false, "mir", &file);
     success(&output);
     trace(&output, "checksum=Hash");
+    // That load verified the replacement and recorded its stat fields.
+    let output = staged.compiler(false, "mir", &file);
+    success(&output);
+    trace(&output, "checksum=Stat");
     let repair = flib_support::run(
         staged.command().arg("build-builtins"),
         "repair-replaced-suite-stamp",
@@ -338,9 +342,16 @@ fn executable_identity_fallback_and_suite_corruption_are_distinct() {
         CheckMethod::Hash,
         "mtime-only changes must recheck content"
     );
+    // The matching hash records the executable's new stat fields, so later
+    // processes skip the content hash until the executable changes again.
+    let (_, method) = flux_cli::builtins::load(&staged.suite, &staged.executable)
+        .unwrap()
+        .unwrap();
+    assert_eq!(method, CheckMethod::Stat);
     let output = staged.compiler(false, "mir", &file);
     success(&output);
-    trace(&output, "identity=Hash");
+    trace(&output, "identity=Stat");
+    trace(&output, "checksum=Stat");
     std::fs::remove_file(&staged.suite).unwrap();
     let output = staged.compiler(false, "mir", &file);
     success(&output);

@@ -197,6 +197,15 @@ CARGO_PROFILE_TEST_OPT_LEVEL=0 cargo test -p flux-mir --test mir
 CARGO_PROFILE_TEST_OPT_LEVEL=0 python3 scripts/test.py borrowing --target mir
 ```
 
+Self-host source graphs compile large crate graphs inside the test binary.
+`--profile stage0` builds the test binaries and the staged compiler with the
+`stage0` profile (release optimization, debug assertions and overflow checks
+on) instead; see [compiling Flux with Flux](docs/SELF_HOSTING.md#building-the-stages):
+
+```sh
+python3 scripts/test.py graphs --profile stage0
+```
+
 Every parser change needs a fixture. Put valid Rust in
 `crates/flux-syntax/tests/data/parser/ok/` and invalid Rust in `err/`, run
 `just snapshots`, and review the `.rast` diff: a snapshot passing only
@@ -231,7 +240,9 @@ does not match `flux.ungram`.
 Programs in `tests/run` are compiled with rustc (`-C overflow-checks=off
 -C panic=abort`) and with flux, with and without `-O`, and must produce
 the same output, panic messages and exit status: `cargo test -p
-flux-cli --test run`. Both are given the program's path relative to the
+flux-cli --test run`. Debug assertions are on without `-O` and off with it;
+a program that mentions them gets a second rustc reference built with
+`-C debug-assertions=off` for the `-O` comparison. Both are given the program's path relative to the
 repository, which panic messages show.
 Shared CLI test mechanics live in `crates/flux-cli/tests/support`: `process`
 runs bounded commands with file-backed output, `oracle` compares ordinary native

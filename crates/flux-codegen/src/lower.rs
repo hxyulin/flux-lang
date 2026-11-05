@@ -72,7 +72,34 @@ pub fn lower_module(
     typed: &TypedFile,
     mir: &FileMir,
 ) -> Result<Module, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, None).map(|lowered| lowered.module)
+    lower_inner(hir, typed, mir, None, None).map(|lowered| lowered.module)
+}
+
+/// Time spent in parts of lowering, for `--timings`. Each field sums its part
+/// over all instances; lowering MIR to keel IR is the rest of the call.
+#[derive(Default, Debug)]
+pub struct LoweringTimings {
+    /// Reachability and monomorphization: finding every instance to emit.
+    pub collect: std::time::Duration,
+    /// Substituting each instance's generic arguments into its MIR body.
+    pub substitute: std::time::Duration,
+    /// Checking each substituted body with the MIR validator.
+    pub validate: std::time::Duration,
+}
+
+/// [`lower_module`] or [`lower_crate`], recording [`LoweringTimings`].
+///
+/// # Errors
+///
+/// Returns the same diagnostics as the untimed entry points.
+pub fn lower_with_timings(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Option<Compilation<'_>>,
+    timings: &mut LoweringTimings,
+) -> Result<Module, Vec<Diagnostic>> {
+    lower_inner(hir, typed, mir, compilation, Some(timings)).map(|lowered| lowered.module)
 }
 
 /// Which crate an object defines. Dependencies supply their own non-generic code.
@@ -153,7 +180,7 @@ pub fn lower_crate_with_requirements(
     mir: &FileMir,
     compilation: Compilation<'_>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, Some(compilation))
+    lower_inner(hir, typed, mir, Some(compilation), None)
 }
 
 fn lower_inner(
@@ -161,9 +188,11 @@ fn lower_inner(
     typed: &TypedFile,
     mir: &FileMir,
     compilation: Option<Compilation<'_>>,
+    mut timings: Option<&mut LoweringTimings>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
     let _shapes = shapes::scope(&typed.sigs);
     let _fields = flux_solve::remember_field_types(&typed.sigs);
+    let start = timings.is_some().then(std::time::Instant::now);
     let monomorphic = |id: FunctionId| {
         let function = &hir.items.functions[id];
         let instance = Instance {
@@ -281,6 +310,9 @@ fn lower_inner(
         None => flux_mir::mono::collect_all(hir, &typed.sigs, mir),
     }
     .map_err(|d| vec![d])?;
+    if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
+        timings.collect = start.elapsed();
+    }
     let instances = collected.instances;
     let required_instances = compilation.map_or_else(Vec::new, |compilation| {
         instances
@@ -488,7 +520,9 @@ fn lower_inner(
             }
             continue;
         }
+        let start = timings.is_some().then(std::time::Instant::now);
         let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
+        let substituted = start.map(|start| (start.elapsed(), std::time::Instant::now()));
         flux_mir::validate::assert_valid(
             &hir.items,
             &typed.sigs,
@@ -496,6 +530,10 @@ fn lower_inner(
             &body,
             &hir.items.functions[instance.function].name,
         );
+        if let (Some(timings), Some((substitute, start))) = (timings.as_deref_mut(), substituted) {
+            timings.substitute += substitute;
+            timings.validate += start.elapsed();
+        }
         let function = ctx.function(instance, &body, false);
         module.functions.push(function);
         if compilation.is_some() && items.functions[instance.function].track_caller {

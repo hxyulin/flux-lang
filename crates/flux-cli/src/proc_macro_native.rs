@@ -125,6 +125,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
             options: crate::BuildOptions {
                 optimize: false,
                 timings: false,
+                debug_assertions: None,
             },
             sources: &sources,
         },
@@ -136,7 +137,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
 }
 
 fn native_cfg() -> Result<HashSet<String>, String> {
-    let mut cfg: HashSet<_> = crate::target::cfg()?.into_iter().collect();
+    let mut cfg: HashSet<_> = crate::target::cfg(true)?.into_iter().collect();
     cfg.insert("proc_macro".into());
     Ok(cfg)
 }

@@ -56,7 +56,7 @@ pub use item_tree::{
     VariantData, Visibility, WherePredicate, array_target, is_primitive, raw_ptr_target,
     slice_target,
 };
-pub use library::Core;
+pub use library::{Core, owned_box};
 pub use lower::{LoweredBody, lower_body, lower_const};
 pub use macros::{Builtin, MacroDef, MacroId, MacroKind, MacroScope, MacroScopeId};
 pub use source::{CORE_ROOT, CrateCfg, FileId, SourceDb, SourceFile};

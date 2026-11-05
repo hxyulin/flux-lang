@@ -154,6 +154,7 @@ fn compile_inner(
     // `core`'s files are parsed with the database.
     let (mut db, root) = timings.time("database + root load/parse", || {
         let mut db = suite.map_or_else(SourceDb::new, |s| s.db.fork());
+        db.set_debug_assertions(options.debug_assertions());
         let edition = sources
             .last()
             .map_or(flux_syntax::Edition::E2024, |s| s.edition);
@@ -164,6 +165,10 @@ fn compile_inner(
         (db, root)
     });
     let root = root?;
+    if sources.is_empty() && !options.debug_assertions() {
+        // A lone root is otherwise left unconfigured, which keeps them on.
+        db.set_crate_cfg(root, flux_hir::CrateCfg::default())?;
+    }
     let graph = timings.time("source dependency load/parse", || {
         let mut graph = Vec::new();
         for source in sources {
@@ -267,26 +272,39 @@ fn compile_inner(
             } else {
                 Vec::new()
             };
-            let mut module = match timings.time("mono + keel lowering", || {
-                if builtin_object {
-                    let roots = roots.as_ref().expect("native suite has providers");
-                    flux_codegen::lower_crate(
-                        &hir,
-                        &typed,
-                        &mir,
-                        flux_codegen::Compilation {
-                            kind: flux_codegen::OutputKind::Executable,
-                            crate_hashes: &hashes,
-                            imported: &[],
-                            required_functions: &roots.functions,
-                            required_instances: &roots.instances,
-                            builtin_object: true,
-                        },
-                    )
-                } else {
-                    flux_codegen::lower_module(&hir, &typed, &mir)
+            let compilation = builtin_object.then(|| {
+                let roots = roots.as_ref().expect("native suite has providers");
+                flux_codegen::Compilation {
+                    kind: flux_codegen::OutputKind::Executable,
+                    crate_hashes: &hashes,
+                    imported: &[],
+                    required_functions: &roots.functions,
+                    required_instances: &roots.instances,
+                    builtin_object: true,
                 }
-            }) {
+            });
+            let lowered = if options.timings {
+                let mut parts = flux_codegen::LoweringTimings::default();
+                let lowered = timings.time("mono + keel lowering (inclusive)", || {
+                    flux_codegen::lower_with_timings(&hir, &typed, &mir, compilation, &mut parts)
+                });
+                let inclusive = timings.phases.last().map_or(Duration::ZERO, |p| p.1);
+                let measured = parts.collect + parts.substitute + parts.validate;
+                for (name, duration) in [
+                    ("  mono collection", parts.collect),
+                    ("  body substitution", parts.substitute),
+                    ("  mir validation", parts.validate),
+                    ("  keel lowering", inclusive.saturating_sub(measured)),
+                ] {
+                    timings.phases.push((name, duration));
+                }
+                lowered
+            } else if let Some(compilation) = compilation {
+                flux_codegen::lower_crate(&hir, &typed, &mir, compilation)
+            } else {
+                flux_codegen::lower_module(&hir, &typed, &mir)
+            };
+            let mut module = match lowered {
                 Ok(module) => module,
                 Err(found) => {
                     errors.extend(found);

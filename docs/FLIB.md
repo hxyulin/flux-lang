@@ -241,17 +241,25 @@ The header records the executable's SHA-256 and its device, inode, size, and
 nanosecond modification and change times. Matching stat fields avoid hashing
 the executable again. Any mismatch requires the full content hash; copying the
 compiler can still accept the suite, while a dirty rebuild rejects it. Missing
-or stale suites select source mode for the process. Corrupt matching suites
-name the artifact and instruct the user to run `fluxc build-builtins` again.
+or stale suites select source mode for the process; when stderr is a terminal,
+a stale suite also prints a note asking for `fluxc build-builtins`. Corrupt
+matching suites name the artifact and instruct the user to run
+`fluxc build-builtins` again.
 Staging validates an existing matching suite without rebuilding it. New contents
 are written to a temporary file in the same directory and renamed into place.
 Before writing, staging decodes the new payload with every check, including
 MIR type checking. The loader then skips only the MIR type checks: a suite
 loads only for the compiler binary that staged it, with a matching checksum.
 An atomically written `flux-builtins.flib.stamp` caches the suite file's own stat
-fields after staging. The loader compares them with its opened file and skips
-the payload checksum only on a match. A missing/stale sidecar uses the checksum;
-loading never rewrites either file.
+fields after staging, and the stat fields and hash of the executable that last
+loaded the suite. The loader compares the suite fields with its opened file and
+skips the payload checksum only on a match. A missing/stale sidecar uses the
+checksum. The executable fields let a copied or relinked compiler, whose stat
+fields no longer match the header, skip the executable hash after its first
+load. A load that had to hash either file rewrites the stamp (ignoring write
+errors); it never rewrites the suite. A stale suite records the new
+executable's hash as well, so later processes select source mode without
+hashing.
 Explicit staging repairs a missing/stale stamp without rebuilding or rewriting
 a matching suite. The captured file hash must match the bytes staging verified.
 

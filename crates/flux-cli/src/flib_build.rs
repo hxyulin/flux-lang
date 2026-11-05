@@ -114,6 +114,7 @@ pub(crate) fn compile(
     } else {
         state.db.load_with_edition(&input.file, input.edition)?
     };
+    state.db.set_debug_assertions(options.debug_assertions());
     state.db.set_crate_cfg(root, input.cfg.clone())?;
     if let Some(directory) = &input.compilation_dir {
         state.db.set_crate_directory(root, directory.clone())?;
@@ -324,6 +325,7 @@ fn configuration(
     }
 
     encode(options.optimize.encode(&mut e))?;
+    encode(options.debug_assertions().encode(&mut e))?;
     encode(
         match kind {
             CrateType::Bin => 0u8,

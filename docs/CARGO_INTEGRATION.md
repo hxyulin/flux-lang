@@ -156,7 +156,7 @@ documents that extension point and Cargo's JSON build messages.
   accepts one program root. An arbitrary external crate is rejected.
   This is a starting point for C, not an existing Cargo crate loader.
 - [Configuration](../crates/flux-hir/src/cfg.rs) uses compiler-host
-  constants, fixed debug assertions/panic settings, and treats user feature
+  constants, a fixed panic setting, and treats user feature
   predicates as false. It needs an explicit per-compilation configuration
   before honoring Cargo features, profiles or cross targets.
 - [Flux codegen](../crates/flux-codegen/src/lib.rs) already calls
