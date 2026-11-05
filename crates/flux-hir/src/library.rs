@@ -19,8 +19,30 @@ use std::sync::Arc;
 use crate::source::SourceFile;
 use crate::{
     Body, BodySourceMap, Const, ConstId, Diagnostic, FunctionId, Hir, ItemTree, LoweredBody,
-    SourceDb, lower_body,
+    SourceDb, StructId, lower_body,
 };
+
+static OWNED_BOX: OnceLock<Option<StructId>> = OnceLock::new();
+
+/// `alloc`'s `Box<T>` (`#[lang = "owned_box"]`). Embedded library IDs are the
+/// same in every compilation, so the ID is taken from whichever library tree
+/// this process loads first: a staged built-in suite or the parsed sources.
+pub fn owned_box() -> Option<StructId> {
+    *OWNED_BOX.get_or_init(|| owned_box_in(&Core::get().items))
+}
+
+/// Records the library's lang structs from a loaded library tree, so that
+/// later queries do not parse the library sources.
+pub(crate) fn note_library(items: &ItemTree) {
+    OWNED_BOX.get_or_init(|| owned_box_in(items));
+}
+
+fn owned_box_in(items: &ItemTree) -> Option<StructId> {
+    items
+        .lang_enums
+        .get(&flux_intern::Symbol::intern("owned_box"))
+        .copied()
+}
 
 /// The embedded libraries, lowered. [`Core::get`] builds them on first use.
 #[derive(Debug)]
@@ -59,6 +81,7 @@ impl Core {
     fn build() -> Core {
         let mut db = SourceDb::core_only();
         let items = ItemTree::core(&mut db);
+        note_library(&items);
         let mut diagnostics = Vec::new();
         let const_bodies = crate::lower_consts(&db, &items, 0, &mut diagnostics);
         let bodies = (0..items.functions.len())
