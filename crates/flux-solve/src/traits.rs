@@ -1998,29 +1998,72 @@ pub fn drop_impl(items: &ItemTree, sigs: &Signatures, strukt: StructId) -> Optio
 /// in scope: it is, or has a part that is, a struct with a `Drop` impl,
 /// or a type parameter that is not `Copy`, which may be one.
 pub fn needs_drop(items: &ItemTree, sigs: &Signatures, env: &[Predicate], ty: Ty) -> bool {
-    match ty.kind() {
-        TyKind::Tuple(elements) => elements.iter().any(|&e| needs_drop(items, sigs, env, e)),
-        TyKind::Array(elem, len) => len.as_usize() != Some(0) && needs_drop(items, sigs, env, elem),
-        TyKind::Slice(elem) => needs_drop(items, sigs, env, elem),
-        // The erased concrete type may have a destructor.
-        TyKind::Dynamic(_) => true,
-        TyKind::Closure(_, args) => ClosureArgs::split(args)
-            .upvar_types()
-            .iter()
-            .any(|&e| needs_drop(items, sigs, env, e)),
-        // Holds a value it never drops.
-        TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "manually_drop") => false,
-        // Copy excludes destructors even when a stored associated type
-        // has not been normalized to its concrete representation yet.
-        TyKind::Adt(..) if is_copy(items, sigs, env, ty) => false,
-        TyKind::Adt(adt, args) => {
-            drop_impl(items, sigs, adt.strukt).is_some()
-                || sigs.structs[adt.strukt]
-                    .iter()
-                    .any(|f| needs_drop(items, sigs, env, f.subst(args)))
+    DropWalk {
+        items,
+        sigs,
+        env,
+        structs: 0,
+        memo: rustc_hash::FxHashMap::default(),
+    }
+    .needs_drop(ty)
+}
+
+/// One [`needs_drop`]. A type is a DAG (`struct A(B, B)`), which a walk
+/// that does not remember the structs it met sees as a tree; most walks
+/// meet a few, for which a map costs more than it saves.
+struct DropWalk<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    env: &'a [Predicate],
+    /// How many structs the walk met: after [`DropWalk::UNREMEMBERED`],
+    /// it remembers them in `memo`.
+    structs: u32,
+    memo: rustc_hash::FxHashMap<Ty, bool>,
+}
+
+impl DropWalk<'_> {
+    const UNREMEMBERED: u32 = 16;
+
+    fn needs_drop(&mut self, ty: Ty) -> bool {
+        let (items, sigs, env) = (self.items, self.sigs, self.env);
+        match ty.kind() {
+            TyKind::Tuple(elements) => elements.iter().any(|&e| self.needs_drop(e)),
+            TyKind::Array(elem, len) => len.as_usize() != Some(0) && self.needs_drop(elem),
+            TyKind::Slice(elem) => self.needs_drop(elem),
+            // The erased concrete type may have a destructor.
+            TyKind::Dynamic(_) => true,
+            TyKind::Closure(_, args) => ClosureArgs::split(args)
+                .upvar_types()
+                .iter()
+                .any(|&e| self.needs_drop(e)),
+            // Holds a value it never drops.
+            TyKind::Adt(adt, _) if crate::is_lang_struct(items, adt.strukt, "manually_drop") => {
+                false
+            }
+            TyKind::Adt(adt, args) => {
+                self.structs += 1;
+                let remember = self.structs > Self::UNREMEMBERED;
+                if remember && let Some(&known) = self.memo.get(&ty) {
+                    return known;
+                }
+                // Copy excludes destructors even when a stored associated
+                // type has not been normalized to its concrete
+                // representation yet.
+                let needs = !is_copy(items, sigs, env, ty)
+                    && (drop_impl(items, sigs, adt.strukt).is_some()
+                        || sigs.structs[adt.strukt]
+                            .iter()
+                            .any(|f| self.needs_drop(f.subst(args))));
+                if remember {
+                    self.memo.insert(ty, needs);
+                }
+                needs
+            }
+            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => {
+                !is_copy(items, sigs, env, ty)
+            }
+            _ => false,
         }
-        TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) => !is_copy(items, sigs, env, ty),
-        _ => false,
     }
 }
 
