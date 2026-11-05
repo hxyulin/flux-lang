@@ -859,6 +859,12 @@ or result types. Reification rejects fixed, owner-bound, bounded or repeated
 input lifetimes rather than discarding their constraints; this also rejects
 some valid Rust signatures. Named pointer lifetimes remain unsupported, and elided reference outputs
 retain conservative checks. Borrowed function pointers autodereference at calls.
+A pointer's parameters and result may name type aliases with lifetimes, as
+in `fn(ParseStream<'a>) -> Result<T>` with `type ParseStream<'a> =
+&'a ParseBuffer<'a>`: each stands for its declared type, with the lifetimes
+written at the use (an elided one is one lifetime, as in rustc) and its
+type arguments' regions. Aliases whose region-bearing type parameters are
+left to defaults remain unsupported.
 A tuple struct's or tuple variant's constructor is a function
 too, as in rustc: its path not called (`Token::Num`, `Some`, `Wrapper`)
 is a value of its own function item type (`fn(i64) -> Token

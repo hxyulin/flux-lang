@@ -129,6 +129,94 @@ impl Builder<'_> {
         FnRegion::Bound(next)
     }
 
+    /// The recipe of `ty`, written as alias `id` with the arguments of
+    /// `path`: the alias's own region table with its lifetimes as written
+    /// here (an elided one is one lifetime, as rustc has it) and its type
+    /// parameters' recipes as their arguments'. `None` for an alias whose
+    /// table or arguments this cannot map.
+    fn alias(
+        &mut self,
+        path: &flux_hir::Path,
+        id: flux_hir::TypeAliasId,
+        ty: Ty,
+    ) -> Option<Vec<FnRegion>> {
+        use crate::regions::Region;
+        let def = &self.items.type_aliases[id];
+        let want = def.generics.lifetimes.len();
+        let mut errors = Vec::new();
+        let table = crate::regions::alias_regions(self.items, id, &mut errors);
+        let alias_ty = table.ty?;
+        if !errors.is_empty()
+            || table.regions.iter().any(|r| match *r {
+                Region::Param(i) => i as usize >= want,
+                Region::Static => false,
+                Region::Erased | Region::Late(_) => true,
+            })
+        {
+            return None;
+        }
+        let last = path.segments.len().saturating_sub(1);
+        let args = path.args(last);
+        let written: &[LifetimeRef] = args.map_or(&[], |a| &a.lifetimes);
+        if !written.is_empty() && written.len() != want {
+            return None;
+        }
+        let at = path.range(last, TextRange::default());
+        let lifetimes: Vec<FnRegion> = (0..want)
+            .map(|i| self.lifetime(written.get(i).copied(), at))
+            .collect();
+        // The instance's type arguments, matched against the alias's type.
+        fn arguments(generic: Ty, instance: Ty, out: &mut Vec<Option<Ty>>) {
+            if let TyKind::Param(p) = generic.kind() {
+                let i = p.index as usize;
+                if out.len() <= i {
+                    out.resize(i + 1, None);
+                }
+                out[i] = Some(instance);
+            } else {
+                for (g, t) in generic.children().zip(instance.children()) {
+                    arguments(g, t, out);
+                }
+            }
+        }
+        let mut resolved = Vec::new();
+        arguments(alias_ty, ty, &mut resolved);
+        let mut types = Vec::new();
+        for i in 0..def.generics.params.len() {
+            let Some(arg) = resolved.get(i).copied().flatten() else {
+                types.push(Vec::new());
+                continue;
+            };
+            match args.and_then(|a| a.types.get(i)) {
+                Some(written) => types.push(self.walk(written, arg)),
+                // A default's lifetimes are its declaration's.
+                None if crate::regions::slots(self.items, arg) == 0
+                    && !arg.has_params()
+                    && !arg.has_infer()
+                    && !arg.has_aliases() =>
+                {
+                    types.push(Vec::new())
+                }
+                None => return None,
+            }
+        }
+        let mut map = |r: Region| match r {
+            Region::Param(i) => lifetimes[i as usize],
+            _ => FnRegion::Static,
+        };
+        let args = |j: u32| types.get(j as usize).cloned().unwrap_or_default();
+        let mut out = Vec::new();
+        crate::regions::instantiate(
+            self.items,
+            alias_ty,
+            &table.regions,
+            &mut map,
+            &args,
+            &mut out,
+        );
+        Some(out)
+    }
+
     fn capture(&mut self, written: &TypeRef, ty: Ty) -> Vec<FnRegion> {
         if !ty.has_params()
             && !ty.has_infer()
@@ -175,20 +263,20 @@ impl Builder<'_> {
         // lifetime. Containers establish a new defaulting context.
         let enclosing = self.enclosing.take();
         if let TypeRef::Path(path) = written
-            && matches!(
+            && let Ok(flux_hir::def_map::Resolved::Def(flux_hir::def_map::Def::TypeAlias(id))) =
                 self.items
-                    .resolve(self.module, path, flux_hir::def_map::Ns::Types),
-                Ok(flux_hir::def_map::Resolved::Def(
-                    flux_hir::def_map::Def::TypeAlias(_)
-                ))
-            )
+                    .resolve(self.module, path, flux_hir::def_map::Ns::Types)
         {
-            if crate::regions::slots(self.items, ty) != 0 {
-                self.errors.push((
-                    path.range(path.segments.len().saturating_sub(1), TextRange::default()),
-                    "region-bearing aliases inside function pointers are not supported yet".into(),
-                ));
+            if crate::regions::slots(self.items, ty) == 0 {
+                return self.capture(written, ty);
             }
+            if let Some(row) = self.alias(path, id, ty) {
+                return row;
+            }
+            self.errors.push((
+                path.range(path.segments.len().saturating_sub(1), TextRange::default()),
+                "region-bearing aliases inside function pointers are not supported yet".into(),
+            ));
             return self.capture(written, ty);
         }
         match (written, ty.kind()) {
