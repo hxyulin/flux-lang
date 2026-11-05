@@ -3135,3 +3135,8 @@ macro_rules! float_sum_product {
     )*);
 }
 float_sum_product! { f32 f64 }
+
+/// Pairs the items of two iterables: `a.into_iter().zip(b)`.
+pub fn zip<A: IntoIterator, B: IntoIterator>(a: A, b: B) -> Zip<A::IntoIter, B::IntoIter> {
+    a.into_iter().zip(b)
+}

@@ -71,4 +71,12 @@ fn main() {
     static LEGACY_ONCE: std::sync::Once = std::sync::ONCE_INIT;
     LEGACY_ONCE.call_once(|| println!("once"));
     LEGACY_ONCE.call_once(|| println!("twice"));
+
+    use std::num::{NonZeroI32, NonZeroU8, NonZeroUsize};
+    println!("{} {} {:?} {:?}", NonZeroUsize::MIN, NonZeroU8::MAX, NonZeroU8::MIN.checked_add(254), NonZeroU8::MAX.checked_add(1));
+    let eight = NonZeroUsize::new(8).unwrap();
+    println!("{:?} {} {} {:?}", eight.checked_mul(eight), eight.ilog2(), eight.is_power_of_two(), NonZeroI32::MIN.checked_abs());
+    println!("{:?}", std::iter::zip([1, 2], ['a', 'b']).collect::<Vec<_>>());
+    let filled: u32 = unsafe { std::mem::uninitialized() };
+    println!("{:#x}", filled);
 }

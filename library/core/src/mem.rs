@@ -165,6 +165,20 @@ impl<T: ?Sized + crate::hash::Hash> crate::hash::Hash for ManuallyDrop<T> {
     fn hash<H: crate::hash::Hasher>(&self, state: &mut H) { self.value.hash(state) }
 }
 
+/// A value whose bytes are all 0x01, as std fills them.
+///
+/// # Safety
+/// Those bytes must form a valid `T`; use MaybeUninit instead.
+#[deprecated(note = "use `mem::MaybeUninit` instead")]
+pub unsafe fn uninitialized<T>() -> T {
+    let mut value = MaybeUninit::<T>::uninit();
+    // SAFETY: the caller guarantees that 0x01 bytes are a valid T.
+    unsafe {
+        crate::ptr::write_bytes(value.as_mut_ptr(), 0x01, 1);
+        value.assume_init()
+    }
+}
+
 /// A value whose bytes are all zero.
 ///
 /// # Safety
