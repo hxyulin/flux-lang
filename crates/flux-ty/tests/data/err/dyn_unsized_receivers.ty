@@ -1,0 +1,18 @@
+fn by_value(Self) -> ()
+    self@0: Self
+fn deref_dyn_iterator(&mut dyn Iterator<Item = i32>) -> ()
+    r@0: &mut dyn Iterator<Item = i32>
+    _p@1: {error}
+fn deref_dyn_trait(&mut dyn Tr) -> ()
+    r@0: &mut dyn Tr
+fn move_out_of_box(Box<dyn Iterator<Item = i32>>) -> ()
+    b@0: Box<dyn Iterator<Item = i32>>
+    _x@1: dyn Iterator<Item = i32>
+fn move_out_of_param<T>(&mut T) -> ()
+    r@0: &mut T
+    _x@1: T
+fn main() -> ()
+error 357..365: the `peekable` method cannot be invoked on a trait object
+error 418..426: the `by_value` method cannot be invoked on a trait object
+error 496..498: the size for values of type `dyn Iterator<Item = i32>` cannot be known at compilation time
+error 561..563: the size for values of type `T` cannot be known at compilation time
