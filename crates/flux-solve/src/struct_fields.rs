@@ -229,6 +229,13 @@ fn may_hold(sigs: &Signatures, p: Predicate, depth: u32) -> Option<bool> {
     if rigid(p.self_ty) || depth > 8 {
         return Some(false);
     }
+    // A trait object implements its trait and supertraits, with no
+    // `impl` block (`dyn Iterator<Item = u8>: Iterator`).
+    if let TyKind::Dynamic(d) = p.self_ty.kind()
+        && traits::dyn_bounds(sigs, p.self_ty, d).contains(&p)
+    {
+        return Some(true);
+    }
     if matches!(
         p.self_ty.kind(),
         TyKind::Array(..)
@@ -292,6 +299,25 @@ fn normalize_known(
                 }
                 if let TyKind::Closure(_, closure) = args[0].kind() {
                     break 'alias go(ClosureArgs::split(closure).ret());
+                }
+            }
+            // What a trait object says its trait's and supertraits'
+            // associated types are (`dyn Iterator<Item = u8>`), and
+            // what their traits imply.
+            if let TyKind::Dynamic(d) = args[0].kind() {
+                let bounds = traits::dyn_bounds(sigs, args[0], d);
+                if bounds
+                    .iter()
+                    .any(|p| p.trait_ref.trait_ == alias.trait_ && p.trait_ref.args == &args[1..])
+                    && let Some(t) = d.assoc(alias.name)
+                {
+                    break 'alias go(t);
+                }
+                if let Some(p) = traits::implied_projections(sigs, &bounds)
+                    .into_iter()
+                    .find(|p| p.alias == alias)
+                {
+                    break 'alias go(p.ty);
                 }
             }
             // The one block whose header matches and whose bounds can

@@ -1,0 +1,19 @@
+struct Held<I> { iter: I, cached: Option<<I as Iterator>::Item> }
+fn hold<I>(I) -> Held<I>
+    iter@0: I
+fn generic<I>(&mut I) -> Peekable<&mut I>
+    iter@0: &mut I
+fn adapters(&mut dyn Iterator<Item = i32>) -> Option<i32>
+    r@0: &mut dyn Iterator<Item = i32>
+    p@1: Peekable<&mut dyn Iterator<Item = i32>>
+    first@2: Option<i32>
+    x@3: i32
+    mapped@4: Option<i32>
+    taken@5: Option<i32>
+    held@6: Held<&mut dyn Iterator<Item = i32>>
+fn boxed(Box<dyn Iterator<Item = i32>>) -> Option<i32>
+    b@0: Box<dyn Iterator<Item = i32>>
+    first@1: Option<i32>
+    p@2: Peekable<Box<dyn Iterator<Item = i32>>>
+fn main() -> ()
+    it@0: IntoIter<i32>
