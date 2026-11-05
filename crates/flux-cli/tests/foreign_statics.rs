@@ -118,19 +118,19 @@ fn foreign_data_and_link_contracts_match_rustc() {
             false,
             false,
         ),
-        // These stable Rust features require distinct archive/framework and
-        // safe-extern-static semantics, rather than discarded attributes.
+        // Static and framework link kinds are checked here; `native_link`
+        // links them. Safe extern statics are still unsupported.
         (
             "static_library",
             "#[link(name=\"c\",kind=\"static\")]unsafe extern \"C\"{} fn main(){}",
             true,
-            false,
+            true,
         ),
         (
             "framework",
             "#[link(name=\"CoreFoundation\",kind=\"framework\")]unsafe extern \"C\"{} fn main(){}",
             true,
-            false,
+            true,
         ),
         (
             "safe_static",
