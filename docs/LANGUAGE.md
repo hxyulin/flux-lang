@@ -22,7 +22,8 @@ qualifiers and bodiless declarations), structs (unit, tuple, record), enums
 traits, type aliases (including generic associated types), `const` and
 `static` items, inline and out-of-line modules, `use` trees, `extern crate`,
 `extern` blocks (including C-variadic declarations), `macro_rules!`
-definitions, macro calls in item position, and nongeneric unions with concrete
+definitions, macro calls in item position and among the items of traits
+and `impl` blocks, and nongeneric unions with concrete
 Copy fields (bounded as described below). `union` remains a contextual
 keyword, so identifiers and macros named `union` still work. Visibilities: `pub`,
 `pub(crate)`, `pub(self)`, `pub(super)`, `pub(in path)`.
@@ -181,7 +182,7 @@ reported as "not supported yet":
   literals on shared byte-array or byte-slice references (`b"ELF"`), constants of
   integer types, `char` and `bool` (`N`, `i32::MAX`, `Self::N`), ranges
   whose ends are either (`1..=9`, `0..N`, `5..`, `..=i8::MIN`,
-  `'a'..='z'`), or-patterns (`1 | 2`), reference patterns (`&x`), and
+  `'a'..='z'`, and `1...9` before edition 2021), or-patterns (`1 | 2`), reference patterns (`&x`), and
   array and slice patterns (`[a, b]`, `[first, .., last]`, `[x, rest @
   ..]`), with rustc's errors for lengths an array cannot have (E0527,
   E0528, E0730) and values that are neither (E0529), and exhaustiveness
@@ -326,9 +327,10 @@ are removed before binding and duplicate-field checks.
 
 `extern crate self as alias` names the current crate, including inside nested
 modules. Documentation comments become `doc` attributes before both declarative
-and procedural macro matching. Format macros can obtain their format string
-from nested macros such as `concat!` and `stringify!`; remaining argument
-expressions retain ordinary expansion and evaluation.
+and procedural macro matching. Format macros, `panic!` and `unreachable!` can obtain their format string
+from nested macros such as `concat!` and `stringify!`, also through a
+forwarded `expr` fragment; remaining argument expressions retain ordinary
+expansion and evaluation.
 
 Values of `Copy` types are copied: integers, `bool`, raw pointers,
 shared references, tuples and arrays of `Copy` types, structs that
@@ -711,7 +713,8 @@ its receiver or as `Self::Item`); every associated type must be given
 non-auto traits beyond the principal are rejected. Represented auto-trait
 bounds, including Send and Sync, can accompany it; coercion proves required
 markers and may erase them. A bare
-trait as a type is E0782. A method with `where Self: Sized` "cannot be
+trait as a type (`Tr`, `Tr + Send`) is E0782 from edition 2021; editions
+2015 and 2018 read it as a trait object. A method with `where Self: Sized` "cannot be
 invoked on a trait object". A trait object's lifetime bound (`dyn Tr +
 'a`) is, unless written, rustc's default: the reference it is behind,
 `'static` elsewhere. What a value made a trait object holds must
@@ -837,9 +840,14 @@ a function pointer of its signature where one is wanted (an annotation,
 an argument, a field, a return value, an `as` cast), and `if` or
 `match` arms or array elements naming different functions (or
 closures that capture nothing) coerce to one, as in rustc.
-An `unsafe fn` coerces only to an `unsafe fn` pointer. Rust and C function
-pointer ABIs are distinct; coercions preserve the ABI and may weaken safety.
-C functions and C pointers do not implement the Rust `Fn` traits.
+An `unsafe fn` coerces only to an `unsafe fn` pointer. Functions and
+function pointers may use the `Rust`, `C`, `C-unwind`, `system` and
+`system-unwind` ABIs, and `efiapi` on aarch64. Each ABI is a distinct
+pointer type; coercions preserve the ABI and may weaken safety. All but
+`Rust` use the C calling convention, and the `-unwind` ABIs behave like
+their base under `panic=abort`. ABIs rustc rejects for the target get
+rustc's errors. Functions and pointers of ABIs other than `Rust` do not
+implement the `Fn` traits.
 C aggregate calls support repr(C) records and recursively nested fixed arrays
 whose physical offsets, padding, size and alignment match Keel's natural layout.
 Fieldless enums with an explicit C or integer representation cross calls as
@@ -1077,7 +1085,9 @@ Source library roots may use `#![no_std]`: they receive core's prelude,
 without implicit std or alloc types or printing macros. Explicit `extern
 crate alloc` and `extern crate std` opt into those libraries. Freestanding
 executables remain unsupported; no_std executable roots require explicit
-std. `#[rustfmt::skip]` is accepted as an inert tool attribute.
+std. Outer attributes in the namespaces of the tools rustc registers
+(`clippy`, `rustfmt`, `miri`, `rust_analyzer`) are accepted and ignored;
+inner ones need the unstable `custom_inner_attributes`, as in rustc.
 
 flux's `alloc` library has heap memory, through C's `malloc`, `realloc`
 and `free` (`alloc::alloc::{alloc, alloc_zeroed, dealloc, realloc,
