@@ -38,10 +38,28 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
 }
 
 pub(crate) fn tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
-    tokens_filtered(node, skip, out);
+    tokens_filtered(node, skip, false, out);
 }
 pub(crate) fn proc_tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
-    tokens_filtered(node, skip, out);
+    tokens_filtered(node, skip, false, out);
+}
+
+/// [`tokens_of`] for the input of a `macro_rules!` call, keeping the
+/// [`EMPTY_VIS`] markers that an expansion left for empty visibilities.
+pub(crate) fn rules_call_tokens(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
+    tokens_filtered(node, &[], true, out);
+}
+
+/// What a `macro_rules!` expansion writes for a `vis` fragment that
+/// matched nothing. rustc forwards the fragment as an invisible group,
+/// which a later `$v:vis` matches and literal tokens do not. The marker
+/// is a comment, so everything but a `macro_rules!` matcher skips it.
+pub(crate) const EMPTY_VIS: &str = "/*vis*/";
+
+impl Tok {
+    pub(crate) fn is_empty_vis(&self) -> bool {
+        self.kind == SyntaxKind::COMMENT && self.text.as_str() == EMPTY_VIS
+    }
 }
 fn doc_comment(text: &str) -> Option<(bool, String)> {
     let inner = text.starts_with("//!") || text.starts_with("/*!");
@@ -61,13 +79,17 @@ fn doc_comment(text: &str) -> Option<(bool, String)> {
         text.replace("\r\n", "\n").trim_end_matches('\r').to_owned(),
     ))
 }
-fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
+fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], markers: bool, out: &mut Vec<Tok>) {
     let tree = node.tree();
+    // Only an expansion's tree has origins, and only an expansion writes
+    // the marker.
+    let markers = markers && tree.is_expansion();
     let mut tokens = node
         .tokens()
         .filter(|t| {
             (!t.kind().is_trivia()
-                || (t.kind() == SyntaxKind::COMMENT && doc_comment(t.text()).is_some()))
+                || (t.kind() == SyntaxKind::COMMENT
+                    && (doc_comment(t.text()).is_some() || (markers && t.text() == EMPTY_VIS))))
                 && !skip.iter().any(|range| {
                     range.start() <= t.raw_range().start() && t.raw_range().end() <= range.end()
                 })
@@ -82,7 +104,15 @@ fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>)
             ctxt: 0,
         });
         if token.kind() == SyntaxKind::COMMENT {
-            if let Some((inner, text)) = doc_comment(token.text()) {
+            if token.text() == EMPTY_VIS {
+                out.push(Tok {
+                    edition: token.edition(),
+                    kind: SyntaxKind::COMMENT,
+                    text: Symbol::intern(EMPTY_VIS),
+                    joint: false,
+                    origin,
+                });
+            } else if let Some((inner, text)) = doc_comment(token.text()) {
                 let text = format!("#{}[doc = {:?}]", if inner { "!" } else { "" }, text);
                 let lexed = flux_syntax::LexedStr::with_edition(&text, token.edition());
                 for i in 0..lexed.len() {

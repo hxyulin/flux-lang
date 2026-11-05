@@ -569,10 +569,10 @@ fn expand_at_depth(
     let tt = call
         .children()
         .find(|c| c.kind() == SyntaxKind::TOKEN_TREE)?;
-    if matches!(def.kind, MacroKind::ProcMacro(_)) {
-        tt::proc_tokens_ignoring(tt, &[], &mut toks);
-    } else {
-        tokens_of(tt, &mut toks);
+    match def.kind {
+        MacroKind::ProcMacro(_) => tt::proc_tokens_ignoring(tt, &[], &mut toks),
+        MacroKind::Rules(_) => tt::rules_call_tokens(tt, &mut toks),
+        _ => tokens_of(tt, &mut toks),
     }
     let inner = strip_delimiters(&toks);
     // Where the input ends: its closing delimiter, or the whole call if
@@ -1042,6 +1042,9 @@ pub(crate) fn describe_kind(kind: SyntaxKind, text: &str) -> String {
 }
 
 fn describe_token(kind: SyntaxKind, text: Symbol, toks: &[Tok], g: tt::Glued) -> String {
+    if toks[g.raw as usize].is_empty_vis() {
+        return "`vis` metavariable".to_owned();
+    }
     if g.len > 1 {
         return tt::describe(toks, g);
     }

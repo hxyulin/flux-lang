@@ -1,0 +1,12 @@
+fn forwarded() -> i32 {
+    <missing>
+}
+
+fn direct() -> i32 {
+    <missing>
+}
+
+fn main() -> () {}
+
+error 250..251: no rules expected `]`
+error 264..264: no rules expected `vis` metavariable

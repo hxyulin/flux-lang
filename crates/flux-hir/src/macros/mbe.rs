@@ -814,7 +814,13 @@ pub(crate) struct CallInput<'a> {
     /// The glued token view at each raw cursor, including compound suffixes.
     pub glued: Vec<Glued>,
     closes: Vec<u32>,
+    /// The tokens a fragment parser reads: all but [`super::tt::EMPTY_VIS`]
+    /// markers.
     parser_input: parser::Input,
+    /// For each raw token, and the end, the parser token at or after it.
+    to_parser: Vec<u32>,
+    /// For each parser token, its raw token.
+    from_parser: Vec<u32>,
     /// Where the input ends: the call's closing delimiter.
     eof: TextRange,
 }
@@ -826,7 +832,14 @@ impl<'a> CallInput<'a> {
         let glued: Vec<_> = (0..toks.len()).map(|i| glue_at(toks, i)).collect();
         let closes = match_delimiters(&glued);
         let mut parser_input = parser::Input::default();
-        for t in toks {
+        let mut to_parser = Vec::with_capacity(toks.len() + 1);
+        let mut from_parser = Vec::with_capacity(toks.len());
+        for (raw, t) in toks.iter().enumerate() {
+            to_parser.push(from_parser.len() as u32);
+            if t.is_empty_vis() {
+                continue;
+            }
+            from_parser.push(raw as u32);
             parser_input.push_contextual(
                 t.kind,
                 t.is_union_keyword(),
@@ -839,11 +852,14 @@ impl<'a> CallInput<'a> {
                 parser_input.set_last_joint();
             }
         }
+        to_parser.push(from_parser.len() as u32);
         CallInput {
             toks,
             glued,
             closes,
             parser_input,
+            to_parser,
+            from_parser,
             eof,
         }
     }
@@ -882,12 +898,20 @@ impl<'a> CallInput<'a> {
             }
             FragKind::Ident | FragKind::Lifetime => Ok(1),
             FragKind::Literal => Ok(if at(T![-]) { 2 } else { 1 }),
+            // A forwarded empty visibility is the whole fragment.
+            FragKind::Vis if self.toks[pos].is_empty_vis() => Ok(1),
             _ => {
                 let fragment = kind.fragment().expect("parsed fragments");
                 let raw = self.glued[pos].raw as usize;
-                let n = match parser::fragment_or_error(&self.parser_input, raw, fragment) {
-                    Ok(n) => n,
+                let start = self.to_parser[raw] as usize;
+                let n = match parser::fragment_or_error(&self.parser_input, start, fragment) {
+                    Ok(0) => 0,
+                    Ok(n) => self.from_parser[start + n - 1] as usize + 1 - raw,
                     Err(at) => {
+                        let at = self
+                            .from_parser
+                            .get(at)
+                            .map_or(self.toks.len(), |&r| r as usize);
                         let found = (at < self.toks.len()).then_some(at);
                         return Err(match found {
                             Some(r) => {
@@ -1003,6 +1027,14 @@ fn can_begin_type(k: SyntaxKind) -> bool {
 /// a fragment at a token that cannot start one.
 fn may_begin(kind: FragKind, k: SyntaxKind) -> bool {
     let is_name = k == SyntaxKind::IDENT || k.is_keyword();
+    // A forwarded empty visibility (see `tt::EMPTY_VIS`): a visibility,
+    // one token tree, or the start of an item or statement.
+    if k == SyntaxKind::COMMENT {
+        return matches!(
+            kind,
+            FragKind::Vis | FragKind::Tt | FragKind::Item | FragKind::Stmt
+        );
+    }
     match kind {
         FragKind::Expr => can_begin_expr(k) && k != T![let],
         FragKind::Expr2021 => can_begin_expr(k) && !matches!(k, T![let] | T![_] | T![const]),
@@ -1420,6 +1452,16 @@ impl Transcriber<'_, '_> {
                     }
                     Some(&NamedMatch::Single { start, end, kind }) => {
                         let raw = self.input.raw(start, end);
+                        if kind == FragKind::Vis && raw.is_empty() {
+                            let marker = Tok {
+                                kind: SyntaxKind::COMMENT,
+                                text: Symbol::intern(super::tt::EMPTY_VIS),
+                                joint: false,
+                                ..toks[dollar as usize]
+                            };
+                            (self.def)(&marker, out);
+                            continue;
+                        }
                         // An expression stays one when put among other
                         // tokens: `$e * 2` multiplies all of `$e`.
                         let wrap =
