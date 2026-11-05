@@ -5280,6 +5280,14 @@ impl Ctx<'_> {
             self.error(name_range, format!("method `{method}` is private"));
             return Ty::ERROR;
         }
+        // A receiver whose type is not known after other errors is not
+        // reported, as below.
+        if let Some(ty) = unmet
+            && matches!(self.shallow(ty).kind(), TyKind::Infer(_))
+            && self.tainted()
+        {
+            return Ty::ERROR;
+        }
         if let Some(ty) = unmet {
             let what = self.describe_kind(ty);
             self.error(
@@ -6925,6 +6933,11 @@ impl Ctx<'_> {
     /// known, as rustc does, rather than where the unknown part came
     /// from: `let x = f();` for a generic `f`.
     fn report_unknown_lets(&mut self, reported: &mut FxHashSet<InferVar>) {
+        // As rustc's writeback, a body with errors reports no unknown
+        // types: they likely come from those errors.
+        if self.tainted {
+            return;
+        }
         let body = self.body;
         for (_, expr) in body.exprs.iter() {
             let Expr::Block { stmts, .. } = expr else {
