@@ -207,3 +207,138 @@ pub fn current_exe() -> crate::io::Result<crate::path::PathBuf> {
     #[cfg(target_os = "linux")]
     { crate::fs::canonicalize("/proc/self/exe") }
 }
+
+/// The process environment as Unicode strings, copied when created.
+pub struct Vars { inner: VarsOs }
+impl Iterator for Vars {
+    type Item = (String, String);
+    /// Panics if a name or value is not valid Unicode.
+    fn next(&mut self) -> Option<(String, String)> {
+        self.inner.next().map(|(a, b)| (a.into_string().unwrap(), b.into_string().unwrap()))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl core::fmt::Debug for Vars {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Vars").field("inner", &self.inner).finish()
+    }
+}
+/// Copies the environment; iteration panics on non-Unicode entries.
+pub fn vars() -> Vars { Vars { inner: vars_os() } }
+
+/// The process arguments as Unicode strings.
+pub struct Args { inner: ArgsOs }
+impl Iterator for Args {
+    type Item = String;
+    /// Panics if an argument is not valid Unicode.
+    fn next(&mut self) -> Option<String> { self.inner.next().map(|s| s.into_string().unwrap()) }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl ExactSizeIterator for Args { fn len(&self) -> usize { self.inner.len() } }
+impl DoubleEndedIterator for Args {
+    fn next_back(&mut self) -> Option<String> { self.inner.next_back().map(|s| s.into_string().unwrap()) }
+}
+impl core::fmt::Debug for Args {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Args").field("inner", &self.inner).finish()
+    }
+}
+/// Copies the arguments; iteration panics on non-Unicode arguments.
+pub fn args() -> Args { Args { inner: args_os() } }
+
+/// Returns HOME when it is set and not empty, and otherwise the user
+/// database's home directory for the current user.
+pub fn home_dir() -> Option<crate::path::PathBuf> {
+    match var_os("HOME") {
+        Some(home) if !home.is_empty() => Some(crate::path::PathBuf::from(home)),
+        _ => password_home().map(crate::path::PathBuf::from),
+    }
+}
+
+fn password_home() -> Option<OsString> {
+    unsafe extern "C" {
+        fn sysconf(name: i32) -> core::ffi::c_long;
+        fn getuid() -> u32;
+        fn getpwuid_r(uid: u32, record: *mut u64, buffer: *mut u8, size: usize, result: *mut *mut u64) -> i32;
+    }
+    // _SC_GETPW_R_SIZE_MAX, and the word of struct passwd holding pw_dir.
+    #[cfg(target_os = "macos")]
+    const SIZE_MAX_NAME: i32 = 71;
+    #[cfg(target_os = "macos")]
+    const DIRECTORY_WORD: usize = 6;
+    #[cfg(target_os = "linux")]
+    const SIZE_MAX_NAME: i32 = 70;
+    #[cfg(target_os = "linux")]
+    const DIRECTORY_WORD: usize = 4;
+    // SAFETY: sysconf takes no pointers.
+    let size = match unsafe { sysconf(SIZE_MAX_NAME) } { n if n < 0 => 512, n => n as usize };
+    let mut buffer: Vec<u8> = Vec::with_capacity(size);
+    // Large enough for struct passwd on both targets (72 and 48 bytes).
+    let mut record = [0u64; 10];
+    let mut result: *mut u64 = core::ptr::null_mut();
+    // SAFETY: record and buffer are writable for the sizes passed; on success
+    // result points at record, whose directory field names a terminated
+    // string inside buffer, copied before buffer is freed.
+    unsafe {
+        if getpwuid_r(getuid(), record.as_mut_ptr(), buffer.as_mut_ptr(), buffer.capacity(), &mut result) != 0 || result.is_null() {
+            return None;
+        }
+        Some(OsString { bytes: copy_environment_string(*result.add(DIRECTORY_WORD) as *const u8) })
+    }
+}
+
+/// An iterator over the `:`-separated parts of a PATH-style value.
+pub struct SplitPaths<'a> { rest: Option<&'a [u8]> }
+/// Splits a PATH-style value at each `:`; empty parts yield empty paths.
+pub fn split_paths<T: AsRef<crate::ffi::OsStr> + ?Sized>(unparsed: &T) -> SplitPaths<'_> {
+    SplitPaths { rest: Some(unparsed.as_ref().as_encoded_bytes()) }
+}
+impl<'a> Iterator for SplitPaths<'a> {
+    type Item = crate::path::PathBuf;
+    fn next(&mut self) -> Option<crate::path::PathBuf> {
+        let rest = self.rest?;
+        let part = match rest.iter().position(|&byte| byte == b':') {
+            Some(index) => { self.rest = Some(&rest[index + 1..]); &rest[..index] }
+            None => { self.rest = None; rest }
+        };
+        Some(crate::path::PathBuf::from(OsString { bytes: part.to_vec() }))
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match self.rest { Some(rest) => (1, Some(rest.len() + 1)), None => (0, Some(0)) }
+    }
+}
+impl core::fmt::Debug for SplitPaths<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("SplitPaths").finish_non_exhaustive()
+    }
+}
+
+/// The error from join_paths when a part contains the `:` separator.
+#[derive(Debug)]
+pub struct JoinPathsError { inner: paths::JoinPathsError }
+mod paths {
+    #[derive(Debug)]
+    pub struct JoinPathsError;
+}
+impl core::fmt::Display for JoinPathsError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let paths::JoinPathsError = self.inner;
+        f.write_str("path segment contains separator `:`")
+    }
+}
+impl core::error::Error for JoinPathsError {}
+/// Joins parts with `:`, failing if a part contains `:`.
+pub fn join_paths<I, T>(paths: I) -> Result<OsString, JoinPathsError>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<crate::ffi::OsStr>,
+{
+    let mut joined = Vec::new();
+    for (index, path) in paths.into_iter().enumerate() {
+        let path = path.as_ref().as_encoded_bytes();
+        if index > 0 { joined.push(b':'); }
+        if path.contains(&b':') { return Err(JoinPathsError { inner: paths::JoinPathsError }); }
+        joined.extend_from_slice(path);
+    }
+    Ok(OsString { bytes: joined })
+}

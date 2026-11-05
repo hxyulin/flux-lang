@@ -7,6 +7,13 @@ use core::cmp::Ordering;
 use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 
+/// The separator between path components on Unix.
+pub const MAIN_SEPARATOR: char = '/';
+/// MAIN_SEPARATOR as a string.
+pub const MAIN_SEPARATOR_STR: &str = "/";
+/// Whether `c` separates path components; only `/` does on Unix.
+pub fn is_separator(c: char) -> bool { c == '/' }
+
 #[repr(transparent)]
 pub struct Path { inner: OsStr }
 #[derive(Clone, Default)]
@@ -156,6 +163,81 @@ impl Path {
     pub fn display(&self) -> Display<'_> { Display { path: self } }
     pub fn is_file(&self) -> bool { crate::fs::is_file(self) }
     pub fn canonicalize(&self) -> crate::io::Result<PathBuf> { crate::fs::canonicalize(self) }
+    pub fn metadata(&self) -> crate::io::Result<crate::fs::Metadata> { crate::fs::metadata(self) }
+    pub fn symlink_metadata(&self) -> crate::io::Result<crate::fs::Metadata> { crate::fs::symlink_metadata(self) }
+    pub fn read_dir(&self) -> crate::io::Result<crate::fs::ReadDir> { crate::fs::read_dir(self) }
+    /// Whether the path names a symbolic link, without following it.
+    pub fn is_symlink(&self) -> bool {
+        crate::fs::symlink_metadata(self).map(|metadata| metadata.file_type().is_symlink()).unwrap_or(false)
+    }
+    pub fn iter(&self) -> Iter<'_> { Iter { inner: self.components() } }
+    /// Whether the trailing components equal those of `child`.
+    pub fn ends_with<P: AsRef<Path>>(&self, child: P) -> bool {
+        let mut own = self.components();
+        let mut child = child.as_ref().components();
+        loop {
+            match (child.next_back(), own.next_back()) {
+                (None, _) => return true,
+                (Some(_), None) => return false,
+                (Some(left), Some(right)) => if left != right { return false; },
+            }
+        }
+    }
+    /// Returns the filename before its first dot, ignoring a leading dot.
+    pub fn file_prefix(&self) -> Option<&OsStr> {
+        let name = self.file_name()?.as_encoded_bytes();
+        let end = match name.iter().skip(1).position(|&byte| byte == b'.') { Some(index) => index + 1, None => name.len() };
+        Some(OsStr::from_unix_bytes(&name[..end]))
+    }
+    pub fn into_path_buf(self: crate::alloc_crate::boxed::Box<Path>) -> PathBuf {
+        use crate::alloc_crate::boxed::Box;
+        // SAFETY: transparent Path has exactly OsStr's layout and validity.
+        let os = unsafe { Box::from_raw(Box::into_raw(self) as *mut OsStr) };
+        PathBuf { inner: OsString { bytes: os.into_os_string().bytes } }
+    }
+}
+
+/// An iterator over a path's components as OS strings.
+#[derive(Clone)]
+pub struct Iter<'a> { inner: Components<'a> }
+impl<'a> Iter<'a> { pub fn as_path(&self) -> &'a Path { self.inner.as_path() } }
+impl<'a> Iterator for Iter<'a> {
+    type Item = &'a OsStr;
+    fn next(&mut self) -> Option<&'a OsStr> { self.inner.next().map(|component| component.as_os_str()) }
+}
+impl<'a> DoubleEndedIterator for Iter<'a> {
+    fn next_back(&mut self) -> Option<&'a OsStr> { self.inner.next_back().map(|component| component.as_os_str()) }
+}
+impl core::iter::FusedIterator for Iter<'_> {}
+impl AsRef<Path> for Iter<'_> { fn as_ref(&self) -> &Path { self.as_path() } }
+impl AsRef<OsStr> for Iter<'_> { fn as_ref(&self) -> &OsStr { self.as_path().as_os_str() } }
+impl core::fmt::Debug for Iter<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let parts: crate::alloc_crate::vec::Vec<&OsStr> = self.clone().collect();
+        f.debug_tuple("Iter").field(&parts).finish()
+    }
+}
+impl<'a> IntoIterator for &'a Path {
+    type Item = &'a OsStr;
+    type IntoIter = Iter<'a>;
+    fn into_iter(self) -> Iter<'a> { self.iter() }
+}
+impl<'a> IntoIterator for &'a PathBuf {
+    type Item = &'a OsStr;
+    type IntoIter = Iter<'a>;
+    fn into_iter(self) -> Iter<'a> { self.iter() }
+}
+impl<P: AsRef<Path>> FromIterator<P> for PathBuf {
+    fn from_iter<I: IntoIterator<Item = P>>(iter: I) -> PathBuf {
+        let mut path = PathBuf::new();
+        path.extend(iter);
+        path
+    }
+}
+impl<P: AsRef<Path>> Extend<P> for PathBuf {
+    fn extend<I: IntoIterator<Item = P>>(&mut self, iter: I) {
+        for part in iter { self.push(part.as_ref()); }
+    }
 }
 impl PathBuf {
     /// Transfers the owned path bytes into a boxed path view.
@@ -195,6 +277,24 @@ impl PathBuf {
         self.inner.bytes.truncate(name_start + stem_len);
         if !extension.is_empty() { self.inner.bytes.push(b'.'); self.inner.bytes.extend_from_slice(extension); }
         true
+    }
+    pub fn with_capacity(capacity: usize) -> PathBuf { PathBuf { inner: OsString::with_capacity(capacity) } }
+    pub fn capacity(&self) -> usize { self.inner.capacity() }
+    pub fn clear(&mut self) { self.inner.clear() }
+    pub fn reserve(&mut self, additional: usize) { self.inner.reserve(additional) }
+    pub fn shrink_to_fit(&mut self) { self.inner.shrink_to_fit() }
+    pub fn as_mut_os_string(&mut self) -> &mut OsString { &mut self.inner }
+    /// Truncates to the parent path; returns false when there is no parent.
+    pub fn pop(&mut self) -> bool {
+        match self.parent().map(|parent| parent.as_os_str().len()) {
+            Some(len) => { self.inner.bytes.truncate(len); true }
+            None => false,
+        }
+    }
+    /// Replaces the final filename, or appends one when there is none.
+    pub fn set_file_name<S: AsRef<OsStr>>(&mut self, file_name: S) {
+        if self.file_name().is_some() { self.pop(); }
+        self.push(Path::new(file_name.as_ref()));
     }
     pub fn push<P: AsRef<Path>>(&mut self, path: P) {
         let path = path.as_ref();
@@ -401,3 +501,58 @@ impl<'a> Iterator for Ancestors<'a> {
 impl core::iter::FusedIterator for Ancestors<'_> {}
 
 impl From<&String> for PathBuf {fn from(value:&String)->Self {Self::from(value.as_str())}}
+
+use crate::alloc_crate::borrow::Cow;
+use crate::alloc_crate::boxed::Box;
+use crate::alloc_crate::rc::Rc;
+use crate::alloc_crate::sync::Arc;
+impl From<&Path> for Box<Path> {
+    fn from(value: &Path) -> Box<Path> { value.to_path_buf().into_boxed_path() }
+}
+impl From<PathBuf> for Box<Path> {
+    fn from(value: PathBuf) -> Box<Path> { value.into_boxed_path() }
+}
+impl From<Box<Path>> for PathBuf {
+    fn from(value: Box<Path>) -> PathBuf { value.into_path_buf() }
+}
+impl From<Cow<'_, Path>> for Box<Path> {
+    fn from(value: Cow<'_, Path>) -> Box<Path> { value.into_owned().into_boxed_path() }
+}
+impl From<PathBuf> for OsString {
+    fn from(value: PathBuf) -> OsString { value.inner }
+}
+impl<'a> From<Cow<'a, Path>> for PathBuf {
+    fn from(value: Cow<'a, Path>) -> PathBuf { value.into_owned() }
+}
+impl<'a> From<&'a Path> for Cow<'a, Path> {
+    fn from(value: &'a Path) -> Cow<'a, Path> { Cow::Borrowed(value) }
+}
+impl<'a> From<PathBuf> for Cow<'a, Path> {
+    fn from(value: PathBuf) -> Cow<'a, Path> { Cow::Owned(value) }
+}
+impl<'a> From<&'a PathBuf> for Cow<'a, Path> {
+    fn from(value: &'a PathBuf) -> Cow<'a, Path> { Cow::Borrowed(value.as_path()) }
+}
+impl From<&Path> for Arc<Path> {
+    fn from(value: &Path) -> Arc<Path> {
+        let os: Arc<OsStr> = Arc::from(value.as_os_str());
+        // SAFETY: transparent Path has exactly OsStr's layout and metadata.
+        unsafe { Arc::from_raw(Arc::into_raw(os) as *const Path) }
+    }
+}
+impl From<PathBuf> for Arc<Path> {
+    fn from(value: PathBuf) -> Arc<Path> { Arc::from(value.as_path()) }
+}
+impl From<&Path> for Rc<Path> {
+    fn from(value: &Path) -> Rc<Path> {
+        let os: Rc<OsStr> = Rc::from(value.as_os_str());
+        // SAFETY: transparent Path has exactly OsStr's layout and metadata.
+        unsafe { Rc::from_raw(Rc::into_raw(os) as *const Path) }
+    }
+}
+impl From<PathBuf> for Rc<Path> {
+    fn from(value: PathBuf) -> Rc<Path> { Rc::from(value.as_path()) }
+}
+impl AsRef<Path> for Cow<'_, OsStr> { fn as_ref(&self) -> &Path { Path::new(self) } }
+impl PartialEq<OsStr> for Path { fn eq(&self, other: &OsStr) -> bool { self == Path::new(other) } }
+impl PartialEq<Path> for OsStr { fn eq(&self, other: &Path) -> bool { Path::new(self) == other } }

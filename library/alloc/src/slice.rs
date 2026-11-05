@@ -47,17 +47,55 @@ impl<T> [T] {
     }
 }
 
-impl<T: Borrow<str>> [T] {
-    /// Concatenates the borrowed strings, with `separator` between elements.
-    pub fn join(&self, separator: &str) -> String {
+impl<T> [T] {
+    /// Joins the borrowed elements with `separator` between them.
+    pub fn join<Separator>(&self, separator: Separator) -> <Self as Join<Separator>>::Output
+    where Self: Join<Separator> {
+        <Self as Join<Separator>>::join(self, separator)
+    }
+}
+
+/// The owned result of joining a slice of borrowed values with a separator.
+#[doc(hidden)]
+pub trait Join<Separator> {
+    type Output;
+    fn join(slice: &Self, separator: Separator) -> Self::Output;
+}
+impl<S: Borrow<str>> Join<&str> for [S] {
+    type Output = String;
+    fn join(slice: &Self, separator: &str) -> String {
         let mut result = String::new();
         let mut first = true;
-        for value in self {
-            if !first {
-                result.push_str(separator);
-            }
+        for value in slice {
+            if !first { result.push_str(separator); }
             first = false;
             result.push_str(value.borrow());
+        }
+        result
+    }
+}
+impl<T: Clone, V: Borrow<[T]>> Join<&T> for [V] {
+    type Output = Vec<T>;
+    fn join(slice: &Self, separator: &T) -> Vec<T> {
+        let mut result = Vec::new();
+        let mut first = true;
+        for value in slice {
+            if !first { result.push(separator.clone()); }
+            first = false;
+            result.extend_from_slice(value.borrow());
+        }
+        result
+    }
+}
+impl<T: Clone, V: Borrow<[T]>> Join<&[T]> for [V] {
+    type Output = Vec<T>;
+    fn join(slice: &Self, separator: &[T]) -> Vec<T> {
+        let mut result = Vec::new();
+        let mut first = true;
+        for value in slice {
+            if !first { result.extend_from_slice(separator); }
+            first = false;
+            result.extend_from_slice(value.borrow());
         }
         result
     }
