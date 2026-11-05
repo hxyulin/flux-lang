@@ -32,6 +32,7 @@
 
 mod abi;
 mod reachability;
+mod shapes;
 use abi::{
     Argument, Convention, Return, attrs, c_signature, check_c_abi, ctx_signature, signature,
 };
@@ -160,6 +161,7 @@ fn lower_inner(
     mir: &FileMir,
     compilation: Option<Compilation<'_>>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    let _shapes = shapes::scope(&typed.sigs);
     let monomorphic = |id: FunctionId| {
         let function = &hir.items.functions[id];
         let instance = Instance {
@@ -923,6 +925,10 @@ fn tag_int(bytes: u8) -> IntTy {
 
 /// Whether values of `ty` contain an array, so live in memory.
 fn is_memory(sigs: &Signatures, ty: Ty) -> bool {
+    shapes::is_memory(sigs, ty, is_memory_uncached)
+}
+
+fn is_memory_uncached(sigs: &Signatures, ty: Ty) -> bool {
     match ty.kind() {
         TyKind::Array(..) => true,
         TyKind::Adt(adt, _) if sigs.unions.contains(&adt.strukt) => true,
@@ -975,6 +981,10 @@ fn address_leaf() -> Ty {
 /// variant's fields; the address of a value of a memory type; the
 /// address and length of a pointer to a slice.
 fn leaves(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
+    shapes::leaves(sigs, ty, out, leaves_uncached);
+}
+
+fn leaves_uncached(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
     if is_memory(sigs, ty) {
         out.push(address_leaf());
         return;
@@ -1013,6 +1023,10 @@ fn leaves_of(sigs: &Signatures, ty: Ty) -> TypeLeaves {
 }
 
 fn leaf_count(sigs: &Signatures, ty: Ty) -> usize {
+    shapes::leaf_count(sigs, ty, leaf_count_uncached)
+}
+
+fn leaf_count_uncached(sigs: &Signatures, ty: Ty) -> usize {
     if is_memory(sigs, ty) {
         return 1;
     }
