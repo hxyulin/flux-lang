@@ -207,6 +207,28 @@ fn bare_traits_and_root_imports_are_edition_sensitive() {
 }
 
 #[test]
+fn ellipsis_range_patterns_until_2021() {
+    let case = Case::new();
+    let ranges = "const MAX:u8=0x7f;fn class(c:char)->u32{match c{'a'...'z'|'A'...'Z'=>1,'0'...'9'=>2,_=>3}}fn byte(b:u8)->u32{match b{0...MAX=>1,_=>2}}fn pair(p:(i32,i32))->u32{match p{(-5...-1,0xE0...0xEF)=>1,_=>2}}fn main(){println!(\"{} {} {} {} {} {}\",class('q'),class('Q'),class('7'),class('-'),byte(200),pair((-3,0xE5)));}";
+    for edition in [Edition::E2015, Edition::E2018] {
+        case.check(ranges, edition, true);
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        assert_eq!(case.runtime(ranges, edition), b"1 1 2 3 2 1\n");
+    }
+    case.check(ranges, Edition::E2021, false);
+    for edition in [Edition::E2015, Edition::E2018, Edition::E2021] {
+        case.check("fn f(x:i32)->i32{match x{0...=>1,_=>0}}", edition, false);
+        case.check("fn f(x:i32)->i32{match x{...5=>1,_=>0}}", edition, false);
+    }
+    let reference = "fn f(x:&i32)->i32{match x{&0...5=>1,_=>0}}";
+    case.check(reference, Edition::E2018, true);
+    case.check(reference, Edition::E2021, false);
+}
+
+#[test]
 fn shared_legacy_semantics_and_macro_imports() {
     let case = Case::new();
     let source = r#"macro_rules! route{($e:expr)=>{1};(_)=>{2};(const $e:expr)=>{3};}macro_rules! pats{($($p:pat)|+)=>{{let mut n=0;$(let _=stringify!($p);n+=1;)+n}};}fn main(){let values=[String::from("first"),String::from("second")];let mut iter=values.into_iter();let first:&String=iter.next().unwrap();println!("{} {} {} {} {}",first,values[1],route!(_),route!(const{3}),pats!(A|B));if false{panic!("literal {missing}");}}"#;

@@ -5395,9 +5395,20 @@ impl<'a> Ctx<'a> {
         let Some(op) = pat.op() else {
             return Pat::Missing;
         };
+        // `a...b` is `a..=b`, which edition 2021 made an error.
         if op.kind() == flux_syntax::T![...] {
-            self.error(range, "`...` range patterns are deprecated");
-            return Pat::Missing;
+            if pat.start().is_none() {
+                self.error(range, "range-to patterns with `...` are not allowed");
+                return Pat::Missing;
+            }
+            if !matches!(
+                op.edition(),
+                flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+            ) && pat.end().is_some()
+            {
+                self.error(range, "`...` range patterns are deprecated");
+                return Pat::Missing;
+            }
         }
         let inclusive = pat.op_kind() == Some(ast::RangeOp::Inclusive);
         let end = |this: &mut Self, end: Option<ast::Pat<'_>>| -> Result<Option<ExprId>, ()> {
