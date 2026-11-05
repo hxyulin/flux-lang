@@ -480,7 +480,7 @@ fn same_shape(a: Ty, b: Ty) -> bool {
         (TyKind::Array(x, m), TyKind::Array(y, n)) => m == n && same(x, y),
         (TyKind::Slice(x), TyKind::Slice(y)) => same(x, y),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_c == y.is_c && x.is_unsafe == y.is_unsafe && all(x.inputs_output, y.inputs_output)
+            x.abi == y.abi && x.is_unsafe == y.is_unsafe && all(x.inputs_output, y.inputs_output)
         }
         (TyKind::FnDef(x), TyKind::FnDef(y)) => x.function == y.function && all(x.args, y.args),
         _ => false,

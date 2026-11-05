@@ -50,7 +50,7 @@ pub fn same_shape(a: Ty, b: Ty) -> bool {
         |a: &[Ty], b: &[Ty]| a.len() == b.len() && a.iter().zip(b).all(|(&a, &b)| same_shape(a, b));
     match (a.kind(), b.kind()) {
         (TyKind::FnPtr(a), TyKind::FnPtr(b)) => {
-            a.is_c == b.is_c && a.is_unsafe == b.is_unsafe && all(a.inputs_output, b.inputs_output)
+            a.abi == b.abi && a.is_unsafe == b.is_unsafe && all(a.inputs_output, b.inputs_output)
         }
         (TyKind::Ref(m, a), TyKind::Ref(n, b)) | (TyKind::RawPtr(m, a), TyKind::RawPtr(n, b)) => {
             m == n && same_shape(a, b)

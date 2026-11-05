@@ -224,7 +224,7 @@ impl Ctx<'_> {
         {
             let parts = crate::ClosureArgs::split(args);
             let params_ok = self.unify(parts.params(), Ty::tuple(ptr.params()));
-            if !ptr.is_c && params_ok && self.unify(parts.ret(), ptr.ret()) {
+            if ptr.abi == flux_hir::Abi::Rust && params_ok && self.unify(parts.ret(), ptr.ret()) {
                 self.reified.insert(expr, expected);
                 self.reified_closures.push((expr, actual, expected));
             } else {
@@ -262,7 +262,7 @@ impl Ctx<'_> {
                 );
                 return;
             }
-            let c_abi = self.items.functions[def.function].c_abi;
+            let abi = self.items.functions[def.function].abi;
             // Pointer input references are independently higher-ranked.
             // Fixed or constrained lifetimes in the item's signature cannot
             // be discarded when reifying it, including after `Clone`.
@@ -304,7 +304,7 @@ impl Ctx<'_> {
                 is_unsafe: ptr.is_unsafe,
                 ..def.sig
             }));
-            if ptr.is_c == c_abi
+            if ptr.abi == abi
                 && (ptr.is_unsafe || !def.sig.is_unsafe)
                 && self.unify(reified, expected)
             {
@@ -324,7 +324,7 @@ impl Ctx<'_> {
                 is_unsafe: to.is_unsafe,
                 ..from
             }));
-            if from.is_c == to.is_c
+            if from.abi == to.abi
                 && (to.is_unsafe || !from.is_unsafe)
                 && self.unify(offered, expected)
             {
@@ -679,7 +679,7 @@ impl Ctx<'_> {
             }
             (TyKind::Closure(_, args), TyKind::FnPtr(ptr)) => {
                 let parts = crate::ClosureArgs::split(args);
-                return !ptr.is_c
+                return ptr.abi == flux_hir::Abi::Rust
                     && self.can_unify(parts.params(), Ty::tuple(ptr.params()))
                     && self.can_unify(parts.ret(), ptr.ret());
             }
@@ -690,12 +690,12 @@ impl Ctx<'_> {
                 if !ptr.is_unsafe && !self.can_reify_function_features(def.function) {
                     return false;
                 }
-                let c_abi = self.items.functions[def.function].c_abi;
+                let abi = self.items.functions[def.function].abi;
                 let reified = Ty::new(TyKind::FnPtr(crate::FnSigTy {
                     is_unsafe: ptr.is_unsafe,
                     ..def.sig
                 }));
-                return ptr.is_c == c_abi
+                return ptr.abi == abi
                     && (ptr.is_unsafe || !def.sig.is_unsafe)
                     && self.can_unify(reified, expected);
             }
@@ -705,7 +705,7 @@ impl Ctx<'_> {
                     is_unsafe: to.is_unsafe,
                     ..from
                 }));
-                return from.is_c == to.is_c
+                return from.abi == to.abi
                     && (to.is_unsafe || !from.is_unsafe)
                     && self.can_unify(offered, expected);
             }

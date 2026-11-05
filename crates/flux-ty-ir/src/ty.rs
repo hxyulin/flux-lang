@@ -399,7 +399,7 @@ pub struct FnSigTy {
     pub regions: Option<&'static FnPtrRegions>,
     pub inputs_output: &'static [Ty],
     pub is_unsafe: bool,
-    pub is_c: bool,
+    pub abi: flux_hir::Abi,
 }
 
 impl FnSigTy {
@@ -409,7 +409,7 @@ impl FnSigTy {
             regions: None,
             inputs_output: all,
             is_unsafe,
-            is_c: false,
+            abi: flux_hir::Abi::Rust,
         }
     }
 
@@ -1391,8 +1391,8 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
     if sig.is_unsafe {
         f.write_str("unsafe ")?;
     }
-    if sig.is_c {
-        f.write_str("extern \"C\" ")?;
+    if sig.abi != flux_hir::Abi::Rust {
+        write!(f, "extern \"{}\" ", sig.abi.name())?;
     }
     let params: Vec<String> = sig.params().iter().map(Ty::to_string).collect();
     write!(f, "fn({})", params.join(", "))?;

@@ -745,7 +745,7 @@ mod process_tests {
             Ty::new(TyKind::FnPtr(FnSigTy {
                 inputs_output: Ty::list(&[reference, reference]),
                 is_unsafe: false,
-                is_c: false,
+                abi: flux_hir::Abi::Rust,
                 regions: Some(FnPtrRegions::intern(1, 0, rows, &[])),
             }))
         };

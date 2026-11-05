@@ -47,12 +47,12 @@ pub use body::{
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{
-    ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Bound, Const, ConstId, CrateData, CrateId,
-    Derive, Discriminant, DynRef, Field, Function, FunctionId, GenericArgs, GenericParam, Generics,
-    Impl, ImplId, ImplTarget, ImplTraitRef, ImplType, InlineHint, ItemCounts, ItemLoc, ItemTree,
-    LifetimeParam, LifetimeRef, MISPLACED_BINDING, Module, ModuleId, OutlivesPredicate, Owner,
-    Param, ParamKind, Path, PathAnchor, QSelf, SizedDispatch, Struct, StructId, StructKind, Trait,
-    TraitId, TraitType, TypeAlias, TypeAliasId, TypeOutlives, TypeRef, UseCapture, Variant,
+    Abi, ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Bound, Const, ConstId, CrateData,
+    CrateId, Derive, Discriminant, DynRef, Field, Function, FunctionId, GenericArgs, GenericParam,
+    Generics, Impl, ImplId, ImplTarget, ImplTraitRef, ImplType, InlineHint, ItemCounts, ItemLoc,
+    ItemTree, LifetimeParam, LifetimeRef, MISPLACED_BINDING, Module, ModuleId, OutlivesPredicate,
+    Owner, Param, ParamKind, Path, PathAnchor, QSelf, SizedDispatch, Struct, StructId, StructKind,
+    Trait, TraitId, TraitType, TypeAlias, TypeAliasId, TypeOutlives, TypeRef, UseCapture, Variant,
     VariantData, Visibility, WherePredicate, array_target, is_primitive, raw_ptr_target,
     slice_target,
 };

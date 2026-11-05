@@ -321,7 +321,7 @@ pub fn overlap(a: Ty, b: Ty) -> bool {
         (TyKind::Slice(x), TyKind::Slice(y)) => overlap(x, y),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
             x.is_unsafe == y.is_unsafe
-                && x.is_c == y.is_c
+                && x.abi == y.abi
                 && x.inputs_output.len() == y.inputs_output.len()
                 && (x.inputs_output.iter().zip(y.inputs_output)).all(|(&a, &b)| overlap(a, b))
         }

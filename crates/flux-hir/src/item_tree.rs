@@ -757,6 +757,40 @@ pub enum InlineHint {
     Never,
 }
 
+/// A function ABI flux implements. rustc gives each one its own function
+/// pointer type. On flux's targets every ABI but `Rust` uses the C calling
+/// convention, and an `-unwind` ABI lowers like its base ABI because flux
+/// builds with `panic=abort`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum Abi {
+    #[default]
+    Rust,
+    C,
+    CUnwind,
+    System,
+    SystemUnwind,
+    Efiapi,
+}
+
+impl Abi {
+    /// Whether calls use the C calling convention.
+    pub fn is_c(self) -> bool {
+        self != Abi::Rust
+    }
+
+    /// The name written in `extern "name"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Abi::Rust => "Rust",
+            Abi::C => "C",
+            Abi::CUnwind => "C-unwind",
+            Abi::System => "system",
+            Abi::SystemUnwind => "system-unwind",
+            Abi::Efiapi => "efiapi",
+        }
+    }
+}
+
 /// A function: one with a body, or one declared in an `extern` block.
 #[derive(Debug, Clone)]
 pub struct Function {
@@ -778,8 +812,8 @@ pub struct Function {
     pub is_extern: bool,
     /// An explicit native symbol for a foreign function declaration only.
     pub link_name: Option<Symbol>,
-    /// Uses the C calling convention, including definitions with bodies.
-    pub c_abi: bool,
+    /// The ABI written on the function, or its `extern` block's.
+    pub abi: Abi,
     /// `const fn`: callable in constants.
     pub is_const: bool,
     /// `#[rustc_inherit_overflow_checks]`, which only `core` may write:
@@ -1262,7 +1296,7 @@ pub enum TypeRef {
         params: Box<[TypeRef]>,
         ret: Box<TypeRef>,
         is_unsafe: bool,
-        is_c: bool,
+        abi: Abi,
     },
     /// `impl Tr + 'a`, where it is not (yet) known what it stands for.
     /// Lowering an item makes those in a function's parameters
@@ -1413,7 +1447,7 @@ impl std::fmt::Display for TypeRef {
                 params,
                 ret,
                 is_unsafe,
-                is_c,
+                abi,
             } => {
                 if !bound_lifetimes.is_empty() {
                     f.write_str("for<")?;
@@ -1428,8 +1462,8 @@ impl std::fmt::Display for TypeRef {
                 if *is_unsafe {
                     f.write_str("unsafe ")?;
                 }
-                if *is_c {
-                    f.write_str("extern \"C\" ")?;
+                if *abi != Abi::Rust {
+                    write!(f, "extern \"{}\" ", abi.name())?;
                 }
                 let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
                 write!(f, "fn({})", params.join(", "))?;
@@ -3552,7 +3586,7 @@ pub(crate) fn is_anon_const(expr: ast::Expr<'_>) -> bool {
 /// `fn(A, B) -> R`, `unsafe fn(A)`; `extern "C" fn` and C-variadic ones
 /// are reported.
 fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
-    let is_c = function_c_abi(ptr.abi(), diagnostics);
+    let abi = function_abi(ptr.abi(), diagnostics);
     let mut params = Vec::new();
     if let Some(list) = ptr.param_list() {
         for param in list.params() {
@@ -3580,7 +3614,7 @@ fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> T
         params: params.into(),
         ret: Box::new(ret),
         is_unsafe: ptr.unsafe_token().is_some(),
-        is_c,
+        abi,
     }
 }
 
@@ -3749,24 +3783,54 @@ fn bind_fn_lifetimes(
     true
 }
 
-/// Whether a written function ABI is C. Omitted `extern` ABI means C.
-fn function_c_abi(abi: Option<ast::Abi<'_>>, diagnostics: &mut Vec<Diagnostic>) -> bool {
-    let Some(abi) = abi else { return false };
-    let name = abi
-        .string_token()
-        .and_then(|s| crate::literal::unescape_str(s.text()).ok());
-    match name.as_deref().unwrap_or("C") {
-        "C" => true,
-        "Rust" => false,
-        _ => {
-            unsupported(
-                diagnostics,
-                abi.syntax().text_range(),
-                "function ABIs other than \"C\" and \"Rust\"",
-            );
-            false
+/// The ABI of `extern "name"`, `extern` (C) or no `extern` (Rust), with
+/// the ABIs rustc rejects for the target reported as rustc does.
+pub(crate) fn function_abi(abi: Option<ast::Abi<'_>>, diagnostics: &mut Vec<Diagnostic>) -> Abi {
+    let Some(abi) = abi else { return Abi::Rust };
+    let Some(token) = abi.string_token() else {
+        return Abi::C;
+    };
+    let Ok(name) = crate::literal::unescape_str(token.text()) else {
+        return Abi::Rust;
+    };
+    let x86_64 = std::env::consts::ARCH == "x86_64";
+    let message = match name.as_str() {
+        "Rust" => return Abi::Rust,
+        "C" => return Abi::C,
+        "C-unwind" => return Abi::CUnwind,
+        "system" => return Abi::System,
+        "system-unwind" => return Abi::SystemUnwind,
+        // On x86_64, `efiapi` is the Windows x64 convention rather than C.
+        "efiapi" if !x86_64 => return Abi::Efiapi,
+        "efiapi" | "cdecl" | "cdecl-unwind" => format!("the \"{name}\" ABI is not supported yet"),
+        "win64" | "win64-unwind" | "sysv64" | "sysv64-unwind" if x86_64 => {
+            format!("the \"{name}\" ABI is not supported yet")
         }
-    }
+        "win64" | "win64-unwind" | "sysv64" | "sysv64-unwind" | "stdcall" | "stdcall-unwind"
+        | "fastcall" | "fastcall-unwind" | "thiscall" | "thiscall-unwind" | "aapcs"
+        | "aapcs-unwind" => format!("\"{name}\" is not a supported ABI for the current target"),
+        "vectorcall"
+        | "vectorcall-unwind"
+        | "rust-call"
+        | "rust-cold"
+        | "rust-invalid"
+        | "rust-preserve-none"
+        | "unadjusted"
+        | "ptx-kernel"
+        | "gpu-kernel"
+        | "x86-interrupt"
+        | "msp430-interrupt"
+        | "riscv-interrupt-m"
+        | "riscv-interrupt-s"
+        | "avr-interrupt"
+        | "avr-non-blocking-interrupt"
+        | "C-cmse-nonsecure-call"
+        | "C-cmse-nonsecure-entry"
+        | "custom" => format!("the extern \"{name}\" ABI is experimental and subject to change"),
+        _ => format!("invalid ABI: found `{name}`"),
+    };
+    diagnostics.push(Diagnostic::new(abi.syntax().text_range(), message));
+    Abi::Rust
 }
 
 #[cfg(test)]

@@ -516,7 +516,7 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
         );
         d.file = function.loc.file;
         return Some(d);
-    } else if function.c_abi {
+    } else if function.abi.is_c() {
         "`main` function must have the Rust ABI".to_owned()
     } else if function.target_features.is_some() {
         "`main` function is not allowed to have `target_feature`".to_owned()

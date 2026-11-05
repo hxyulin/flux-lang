@@ -1030,7 +1030,7 @@ impl Ctx<'_> {
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
                 let mut ok = x.is_unsafe == y.is_unsafe
-                    && x.is_c == y.is_c
+                    && x.abi == y.abi
                     && x.inputs_output.len() == y.inputs_output.len();
                 for (&a, &b) in x.inputs_output.iter().zip(y.inputs_output) {
                     ok &= self.unify(a, b);
@@ -1213,7 +1213,7 @@ impl Ctx<'_> {
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
                 x.is_unsafe == y.is_unsafe
-                    && x.is_c == y.is_c
+                    && x.abi == y.abi
                     && x.inputs_output.len() == y.inputs_output.len()
                     && (x.inputs_output.iter().zip(y.inputs_output))
                         .all(|(&a, &b)| self.can_unify(a, b))
@@ -1313,7 +1313,10 @@ impl Ctx<'_> {
     fn describe_sig(&mut self, sig: crate::FnSigTy) -> String {
         let params: Vec<String> = sig.params().iter().map(|&p| self.describe(p)).collect();
         let unsafety = if sig.is_unsafe { "unsafe " } else { "" };
-        let abi = if sig.is_c { "extern \"C\" " } else { "" };
+        let abi = match sig.abi {
+            flux_hir::Abi::Rust => String::new(),
+            abi => format!("extern \"{}\" ", abi.name()),
+        };
         let mut text = format!("{unsafety}{abi}fn({})", params.join(", "));
         if self.shallow(sig.ret()) != Ty::UNIT {
             text.push_str(&format!(" -> {}", self.describe(sig.ret())));
@@ -3985,7 +3988,7 @@ impl Ctx<'_> {
             name,
             args: Ty::list(&args),
             sig: crate::FnSigTy {
-                is_c: data.c_abi,
+                abi: data.abi,
                 ..crate::FnSigTy::new(&sig.params, sig.ret, data.is_unsafe)
             },
         }))

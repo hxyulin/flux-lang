@@ -407,7 +407,7 @@ fn lower_inner(
             module.decls.push(FuncDecl {
                 attrs: attrs(&typed.sigs[id]),
                 name: symbols[&id].clone(),
-                sig: if function.c_abi {
+                sig: if function.abi.is_c() {
                     c_signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic)
                 } else {
                     signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic)
@@ -1272,7 +1272,7 @@ impl Ctx<'_> {
             instance.args,
         );
         let takes_location = !pointer_wrapper && self.takes_location(instance);
-        let c_abi = self.hir.items.functions[instance.function].c_abi;
+        let c_abi = self.hir.items.functions[instance.function].abi.is_c();
         let signature = self.instance_signature(instance, sig, pointer_wrapper);
         let mut function = Function::new(
             if pointer_wrapper {
@@ -1362,7 +1362,7 @@ impl Ctx<'_> {
         sig: &FnSig,
         pointer_wrapper: bool,
     ) -> Signature {
-        let mut signature = if self.hir.items.functions[instance.function].c_abi {
+        let mut signature = if self.hir.items.functions[instance.function].abi.is_c() {
             c_signature(&self.typed.sigs, &self.layouts, sig, false)
         } else {
             ctx_signature(
@@ -4444,7 +4444,7 @@ impl Lower<'_, '_, '_> {
                     self.ctx.typed.sigs[*func].ret,
                     generic_args,
                 );
-                let is_c = items.functions[resolved.function].c_abi;
+                let is_c = items.functions[resolved.function].abi.is_c();
                 self.call_abi(
                     if is_c {
                         Convention::C
@@ -4475,7 +4475,7 @@ impl Lower<'_, '_, '_> {
                 let sig = ty
                     .fn_sig()
                     .expect("indirect calls are of function pointers");
-                let is_c = sig.is_c;
+                let is_c = sig.abi.is_c();
                 let sig = FnSig {
                     params: sig.params().into(),
                     ret: sig.ret(),
@@ -4867,7 +4867,7 @@ impl Lower<'_, '_, '_> {
             func,
             generic_args,
         );
-        let mut sig = if function.c_abi {
+        let mut sig = if function.abi.is_c() {
             c_signature(self.sigs, &self.ctx.layouts, &sig, function.is_variadic)
         } else {
             let reified = self.ctx.compilation.is_some() || self.ctx.reified.contains(&instance);

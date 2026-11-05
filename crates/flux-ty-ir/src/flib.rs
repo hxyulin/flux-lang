@@ -414,7 +414,7 @@ impl Encode for FnSigTy {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.inputs_output.encode(e)?;
         self.is_unsafe.encode(e)?;
-        self.is_c.encode(e)?;
+        self.abi.encode(e)?;
         self.regions.is_some().encode(e)?;
         if let Some(r) = self.regions {
             r.bound.encode(e)?;
@@ -432,7 +432,7 @@ impl Decode for FnSigTy {
             return Err(Error::new("empty function signature"));
         }
         let is_unsafe = bool::decode(d)?;
-        let is_c = bool::decode(d)?;
+        let abi = flux_hir::Abi::decode(d)?;
         let regions = if bool::decode(d)? {
             let bound = u32::decode(d)?;
             let free = u32::decode(d)?;
@@ -461,7 +461,7 @@ impl Decode for FnSigTy {
         Ok(Self {
             inputs_output: Ty::list(&types),
             is_unsafe,
-            is_c,
+            abi,
             regions,
         })
     }
@@ -966,7 +966,7 @@ mod tests {
         let sig = FnSigTy {
             inputs_output: Ty::list(&[Ty::raw_ptr(Mutability::Not, parameter), parameter]),
             is_unsafe: true,
-            is_c: false,
+            abi: flux_hir::Abi::Rust,
             regions: Some(recipe),
         };
         let ty = Ty::tuple(&[

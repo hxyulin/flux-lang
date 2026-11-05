@@ -17,7 +17,7 @@ fn helpers_match(
         || !to.has_body
         || to.is_const
         || to.is_unsafe
-        || to.c_abi
+        || to.abi.is_c()
         || to.is_extern
         || to.is_variadic
         || to.track_caller
@@ -139,7 +139,7 @@ pub(crate) fn validate(items: &ItemTree, sigs: &mut Signatures, errors: &mut Vec
             && data.owner.is_none()
             && !data.is_const
             && !data.is_unsafe
-            && !data.c_abi
+            && !data.abi.is_c()
             && !data.is_extern
             && !data.is_variadic
             && !data.track_caller

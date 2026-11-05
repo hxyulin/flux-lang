@@ -1,7 +1,7 @@
 //! File and macro item collection, followed by derives and constructors.
 mod proc_macros;
 use super::{
-    AnonConst, Arc, AstNode, Block, BodyExpansion, Bound, Const, ConstId, CrateData, CrateId,
+    Abi, AnonConst, Arc, AstNode, Block, BodyExpansion, Bound, Const, ConstId, CrateData, CrateId,
     Defaults, Derive, Diagnostic, Discriminant, FIELD_TYPES, Field, FileId, FsPath, Function,
     FunctionId, GenericArgs, GenericParam, Generics, IN_BOUNDS, Impl, ImplId, ImplParams,
     ImplTraitSite, ImplType, ItemLoc, ItemTree, LifetimeRef, LoadedCrates, MacroDef, MacroId,
@@ -11,9 +11,9 @@ use super::{
     Use, UseKind, Variant, Visibility, WherePredicate, ast, attr_name, check_attr, check_attrs,
     check_inert_attrs, check_inner_attrs, collect_generics, collect_generics_with_drop,
     collect_opaques, const_expr_root, core_path, def_start, derive_attr, desugar_impl_params,
-    discriminant_value, enum_repr, expand_types, function_c_abi, generic_in_discriminant,
-    int_range, is_anon_const, is_item_kind, item_enabled, item_enabled_with_test_context, kw,
-    lang_attr, lower_bound_type, lower_bounds, lower_lifetime, lower_path, lower_type, macros,
+    discriminant_value, enum_repr, expand_types, function_abi, generic_in_discriminant, int_range,
+    is_anon_const, is_item_kind, item_enabled, item_enabled_with_test_context, kw, lang_attr,
+    lower_bound_type, lower_bounds, lower_lifetime, lower_path, lower_type, macros,
     non_exhaustive_attr, on_unimplemented_attr, param_projections, reject_impl_trait,
     reject_impl_trait_in_path, repr_attr, struct_repr, sym, target_feature_attr,
     target_feature_inline, unsupported, with_macro_types,
@@ -534,7 +534,7 @@ impl Collector<'_> {
         let item = ast::Item::cast(tree.node(node)).expect("items are ITEM nodes");
         match item {
             ast::Item::Fn(f) => {
-                self.collect_fn(ctx, f, false, None);
+                self.collect_fn(ctx, f, None, None);
             }
             ast::Item::Impl(imp) => {
                 self.collect_impl(ctx, imp);
@@ -1261,7 +1261,7 @@ impl Collector<'_> {
             }
             let what = match item {
                 ast::Item::Fn(f) => {
-                    if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Trait(id))) {
+                    if let Some(function) = self.collect_fn(ctx, f, None, Some(Owner::Trait(id))) {
                         let data = &self.items.functions[function];
                         let duplicate =
                             self.items.traits[id].value(self.items, data.name).is_some();
@@ -1815,7 +1815,7 @@ impl Collector<'_> {
             }
             let what = match item {
                 ast::Item::Fn(f) => {
-                    if let Some(function) = self.collect_fn(ctx, f, false, Some(Owner::Impl(id))) {
+                    if let Some(function) = self.collect_fn(ctx, f, None, Some(Owner::Impl(id))) {
                         let (name, range) = {
                             let data = &self.items.functions[function];
                             (data.name, data.item_range)
@@ -2001,9 +2001,10 @@ impl Collector<'_> {
         &mut self,
         ctx: Ctx,
         f: ast::Fn<'_>,
-        in_extern_block: bool,
+        extern_block: Option<Abi>,
         owner: Option<Owner>,
     ) -> Option<FunctionId> {
+        let in_extern_block = extern_block.is_some();
         let is_core = self.items.is_core(ctx.module);
         let mut inherits_overflow_checks = false;
         let mut const_unstable = false;
@@ -2193,8 +2194,11 @@ impl Collector<'_> {
                 "functions in `extern` blocks cannot have an `extern` qualifier",
             ));
         }
-        let c_abi = in_extern_block || function_c_abi(f.abi(), diagnostics);
-        if c_abi && track_caller {
+        let abi = match extern_block {
+            Some(abi) => abi,
+            None => function_abi(f.abi(), diagnostics),
+        };
+        if abi.is_c() && track_caller {
             diagnostics.push(Diagnostic::new(
                 f.syntax().text_range(),
                 "`#[track_caller]` requires Rust ABI",
@@ -2415,7 +2419,7 @@ impl Collector<'_> {
             target_features: has_target_feature.then(|| enabled_features.into_boxed_slice()),
             is_extern: in_extern_block,
             link_name,
-            c_abi,
+            abi,
             is_const: f.const_token().is_some(),
             inherits_overflow_checks,
             const_unstable,
@@ -4109,7 +4113,7 @@ impl Collector<'_> {
                     target_features: None,
                     link_name: None,
                     is_extern: false,
-                    c_abi: false,
+                    abi: Abi::Rust,
                     is_const: true,
                     inherits_overflow_checks: false,
                     const_unstable: false,
@@ -4431,7 +4435,7 @@ impl Collector<'_> {
             target_features: None,
             link_name: None,
             is_extern: false,
-            c_abi: false,
+            abi: Abi::Rust,
             is_const: false,
             inherits_overflow_checks: false,
             const_unstable: false,
@@ -4482,14 +4486,19 @@ impl Collector<'_> {
             }
         }
         let abi = block.abi();
-        if let Some(abi) = abi
-            && abi.string_token().is_some_and(|s| s.text() != "\"C\"")
-        {
-            unsupported(
-                diagnostics,
-                abi.syntax().text_range(),
-                "ABIs other than \"C\"",
-            );
+        let mut block_abi = function_abi(abi, diagnostics);
+        if block_abi == Abi::Rust {
+            // Reported above unless the block really says "Rust".
+            if let Some(abi) = abi
+                && abi.string_token().is_some_and(|s| s.text() == "\"Rust\"")
+            {
+                unsupported(
+                    diagnostics,
+                    abi.syntax().text_range(),
+                    "`extern \"Rust\"` blocks",
+                );
+            }
+            block_abi = Abi::C;
         }
         if edition == flux_syntax::Edition::E2024 && block.unsafe_token().is_none() {
             let range = abi.map_or(block.syntax().text_range(), |a| a.syntax().text_range());
@@ -4507,7 +4516,7 @@ impl Collector<'_> {
             }
             match item {
                 ast::Item::Fn(f) => {
-                    self.collect_fn(ctx, f, true, None);
+                    self.collect_fn(ctx, f, Some(block_abi), None);
                 }
                 ast::Item::Static(st) => self.collect_static(ctx, st, true),
                 _ => self.items.diagnostics.push(Diagnostic::new(

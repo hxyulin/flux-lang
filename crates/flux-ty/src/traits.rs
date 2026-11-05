@@ -1147,7 +1147,7 @@ fn check_method(
     let trait_name = items.traits[t].name;
     // In particular, an unsafe baseline target-feature method cannot satisfy
     // a safe trait declaration: calls through the trait must preserve safety.
-    if function.is_unsafe != decl.is_unsafe || function.c_abi != decl.c_abi {
+    if function.is_unsafe != decl.is_unsafe || function.abi != decl.abi {
         return error(
             function.def_range,
             format!("method `{name}` has an incompatible type for trait"),
@@ -3050,7 +3050,7 @@ fn unify_headers_with_predicates(
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
                 x.is_unsafe == y.is_unsafe
-                    && x.is_c == y.is_c
+                    && x.abi == y.abi
                     && all(x.inputs_output, y.inputs_output)
             }
             _ => a.1 == b.1,

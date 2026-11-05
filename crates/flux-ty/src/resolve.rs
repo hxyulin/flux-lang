@@ -844,7 +844,7 @@ pub fn resolve_type(
             params,
             ret,
             is_unsafe,
-            is_c,
+            abi,
         } => {
             let scope = TypeScope {
                 in_fn_pointer: true,
@@ -867,7 +867,7 @@ pub fn resolve_type(
                 unreachable!()
             };
             let signature = FnSigTy {
-                is_c: *is_c,
+                abi: *abi,
                 ..FnSigTy::new(&params, ret, *is_unsafe)
             };
             let description = fn_regions::describe(

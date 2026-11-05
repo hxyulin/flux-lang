@@ -948,7 +948,7 @@ pub(super) fn extend_signatures(
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let sig = &sigs.fns[id];
         let params = function.params.iter().zip(&sig.params);
-        if function.c_abi {
+        if function.abi.is_c() {
             for (param, &ty) in params.clone() {
                 if contains_ref(ty) {
                     error(

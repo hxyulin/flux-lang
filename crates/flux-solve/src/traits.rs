@@ -960,7 +960,7 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         (TyKind::Slice(x), TyKind::Slice(y)) => match_ty(x, y, binds),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
             x.is_unsafe == y.is_unsafe
-                && x.is_c == y.is_c
+                && x.abi == y.abi
                 && x.inputs_output.len() == y.inputs_output.len()
                 && (x.inputs_output.iter().zip(y.inputs_output))
                     .all(|(&a, &b)| match_ty(a, b, binds))
@@ -2013,7 +2013,7 @@ pub fn fn_goal(items: &ItemTree, t: TraitId, ty: Ty) -> Option<ClosureGoal> {
     let sig = ty.fn_sig()?;
     let kind = crate::fn_trait_kind(items, t)?;
     if sig.is_unsafe
-        || sig.is_c
+        || sig.abi.is_c()
         || matches!(ty.kind(),TyKind::FnDef(def) if items.functions[def.function].target_features.is_some())
     {
         return Some(ClosureGoal::No);
@@ -2050,7 +2050,7 @@ pub fn copy_trait_ref(items: &ItemTree) -> Option<TraitRef> {
 pub fn closure_output(items: &ItemTree, alias: AliasTy) -> Option<Ty> {
     if let Some(sig) = alias.args[0].fn_sig()
         && !sig.is_unsafe
-        && !sig.is_c
+        && sig.abi == flux_hir::Abi::Rust
         && !matches!(alias.args[0].kind(),TyKind::FnDef(def) if items.functions[def.function].target_features.is_some())
         && crate::fn_trait_kind(items, alias.trait_) == Some(crate::ClosureKind::FnOnce)
     {

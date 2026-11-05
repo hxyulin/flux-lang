@@ -313,7 +313,7 @@ pub(super) fn check_c_abi(
         .items
         .functions
         .iter()
-        .filter(|(_, data)| data.is_extern && data.c_abi)
+        .filter(|(_, data)| data.is_extern && data.abi.is_c())
     {
         if !supported(&typed.sigs[id]) {
             add(data.loc.file, data.def_range);
@@ -321,7 +321,7 @@ pub(super) fn check_c_abi(
     }
     for &instance in instances {
         let data = &hir.items.functions[instance.function];
-        if data.c_abi
+        if data.abi.is_c()
             && !supported(&flux_solve::traits::instance_sig(
                 &hir.items,
                 &typed.sigs,
@@ -339,7 +339,7 @@ pub(super) fn check_c_abi(
             match &block.terminator.kind {
                 TerminatorKind::CallIndirect { callee, .. } => {
                     if let Some(sig) = body.operand_ty(callee, &typed.sigs).fn_sig()
-                        && sig.is_c
+                        && sig.abi.is_c()
                         && !supported(&FnSig {
                             params: sig.params().into(),
                             ret: sig.ret(),
@@ -349,7 +349,7 @@ pub(super) fn check_c_abi(
                     }
                 }
                 TerminatorKind::Call { func, args, .. }
-                    if hir.items.functions[*func].c_abi
+                    if hir.items.functions[*func].abi.is_c()
                         && hir.items.functions[*func].is_variadic =>
                 {
                     let fixed = typed.sigs[*func].params.len();

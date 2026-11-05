@@ -1,0 +1,15 @@
+fn system() -> ()
+fn unwind() -> ()
+fn main() -> ()
+    a@0: extern "C" fn()
+    b@1: extern "system" fn()
+    c@2: extern "C-unwind" fn()
+    d@3: extern "C" fn()
+    e@4: unsafe extern "C-unwind" fn()
+    f@5: fn()
+    g@6: extern "system" fn()
+error 180..218: conflicting implementations of trait `Marker` for type `extern "C-unwind" fn()`
+error 327..333: mismatched types: expected `extern "C" fn()`, found `extern "system" fn() {system}`
+error 369..375: mismatched types: expected `extern "system" fn()`, found `extern "C-unwind" fn() {unwind}`
+error 450..451: mismatched types: expected `extern "C" fn()`, found `extern "C-unwind" fn()`
+error 558..563: mismatched types: expected `extern "system" fn()`, found `{closure}`

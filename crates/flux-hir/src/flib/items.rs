@@ -3,7 +3,7 @@
 use super::{Decode, Decoder, Encode, Encoder, Error};
 use crate::def_map::{Binding, BindingKind, Def, Scope};
 use crate::item_tree::{
-    AnonConst, ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Block, Bound, Const, Derive,
+    Abi, AnonConst, ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Block, Bound, Const, Derive,
     Discriminant, DynRef, Field, Function, GenericArgs, GenericParam, Generics, Impl, ImplTarget,
     ImplTraitRef, ImplType, InlineHint, ItemLoc, LifetimeParam, LifetimeRef, Module,
     OutlivesPredicate, Owner, Param, ParamKind, Path, PathAnchor, QSelf, Struct, StructKind, Trait,
@@ -180,7 +180,7 @@ record!(Function {
     target_features,
     is_extern,
     link_name,
-    c_abi,
+    abi,
     is_const,
     inherits_overflow_checks,
     const_unstable,
@@ -303,13 +303,14 @@ variants!(ImplTarget {0=>Struct(id),1=>Primitive(name),2=>Object(id)});
 variants!(Discriminant {0=>Value(value),1=>Const{konst,offset}});
 variants!(StructKind {0=>Record,1=>Tuple,2=>Unit});
 variants!(InlineHint {0=>Hint,1=>Always,2=>Never});
+variants!(Abi {0=>Rust,1=>C,2=>CUnwind,3=>System,4=>SystemUnwind,5=>Efiapi});
 variants!(Derive {0=>Clone,1=>Copy,2=>PartialEq,3=>Eq,4=>PartialOrd,5=>Ord,6=>Default,7=>Debug,8=>Hash});
 variants!(ParamKind {0=>Type,1=>Const{ty,ty_range}});
 variants!(UseKind {0=>Named(name),1=>Anonymous{module_only},2=>Module(name),3=>Glob});
 variants!(PathAnchor {0=>Plain,1=>Crate,2=>DefinitionCrate(id),3=>SelfModule,4=>Super(count),5=>Global});
 variants!(UseCapture {0=>Lifetime(value),1=>Param(name,range)});
 variants!(ArrayLenKind {0=>Lit{value,suffix},1=>NegLit{value,suffix},2=>Const(id),3=>Path(path),4=>Bool(value),5=>Char(value),6=>Anon(file,node),7=>Error});
-variants!(TypeRef {0=>Path(path),1=>Tuple(types),2=>Never,3=>Ptr{mutable,pointee},4=>Ref{lifetime,amp,mutable,pointee},5=>Array{elem,len},6=>Slice(ty),7=>Infer,8=>FnPtr{bound_lifetimes,params,ret,is_unsafe,is_c},9=>ImplTrait(value),10=>Dyn(value),11=>ImplParam(index),12=>Opaque(index),13=>Const(value),14=>Error});
+variants!(TypeRef {0=>Path(path),1=>Tuple(types),2=>Never,3=>Ptr{mutable,pointee},4=>Ref{lifetime,amp,mutable,pointee},5=>Array{elem,len},6=>Slice(ty),7=>Infer,8=>FnPtr{bound_lifetimes,params,ret,is_unsafe,abi},9=>ImplTrait(value),10=>Dyn(value),11=>ImplParam(index),12=>Opaque(index),13=>Const(value),14=>Error});
 variants!(BindingKind {0=>Item,1=>Import,2=>Glob,3=>AmbiguousGlob});
 variants!(Def {0=>Module(id),1=>Struct(id),2=>Trait(id),3=>Function(id),4=>Const(id),5=>Variant(id,index),6=>TypeAlias(id),7=>Static(id),8=>Macro(id),9=>Primitive(name)});
 record!(Binding {

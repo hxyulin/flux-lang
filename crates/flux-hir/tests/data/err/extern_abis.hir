@@ -1,0 +1,23 @@
+type Bogus = fn();
+
+fn stdcall() -> () {}
+
+fn cdecl() -> () {}
+
+fn vectorcall() -> () {}
+
+unsafe extern fn imported() -> ();
+
+unsafe extern fn fastcall() -> ();
+
+fn tracked() -> () {}
+
+fn main() -> () {}
+
+error 0..16: "stdcall" is not a supported ABI for the current target
+error 33..47: the "cdecl" ABI is not supported yet
+error 62..81: the extern "vectorcall" ABI is experimental and subject to change
+error 114..128: invalid ABI: found `bogus`
+error 142..155: `extern "Rust"` blocks are not supported yet
+error 186..210: "fastcall-unwind" is not a supported ABI for the current target
+error 234..283: `#[track_caller]` requires Rust ABI

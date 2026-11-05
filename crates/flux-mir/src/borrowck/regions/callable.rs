@@ -174,7 +174,7 @@ impl Cx<'_> {
         target_own: &[Var],
         range: TextRange,
     ) {
-        if source.is_c != target.is_c
+        if source.abi != target.abi
             || (source.is_unsafe && !target.is_unsafe)
             || source.params().len() != target.params().len()
         {
@@ -330,7 +330,7 @@ impl Cx<'_> {
                     let signature = self.sigs.fns[function].subst(args);
                     let data = &self.items.functions[function];
                     let sig = flux_ty::FnSigTy {
-                        is_c: data.c_abi,
+                        abi: data.abi,
                         ..flux_ty::FnSigTy::new(&signature.params, signature.ret, data.is_unsafe)
                     };
                     let ty = Ty::new(TyKind::FnDef(flux_ty::FnDefTy {

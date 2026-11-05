@@ -1034,7 +1034,7 @@ fn embeds(previous: Ty, next: Ty) -> bool {
                     && a.assoc_names == b.assoc_names
             }
             (TyKind::FnPtr(a), TyKind::FnPtr(b)) => {
-                a.is_c == b.is_c
+                a.abi == b.abi
                     && a.is_unsafe == b.is_unsafe
                     && a.inputs_output.len() == b.inputs_output.len()
                     && a.regions == b.regions
