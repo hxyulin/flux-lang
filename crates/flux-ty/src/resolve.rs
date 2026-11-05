@@ -302,6 +302,14 @@ pub fn resolve_generic_arg(
             return resolve_type(items, module, arg, scope, range, errors);
         }
     };
+    if names_nothing(items, module, arg, scope) {
+        resolve_type(items, module, arg, scope, range, errors);
+        errors.push((
+            range,
+            "unresolved item provided when a constant was expected".to_owned(),
+        ));
+        return Ty::ERROR;
+    }
     let value = match arg {
         TypeRef::Const(value) => value.clone(),
         TypeRef::Infer if scope.signature_of.is_none() => {
@@ -351,7 +359,27 @@ fn names_type(
         // parameter wants.
         return None;
     }
-    Some(items.resolve(module, path, Ns::Types).is_ok())
+    // rustc reads a path that names nothing as a type, and reports it
+    // unresolved there.
+    Some(
+        items.resolve(module, path, Ns::Types).is_ok()
+            || items.resolve(module, path, Ns::Values).is_err(),
+    )
+}
+
+/// Whether the path `arg`, a generic argument, names neither a type nor
+/// a value.
+fn names_nothing(items: &ItemTree, module: ModuleId, arg: &TypeRef, scope: TypeScope<'_>) -> bool {
+    let TypeRef::Path(path) = arg else {
+        return false;
+    };
+    let first = path.segments.first().copied();
+    let local = path.anchor == flux_hir::PathAnchor::Plain
+        && first.is_some_and(|n| n == kw::SelfUpper || scope.generics.contains(&n));
+    path.qself.is_none()
+        && !local
+        && items.resolve(module, path, Ns::Types).is_err()
+        && items.resolve(module, path, Ns::Values).is_err()
 }
 
 /// The generic arguments `written` (with their ranges) for parameters
@@ -379,11 +407,21 @@ pub fn resolve_generic_args(
             };
             match (param.is_const(), is_const) {
                 (false, true) => Some((range, "constant provided when a type was expected")),
+                (true, false) if names_nothing(items, module, arg, scope) => Some((
+                    range,
+                    "unresolved item provided when a constant was expected",
+                )),
                 (true, false) => Some((range, "type provided when a constant was expected")),
                 _ => None,
             }
         });
     if let Some((range, message)) = wrong_kind {
+        // rustc reports a path that names nothing before the kind mismatch.
+        for (arg, &range) in written.types.iter().zip(&written.ranges) {
+            if names_nothing(items, module, arg, scope) {
+                resolve_type(items, module, arg, scope, range, errors);
+            }
+        }
         errors.push((range, message.to_owned()));
         return vec![Ty::ERROR; written.types.len()];
     }
