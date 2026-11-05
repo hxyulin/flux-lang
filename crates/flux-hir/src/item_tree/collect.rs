@@ -112,8 +112,16 @@ struct MacroPathCheck {
 /// A macro import can refer to a module collected later. Keep its original
 /// textual scope and associated owner while waiting for the item namespace.
 enum PendingItemKind {
-    Macro(Option<(ImplId, bool)>),
+    Macro(Option<AssocOwner>),
     Attribute,
+}
+
+/// Where a macro call among associated items puts the items it expands
+/// to: an `impl` block (and whether it implements a trait) or a trait.
+#[derive(Clone, Copy)]
+enum AssocOwner {
+    Impl(ImplId, bool),
+    Trait(TraitId),
 }
 struct PendingItem {
     kind: PendingItemKind,
@@ -791,8 +799,8 @@ impl Collector<'_> {
                         match call.kind {
                             PendingItemKind::Macro(owner) => {
                                 let mc = ast::MacroCall::cast(node).expect("pending macro call");
-                                if let Some((owner, is_trait_impl)) = owner {
-                                    self.collect_impl_macro(call.ctx, owner, mc, is_trait_impl);
+                                if let Some(owner) = owner {
+                                    self.collect_assoc_macro(call.ctx, owner, mc);
                                 } else {
                                     self.collect_resolved_macro_call(call.ctx, mc, def);
                                 }
@@ -1255,7 +1263,17 @@ impl Collector<'_> {
             return;
         };
         check_attrs(list.attrs(), &mut self.items.diagnostics);
-        for item in list.items() {
+        let nodes: Vec<_> = list.items().map(|item| item.syntax().id()).collect();
+        self.collect_trait_items(ctx, id, &nodes);
+    }
+
+    fn collect_trait_items(&mut self, ctx: Ctx, id: TraitId, nodes: &[NodeId]) {
+        let _file = TypesFile::enter(ctx.file);
+        let shared = self.db.shared(ctx.file);
+        for &node in nodes {
+            let Some(item) = ast::Item::cast(shared.parse.tree().node(node)) else {
+                continue;
+            };
             if !item_enabled(item.syntax(), &mut self.items.diagnostics) {
                 continue;
             }
@@ -1308,7 +1326,10 @@ impl Collector<'_> {
                     self.collect_trait_type(id, t);
                     continue;
                 }
-                ast::Item::MacroCall(_) => "macros",
+                ast::Item::MacroCall(call) => {
+                    self.collect_assoc_macro(ctx, AssocOwner::Trait(id), call);
+                    continue;
+                }
                 _ => "items like this in traits",
             };
             unsupported(
@@ -1846,7 +1867,7 @@ impl Collector<'_> {
                     continue;
                 }
                 ast::Item::MacroCall(call) => {
-                    self.collect_impl_macro(ctx, id, call, is_trait_impl);
+                    self.collect_assoc_macro(ctx, AssocOwner::Impl(id, is_trait_impl), call);
                     continue;
                 }
                 _ => "items like this in `impl` blocks",
@@ -1859,20 +1880,19 @@ impl Collector<'_> {
         }
     }
 
-    /// Associated items from a macro keep the surrounding impl owner. They
-    /// must not enter the module namespace as ordinary item macros do.
-    fn collect_impl_macro(
-        &mut self,
-        ctx: Ctx,
-        owner: ImplId,
-        call: ast::MacroCall<'_>,
-        is_trait_impl: bool,
-    ) {
+    /// Associated items from a macro keep the surrounding impl or trait
+    /// owner. They must not enter the module namespace as ordinary item
+    /// macros do.
+    fn collect_assoc_macro(&mut self, ctx: Ctx, owner: AssocOwner, call: ast::MacroCall<'_>) {
         check_attrs(call.attrs(), &mut self.items.diagnostics);
+        let (owner_name, position) = match owner {
+            AssocOwner::Impl(..) => ("impls", "non-impl item macro in impl item position"),
+            AssocOwner::Trait(_) => ("traits", "non-trait item macro in trait item position"),
+        };
         if macros::is_macro_rules(call.syntax()) {
             self.items.diagnostics.push(Diagnostic::new(
                 call.syntax().text_range(),
-                "macro definitions are not supported in impls",
+                format!("macro definitions are not supported in {owner_name}"),
             ));
             return;
         }
@@ -1882,7 +1902,7 @@ impl Collector<'_> {
             Ok(macros::Resolved::Local(_)) => unreachable!(),
             Err(error) => {
                 self.pending_items.push(PendingItem {
-                    kind: PendingItemKind::Macro(Some((owner, is_trait_impl))),
+                    kind: PendingItemKind::Macro(Some(owner)),
                     ctx,
                     node: call.syntax().id(),
                     scope: self.macro_scope,
@@ -1900,7 +1920,7 @@ impl Collector<'_> {
         ) {
             self.items.diagnostics.push(Diagnostic::new(
                 call.syntax().text_range(),
-                "non-impl item macro in impl item position: include",
+                format!("{position}: include"),
             ));
             return;
         }
@@ -1969,7 +1989,12 @@ impl Collector<'_> {
                 &mut |call, diagnostics| self.expand_type_call(ctx, call, diagnostics),
             );
             self.items.diagnostics.extend(diagnostics);
-            self.collect_impl_items(ctx, owner, &nodes, is_trait_impl);
+            match owner {
+                AssocOwner::Impl(id, is_trait_impl) => {
+                    self.collect_impl_items(ctx, id, &nodes, is_trait_impl);
+                }
+                AssocOwner::Trait(id) => self.collect_trait_items(ctx, id, &nodes),
+            }
         });
         self.tag(start, file);
         self.expansion_depth -= 1;

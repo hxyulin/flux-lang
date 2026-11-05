@@ -1,0 +1,15 @@
+trait Statement;
+
+trait Nested;
+
+trait Unknown;
+
+fn main() -> () {}
+
+error 47..50: expected an item
+error 53..54: expected `!`
+error 53..54: expected an item
+error 55..56: expected an item
+error 56..57: expected an item
+error 111..124: items like this in traits are not supported yet
+error 228..235: cannot find macro `missing` in this scope
