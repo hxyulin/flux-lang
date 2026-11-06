@@ -8,9 +8,10 @@
 //! out ([`flux_mir::layout`]); so does whatever a pointer points to.
 //! Small Rust aggregates cross calls as one argument per leaf; larger
 //! scalar aggregates use a private by-value snapshot after sixteen leaves. A function returning
-//! two or more leaves returns them through memory the caller provides
-//! (`sret`), laid out as a C struct of the leaves, which keel returns in
-//! registers where the platform allows. Native C signatures instead describe
+//! two or more leaves returns them as keel results when each gets a register
+//! of its own (`abi::register_results`), and otherwise through memory the
+//! caller provides (`sret`), laid out as a C struct of the leaves, which keel
+//! returns in registers where the platform allows. Native C signatures instead describe
 //! aggregates with their physical layout through Keel `ByVal` and `Sret`.
 //!
 //! An enum's leaves are its discriminant, of its `repr` type (`isize`
@@ -4453,13 +4454,17 @@ impl Lower<'_, '_, '_> {
                     self.ctx.typed.sigs[*func].ret,
                     generic_args,
                 );
-                let is_c = items.functions[resolved.function].abi.is_c();
+                // The callee's own convention, as `callee` declared it:
+                // the two Rust ones return different shapes.
+                let convention = if items.functions[resolved.function].abi.is_c() {
+                    Convention::C
+                } else if self.ctx.compilation.is_some() || self.ctx.reified.contains(&resolved) {
+                    Convention::RustReified
+                } else {
+                    Convention::RustFast
+                };
                 self.call_abi(
-                    if is_c {
-                        Convention::C
-                    } else {
-                        Convention::RustReified
-                    },
+                    convention,
                     ret,
                     args,
                     dest,

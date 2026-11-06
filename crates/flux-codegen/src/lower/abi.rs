@@ -74,7 +74,7 @@ impl Convention {
         if self.is_c() {
             c_return_kind(sigs, layouts, ty)
         } else {
-            return_kind(sigs, layouts, ty)
+            return_kind(sigs, layouts, ty, self == Self::RustFast)
         }
     }
 
@@ -108,7 +108,7 @@ impl Convention {
             }
         }
         signature.variadic = variadic;
-        if self == Self::RustFast && signature.returns.len() <= 1 {
+        if self == Self::RustFast {
             signature.cc = CallConv::Fast;
             for param in signature.params.iter_mut().chain(&mut signature.returns) {
                 param.ext = ArgExt::None;
@@ -225,7 +225,7 @@ fn c_return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
             Return::Memory(layout)
         }
     } else {
-        return_kind(sigs, layouts, ret)
+        return_kind(sigs, layouts, ret, false)
     }
 }
 
@@ -406,7 +406,7 @@ pub(super) enum Return {
     Memory(Layout),
 }
 
-fn return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
+fn return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty, fast: bool) -> Return {
     if is_memory(sigs, ret) {
         let layout = layouts.of(ret);
         // Nothing to return (`[T; 0]`): keel has no empty `sret`.
@@ -419,11 +419,46 @@ fn return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
     if leaves.len() <= 1 {
         return Return::Values(leaves.into_iter().filter_map(abi_param).collect());
     }
+    if let Some(returns) = register_results(&leaves, fast) {
+        return Return::Values(returns);
+    }
     let fields = leaves
         .iter()
         .map(|&leaf| Layout::Scalar(keel_type(leaf).expect("leaves are scalars")))
         .collect();
     Return::Sret(Layout::Struct(fields))
+}
+
+/// Several leaves returned as keel results, when the convention gives each
+/// one its own register on both arm64 and x86-64. `cc(fast)` places results
+/// as it places arguments: at most seven integers or pointers (x86-64 has
+/// seven such registers) and eight floats. The C convention, which reified
+/// and separately compiled functions use, returns them where C returns a
+/// struct of the leaves, so it takes two integers or pointers, one of them
+/// 8 bytes so that neither shares a register, or two `f64`. Anything else goes through
+/// `sret`. Results carry no extension, as struct fields have none.
+fn register_results(leaves: &[Ty], fast: bool) -> Option<Vec<AbiParam>> {
+    let types = leaves
+        .iter()
+        .map(|&leaf| keel_type(leaf))
+        .collect::<Option<Vec<_>>>()?;
+    let is_int = |ty: &Type| matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Ptr);
+    let is_float = |ty: &Type| matches!(ty, Type::F32 | Type::F64);
+    let ints = types.iter().filter(|ty| is_int(ty)).count();
+    let floats = types.iter().filter(|ty| is_float(ty)).count();
+    if ints + floats != types.len() {
+        return None;
+    }
+    let fits = if fast {
+        ints <= 7 && floats <= 8
+    } else {
+        match types[..] {
+            [a, b] if ints == 2 => [a, b].iter().any(|ty| matches!(ty, Type::I64 | Type::Ptr)),
+            [Type::F64, Type::F64] => true,
+            _ => false,
+        }
+    };
+    fits.then(|| types.into_iter().map(AbiParam::new).collect())
 }
 
 /// Bound Rust aggregate expansion at call boundaries. In particular, an
