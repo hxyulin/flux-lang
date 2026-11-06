@@ -180,6 +180,30 @@ fn array_length_constants_match_rustc() {
             "struct S;fn main(){let _:[u8;S::N]=[];}",
             false,
         ),
+        // keel's `Cover::ALL`: a field length that names a constant whose
+        // own type has a computed length, resolved in a later round.
+        (
+            "constant_type_length",
+            "#[derive(Clone,Copy)]enum C{A,B}impl C{const ALL:[Self;[\"A\",\"B\"].len()]=[Self::A,Self::B];}struct P{c:[u64;C::ALL.len()]}fn main(){let p=P{c:[1;2]};assert_eq!(p.c.len(),2);}",
+            true,
+        ),
+        (
+            "constant_type_length_chain",
+            "#[derive(Clone,Copy)]enum C{A,B,D}impl C{const ALL:[Self;[\"A\",\"B\",\"D\"].len()]=[Self::A,Self::B,Self::D];}struct M{m:[C;C::ALL.len()+1]}impl M{const ONE:M=M{m:[C::A;4]};}struct T{t:[u8;M::ONE.m.len()*2]}fn main(){let t=T{t:[1;8]};assert_eq!(t.t.len(),8);}",
+            true,
+        ),
+        // keel-opt's pass lists: references to named constants inside a
+        // constant slice, read through when evaluating a length.
+        (
+            "named_constant_references",
+            "const R:[&str;2]=[\"a\",\"b\"];const P:&[&[&str]]=&[&[\"x\"],&R];const fn total(p:&[&[&str]])->usize{let mut t=0;let mut i=0;while i<p.len(){t+=p[i].len();i+=1;}t}fn main(){let a=[0u8;total(P)];assert_eq!(a.len(),3);}",
+            true,
+        ),
+        (
+            "constant_type_unresolved",
+            "const ALL:[Undefined;3]=[1,2,3];struct P{c:[u8;ALL.len()]}fn main(){}",
+            false,
+        ),
     ] {
         if !case_filter::selected(name) {
             continue;

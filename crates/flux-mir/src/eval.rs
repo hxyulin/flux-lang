@@ -880,7 +880,12 @@ impl<'a> Evaluator<'a> {
                     local: crate::Local::from_raw(0),
                     projection: vec![ProjectionElem::Deref].into(),
                 };
-                self.operand(&locals, &[], &Operand::Copy(place), range)?
+                let value = self.operand(&locals, &[], &Operand::Copy(place), range)?;
+                // Read through a projection, with no view to check.
+                if source == Ty::ERROR {
+                    return Ok(value);
+                }
+                value
             }
             _ => return Err(unsupported_view(range)),
         };
@@ -3089,7 +3094,10 @@ impl<'a> Evaluator<'a> {
                         .as_ref()
                         .ok_or_else(|| error(range, "use of an uninitialized value".into()))?;
                     let mut reader = |pointer: &Value, source, target, range| {
-                        if matches!(pointer, Value::LocalRef { .. }) {
+                        if matches!(
+                            pointer,
+                            Value::LocalRef { .. } | Value::Static(_) | Value::StaticPart { .. }
+                        ) {
                             self.pointer_value(pointer, source, target, range)
                         } else {
                             Err(unsupported_view(range))
@@ -3682,6 +3690,20 @@ fn project_with_reader(
                     local: Some(*local),
                 };
                 let viewed = reader(reference, Ty::ERROR, Ty::ERROR, range)?;
+                return project_with_reader(
+                    locals,
+                    &viewed,
+                    &projection[k + 1..],
+                    range,
+                    origin,
+                    reader,
+                );
+            }
+            // A reference to a named constant stored in another
+            // constant's value (`&[&ROUND]`): its value is read.
+            (ProjectionElem::Deref, pointer @ (Value::Static(_) | Value::StaticPart { .. })) => {
+                *origin = BorrowOrigin::default();
+                let viewed = reader(pointer, Ty::ERROR, Ty::ERROR, range)?;
                 return project_with_reader(
                     locals,
                     &viewed,
