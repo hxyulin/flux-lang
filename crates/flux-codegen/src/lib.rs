@@ -260,6 +260,8 @@ pub fn link_objects(
                 keel_link::Options {
                     dylibs,
                     sdk_version,
+                    // Functions nothing reaches are removed one by one.
+                    dead_strip: true,
                     ..defaults
                 },
             )
