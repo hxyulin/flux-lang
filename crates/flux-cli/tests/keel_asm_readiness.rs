@@ -105,18 +105,19 @@ fn keel_asm_worker() {
         "hashbrown",
         "indexmap",
         "object",
+        "keel_util",
         "keel_asm",
         "consumer",
     ];
     let versions = [
         "3.20.3", "1.16.3", "0.1.0", "2.8.3", "1.0.5", "1.5.3", "0.1.5", "0.15.5", "1.0.3",
-        "0.17.1", "2.14.2", "0.36.7", "0.1.0",
+        "0.17.1", "2.14.2", "0.36.7", "0.1.0", "0.1.0",
     ];
     let edition_names = [
         "2021", "2018", "2024", "2021", "2018", "2021", "2021", "2021", "2015", "2024", "2024",
-        "2018", "2024",
+        "2018", "2024", "2024",
     ];
-    let expected_features: [&[&str]; 13] = [
+    let expected_features: [&[&str]; 14] = [
         &["collections", "default"],
         &[],
         &[],
@@ -144,8 +145,9 @@ fn keel_asm_worker() {
             "xcoff",
         ],
         &[],
+        &[],
     ];
-    let dependencies: [&[usize]; 14] = [
+    let dependencies: [&[usize]; 15] = [
         &[],
         &[],
         &[1],
@@ -158,10 +160,11 @@ fn keel_asm_worker() {
         &[],
         &[8, 9],
         &[5, 7, 10, 3],
-        &[0, 2, 3, 11, 1],
-        &[12, 11],
+        &[],
+        &[0, 2, 3, 11, 12, 1],
+        &[13, 11],
     ];
-    let packages: Vec<_> = (0..13)
+    let packages: Vec<_> = (0..14)
         .map(|index| {
             metadata["packages"]
                 .as_array()
@@ -177,11 +180,11 @@ fn keel_asm_worker() {
     let mut roots = Vec::new();
     let mut editions = Vec::new();
     let mut features: Vec<Vec<String>> = Vec::new();
-    let mut cfgs: Vec<Vec<String>> = vec![vec![]; 14];
+    let mut cfgs: Vec<Vec<String>> = vec![vec![]; 15];
     let mut config = Vec::new();
     let mut originals = Vec::new();
     let mut scripts = Vec::new();
-    for index in 0..13 {
+    for index in 0..14 {
         let package = packages[index];
         let manifest = PathBuf::from(package["manifest_path"].as_str().unwrap());
         originals.push((manifest.clone(), std::fs::read(&manifest).unwrap()));
@@ -239,10 +242,10 @@ fn keel_asm_worker() {
         actual.sort();
         expected.sort();
         assert_eq!(actual, expected, "normal edges for {}", package["id"]);
-        if index == 2 || index == 12 {
+        if index == 2 || index == 12 || index == 13 {
             assert_eq!(
                 package["source"],
-                "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+                "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
             );
             let workspace = manifest.ancestors().nth(3).unwrap().join("Cargo.toml");
             originals.push((workspace.clone(), std::fs::read(workspace).unwrap()));
@@ -389,8 +392,8 @@ fn keel_asm_worker() {
         std::fs::create_dir_all(&oracle).unwrap();
         let mut libraries: Vec<PathBuf> = Vec::new();
         phase(&root, "rustc-reference");
-        for index in 0..14 {
-            let output = if index < 13 {
+        for index in 0..15 {
+            let output = if index < 14 {
                 oracle.join(format!("lib{}_{index}.rlib", names[index]))
             } else {
                 oracle.join("reference")
@@ -416,7 +419,7 @@ fn keel_asm_worker() {
                 .arg(&oracle)
                 .arg("-o")
                 .arg(&output);
-            if index < 13 {
+            if index < 14 {
                 command.arg("--crate-type=rlib");
             }
             command.args(["-C", &format!("metadata=keel_asm_readiness_{index}")]);
@@ -436,7 +439,7 @@ fn keel_asm_worker() {
             libraries.push(output);
         }
         let expected = bounded(
-            &mut Command::new(&libraries[13]),
+            &mut Command::new(&libraries[14]),
             &root,
             "run-reference",
             60,

@@ -180,11 +180,11 @@ fn native_slice_ownership_contention_and_last_owner_visibility() {
                         ..
                     } => release_sub = true,
                     keel_ir::InstData::AtomicCas {
-                        ordering: keel_ir::Ordering::Acquire,
+                        success: keel_ir::Ordering::Acquire,
                         ..
                     } => acquire_cas = true,
                     keel_ir::InstData::AtomicCas {
-                        ordering: keel_ir::Ordering::Relaxed,
+                        success: keel_ir::Ordering::Relaxed,
                         ..
                     } => relaxed_cas = true,
                     keel_ir::InstData::Fence {

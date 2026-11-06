@@ -4401,7 +4401,14 @@ impl Lower<'_, '_, '_> {
                         "cas" => Some(
                             self.b
                                 .ins()
-                                .atomic_cas(ordering, values[0], values[1], values[2]),
+                                .atomic_cas(
+                                    ordering,
+                                    ordering.cas_failure(),
+                                    values[0],
+                                    values[1],
+                                    values[2],
+                                )
+                                .0,
                         ),
                         "fence" => {
                             self.b.ins().fence(ordering);

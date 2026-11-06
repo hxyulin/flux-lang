@@ -5,7 +5,7 @@
   <a href="Cargo.toml"><img alt="Rust edition 2024" src="https://img.shields.io/badge/edition-2024-dea584"></a>
   <a href="docs/SELF_HOSTING.md"><img alt="Target arm64 macOS" src="https://img.shields.io/badge/target-arm64%20macOS-lightgrey?logo=apple"></a>
   <a href="docs/SELF_HOSTING.md"><img alt="Target x86-64 Linux" src="https://img.shields.io/badge/target-x86--64%20Linux-lightgrey?logo=linux"></a>
-  <a href="https://github.com/hxyulin/keel/commit/a078986ccddb1394db73b42843b282f271807ae4"><img alt="Keel a078986c" src="https://img.shields.io/badge/Keel-a078986c-6e56cf"></a>
+  <a href="https://github.com/hxyulin/keel/commit/f503b7263f5ea2d85367a4e986027fea8ab9ce20"><img alt="Keel f503b726" src="https://img.shields.io/badge/Keel-f503b726-6e56cf"></a>
   <a href="#size"><img alt="About 520k lines of compiler source" src="https://img.shields.io/badge/source-~520k%20lines-informational"></a>
   <a href="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="#license"><img alt="MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>

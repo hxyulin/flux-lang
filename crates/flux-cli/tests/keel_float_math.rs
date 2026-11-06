@@ -55,7 +55,7 @@ fn unchanged_keel_float_folding_matches_rustc_default_environment() {
         package["source"]
             .as_str()
             .unwrap()
-            .ends_with("#a078986ccddb1394db73b42843b282f271807ae4")
+            .ends_with("#f503b7263f5ea2d85367a4e986027fea8ab9ce20")
     );
     let opt = packages.iter().find(|p| p["name"] == "keel-opt").unwrap();
     let fp = PathBuf::from(opt["manifest_path"].as_str().unwrap())

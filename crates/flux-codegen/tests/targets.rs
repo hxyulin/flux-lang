@@ -221,7 +221,7 @@ fn native_link_options(dead_strip: bool) -> keel_link::Options {
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[test]
-fn user_library_keeps_unused_exports_in_its_live_text_section() {
+fn dead_strip_removes_unused_exports_from_a_live_text_section() {
     use flux_codegen::{Compilation, OutputKind};
     use flux_intern::Symbol;
     let (mut db, _, mut library) = flux_hir::lower_text_bare(
@@ -312,18 +312,23 @@ fn user_library_keeps_unused_exports_in_its_live_text_section() {
         let mut sizes = Vec::new();
         for dead_strip in [false, true] {
             let executable = keel_link::link(&inputs, native_link_options(dead_strip)).unwrap();
-            assert!(
+            // Keel strips atom by atom, so the unreachable export goes even
+            // though it shares the live library text section.
+            assert_eq!(
                 executable
                     .bytes
                     .windows(dead.len())
                     .any(|bytes| bytes == dead.as_bytes()),
-                "the unreachable exported function shares the live library text section"
+                !dead_strip,
+                "the unreachable exported function is kept only without dead strip"
             );
             sizes.push(executable.bytes.len());
         }
-        eprintln!(
-            "user library {tier:?}, dead_strip off/on executable bytes: {sizes:?}; unreachable emitted exports: 1/1; private dead definitions: 0/0"
+        assert!(
+            sizes[1] < sizes[0],
+            "dead strip shrinks the executable: {sizes:?}"
         );
+        eprintln!("user library {tier:?}, dead_strip off/on executable bytes: {sizes:?}");
     }
 }
 

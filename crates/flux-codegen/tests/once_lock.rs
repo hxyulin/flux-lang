@@ -124,7 +124,7 @@ fn native_contention_and_publication() {
                         ..
                     } => load = true,
                     InstData::AtomicCas {
-                        ordering: Ordering::Acquire,
+                        success: Ordering::Acquire,
                         ..
                     } => cas = true,
                     InstData::AtomicStore {

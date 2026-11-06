@@ -54,10 +54,10 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
                             *ordering,
                         ));
                     }
-                    InstData::AtomicCas { args, ordering, .. } => {
+                    InstData::AtomicCas { args, success, .. } => {
                         assert_eq!(function.value_type(args[1]), Type::I64);
                         assert_eq!(function.value_type(args[2]), Type::I64);
-                        operations.push(("cas", *ordering));
+                        operations.push(("cas", *success));
                     }
                     InstData::Fence { ordering } => operations.push(("fence", *ordering)),
                     _ => {}

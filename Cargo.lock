@@ -53,14 +53,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bbtree"
-version = "0.1.5"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
-dependencies = [
- "vstd",
-]
-
-[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -118,7 +110,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn",
 ]
 
 [[package]]
@@ -147,12 +139,6 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
-
-[[package]]
-name = "convert_case"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
 name = "cpufeatures"
@@ -426,10 +412,11 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 [[package]]
 name = "keel-asm"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 dependencies = [
  "bumpalo",
  "keel-asm-ir",
+ "keel-util",
  "memchr",
  "object",
  "smallvec",
@@ -438,7 +425,7 @@ dependencies = [
 [[package]]
 name = "keel-asm-ir"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 dependencies = [
  "smallvec",
 ]
@@ -446,18 +433,19 @@ dependencies = [
 [[package]]
 name = "keel-codegen"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 dependencies = [
  "keel-asm",
  "keel-asm-ir",
  "keel-ir",
+ "keel-util",
  "profiling",
 ]
 
 [[package]]
 name = "keel-frontend"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 dependencies = [
  "keel-ir",
  "smallvec",
@@ -466,7 +454,7 @@ dependencies = [
 [[package]]
 name = "keel-ir"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 dependencies = [
  "keel-asm-ir",
 ]
@@ -474,9 +462,10 @@ dependencies = [
 [[package]]
 name = "keel-link"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 dependencies = [
- "bbtree",
+ "keel-asm-ir",
+ "keel-util",
  "object",
  "serde",
  "serde_yaml",
@@ -486,11 +475,16 @@ dependencies = [
 [[package]]
 name = "keel-opt"
 version = "0.1.0"
-source = "git+https://github.com/hxyulin/keel?rev=a078986ccddb1394db73b42843b282f271807ae4#a078986ccddb1394db73b42843b282f271807ae4"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 dependencies = [
  "keel-ir",
  "profiling",
 ]
+
+[[package]]
+name = "keel-util"
+version = "0.1.0"
+source = "git+https://github.com/hxyulin/keel?rev=f503b7263f5ea2d85367a4e986027fea8ab9ce20#f503b7263f5ea2d85367a4e986027fea8ab9ce20"
 
 [[package]]
 name = "libc"
@@ -603,7 +597,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn",
 ]
 
 [[package]]
@@ -666,17 +660,6 @@ checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "syn"
-version = "2.0.119"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
-
-[[package]]
-name = "syn"
 version = "3.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d78c8dee4c7bf0e14673097256fed6142ce9d3b85a408189d07482442145823b"
@@ -684,17 +667,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
-]
-
-[[package]]
-name = "synstructure"
-version = "0.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -714,7 +686,7 @@ checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.9",
+ "syn",
 ]
 
 [[package]]
@@ -795,71 +767,6 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "verus_builtin"
-version = "0.0.0-2026-08-30-0159"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "300d269a2e06dbe54cb53084464065912ad7accbb52ae8d6c8aa7a6c521974c5"
-
-[[package]]
-name = "verus_builtin_macros"
-version = "0.0.0-2026-08-30-0159"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc040bfded82e79a708c1819c52b386ee23c0c823239334f39ced152bbdf3624"
-dependencies = [
- "convert_case",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "synstructure",
- "verus_prettyplease",
- "verus_syn",
-]
-
-[[package]]
-name = "verus_prettyplease"
-version = "0.0.0-2026-08-09-0044"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51fc115de5fb3806bc362060bb683024660ed2bc13c1183d1f01d464e4537139"
-dependencies = [
- "proc-macro2",
- "verus_syn",
-]
-
-[[package]]
-name = "verus_state_machines_macros"
-version = "0.0.0-2026-08-02-0125"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93f77ff8d121edb1bf2651335769a80a2f611da8573c3b498434a66b3162805f"
-dependencies = [
- "indexmap",
- "proc-macro2",
- "quote",
- "verus_syn",
-]
-
-[[package]]
-name = "verus_syn"
-version = "0.0.0-2026-08-02-0125"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f17237ea6d267e457d53ce36f55b315fc9edd26eb88c765dd95e035c0b415869"
-dependencies = [
- "proc-macro2",
- "quote",
- "unicode-ident",
-]
-
-[[package]]
-name = "vstd"
-version = "0.0.0-2026-08-30-0159"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7169790c92857fa9441c8ba7e0c469f4fc62104caf1dfc632c318577a1a08d7a"
-dependencies = [
- "verus_builtin",
- "verus_builtin_macros",
- "verus_state_machines_macros",
-]
 
 [[package]]
 name = "windows-link"

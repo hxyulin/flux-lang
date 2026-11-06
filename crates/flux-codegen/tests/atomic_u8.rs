@@ -34,10 +34,10 @@ fn byte_cas_keeps_native_byte_access_and_ordering() {
         let mut orders = Vec::new();
         for function in atomic_support::named_functions(&module, "AtomicU8") {
             for (_, inst) in function.layout_insts() {
-                if let InstData::AtomicCas { ordering, args } = function.inst_data(inst) {
+                if let InstData::AtomicCas { success, args, .. } = function.inst_data(inst) {
                     assert_eq!(function.value_type(args[1]), Type::I8);
                     assert_eq!(function.value_type(args[2]), Type::I8);
-                    orders.push(*ordering);
+                    orders.push(*success);
                 }
             }
         }
