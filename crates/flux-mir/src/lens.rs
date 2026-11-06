@@ -121,9 +121,30 @@ fn eval_lens_from(
             Some(imported) => evaluator.with_provider(imported),
             None => evaluator,
         };
+        // A constant with error types and no diagnostics of its own names
+        // an item whose type waits for another length here
+        // (`[u64; C::ALL.len()]` with `ALL: [C; [A, B].len()]`). It is left
+        // out while others are evaluated, so the signatures are resolved
+        // again with their values; alone, it fails as rustc's would.
+        let stale: Vec<ConstId> = (pending.iter().copied())
+            .filter(|&c| {
+                typed.consts.get(c).is_some_and(|r| {
+                    r.diagnostics.is_empty()
+                        && r.missing_lens.is_empty()
+                        && r.expr_types.iter().any(|(_, t)| t.has_error())
+                })
+            })
+            .collect();
+        let defer = stale.len() < pending.len();
         let mut waiting = Vec::new();
         let mut progress = false;
         for &c in &pending {
+            if stale.contains(&c) {
+                if !defer {
+                    done.push((c, None));
+                }
+                continue;
+            }
             let missing = typed.consts.get(c).map_or(&[][..], |r| &r.missing_lens[..]);
             if !missing.is_empty() {
                 for &m in missing {

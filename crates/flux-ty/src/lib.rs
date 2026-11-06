@@ -676,7 +676,7 @@ fn literal_values<'b>(
 
 /// Resolves the signatures of `items`, evaluating with `eval` the
 /// constants their array lengths name, if any: then they are resolved
-/// twice, the first time to type-check the constants.
+/// again after each round of evaluation, until no length is missing.
 fn lens_signatures(hir: &Hir, all: bool, eval: LenEvaluator<'_>) -> (Signatures, Vec<Diagnostic>) {
     lens_signatures_from(hir, all, eval, None)
 }
@@ -701,28 +701,39 @@ fn lens_signatures_from(
         Some(loaded) => loaded.extend_source_signatures(items, Some(lens)),
         None => signatures_checked(items, all, Some(lens)),
     };
-    let lens = ArrayLens::new(&known, &arg_tys);
-    let (mut sigs, diagnostics) = resolve(&lens);
-    let missing = lens.missing.into_inner();
-    let new_tys = lens.new_arg_tys.into_inner();
-    if missing.is_empty() && new_tys.is_empty() {
-        sigs.array_lens = known;
-        return (sigs, diagnostics);
+    let mut failures = Vec::new();
+    loop {
+        let lens = ArrayLens::new(&known, &arg_tys);
+        let (mut sigs, mut diagnostics) = resolve(&lens);
+        let missing = lens.missing.into_inner();
+        let new_tys = lens.new_arg_tys.into_inner();
+        if missing.is_empty() && new_tys.is_empty() {
+            sigs.array_lens = known;
+            sigs.arg_tys = arg_tys;
+            diagnostics.append(&mut failures);
+            return (sigs, diagnostics);
+        }
+        arg_tys.extend(new_tys);
+        for (&konst, &ty) in &arg_tys {
+            sigs.consts.insert(konst, ty);
+        }
+        sigs.arg_tys = arg_tys.clone();
+        sigs.array_lens = known.clone();
+        // The evaluator leaves out a length whose constant names an item
+        // whose type waits for another length in `missing`
+        // (`[u64; C::ALL.len()]` with `ALL: [C; [A, B].len()]`): it is
+        // missing again once the signatures are resolved with that length.
+        let (values, mut round) = eval(hir, &sigs, &missing);
+        failures.append(&mut round);
+        let before = known.len();
+        known.extend(values);
+        if known.len() == before {
+            // No length was evaluated: what is left waits on itself.
+            for konst in missing {
+                known.entry(konst).or_insert(None);
+            }
+        }
     }
-    arg_tys.extend(new_tys);
-    for (&konst, &ty) in &arg_tys {
-        sigs.consts.insert(konst, ty);
-    }
-    sigs.arg_tys = arg_tys.clone();
-    sigs.array_lens = known.clone();
-    let (values, mut failures) = eval(hir, &sigs, &missing);
-    known.extend(values);
-    let lens = ArrayLens::new(&known, &arg_tys);
-    let (mut sigs, mut diagnostics) = resolve(&lens);
-    sigs.array_lens = known;
-    sigs.arg_tys = arg_tys;
-    diagnostics.append(&mut failures);
-    (sigs, diagnostics)
 }
 
 /// The embedded core, alloc and std destructors, which implicit drop glue
@@ -958,6 +969,11 @@ fn check(
     if !missing.is_empty() || !new_tys.is_empty() {
         let (values, failures) = eval(hir, &sigs, &missing);
         sigs.array_lens.extend(values);
+        // Signatures are not resolved again here, so a length the
+        // evaluator left out for that fails.
+        for &konst in &missing {
+            sigs.array_lens.entry(konst).or_insert(None);
+        }
         diagnostics.extend(failures);
         let redo: Vec<ConstId> = consts
             .iter()
