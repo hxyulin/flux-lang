@@ -21,6 +21,8 @@ impl<T, S> HashSet<T, S> {
     pub fn reserve(&mut self, additional: usize) { self.map.reserve(additional); }
     pub fn iter(&self) -> Iter<'_, T> { Iter { inner: self.map.keys() } }
     pub fn retain<F: FnMut(&T) -> bool>(&mut self, mut f: F) { self.map.retain(|key, _| f(key)); }
+    /// Removes every element, keeping the capacity, and yields them.
+    pub fn drain(&mut self) -> Drain<'_, T> { Drain { inner: self.map.drain() } }
 }
 impl<T, S: Default> Default for HashSet<T, S> {
     fn default() -> Self { Self::with_hasher(S::default()) }
@@ -66,6 +68,14 @@ impl<'a, T> Iterator for Iter<'a, T> {
 }
 impl<T> ExactSizeIterator for Iter<'_, T> {}
 impl<T> FusedIterator for Iter<'_, T> {}
+pub struct Drain<'a, T> { inner: hash_map::Drain<'a, T, ()> }
+impl<T> Iterator for Drain<'_, T> {
+    type Item = T;
+    fn next(&mut self) -> Option<T> { self.inner.next().map(|(key, _)| key) }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<T> ExactSizeIterator for Drain<'_, T> {}
+impl<T> FusedIterator for Drain<'_, T> {}
 pub struct IntoIter<T> { inner: hash_map::IntoIter<T, ()> }
 impl<T> Iterator for IntoIter<T> {
     type Item = T;

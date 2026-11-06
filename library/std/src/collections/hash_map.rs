@@ -98,6 +98,20 @@ impl<K, V, S> HashMap<K, V, S> {
             inner: self.into_iter(),
         }
     }
+    /// Removes every entry, keeping the capacity, and yields them.
+    pub fn drain(&mut self) -> Drain<'_, K, V> {
+        let empty = (0..self.buckets.len()).map(|_| Bucket::Empty).collect();
+        let buckets = core::mem::replace(&mut self.buckets, empty);
+        let remaining = core::mem::replace(&mut self.len, 0);
+        self.deleted = 0;
+        Drain {
+            inner: IntoIter {
+                inner: buckets.into_iter(),
+                remaining,
+            },
+            map: core::marker::PhantomData,
+        }
+    }
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&mut self, mut keep: F) {
         for bucket in &mut self.buckets {
             let remove = match bucket {
@@ -540,6 +554,21 @@ impl<'a, K, V> Iterator for ValuesMut<'a, K, V> {
 }
 impl<K, V> ExactSizeIterator for ValuesMut<'_, K, V> {}
 impl<K, V> FusedIterator for ValuesMut<'_, K, V> {}
+pub struct Drain<'a, K, V> {
+    inner: IntoIter<K, V>,
+    map: core::marker::PhantomData<&'a mut HashMap<K, V>>,
+}
+impl<K, V> Iterator for Drain<'_, K, V> {
+    type Item = (K, V);
+    fn next(&mut self) -> Option<(K, V)> {
+        self.inner.next()
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+impl<K, V> ExactSizeIterator for Drain<'_, K, V> {}
+impl<K, V> FusedIterator for Drain<'_, K, V> {}
 pub struct IntoKeys<K, V> {
     inner: IntoIter<K, V>,
 }

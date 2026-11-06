@@ -75,6 +75,8 @@ impl<K, V> BTreeMap<K, V> {
     /// Removes every entry before dropping its former storage.
     pub fn clear(&mut self) { drop(core::mem::replace(self, Self::new())); }
 
+    pub fn into_keys(self) -> IntoKeys<K, V> { IntoKeys { inner: self.into_iter() } }
+
     pub fn into_values(self) -> IntoValues<K, V> { IntoValues { inner: self.into_iter() } }
 
     pub fn iter(&self) -> Iter<'_, K, V> {
@@ -365,6 +367,18 @@ impl<K, V> core::iter::DoubleEndedIterator for IntoIter<K, V> {
 }
 impl<K, V> core::iter::ExactSizeIterator for IntoIter<K, V> {}
 impl<K, V> core::iter::FusedIterator for IntoIter<K, V> {}
+
+pub struct IntoKeys<K, V> { inner: IntoIter<K, V> }
+impl<K, V> Iterator for IntoKeys<K, V> {
+    type Item = K;
+    fn next(&mut self) -> Option<K> { self.inner.next().map(|(key, _)| key) }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<K, V> core::iter::DoubleEndedIterator for IntoKeys<K, V> {
+    fn next_back(&mut self) -> Option<K> { self.inner.next_back().map(|(key, _)| key) }
+}
+impl<K, V> core::iter::ExactSizeIterator for IntoKeys<K, V> {}
+impl<K, V> core::iter::FusedIterator for IntoKeys<K, V> {}
 
 pub struct IntoValues<K, V> { inner: IntoIter<K, V> }
 impl<K, V> Iterator for IntoValues<K, V> {

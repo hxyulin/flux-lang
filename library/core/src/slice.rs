@@ -1990,3 +1990,26 @@ impl<'a, T, P: FnMut(&T, &T) -> bool> DoubleEndedIterator for ChunkBy<'a, T, P> 
     }
 }
 impl<T, P: FnMut(&T, &T) -> bool> crate::iter::FusedIterator for ChunkBy<'_, T, P> {}
+
+impl<T, const N: usize> [[T; N]] {
+    /// The elements of the arrays, in order, as one slice.
+    pub const fn as_flattened(&self) -> &[T] {
+        let len = match self.len().checked_mul(N) {
+            Some(len) => len,
+            None => panic("slice len overflow"),
+        };
+        // SAFETY: `[T; N]` has no padding between elements, so the arrays
+        // are `len` contiguous `T`s borrowed for as long as `self`.
+        unsafe { from_raw_parts(self.as_ptr() as *const T, len) }
+    }
+
+    /// The elements of the arrays, in order, as one mutable slice.
+    pub const fn as_flattened_mut(&mut self) -> &mut [T] {
+        let len = match self.len().checked_mul(N) {
+            Some(len) => len,
+            None => panic("slice len overflow"),
+        };
+        // SAFETY: as in `as_flattened`, with the unique borrow of `self`.
+        unsafe { from_raw_parts_mut(self.as_mut_ptr() as *mut T, len) }
+    }
+}
