@@ -99,6 +99,16 @@ impl CrateIndices {
         }
         loop {
             let old = files.len();
+            // Several item expansions can share one source file. The source
+            // records retain every expansion, including ones with only imports.
+            for (&file, source) in &items.files {
+                if source
+                    .expansion_of
+                    .is_some_and(|parent| files.contains(&parent.0))
+                {
+                    files.insert(file.0);
+                }
+            }
             for (&from, &to) in &items.expansion_files {
                 if files.contains(&from.0) {
                     files.insert(to.0);

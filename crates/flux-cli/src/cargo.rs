@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::build::{self, CompileRequest, SourceInput};
 
-mod native;
+pub(crate) mod native;
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Command {
@@ -24,11 +24,11 @@ pub(crate) enum Command {
     GenerateLockfile(native::ResolveOptions),
     /// Prepare build scripts and host proc-macro artifacts.
     Prepare(Options),
-    /// Prepare inputs, then compile a supported binary's source graph with Flux.
+    /// Build selected workspace libraries and binaries with Flux.
     Build {
         #[command(flatten)]
         options: Options,
-        #[arg(short = 'O')]
+        #[arg(short = 'r', long = "release", short_alias = 'O')]
         optimize: bool,
         /// Print host preparation and compilation timings.
         #[arg(long)]
@@ -42,8 +42,14 @@ pub(crate) struct Options {
     manifest_path: PathBuf,
     #[arg(short = 'p', long)]
     package: Option<String>,
+    #[arg(long, conflicts_with = "package")]
+    workspace: bool,
     #[arg(long)]
     bin: Option<String>,
+    #[arg(long)]
+    lib: bool,
+    #[arg(long)]
+    bins: bool,
     #[arg(long, value_delimiter = ',')]
     features: Vec<String>,
     #[arg(long)]
@@ -51,11 +57,14 @@ pub(crate) struct Options {
     #[arg(long)]
     offline: bool,
     /// Select the compiler used for procedural macro hosts.
-    #[arg(long, value_enum, default_value_t = crate::package::MacroHostCompiler::Rustc)]
+    #[arg(long, value_enum, default_value_t = crate::package::MacroHostCompiler::Flux, default_value_if("cargo", "true", Some("rustc")))]
     pub(crate) macro_host_compiler: crate::package::MacroHostCompiler,
     /// Use Cargo for host preparation instead of the native package pipeline.
     #[arg(long)]
     pub(crate) cargo: bool,
+    /// Maximum number of concurrent crate compilations.
+    #[arg(short = 'j', long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub(crate) jobs: Option<u32>,
     /// Write a versioned plan here (default: target/flux/{native,cargo}-plan.json).
     #[arg(long)]
     plan: Option<PathBuf>,
@@ -214,16 +223,25 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         };
         return native::prepare(options, build);
     }
+    if options.workspace || options.lib || options.bins {
+        return Err(
+            "workspace and library target selection require native builds; remove --cargo".into(),
+        );
+    }
     if matches!(
         options.macro_host_compiler,
         crate::package::MacroHostCompiler::Flux
     ) {
         return Err("flux macro hosts require native preparation; remove --cargo".into());
     }
-    let rustc = output(
-        Process::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())).arg("-vV"),
-        "rustc version",
-    )?;
+    let timed = matches!(command, Command::Build { timings: true, .. });
+    let mut preparation = build::Timings::new(timed, "Cargo preparation elapsed");
+    let rustc = preparation.time("rustc version", || {
+        output(
+            Process::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into())).arg("-vV"),
+            "rustc version",
+        )
+    })?;
     let host = rustc
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
@@ -231,8 +249,10 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         .to_owned();
     let mut metadata = base(options, "metadata");
     metadata.args(["--filter-platform", &host, "--format-version", "1"]);
-    let metadata: Metadata = serde_json::from_str(&output(&mut metadata, "Cargo metadata")?)
-        .map_err(|e| format!("invalid Cargo metadata: {e}"))?;
+    let metadata: Metadata = preparation.time("Cargo metadata", || {
+        serde_json::from_str(&output(&mut metadata, "Cargo metadata")?)
+            .map_err(|e| format!("invalid Cargo metadata: {e}"))
+    })?;
     let package = select_package(options, &metadata)?;
     let target = select_binary(options, package)?;
     let mut check = base(options, "check");
@@ -245,7 +265,9 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         &host,
         "--message-format=json",
     ]);
-    let messages = output(&mut check, "Cargo host preparation")?;
+    let messages = preparation.time("Cargo host preparation", || {
+        output(&mut check, "Cargo host preparation")
+    })?;
     let HostInputs {
         scripts,
         artifacts,
@@ -262,15 +284,17 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     };
     let mut visited = BTreeMap::new();
     let mut active = BTreeSet::new();
-    visit(
-        &package.id,
-        target,
-        &metadata,
-        &artifacts,
-        &mut plan,
-        &mut visited,
-        &mut active,
-    )?;
+    preparation.time("source graph planning", || {
+        visit(
+            &package.id,
+            target,
+            &metadata,
+            &artifacts,
+            &mut plan,
+            &mut visited,
+            &mut active,
+        )
+    })?;
     let path = options
         .plan
         .clone()
@@ -304,6 +328,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     }
     let mut sources = Vec::new();
     let mut hosts = BTreeMap::new();
+    let mut macro_server = None;
     for host in &plan.host_proc_macros {
         if !plan.sources.iter().any(|source| {
             source
@@ -321,8 +346,19 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         host_cfg
             .names
             .push(flux_intern::Symbol::intern("proc_macro"));
-        let exports =
-            crate::proc_macro::exports(&plan.rustc, &host.artifact, &host.source, host_cfg)?;
+        if macro_server.is_none() {
+            macro_server = Some(preparation.time("proc-macro server discovery", || {
+                crate::proc_macro::rustc_server(&plan.rustc)
+            })?);
+        }
+        let exports = preparation.time("proc-macro exports", || {
+            crate::proc_macro::exports_from_server(
+                macro_server.as_deref().expect("discovered macro server"),
+                &host.artifact,
+                &host.source,
+                host_cfg,
+            )
+        })?;
         hosts.insert(host.package_id.as_str(), sources.len());
         sources.push(SourceInput {
             compilation_dir: None,
@@ -396,9 +432,16 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         )?;
     }
     let main = sources.last().ok_or("empty Cargo source graph")?;
-    let executable = metadata.target_directory.join("flux").join(&target.name);
+    let executable = metadata
+        .target_directory
+        .join("flux")
+        .join(if *optimize { "release" } else { "debug" })
+        .join(&target.name);
     std::fs::create_dir_all(executable.parent().expect("target output has a parent"))
         .map_err(|e| format!("cannot create executable directory: {e}"))?;
+    let debug_assertions =
+        profile_debug_assertions(&metadata.workspace_root.join("Cargo.toml"), *optimize)?;
+    drop(preparation);
     let ok = build::compile(CompileRequest {
         file: &main.file,
         crate_name: &main.name,
@@ -407,10 +450,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         options: crate::BuildOptions {
             optimize: *optimize,
             timings: *timings,
-            debug_assertions: Some(profile_debug_assertions(
-                &metadata.workspace_root.join("Cargo.toml"),
-                *optimize,
-            )?),
+            debug_assertions: Some(debug_assertions),
         },
         native,
     })?;

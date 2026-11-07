@@ -184,7 +184,7 @@ fn registry_fetch_offline_reuse_and_cargo_free_build() {
         .completed();
         success(&built, "build newly fetched dependency");
         let output = support::process::run(
-            &mut Command::new(f.0.join("target/flux/app")),
+            &mut Command::new(f.0.join("target/flux/debug/app")),
             &f.0,
             "native-run",
             Duration::from_secs(10),

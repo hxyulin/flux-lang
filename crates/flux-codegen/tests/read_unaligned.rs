@@ -15,11 +15,12 @@ fn scalar_load_has_no_alignment_or_fault_freedom_promise() {
         ("u16", keel_ir::Type::I16),
         ("u32", keel_ir::Type::I32),
         ("u64", keel_ir::Type::I64),
+        ("u128", keel_ir::Type::I128),
         ("usize", keel_ir::Type::I64),
     ] {
         let text = format!(
             "unsafe fn get(p: *const {rust_ty}) -> {rust_ty} {{ unsafe {{ p.read_unaligned() }} }}
-             fn main() {{ let bytes = [1u8, 2, 3, 4, 5, 6, 7, 8, 9];
+             fn main() {{ let bytes = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
              let f: unsafe fn(*const {rust_ty}) -> {rust_ty} = get;
              println!(\"{{}}\", unsafe {{ f(bytes.as_ptr().add(1).cast::<{rust_ty}>()) }}); }}"
         );
@@ -68,9 +69,9 @@ fn unsupported_substitutions_are_rejected_in_generic_wrappers() {
         let (hir, typed, mir) = front_end(&text);
         let errors = flux_codegen::lower_module(&hir, &typed, &mir).unwrap_err();
         assert!(
-            errors.iter().any(
-                |d| d.message == "read_unaligned supports only u8, u16, u32, u64 and usize yet"
-            ),
+            errors
+                .iter()
+                .any(|d| d.message == "read_unaligned supports only unsigned integers yet"),
             "{ty}: {errors:?}"
         );
     }

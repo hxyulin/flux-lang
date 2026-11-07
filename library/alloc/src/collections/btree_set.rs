@@ -19,6 +19,13 @@ impl<T> BTreeSet<T> {
     }
 }
 impl<T: Ord> BTreeSet<T> {
+    /// Borrows the smallest element without removing it.
+    pub fn first(&self) -> Option<&T> { self.map.first_key_value().map(|(key, _)| key) }
+    /// Whether the sets have no elements in common.
+    pub fn is_disjoint(&self, other: &Self) -> bool {
+        let (small, large) = if self.len() <= other.len() { (self, other) } else { (other, self) };
+        small.iter().all(|value| !large.contains(value))
+    }
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
     where T: Borrow<Q>, Q: Ord { self.map.remove(value).is_some() }
     pub fn pop_first(&mut self) -> Option<T> { self.map.pop_first().map(|(key, _)| key) }

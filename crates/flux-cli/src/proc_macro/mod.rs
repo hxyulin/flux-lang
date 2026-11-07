@@ -64,6 +64,12 @@ pub fn exports(
     source: &Path,
     cfg: flux_hir::CrateCfg,
 ) -> Result<Vec<ProcMacro>, String> {
+    let server = rustc_server(rustc)?;
+    exports_from_server(&server, dylib, source, cfg)
+}
+
+/// Discover once for the matching toolchain, then share across one preparation.
+pub(crate) fn rustc_server(rustc: &str) -> Result<PathBuf, String> {
     if !rustc.contains(SUPPORTED_COMMIT) {
         return Err("proc-macro server protocol is not supported for this rustc commit".into());
     }
@@ -75,8 +81,16 @@ pub fn exports(
         return Err("rustc sysroot query failed".into());
     }
     let sysroot = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
-    let server = Path::new(sysroot.trim()).join("libexec/rust-analyzer-proc-macro-srv");
-    let identity = flib::HostIdentity::rustc(&server, dylib)?;
+    Ok(Path::new(sysroot.trim()).join("libexec/rust-analyzer-proc-macro-srv"))
+}
+
+pub(crate) fn exports_from_server(
+    server: &Path,
+    dylib: &Path,
+    source: &Path,
+    cfg: flux_hir::CrateCfg,
+) -> Result<Vec<ProcMacro>, String> {
+    let identity = flib::HostIdentity::rustc(server, dylib)?;
     let (server, dylib) = identity.rustc_paths();
     let server = server.to_owned();
     let dylib = dylib.to_owned();

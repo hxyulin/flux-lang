@@ -53,6 +53,7 @@ fn main() {
     let array: [u8; a::next(a::N)] = [1, 2, 3, 4];
     println!("{} {} {} {} {}", (a::P)(7), (a::S)(15), a::V.count(3), a::identity(42u32), array.len());
 }
+
 "#).unwrap();
     // rustc is the behavior oracle, and its private artifact stays outside the Flux path.
     let oracle = flib_support::run(
@@ -96,5 +97,82 @@ fn main() {
         let actual = flib_support::run(&mut Command::new(s.path().join("program")), "flux-run");
         assert_eq!(actual.status.code(), expected.status.code());
         assert_eq!(actual.stdout, expected.stdout);
+    }
+}
+
+#[test]
+fn unused_local_declarations_are_checked_against_imported_contracts() {
+    let s = scratch();
+    std::fs::write(
+        s.path().join("dep.rs"),
+        r#"
+#[repr(align(8))] pub struct Aligned(pub u64);
+pub trait Super {}
+pub trait Sub: Super {}
+"#,
+    )
+    .unwrap();
+    s.command(&["build", "dep.rs", "--crate-type", "lib", "-o", "dep.flib"]);
+    let oracle = flib_support::run(
+        Command::new("rustc").current_dir(s.path()).args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "dep.rs",
+        ]),
+        "declaration-oracle-library",
+    );
+    assert!(
+        oracle.status.success(),
+        "{}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    std::fs::remove_file(s.path().join("dep.rs")).unwrap();
+    for (name, source, message) in [
+        (
+            "packed",
+            "#[repr(packed)] pub struct Bad(dep::Aligned);",
+            "packed",
+        ),
+        (
+            "supertrait",
+            "pub struct Local<'a>(&'a u32); impl dep::Super for Local<'static> {} impl<'a> dep::Sub for Local<'a> {}",
+            "supertrait lifetime requirements",
+        ),
+    ] {
+        let file = format!("{name}.rs");
+        std::fs::write(s.path().join(&file), source).unwrap();
+        let oracle = flib_support::run(
+            Command::new("rustc").current_dir(s.path()).args([
+                "--edition=2024",
+                "--crate-type=lib",
+                &file,
+                "--extern",
+                "dep=libdep.rlib",
+            ]),
+            "declaration-oracle",
+        );
+        assert!(!oracle.status.success(), "rustc accepted {name}");
+        let output = flib_support::run(
+            Command::new(env!("CARGO_BIN_EXE_fluxc"))
+                .current_dir(s.path())
+                .args([
+                    "build",
+                    &file,
+                    "--crate-type",
+                    "lib",
+                    "--metadata-only",
+                    "--extern",
+                    "dep=dep.flib",
+                    "-o",
+                    "bad.flib",
+                ]),
+            "declaration-flux",
+        );
+        let errors = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && errors.contains(message),
+            "{name}: {errors}"
+        );
+        assert!(!s.path().join("bad.flib").exists());
     }
 }

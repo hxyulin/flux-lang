@@ -1551,7 +1551,7 @@ Nonempty mutable temporaries, other zero-sized values and named local storage
 retain their ordinary borrowing restrictions.
 
 Raw pointers and `core::ptr::read_unaligned` provide unsafe unaligned reads
-of u8/u16/u32/u64/usize. They use alignment-one loads without creating source
+of u8/u16/u32/u64/u128/usize. They use alignment-one loads without creating source
 references. Other type substitutions and const calls remain explicitly
 unsupported; callers must provide initialized, readable memory.
 

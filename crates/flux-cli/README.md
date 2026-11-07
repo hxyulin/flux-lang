@@ -12,8 +12,8 @@ an experimental compiler for a subset of Rust.
 `fluxc print host` and `fluxc print cfg` report Flux’s native target and baseline
 configuration without querying rustc. Resolution, planning and packages without
 host tools do not require rustc. Flux compiles build scripts and their library
-dependencies. Native macro hosts with dependency graphs are available through
-`--macro-host-compiler flux`; the default macro host compiler remains rustc.
+dependencies. Native macro hosts and their dependency graphs use Flux by default.
+`--macro-host-compiler rustc` explicitly selects rustc for macro hosts.
 
 ```sh
 fluxc lex file.rs      # tokens, trivia included
@@ -26,7 +26,7 @@ fluxc check a.rs b.rs  # errors only; exits with 1 if there are any
 ```sh
 flux generate-lockfile --manifest-path Cargo.toml
 flux fetch --locked
-flux build --offline -p flux-cli --bin fluxc -O
+flux build --offline -p flux-cli --bin fluxc --release
 ```
 
 `generate-lockfile` resolves every package in the workspace and writes Cargo.lock
@@ -91,7 +91,7 @@ indexed by `out/lockfile-resolution-audit/proof.json`.
 ```sh
 flux fetch --locked --manifest-path Cargo.toml
 flux fetch --locked --offline
-flux build --offline -p flux-cli --bin fluxc -O
+flux build --offline -p flux-cli --bin fluxc --release
 ```
 
 Fetching reads an existing Cargo.lock version 3 or 4 and downloads every locked
@@ -176,33 +176,75 @@ Unsupported source/target overrides in Cargo configuration fail explicitly.
 ## Native source builds
 
 ```sh
-flux prepare --manifest-path Cargo.toml -p flux-cli --bin fluxc
-flux build --manifest-path path/to/Cargo.toml -p application -O
+flux build --offline
+flux build --offline --release
+flux build --manifest-path path/to/Cargo.toml -p application --release
 ```
 
-These commands use native offline planning. Flux compiles build-script
-executables and their library source graphs. Libraries required by rustc-ABI
-proc macros and the macro dylibs themselves still compile with rustc. They run
-build scripts from their package directories, then Flux compiles target source
-crates and generated includes. Rustc does not check or compile target libraries
-or binaries. Host and target units retain separate features and `OUT_DIR`s.
-The existing toolchain-matched proc-macro server executes host dylibs.
+These commands use native offline planning. `RUSTC` and `CARGO` overrides are
+not required; setting them to failing commands is a validation guard against
+accidentally invoking those tools. Flux compiles build scripts,
+procedural macro hosts and target crates. Macro hosts use the Flux token API
+and executable protocol by default. `--macro-host-compiler rustc` explicitly
+selects rustc-built macro hosts; there is no automatic fallback. The `--cargo`
+adapter retains its rustc host default. Host and target units retain separate
+features and `OUT_DIR`s.
+
+Target crates compile in dependency order, with independent libraries running
+in separate compiler processes. `-j N` bounds concurrent compiler processes;
+the default is the available CPU count. Libraries become checked `.flib`
+artifacts under `target/flux/debug/deps/` or `target/flux/release/deps/`.
+Dependents load these artifacts instead of compiling the library's source again.
+Final binaries live under `target/flux/debug/` or `target/flux/release/`.
+Selected libraries also appear there as `lib<name>.flib`.
+
+Without `-p`, a workspace-root build selects `workspace.default-members`.
+When that list is absent, virtual workspaces select all members and package
+workspaces select the root package. A member manifest selects that package.
+`--workspace` selects all members. Builds include every library and binary in
+those packages, skipping binaries whose required features are disabled;
+`--bin`, `--bins` and `--lib` select targets explicitly. `default-run` does not
+limit a build. Explicit binary paths replace matching automatic targets.
+`--release` (or `-r`) selects optimization and release profile defaults; `-O`
+remains a compatibility alias. The output root stays separate from Cargo's
+artifacts because Flux libraries use `.flib`, not `.rlib`.
+
+Fresh libraries and executables print `Fresh <crate>` and skip compilation.
+Changed units print `Compiling <crate>`. Reuse checks compiler identity, options,
+package identity, cfg, dependencies, source and include contents, module lookup
+candidates and the compilation environment. Executable records also verify a
+streamed BLAKE3 hash of the output; missing, changed or malformed records cause
+a rebuild. Library input snapshots and semantic identities retain the existing
+Fluxlib hash format. BLAKE3 also names build units, independently of their plan
+position. Records are replaced atomically. This follows [quon](https://github.com/hxyulin/quon)'s model of a
+build DAG and per-node freshness, while using flux's own checked artifacts and
+HIR input trace.
+
+Procedural macros can read arbitrary external state. Their hosts and consuming
+crates rebuild each invocation. Build scripts also recompile and rerun each
+invocation; byte-identical generated files let target crates stay fresh.
+Builds with native linker overrides retain the source-graph compiler path,
+without target artifact caching or parallel target compilation. Executables with
+source-level native library links also relink each time, since those libraries
+are not tracked by the HIR input trace.
 
 Build scripts receive package, feature, target cfg, and profile variables, plus
 `DEP_*` metadata from direct dependencies with `links` declarations. Both
 `cargo:` and `cargo::` output prefixes support cfg, environment, linker search
 paths and libraries, and links metadata. Build-script environment names currently
-require ASCII. Unknown modern directives and custom
-linker arguments fail explicitly. Native linker directives can prepare rustc
-host tools; Flux target linking still rejects them.
+require ASCII. Unknown modern directives and unsupported linker arguments
+fail explicitly. Native library and search-path directives reach target linking.
+Build scripts receive the `-j` limit in `NUM_JOBS`.
 
 Each invocation recompiles and reruns build scripts with Flux. A rustc host unit
 is reused when its command, its dependencies' fingerprints, and every source
 file and environment variable in its rustc dep-info are unchanged; otherwise it
-is rebuilt. Independent rustc units run in parallel, one per available core,
+is rebuilt. Independent rustc units run in parallel within the `-j` limit,
 while Flux compiles and runs build scripts on the driver thread. Host tools use
-optimization level 0 with debug assertions; `-O` selects Flux target optimization.
-Cargo profiles and rustc wrappers are not interpreted. Paths depend only on the
+optimization level 0. Target builds use dev or release optimization and their
+`debug-assertions` setting. Build scripts receive the selected profile through
+`PROFILE`, `OPT_LEVEL` and `DEBUG`. Custom profiles, arbitrary profile settings
+and rustc wrappers are not interpreted. Paths depend only on the
 unit's package, target, features and rustc version, so repeated builds embed the
 same build-script output directories. rustc artifacts and their fingerprints live
 in `target/flux/native-host/deps/`; each unit's dep-info, build-script output
@@ -222,9 +264,8 @@ a runtime comparison with rustc.
 
 The driver never invokes Cargo. Build scripts may invoke their own external
 tools; scripts that explicitly call Cargo still require it. Native preparation
-retains the planner's source and workspace limits. It currently uses rustc
-for proc macros with dependencies. The standalone `flux package` driver also
-offers Flux compilation for dependency-free macro hosts.
+retains the planner's source and workspace limits. The standalone `flux package`
+driver has a separate macro-host default and supports Flux compilation for dependency-free macro hosts.
 
 ### Flux-native procedural macro graphs
 
@@ -232,7 +273,7 @@ offers Flux compilation for dependency-free macro hosts.
 flux build --offline --macro-host-compiler flux
 ```
 
-This opt-in mode compiles macro hosts and their library dependencies as Flux source
+This default mode compiles macro hosts and their library dependencies as Flux source
 graphs, using the native token API and executable protocol rather than rustc
 dylibs. The same mode applies to `prepare`. Dependency aliases, host features,
 build-script cfg/environment output and generated includes are retained. Macros
@@ -244,33 +285,38 @@ Build scripts in this mode receive `RUSTC` pointing to `fluxc` and a scoped
 `FLUX_COMPILER_PROBE` environment setting. The probe interface accepts native cfg
 queries and library metadata compilation with edition, crate-name, cfg, target,
 cap-lints and output-directory options. Unsupported options fail. Compile probes
-are checked against Flux's libraries and native token API. Version queries report
-`fluxc`'s own version, not a fabricated rustc release. Scripts requiring a numeric
-rustc version, rustc artifacts or other compiler flags are still unsupported.
+are checked against Flux's libraries and native token API. Within this scoped
+probe interface, `--version` reports `rustc 1.85.0 (fluxc <version>)` for build
+scripts that parse a Rust release number. The number selects the edition-2024
+API baseline; it does not claim language parity with rustc 1.85. Normal compiler
+version queries still identify Flux. Rustc artifact formats and unsupported
+compiler flags remain unavailable.
 
-A macro graph with a library dependency and generated configuration has built and
-run with both Cargo and rustc trapped, including use by a build script and by the
-target. Native token construction and all three macro kinds have regression
-coverage. The compiler's real clap_derive/syn/quote/proc-macro2 host graph still
-fails with language/library diagnostics. The latest arm64 macOS audit reports
-45 diagnostics, compared with 1,553 before the token/library/source fixes.
-Dependency source bytes remained unchanged and both Cargo and rustc were trapped.
-Quote and heck have no diagnostics in this graph; that does not independently
-verify their code generation or execution. Remaining blockers include syn's
-trait lifetimes, region-bearing aliases in function pointers, generic
-`Parser::Output` normalization, and proc-macro2's `catch_unwind` use. Span hygiene
-operations such as mixed-site contexts also remain unsupported at runtime.
-It has not completed a rustc-free self-hosting build. The audit and diagnostic
-frequencies are in `out/proc-macro-api-audit/result.json`. The standalone `flux package` route
-still restricts Flux-compiled macro hosts to dependency-free crates.
+The default workspace targets build with Flux-compiled build scripts and
+proc-macro hosts, including clap_derive, serde_derive and thiserror-impl:
 
-Validation on arm64 macOS includes the complete 480-target suite, workspace
-Clippy, 43 runner tests and a native build of the updated compiler using Flux
-build scripts with rustc macro hosts and Cargo trapped. That generated compiler
-passed help/version and target-query checks and compiled a `Result::as_deref`
-program whose output matched rustc. Local evidence is indexed by
-`out/rustc-removal-audit/proof.json`. The new host path has not been retested on
-Linux, and this work does not verify a new stage 2 rebuild.
+```sh
+flux build --offline --release -j 2
+```
+
+This command passed on arm64 macOS without `RUSTC` or `CARGO` overrides.
+Its selection matched Cargo's metadata: 13 packages and 17 targets, comprising
+13 libraries plus `flux`, `fluxc`, `difftest` and `flux-sourcegen`.
+The generated compiler compiled and ran borrowed iterator trait objects,
+unaligned `u128` reads and ordered-set queries. The generated source generator
+reported that the AST was up to date; `difftest gen 42` matched the Rust bootstrap.
+Dependency sources were not patched and no fallback to rustc was enabled.
+Native C build tools remain necessary for dependencies such as BLAKE3.
+Build-script native linker overrides still use the whole source graph path.
+
+Native spans support root-context `resolved_at` while retaining source locations.
+Mixed-site contexts and inputs carrying non-root macro_rules hygiene remain
+unsupported. The standalone `flux package` route still restricts Flux-compiled
+macro hosts to dependency-free crates. This milestone does not establish Cargo
+parity, Linux self-hosting or a stage 2 rebuild.
+Validation passed all 483 validation targets, workspace Clippy, formatting,
+44 runner unit tests and checks of 682 workspace/example source files on arm64
+macOS. Local evidence is indexed by `out/workspace-default-build/proof.json`.
 
 ### Earlier native-host validation
 
@@ -302,7 +348,7 @@ The native route has not yet been verified through a stage 2 rebuild.
 ```sh
 flux prepare --cargo --manifest-path path/to/Cargo.toml -p application --offline
 flux build --cargo --manifest-path path/to/Cargo.toml -p application --offline
-flux build --cargo --manifest-path path/to/Cargo.toml -p application --offline -O
+flux build --cargo --manifest-path path/to/Cargo.toml -p application --offline --release
 ```
 
 These commands always use the lockfile. Select one binary with `--bin` if the
@@ -336,6 +382,11 @@ proc-macro artifact paths, build-script linker directives, and blockers. The
 rustc version is recorded because host macro artifacts depend on its ABI. Cargo
 may reuse cached build-script outputs and artifacts; preparation does not force
 them to rerun. The plan contains explicit compile-time values and local paths.
+
+With `--timings`, Cargo-backed builds report rustc version discovery, Cargo
+metadata, Cargo host preparation, source graph planning and proc-macro catalog
+loading. `Cargo preparation elapsed` ends before Flux compiles the target
+sources. Proc-macro server discovery is shared within one preparation.
 
 Supported builds select one host binary on arm64 macOS or x86-64 Linux. Function-like,
 attribute and derive proc macros execute in the toolchain's separate

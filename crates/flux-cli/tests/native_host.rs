@@ -86,6 +86,9 @@ impl Fixture {
             .env("CARGO_FEATURE_WRONG", "1")
             .env("CARGO_CFG_TARGET_OS", "wrong")
             .env("DEP_OTHER_WRONG", "wrong");
+        if !args.contains(&"--macro-host-compiler") {
+            command.args(["--macro-host-compiler", "rustc"]);
+        }
         let output =
             support::process::run(&mut command, &self.root, label, Duration::from_secs(120))
                 .completed();
@@ -203,7 +206,7 @@ proc-macro=true
 helper={package="shared",path="../shared",features=["host"]}
 "#,
     );
-    f.write("macros/build.rs", "fn main(){println!(\"cargo::rustc-env=MACRO_MARKER=macro-only\");println!(\"cargo::rustc-cfg=macro_generated\"); if std::env::var(\"FLUX_COMPILER_PROBE\").is_ok(){let output=std::process::Command::new(std::env::var(\"RUSTC\").unwrap()).arg(\"--version\").output().unwrap();assert!(output.status.success());assert!(output.stdout.starts_with(b\"fluxc \"));}}\n");
+    f.write("macros/build.rs", "fn main(){println!(\"cargo::rustc-env=MACRO_MARKER=macro-only\");println!(\"cargo::rustc-cfg=macro_generated\"); if std::env::var(\"FLUX_COMPILER_PROBE\").is_ok(){let output=std::process::Command::new(std::env::var(\"RUSTC\").unwrap()).arg(\"--version\").output().unwrap();assert!(output.status.success());assert!(output.stdout.starts_with(b\"rustc 1.85.0 (fluxc \"));}}\n");
     f.write(
         "macros/src/lib.rs",
         r#"
@@ -261,7 +264,11 @@ dependencies=["shared"]
         let output = f.run("build", label, &args);
         support::oracle::success(&output, "native host source build");
         let actual = support::process::run(
-            &mut Command::new(f.root.join("target/flux/app")),
+            &mut Command::new(f.root.join(if args.contains(&"-O") {
+                "target/flux/release/app"
+            } else {
+                "target/flux/debug/app"
+            })),
             &f.root,
             &format!("run-{label}"),
             Duration::from_secs(10),
@@ -305,12 +312,20 @@ dependencies=["shared"]
         serde_json::from_slice(&std::fs::read(f.root.join(format!("{label}.json"))).unwrap())
             .unwrap()
     };
-    let executable = || std::fs::read(f.root.join("target/flux/app")).unwrap();
+    let executable = || std::fs::read(f.root.join("target/flux/release/app")).unwrap();
+    // Flux and rustc macro hosts have distinct artifact identities. Compare
+    // repeated builds using the same host compiler.
+    let baseline = f.run(
+        "build",
+        "optimized-baseline",
+        &["-O", "--features", "derive"],
+    );
+    support::oracle::success(&baseline, "rustc macro-host baseline");
     let optimized = executable();
     let rerun = |label: &str, expected: &[u8]| -> String {
         let output = f.run("build", label, &["-O", "--features", "derive"]);
         support::oracle::success(&output, "repeated native host build");
-        let actual = Command::new(f.root.join("target/flux/app"))
+        let actual = Command::new(f.root.join("target/flux/release/app"))
             .output()
             .unwrap();
         assert_eq!(actual.stdout, expected);
@@ -354,10 +369,9 @@ dependencies=["shared"]
     let stderr = String::from_utf8_lossy(&output.stderr);
     for scope in [
         "planning + native host preparation",
-        "mono collection",
-        "body substitution",
-        "mir validation",
-        "keel lowering",
+        "dependency artifact load",
+        "mir build + checks",
+        "mono + keel lowering",
         "backend (inclusive)",
         "compile scoped elapsed",
     ] {

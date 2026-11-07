@@ -154,7 +154,7 @@ fn crate_identity(
     krate: CrateId,
 ) -> Result<Vec<u8>, &'static str> {
     let mut e = Encoder::new();
-    e.write(b"flux-definition-v1");
+    e.write(b"flux-definition-v2");
     if let Some((_, hash)) = hashes.iter().find(|(id, _)| *id == krate) {
         e.write(hash);
     } else {
@@ -201,12 +201,9 @@ fn definition_key_after(
         }
         IdKind::Function => {
             let i = &items.functions[flux_hir::FunctionId::from_raw(raw)];
-            (
-                i.loc.module,
-                items.function_path(i),
-                i.loc.file,
-                i.def_range,
-            )
+            // The crate-local ordinal disambiguates impls. Diagnostic paths
+            // can contain `$crate` anchors with process-local crate indices.
+            (i.loc.module, i.name.to_string(), i.loc.file, i.def_range)
         }
         IdKind::Const => {
             let i = &items.consts[flux_hir::ConstId::from_raw(raw)];
@@ -524,7 +521,10 @@ mod tests {
             ty = Ty::tuple(&[ty]);
         }
         let key = stable_key(&items, &[], ty).unwrap();
-        assert!(key.len() < 4096, "type definitions must remain linear");
+        assert!(
+            key.len() < 32 * flux_hir::flib::MAX_NESTING_DEPTH as usize,
+            "type definitions must remain linear"
+        );
         assert!(stable_id(&items, &[], ty).is_ok());
         let too_deep = Ty::tuple(&[ty]);
         assert_eq!(
@@ -622,6 +622,65 @@ mod tests {
         let ib = stable_id(&b, &[(kb, hash)], tb).unwrap();
         assert_eq!(ia, ib);
         assert_ne!(ia, stable_id(&a, &[(ka, [8; 32])], ta).unwrap());
+    }
+
+    #[test]
+    fn macro_impl_definition_keys_ignore_definition_crate_indices() {
+        fn graph(padded: bool) -> (ItemTree, flux_hir::FunctionId, CrateId) {
+            let mut db = flux_hir::SourceDb::new();
+            let mut sources = Vec::new();
+            if padded {
+                let root = db.add("/padding/lib.rs", "pub struct Padding;");
+                sources.push(flux_hir::SourceCrate {
+                    root,
+                    name: Symbol::intern("padding"),
+                    dependencies: vec![],
+                });
+            }
+            let root = db.add(
+                "/macro_impl/lib.rs",
+                r#"
+                pub trait Finish { fn finish(self) -> u32; }
+                macro_rules! make {
+                    () => {
+                        pub struct Value;
+                        impl $crate::Finish for Value { fn finish(self) -> u32 { 42 } }
+                    };
+                }
+                make!();
+            "#,
+            );
+            sources.push(flux_hir::SourceCrate {
+                root,
+                name: Symbol::intern("macro_impl"),
+                dependencies: vec![],
+            });
+            let hir = flux_hir::lower_sources(&mut db, &sources);
+            assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+            let krate = hir.items.main_crate();
+            let function = hir
+                .items
+                .functions
+                .iter()
+                .find(|(_, f)| {
+                    hir.items.modules[f.loc.module].krate == krate
+                        && f.name.as_str() == "finish"
+                        && matches!(f.owner, Some(flux_hir::Owner::Impl(_)))
+                })
+                .unwrap()
+                .0;
+            (hir.items, function, krate)
+        }
+        let (left, a, ka) = graph(false);
+        let (right, b, kb) = graph(true);
+        assert_ne!(
+            left.function_path(&left.functions[a]),
+            right.function_path(&right.functions[b])
+        );
+        assert_eq!(
+            definition_key(&left, &[(ka, [7; 32])], IdKind::Function, a.into_raw()).unwrap(),
+            definition_key(&right, &[(kb, [7; 32])], IdKind::Function, b.into_raw()).unwrap(),
+        );
     }
 
     #[test]

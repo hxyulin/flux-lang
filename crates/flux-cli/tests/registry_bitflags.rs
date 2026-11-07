@@ -101,7 +101,7 @@ bitflags = { version = "=2.13.2", features = ["std"] }
                 .arg("--plan")
                 .arg(&plan);
             if optimized {
-                command.arg("-O");
+                command.arg("--release");
             }
             run(&mut command, root, &format!("flux-build-{optimized}"));
             let plan: serde_json::Value =
@@ -115,7 +115,11 @@ bitflags = { version = "=2.13.2", features = ["std"] }
                 .unwrap();
             assert_eq!(source["features"], serde_json::json!(["std"]));
             let actual = run(
-                &mut Command::new(root.join("target/flux/registry-bitflags-consumer")),
+                &mut Command::new(root.join(if optimized {
+                    "target/flux/release/registry-bitflags-consumer"
+                } else {
+                    "target/flux/debug/registry-bitflags-consumer"
+                })),
                 root,
                 &format!("flux-run-{optimized}"),
             );

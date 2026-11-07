@@ -102,3 +102,30 @@ fn built_executable_identity_hashes_all_bytes() {
     *last ^= 1;
     assert_ne!(expected, flux_hir::flib::digest(&bytes));
 }
+
+#[test]
+fn crate_identity_hashes_large_expansion_observations() {
+    let names = (0..8000)
+        .map(|i| format!("N{i}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let hash = |value| {
+        let source = format!(
+            "macro_rules! make {{ ($($name:ident)*) => {{ $(pub const $name:u8={value};)* }}; }} make!({names});"
+        );
+        let mut db = flux_hir::SourceDb::new();
+        let root = db.add("large.rs", source);
+        let hir = flux_hir::lower(&mut db, root, Symbol::intern("large"));
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let tokens: usize = hir
+            .items
+            .files
+            .values()
+            .filter(|file| file.expansion_of.is_some())
+            .map(|file| file.parse.root().tokens().count())
+            .sum();
+        assert!(tokens > flux_hir::flib::MAX_RECORD_LENGTH / 20);
+        crate_hash(&hir.items, hir.items.main_crate(), &[], b"config").unwrap()
+    };
+    assert_ne!(hash(1), hash(2));
+}

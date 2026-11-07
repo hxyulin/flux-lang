@@ -95,8 +95,8 @@ struct Reach<'a> {
     impls: FxHashSet<flux_hir::ImplId>,
     drop_impls: FxHashSet<flux_hir::ImplId>,
     aliases: FxHashSet<flux_hir::TypeAliasId>,
-    symbolic_calls: FxHashSet<(FunctionId, flux_ty::GenericArgs, bool)>,
-    symbolic_constants: FxHashSet<flux_ty::ConstInstance>,
+    symbolic_calls: FxHashMap<(FunctionId, flux_ty::GenericArgs, bool), Vec<Context>>,
+    symbolic_constants: FxHashMap<flux_ty::ConstInstance, Vec<Context>>,
     closures: FxHashMap<ClosureOwner, Vec<&'a Body>>,
 }
 
@@ -129,8 +129,8 @@ impl<'a> Reach<'a> {
             impls: FxHashSet::default(),
             drop_impls: FxHashSet::default(),
             aliases: FxHashSet::default(),
-            symbolic_calls: FxHashSet::default(),
-            symbolic_constants: FxHashSet::default(),
+            symbolic_calls: FxHashMap::default(),
+            symbolic_constants: FxHashMap::default(),
         }
     }
 
@@ -477,21 +477,21 @@ impl<'a> Reach<'a> {
         };
         // Recursive generic templates are legal before instantiation. Stop a
         // growing symbolic cycle; concrete mono still diagnoses invalid uses.
-        if self.current.iter().any(|&(old, previous)| {
-            old == owner
-                && previous != args
-                && previous.len() == args.len()
-                && previous
-                    .iter()
-                    .zip(args)
-                    .all(|(&left, &right)| embeds(left, right))
-        }) {
+        if self
+            .current
+            .iter()
+            .any(|&(old, previous)| old == owner && growing_args(previous, args))
+        {
             return;
         }
+        // Equivalent parameter renamings describe the same symbolic body.
+        // Keep original arguments in the work item for substitution and use
+        // the canonical form only to deduplicate analysis contexts.
+        let key = template_key(args);
         let changed = match owner {
-            ClosureOwner::Function(f) if runtime => self.runtime_functions.insert((f, args)),
-            ClosureOwner::Function(f) => self.const_functions.insert((f, args)),
-            ClosureOwner::Const(c) => self.constants.insert((c, args)),
+            ClosureOwner::Function(f) if runtime => self.runtime_functions.insert((f, key)),
+            ClosureOwner::Function(f) => self.const_functions.insert((f, key)),
+            ClosureOwner::Const(c) => self.constants.insert((c, key)),
         };
         if changed {
             self.work.push(Template {
@@ -549,7 +549,9 @@ impl<'a> Reach<'a> {
             let resolved = flux_solve::traits::resolve_const(self.items, self.sigs, c);
             self.konst_args(resolved.konst, resolved.args);
         } else if matches!(self.items.consts[c.konst].owner, Some(Owner::Trait(_))) {
-            self.symbolic_constants.insert(c);
+            self.symbolic_constants
+                .entry(c)
+                .or_insert(self.current.clone());
             self.symbolic_constant(c);
         }
     }
@@ -560,9 +562,6 @@ impl<'a> Reach<'a> {
         };
         for &imp in self.items.trait_impls.get(&t).into_iter().flatten() {
             if let (Some(&self_ty), Some(&wanted)) = (self.sigs.impls.get(imp), c.args.first()) {
-                if !self.template_matches(self_ty, wanted) {
-                    continue;
-                }
                 if matches!(
                     wanted.kind(),
                     TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
@@ -574,6 +573,9 @@ impl<'a> Reach<'a> {
                     if !self.own(self.items.impls[imp].module) || !self.call_available(self_ty, t) {
                         continue;
                     }
+                }
+                if !self.template_matches(self_ty, wanted) {
+                    continue;
                 }
             }
             if !self.trait_arguments_match(imp, c.args) {
@@ -593,7 +595,9 @@ impl<'a> Reach<'a> {
         if args.iter().any(|ty| ty.has_params()) {
             self.function_args(f, args, runtime);
             if matches!(self.items.functions[f].owner, Some(Owner::Trait(_))) {
-                self.symbolic_calls.insert((f, args, runtime));
+                self.symbolic_calls
+                    .entry((f, args, runtime))
+                    .or_insert(self.current.clone());
                 self.symbolic_call(f, args, runtime);
             }
             return;
@@ -612,9 +616,6 @@ impl<'a> Reach<'a> {
         };
         for &imp in self.items.trait_impls.get(&t).into_iter().flatten() {
             if let (Some(&self_ty), Some(&wanted)) = (self.sigs.impls.get(imp), args.first()) {
-                if !self.template_matches(self_ty, wanted) {
-                    continue;
-                }
                 if matches!(
                     wanted.kind(),
                     TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
@@ -626,6 +627,9 @@ impl<'a> Reach<'a> {
                     if !self.own(self.items.impls[imp].module) || !self.call_available(self_ty, t) {
                         continue;
                     }
+                }
+                if !self.template_matches(self_ty, wanted) {
+                    continue;
                 }
             }
             if !self.trait_arguments_match(imp, args) {
@@ -815,7 +819,7 @@ impl<'a> Reach<'a> {
             for entry in flux_mir::vtable::entries(self.items, self.sigs, object, concrete) {
                 match entry {
                     flux_mir::vtable::Entry::Method(instance) => {
-                        self.function(instance.function, true)
+                        self.function_args(instance.function, instance.args, true)
                     }
                     flux_mir::vtable::Entry::Super(object) => pending.push(object),
                     flux_mir::vtable::Entry::Null => {}
@@ -903,15 +907,27 @@ impl<'a> Reach<'a> {
                     }
                 }
             }
-            self.current.clear();
-            let calls: Vec<_> = self.symbolic_calls.iter().copied().collect();
-            for (function, args, runtime) in calls {
+            // Deferred dispatch keeps its original ancestry. Clearing it
+            // would restart a growing generic cycle in every fixed-point round.
+            let calls: Vec<_> = self
+                .symbolic_calls
+                .iter()
+                .map(|(call, ancestors)| (*call, ancestors.clone()))
+                .collect();
+            for ((function, args, runtime), ancestors) in calls {
+                self.current = ancestors;
                 self.symbolic_call(function, args, runtime);
             }
-            let constants: Vec<_> = self.symbolic_constants.iter().copied().collect();
-            for c in constants {
+            let constants: Vec<_> = self
+                .symbolic_constants
+                .iter()
+                .map(|(constant, ancestors)| (*constant, ancestors.clone()))
+                .collect();
+            for (c, ancestors) in constants {
+                self.current = ancestors;
                 self.symbolic_constant(c);
             }
+            self.current.clear();
             let before = (
                 self.types.len(),
                 self.exposed.len(),
@@ -1002,6 +1018,64 @@ impl<'a> Reach<'a> {
     }
 }
 
+/// Canonicalizes parameter names and indices without changing correlations,
+/// concrete constructors, projections or callback lifetime binders.
+fn template_key(args: flux_ty::GenericArgs) -> flux_ty::GenericArgs {
+    fn visit(ty: Ty, memo: &mut FxHashMap<Ty, Ty>, next: &mut u32) -> Ty {
+        if let Some(&known) = memo.get(&ty) {
+            return known;
+        }
+        let result = if matches!(ty.kind(), TyKind::Param(_)) {
+            let parameter = Ty::param(*next, flux_intern::Symbol::intern("_flib"));
+            *next += 1;
+            parameter
+        } else {
+            ty.map_children(|child| visit(child, memo, next))
+        };
+        memo.insert(ty, result);
+        result
+    }
+    if !args.iter().any(|ty| ty.has_params()) {
+        return args;
+    }
+    let mut memo = FxHashMap::default();
+    let mut next = 0;
+    Ty::list(
+        &args
+            .iter()
+            .map(|&ty| visit(ty, &mut memo, &mut next))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn growing_args(previous: flux_ty::GenericArgs, next: flux_ty::GenericArgs) -> bool {
+    fn unknowns(ty: Ty, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
+        if let Some(&known) = memo.get(&ty) {
+            return known;
+        }
+        let result = if matches!(ty.kind(), TyKind::Param(_)) {
+            Ty::param(u32::MAX, flux_intern::Symbol::intern("_flib"))
+        } else {
+            ty.map_children(|child| unknowns(child, memo))
+        };
+        memo.insert(ty, result);
+        result
+    }
+    if previous.len() != next.len() {
+        return false;
+    }
+    let mut memo = FxHashMap::default();
+    let previous: Vec<_> = previous.iter().map(|&ty| unknowns(ty, &mut memo)).collect();
+    let next: Vec<_> = next.iter().map(|&ty| unknowns(ty, &mut memo)).collect();
+    // Changing equality relationships between parameters is not growth. Such
+    // contexts retain distinct canonical keys and must each be inspected.
+    previous != next
+        && previous
+            .into_iter()
+            .zip(next)
+            .all(|(left, right)| embeds(left, right))
+}
+
 // Homeomorphic embedding detects growing template cycles without imposing a
 // monomorphization limit on a library's uninstantiated generic interfaces.
 fn embeds(previous: Ty, next: Ty) -> bool {
@@ -1037,7 +1111,10 @@ fn embeds(previous: Ty, next: Ty) -> bool {
                 a.abi == b.abi
                     && a.is_unsafe == b.is_unsafe
                     && a.inputs_output.len() == b.inputs_output.len()
-                    && a.regions == b.regions
+                    // Captured types participate in the child embedding below.
+                    // Comparing them here would hide growing callback cycles.
+                    && a.regions.map(|r| (r.bound, r.free, r.inputs_output, r.types.len()))
+                        == b.regions.map(|r| (r.bound, r.free, r.inputs_output, r.types.len()))
             }
             _ => false,
         };
@@ -1049,4 +1126,66 @@ fn embeds(previous: Ty, next: Ty) -> bool {
         result
     }
     visit(previous, next, &mut FxHashMap::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shared_template_subtrees_are_compared_as_a_dag() {
+        let parameter = Ty::param(0, flux_intern::Symbol::intern("T"));
+        let mut repeated = parameter;
+        for _ in 0..32 {
+            repeated = Ty::tuple(&[repeated, repeated]);
+        }
+        assert!(growing_args(Ty::list(&[parameter]), Ty::list(&[repeated])));
+    }
+    #[test]
+    fn template_keys_preserve_correlations_and_concrete_heads() {
+        let parameter = |index, name| Ty::param(index, flux_intern::Symbol::intern(name));
+        let (a, b) = (parameter(0, "Input"), parameter(1, "Output"));
+        let (x, y) = (parameter(4, "I"), parameter(7, "O"));
+        assert_eq!(
+            template_key(Ty::list(&[a, b])),
+            template_key(Ty::list(&[x, y]))
+        );
+        assert_ne!(
+            template_key(Ty::list(&[a, a])),
+            template_key(Ty::list(&[x, y]))
+        );
+        assert_ne!(
+            template_key(Ty::list(&[a, b])),
+            template_key(Ty::list(&[x, x]))
+        );
+        assert!(growing_args(
+            Ty::list(&[a, b]),
+            Ty::list(&[Ty::tuple(&[x]), y])
+        ));
+        assert!(!growing_args(Ty::list(&[a, a]), Ty::list(&[x, y])));
+        assert!(!growing_args(
+            Ty::list(&[Ty::int(flux_ty::IntTy::U32)]),
+            Ty::list(&[Ty::int(flux_ty::IntTy::U64)])
+        ));
+        assert!(!growing_args(
+            Ty::list(&[a]),
+            Ty::list(&[Ty::int(flux_ty::IntTy::U32)])
+        ));
+    }
+    #[test]
+    fn growing_callback_captures_embed_without_erasing_their_binders() {
+        let parameter = Ty::param(0, flux_intern::Symbol::intern("T"));
+        let pointer = |input, bound| {
+            let mut signature = flux_ty::FnSigTy::new(&[input], Ty::UNIT, false);
+            signature.regions = Some(flux_ty::FnPtrRegions::intern(
+                bound,
+                0,
+                &[vec![flux_ty::FnRegion::Type(0)], vec![]],
+                &[input],
+            ));
+            Ty::new(TyKind::FnPtr(signature))
+        };
+        let original = pointer(parameter, 0);
+        assert!(embeds(original, pointer(Ty::tuple(&[parameter]), 0)));
+        assert!(!embeds(original, pointer(Ty::tuple(&[parameter]), 1)));
+    }
 }

@@ -91,7 +91,9 @@ fn check(script: bool) {
             .unwrap();
         support::oracle::success(&output, "rustc-free native package");
     }
-    let output = Command::new(root.join("target/flux/app")).output().unwrap();
+    let output = Command::new(root.join("target/flux/debug/app"))
+        .output()
+        .unwrap();
     support::oracle::success(&output, "rustc-free executable");
     assert_eq!(output.stdout, b"rustc-free\n");
     assert!(!root.join("toolchain-called").exists());
@@ -120,7 +122,14 @@ fn compiler_probes_check_flux_capabilities_without_a_toolchain() {
     };
     let version = invoke(&["--version"]);
     support::oracle::success(&version, "Flux probe version");
-    assert!(version.stdout.starts_with(b"fluxc "));
+    assert!(version.stdout.starts_with(b"rustc 1.85.0 (fluxc "));
+    let normal = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .arg("--version")
+        .env_remove("FLUX_COMPILER_PROBE")
+        .output()
+        .unwrap();
+    support::oracle::success(&normal, "normal Flux version");
+    assert!(normal.stdout.starts_with(b"fluxc "));
     let cfg = invoke(&["--print", "cfg"]);
     support::oracle::success(&cfg, "Flux probe cfg");
     assert!(

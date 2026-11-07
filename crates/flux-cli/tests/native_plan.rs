@@ -433,7 +433,9 @@ required-features=["cli"]
     f.write("child/src/lib.rs", "\n");
     let lock = "version=4\n[[package]]\nname=\"app\"\nversion=\"0.1.0\"\ndependencies=[\"child\"]\n[[package]]\nname=\"child\"\nversion=\"0.1.0\"\n";
     f.write("Cargo.lock", lock);
-    let disabled = f.run(&[]);
+    let skipped = f.plan(&[]);
+    assert!(skipped["root_units"].as_array().unwrap().is_empty());
+    let disabled = f.run(&["--bin", "app"]);
     assert!(!disabled.status.success());
     assert!(String::from_utf8_lossy(&disabled.stderr).contains("requires disabled features"));
     f.plan(&["--features", "cli"]);

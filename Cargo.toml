@@ -38,6 +38,7 @@ flux-codegen = { path = "crates/flux-codegen" }
 # checkout, add a `[patch."https://github.com/hxyulin/keel"]` section to
 # `.cargo/config.toml` (git-ignored); see CONTRIBUTING.md.
 keel-asm = { git = "https://github.com/hxyulin/keel", rev = "f503b7263f5ea2d85367a4e986027fea8ab9ce20" }
+keel-asm-ir = { git = "https://github.com/hxyulin/keel", rev = "f503b7263f5ea2d85367a4e986027fea8ab9ce20" }
 keel-codegen = { git = "https://github.com/hxyulin/keel", rev = "f503b7263f5ea2d85367a4e986027fea8ab9ce20" }
 keel-frontend = { git = "https://github.com/hxyulin/keel", rev = "f503b7263f5ea2d85367a4e986027fea8ab9ce20" }
 keel-ir = { git = "https://github.com/hxyulin/keel", rev = "f503b7263f5ea2d85367a4e986027fea8ab9ce20" }

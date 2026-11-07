@@ -581,13 +581,14 @@ fn collect_roots(
                                     | flux_ty::IntTy::U16
                                     | flux_ty::IntTy::U32
                                     | flux_ty::IntTy::U64
+                                    | flux_ty::IntTy::U128
                                     | flux_ty::IntTy::Usize
                             ))
                         )
                     {
                         let mut d = Diagnostic::new(
                             data.terminator.range,
-                            "read_unaligned supports only u8, u16, u32, u64 and usize yet",
+                            "read_unaligned supports only unsigned integers yet",
                         );
                         d.file = hir.items.functions[caller.function].loc.file;
                         return Err(d);

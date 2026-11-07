@@ -28,7 +28,10 @@ struct Probe {
 pub(crate) fn run() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--version" {
-        println!("fluxc {}", env!("CARGO_PKG_VERSION"));
+        // Build scripts parse rustc's release prefix to select stable APIs.
+        // This is the edition-2024 baseline for this probe protocol, not
+        // a claim that Flux implements all language features in that release.
+        println!("rustc 1.85.0 (fluxc {})", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
     if args.len() == 2 && args[0] == "--print" && args[1] == "cfg" {

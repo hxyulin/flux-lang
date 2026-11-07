@@ -390,17 +390,28 @@ fn actual_include_and_environment_inputs_are_retained_in_metadata() {
 
 #[test]
 fn record_limits_are_symmetric_for_encoding_and_decoding() {
-    use flux_hir::flib::{Decode, Encode, MAX_RECORD_LENGTH};
-    let value = "x".repeat(MAX_RECORD_LENGTH);
+    use flux_hir::flib::{Decode, Encode, MAX_BYTE_LENGTH, MAX_RECORD_LENGTH};
+    let value = "x".repeat(MAX_RECORD_LENGTH + 1);
     let mut encoder = Encoder::new();
     value.encode(&mut encoder).unwrap();
     let bytes = encoder.into_bytes();
     let mut decoder = Decoder::new(&bytes);
     assert_eq!(String::decode(&mut decoder).unwrap(), value);
     decoder.finish().unwrap();
-    assert!((value + "x").encode(&mut Encoder::new()).is_err());
-    let length = (MAX_RECORD_LENGTH as u32 + 1).to_le_bytes();
+    assert!(
+        "x".repeat(MAX_BYTE_LENGTH + 1)
+            .encode(&mut Encoder::new())
+            .is_err()
+    );
+    let length = (MAX_BYTE_LENGTH as u32 + 1).to_le_bytes();
     assert!(String::decode(&mut Decoder::new(&length)).is_err());
+    assert!(
+        vec![0u8; MAX_RECORD_LENGTH + 1]
+            .encode(&mut Encoder::new())
+            .is_err()
+    );
+    let length = (MAX_RECORD_LENGTH as u32 + 1).to_le_bytes();
+    assert!(Vec::<u8>::decode(&mut Decoder::new(&length)).is_err());
 }
 
 #[test]
@@ -566,7 +577,7 @@ fn decode_in_context<T: flux_hir::flib::Decode>(
 fn recursive_item_encoders_match_the_decoder_depth_boundary() {
     use flux_hir::flib::{Decode, Encode, MAX_NESTING_DEPTH};
     // Every pointer consumes an enum record and a sized Box record. The leaf
-    // consumes one more enum record, and the outer Box reaches exactly 128.
+    // consumes one more enum record, and the outer Box reaches the configured record limit.
     let pointers = (MAX_NESTING_DEPTH / 2 - 1) as usize;
     let value = Box::new(pointer_chain(pointers));
     let mut encoder = Encoder::new();
@@ -880,7 +891,11 @@ fn allocation_domains_and_type_slots_have_independent_namespaces() {
             .set_allocation_depth(2, raw, owner.clone(), 0)
             .is_err()
     );
-    assert!(encoder.set_allocation_depth(2, raw, owner, 129).is_err());
+    assert!(
+        encoder
+            .set_allocation_depth(2, raw, owner, flux_hir::flib::MAX_NESTING_DEPTH + 1)
+            .is_err()
+    );
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -970,4 +985,53 @@ fn inline_and_cold_attributes_survive_metadata_roundtrip() {
     assert_eq!(function("plain").inline, None);
     assert!(function("cold").cold);
     assert!(!function("plain").cold);
+}
+
+#[test]
+fn multiple_import_only_expansions_keep_their_source_files() {
+    let mut db = SourceDb::new();
+    let root = db.add(
+        "imports.rs",
+        r#"
+        mod types { pub struct Marker; }
+        macro_rules! export { ($name:ident) => { pub use crate::types::Marker as $name; }; }
+        export!(First);
+        export!(Second);
+    "#,
+    );
+    let hir = flux_hir::lower(&mut db, root, Symbol::intern("imports"));
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let owner = hir.items.main_crate();
+    encode(&hir.items, owner);
+}
+
+#[test]
+fn encoded_byte_streams_can_exceed_collection_count_limits() {
+    let bytes = vec![0x83; flux_hir::flib::MAX_RECORD_LENGTH + 1];
+    let mut encoder = Encoder::new();
+    encoder.blob(&bytes).unwrap();
+    let encoded = encoder.into_bytes();
+    let mut decoder = Decoder::new(&encoded);
+    assert_eq!(decoder.blob().unwrap(), bytes);
+    decoder.finish().unwrap();
+    let bad = (flux_hir::flib::MAX_BYTE_LENGTH as u32 + 1).to_le_bytes();
+    assert!(Decoder::new(&bad).blob().is_err());
+}
+
+#[test]
+fn sixty_four_bit_type_level_integer_aliases_encode() {
+    let mut ty = "UTerm".to_owned();
+    for _ in 0..64 {
+        ty = format!("UInt<{ty},B0>");
+    }
+    let mut db = SourceDb::new();
+    let root = db.add(
+        "bits.rs",
+        format!(
+            "pub struct UInt<A,B>(pub A,pub B);pub struct UTerm;pub struct B0;pub type Big={ty};"
+        ),
+    );
+    let hir = flux_hir::lower(&mut db, root, Symbol::intern("bits"));
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    encode(&hir.items, hir.items.main_crate());
 }

@@ -609,7 +609,7 @@ fn resolve_fetch_and_build_without_existing_lockfile_or_cargo() {
         )
         .completed();
         success(&output, "build resolved graph");
-        let output = Command::new(f.root.join("target/flux/app"))
+        let output = Command::new(f.root.join("target/flux/debug/app"))
             .output()
             .unwrap();
         success(&output, "run resolved graph");

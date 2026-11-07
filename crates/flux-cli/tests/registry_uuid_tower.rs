@@ -108,7 +108,7 @@ tower-layer = "=0.3.3"
                 .arg("--plan")
                 .arg(&plan);
             if optimized {
-                command.arg("-O");
+                command.arg("--release");
             }
             run(&mut command, root, &format!("flux-build-{optimized}"));
             let plan: serde_json::Value =
@@ -124,7 +124,11 @@ tower-layer = "=0.3.3"
                 );
             }
             let actual = run(
-                &mut Command::new(root.join("target/flux/registry-uuid-tower-consumer")),
+                &mut Command::new(root.join(if optimized {
+                    "target/flux/release/registry-uuid-tower-consumer"
+                } else {
+                    "target/flux/debug/registry-uuid-tower-consumer"
+                })),
                 root,
                 &format!("flux-run-{optimized}"),
             );

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::Options;
 
+pub(crate) mod build;
 mod execute;
 mod fetch;
 mod resolve;
@@ -77,7 +78,8 @@ struct Plan {
     lockfile: PathBuf,
     packages: Vec<PlannedPackage>,
     units: Vec<Unit>,
-    root_unit: usize,
+    root_unit: Option<usize>,
+    root_units: Vec<usize>,
 }
 #[derive(Serialize)]
 struct PlannedPackage {
@@ -151,78 +153,156 @@ fn make_plan(options: &Options) -> Result<Plan> {
         host: host.clone(),
     };
     let members = members(&workspace, &workspace_table, &manifest)?;
-    let mut selected = Vec::new();
+    let defaults = if !options.workspace
+        && options.package.is_none()
+        && manifest == workspace.join("Cargo.toml")
+    {
+        match workspace_table
+            .get("workspace")
+            .and_then(|w| w.get("default-members"))
+        {
+            Some(value) => Some(
+                strings(Some(value))?
+                    .into_iter()
+                    .map(|path| canonical(&workspace.join(path).join("Cargo.toml")))
+                    .collect::<Result<BTreeSet<_>>>()?,
+            ),
+            None if workspace_table.contains_key("package") => {
+                Some(BTreeSet::from([manifest.clone()]))
+            }
+            None => None,
+        }
+    } else if !options.workspace && options.package.is_none() {
+        Some(BTreeSet::from([manifest.clone()]))
+    } else {
+        None
+    };
+    if let Some(defaults) = &defaults {
+        for path in defaults {
+            if !members.contains(path) {
+                return Err(format!(
+                    "default member {} is not a workspace member",
+                    path.display()
+                ));
+            }
+        }
+    }
+    let mut roots = Vec::new();
     for path in members {
         let package = load(&path)?;
         let name = string(&package.fields, "name")?;
-        if options.package.as_deref().is_none_or(|n| n == name) {
-            selected.push((path, package));
+        if options.package.as_deref().is_some_and(|n| n != name)
+            || defaults
+                .as_ref()
+                .is_some_and(|paths| !paths.contains(&path))
+        {
+            continue;
+        }
+        let root = planner.identify(&package, None)?;
+        roots.push(root);
+        planner.packages.insert(root, package);
+        let features = planner.states.entry((root, Domain::Target)).or_default();
+        for feature in options.features.iter().flat_map(|s| s.split_whitespace()) {
+            if let Some((dep, name)) = feature.split_once('/') {
+                if !planner.packages[&root]
+                    .dependencies
+                    .iter()
+                    .any(|d| d.alias == dep)
+                {
+                    return Err(format!("unknown dependency `{dep}` in requested feature"));
+                }
+                features.optional.insert(dep.into());
+                features
+                    .forwarded
+                    .entry(dep.into())
+                    .or_default()
+                    .insert(name.into());
+                if planner.packages[&root]
+                    .features
+                    .get(dep)
+                    .is_some_and(|v| v == &[format!("dep:{dep}")])
+                {
+                    features.names.insert(dep.into());
+                }
+            } else {
+                features.names.insert(feature.into());
+            }
+        }
+        if !options.no_default_features && planner.packages[&root].features.contains_key("default")
+        {
+            features.names.insert("default".into());
         }
     }
-    let (_path, package) = if options.package.is_none()
-        && (manifest != workspace.join("Cargo.toml") || workspace_table.contains_key("package"))
-    {
-        (manifest.clone(), load(&manifest)?)
-    } else if selected.len() == 1 {
-        selected.pop().expect("one selected package")
-    } else {
-        return Err("select one workspace package with --package".into());
-    };
-    let root = planner.identify(&package, None)?;
-    let binary = binary(&package, options.bin.as_deref())?;
-    planner.packages.insert(root, package);
-    let features = planner.states.entry((root, Domain::Target)).or_default();
-    for feature in options.features.iter().flat_map(|s| s.split_whitespace()) {
-        if let Some((dep, name)) = feature.split_once('/') {
-            if !planner.packages[&root]
-                .dependencies
-                .iter()
-                .any(|d| d.alias == dep)
-            {
-                return Err(format!("unknown dependency `{dep}` in requested feature"));
-            }
-            features.optional.insert(dep.into());
-            features
-                .forwarded
-                .entry(dep.into())
-                .or_default()
-                .insert(name.into());
-            if planner.packages[&root]
-                .features
-                .get(dep)
-                .is_some_and(|v| v == &[format!("dep:{dep}")])
-            {
-                features.names.insert(dep.into());
-            }
-        } else {
-            features.names.insert(feature.into());
-        }
+    if roots.is_empty() {
+        return Err("no workspace packages selected".into());
     }
-    if !options.no_default_features && planner.packages[&root].features.contains_key("default") {
-        features.names.insert("default".into());
+    for &root in &roots {
+        if planner.packages[&root]
+            .library
+            .as_ref()
+            .is_some_and(|lib| lib.kind == "proc-macro")
+        {
+            let state = planner.states[&(root, Domain::Target)].clone();
+            planner.states.insert((root, Domain::Host), state);
+        }
     }
     planner.resolve()?;
-    if binary
-        .required_features
-        .iter()
-        .any(|f| !planner.states[&(root, Domain::Target)].names.contains(f))
-    {
-        return Err("selected binary requires disabled features".into());
-    }
     let mut units = Vec::new();
     let mut indices = BTreeMap::new();
     let mut active = BTreeSet::new();
-    let root_unit = planner.unit(
-        Key {
-            package: root,
-            domain: Domain::Target,
-            kind: "bin".into(),
-        },
-        Some(&binary),
-        &mut units,
-        &mut indices,
-        &mut active,
-    )?;
+    let mut root_units = Vec::new();
+    for root in roots {
+        let package = &planner.packages[&root];
+        let mut targets = Vec::new();
+        if (options.lib || (options.bin.is_none() && !options.bins))
+            && let Some(library) = &package.library
+        {
+            targets.push(library.clone());
+        }
+        if !options.lib || options.bins || options.bin.is_some() {
+            targets.extend(
+                binaries(package)?
+                    .into_iter()
+                    .filter(|t| options.bin.as_ref().is_none_or(|name| *name == t.name)),
+            );
+        }
+        for target in targets {
+            if target
+                .required_features
+                .iter()
+                .any(|f| !planner.states[&(root, Domain::Target)].names.contains(f))
+            {
+                if options.bin.is_some() {
+                    return Err("selected binary requires disabled features".into());
+                }
+                continue;
+            }
+            let kind = if target.kind == "bin" {
+                format!("bin:{}", target.name)
+            } else {
+                target.kind.clone()
+            };
+            root_units.push(planner.unit(
+                Key {
+                    package: root,
+                    domain: if target.kind == "proc-macro" {
+                        Domain::Host
+                    } else {
+                        Domain::Target
+                    },
+                    kind,
+                },
+                Some(&target),
+                &mut units,
+                &mut indices,
+                &mut active,
+            )?);
+        }
+    }
+    if root_units.is_empty() && (options.bin.is_some() || options.lib) {
+        return Err("no matching build targets selected".into());
+    }
+    let root_unit = root_units.first().copied();
     let used: BTreeSet<_> = units.iter().map(|u| u.package).collect();
     let package_indices: BTreeMap<_, _> = used.iter().enumerate().map(|(i, &p)| (p, i)).collect();
     let packages = used
@@ -256,6 +336,7 @@ fn make_plan(options: &Options) -> Result<Plan> {
         packages,
         units,
         root_unit,
+        root_units,
     };
     Ok(plan)
 }
@@ -558,7 +639,7 @@ impl Planner {
             )?;
             dependencies.push((edge.alias.clone(), index));
         }
-        if key.kind == "bin"
+        if key.kind.starts_with("bin:")
             && let Some(library) = &package.library
         {
             let index = self.unit(
@@ -891,7 +972,7 @@ fn members(root: &Path, table: &Table, manifest: &Path) -> Result<Vec<PathBuf>> 
     paths.dedup();
     Ok(paths)
 }
-fn binary(package: &Package, name: Option<&str>) -> Result<Target> {
+fn binaries(package: &Package) -> Result<Vec<Target>> {
     let dir = package.manifest.parent().ok_or("manifest has no parent")?;
     let mut targets = BTreeMap::new();
     if boolean(&package.fields, "autobins", true)? {
@@ -930,29 +1011,20 @@ fn binary(package: &Package, name: Option<&str>) -> Result<Target> {
             }
         }
     }
+    let mut explicit = Vec::new();
     if let Some(bins) = package.table.get("bin") {
         for value in bins.as_array().ok_or("expected [[bin]]")? {
             let fields = value.as_table().ok_or("expected binary table")?;
-            let target = target(dir, &package.fields, fields, "bin", "src/main.rs")?;
-            targets.insert(target.name.clone(), target);
+            explicit.push(target(dir, &package.fields, fields, "bin", "src/main.rs")?);
         }
     }
-    let wanted = name.or_else(|| {
-        package
-            .fields
-            .get("default-run")
-            .and_then(toml::Value::as_str)
-    });
-    let mut matches: Vec<_> = targets
-        .into_values()
-        .filter(|t| wanted.is_none_or(|n| n == t.name))
-        .collect();
-    if matches.len() == 1 {
-        Ok(matches.remove(0))
-    } else {
-        Err("select one binary with --bin".into())
+    targets.retain(|_, automatic| !explicit.iter().any(|target| target.root == automatic.root));
+    for target in explicit {
+        targets.insert(target.name.clone(), target);
     }
+    Ok(targets.into_values().collect())
 }
+
 fn target(
     dir: &Path,
     package: &Table,

@@ -18,11 +18,16 @@ use std::fmt;
 use flux_arena::Idx;
 use flux_intern::Symbol;
 
-/// Maximum byte length or element count of one metadata allocation.
+/// Maximum element count of one metadata collection.
 pub const MAX_RECORD_LENGTH: usize = 1_000_000;
 
+/// Maximum byte length of a string or an already encoded metadata stream.
+pub const MAX_BYTE_LENGTH: usize = 64 * 1024 * 1024;
+
 /// Maximum number of simultaneously nested metadata records.
-pub const MAX_NESTING_DEPTH: u32 = 128;
+// A single type argument adds several structural records. This accommodates
+// 64-bit typenum aliases while retaining a bound on recursive decoding.
+pub const MAX_NESTING_DEPTH: u32 = 512;
 
 /// A malformed or unsupported Fluxlib metadata record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +235,15 @@ impl Encoder {
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }
+    /// Writes one bounded byte stream without treating bytes as collection records.
+    pub fn blob(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if bytes.len() > MAX_BYTE_LENGTH {
+            return Err(Error("metadata allocation limit exceeded"));
+        }
+        (bytes.len() as u32).encode(self)?;
+        self.write(bytes);
+        Ok(())
+    }
     pub fn write(&mut self, bytes: &[u8]) {
         self.bytes.extend_from_slice(bytes);
     }
@@ -393,9 +407,17 @@ impl<'a> Decoder<'a> {
         self.leave();
         result
     }
+    /// Borrows a bounded byte stream without allocating its decoded contents.
+    pub fn blob(&mut self) -> Result<&'a [u8], Error> {
+        let length = self.bounded_length(MAX_BYTE_LENGTH)?;
+        self.read(length)
+    }
     pub fn length(&mut self) -> Result<usize, Error> {
+        self.bounded_length(MAX_RECORD_LENGTH)
+    }
+    fn bounded_length(&mut self, limit: usize) -> Result<usize, Error> {
         let n = u32::decode(self)? as usize;
-        if n > self.remaining() || n > MAX_RECORD_LENGTH {
+        if n > self.remaining() || n > limit {
             return Err(Error("metadata allocation limit exceeded"));
         }
         Ok(n)
@@ -463,9 +485,7 @@ impl Decode for char {
 }
 impl Encode for str {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
-        self.len().encode(e)?;
-        e.write(self.as_bytes());
-        Ok(())
+        e.blob(self.as_bytes())
     }
 }
 impl Encode for String {
@@ -475,8 +495,7 @@ impl Encode for String {
 }
 impl Decode for String {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
-        let n = d.length()?;
-        let text = std::str::from_utf8(d.read(n)?).map_err(|_| Error("invalid metadata utf-8"))?;
+        let text = std::str::from_utf8(d.blob()?).map_err(|_| Error("invalid metadata utf-8"))?;
         Ok(text.to_owned())
     }
 }

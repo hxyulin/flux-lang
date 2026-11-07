@@ -1,8 +1,8 @@
 //! Token trees and the process protocol used by Flux's procedural macro host.
 //!
 //! This bootstrap API supports token construction and traversal, byte-range spans,
-//! and a bounded binary process protocol. Span hygiene resolution and mixed-site
-//! contexts are not supported and panic explicitly when requested. Identifiers
+//! and a bounded binary process protocol. Spans use the invocation's root
+//! context; mixed-site contexts panic explicitly when requested. Identifiers
 //! use Unicode XID classes and NFC normalization, as Rust does.
 
 use std::fmt;
@@ -68,8 +68,10 @@ impl Span {
     pub fn source_text(&self) -> Option<String> {
         None
     }
+    /// Retains this location with the other's resolution context. Every span
+    /// accepted by the native host has the invocation's root context.
     pub fn resolved_at(self, _: Self) -> Self {
-        panic!("procedural macro span resolution is not supported yet")
+        self
     }
     pub fn located_at(self, other: Self) -> Self {
         other
@@ -1061,6 +1063,8 @@ mod tests {
         let span = Span::new(4, 12);
         assert_eq!(span.start(), Span::new(4, 4));
         assert_eq!(span.end(), Span::new(12, 12));
+        assert_eq!(span.resolved_at(Span::call_site()), span);
+        assert_eq!(Span::call_site().resolved_at(span), Span::call_site());
         let group = Group::new(Delimiter::Brace, TokenStream::new());
         assert_eq!(group.span_open(), Span::call_site());
         assert_eq!(group.span_close(), Span::call_site());

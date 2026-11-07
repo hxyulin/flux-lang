@@ -183,7 +183,11 @@ fn native_macros_match_rustc() {
         let output = run(&mut command, &root, &format!("flux-build-{optimize}"));
         support::oracle::success(&output, "Flux macros build");
         let output = run(
-            &mut Command::new(root.join("target/flux/app")),
+            &mut Command::new(root.join(if optimize {
+                "target/flux/release/app"
+            } else {
+                "target/flux/debug/app"
+            })),
             &root,
             &format!("flux-run-{optimize}"),
         );

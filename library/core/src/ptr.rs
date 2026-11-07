@@ -75,7 +75,7 @@ pub unsafe fn read<T>(src: *const T) -> T {
 
 /// Reads an initialized value without requiring `src` to be aligned.
 /// The caller must provide readable memory for the entire value. Currently
-/// only `u8`, `u16`, `u32`, `u64` and `usize` are supported; other types are
+/// only unsigned integer types are supported; other types are
 /// rejected after substitution. Constant evaluation is not supported.
 pub unsafe fn read_unaligned<T>(src: *const T) -> T {
     unsafe { crate::intrinsics::read_unaligned(src) }

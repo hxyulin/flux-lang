@@ -164,7 +164,11 @@ fn main(){
             "a build dependency must not enable an optional target proc macro"
         );
         let actual = run(
-            &mut Command::new(root.join("target/flux/app-tool")),
+            &mut Command::new(root.join(if optimized {
+                "target/flux/release/app-tool"
+            } else {
+                "target/flux/debug/app-tool"
+            })),
             &root,
             &format!("run-{optimized}"),
         );
@@ -193,7 +197,7 @@ fn main(){
                     .any(|f| f == "alloc")
         }));
         let actual = run(
-            &mut Command::new(root.join("target/flux/app-tool")),
+            &mut Command::new(root.join("target/flux/debug/app-tool")),
             &root,
             &format!("run-{feature}"),
         );
@@ -244,7 +248,7 @@ fn main(){
     );
     support::oracle::success(&output, "Flux target derive expansion");
     let actual = run(
-        &mut Command::new(root.join("target/flux/app-tool")),
+        &mut Command::new(root.join("target/flux/debug/app-tool")),
         &root,
         "run-macro-target",
     );

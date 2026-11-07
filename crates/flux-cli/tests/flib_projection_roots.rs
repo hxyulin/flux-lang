@@ -104,3 +104,127 @@ fn main() {
         assert!(!directory.join("a.rs").exists());
     }
 }
+
+#[test]
+fn concrete_blanket_vtable_retains_private_formatter_after_source_removal() {
+    let scratch = scratch::Scratch::new("out/flib-private-formatter");
+    let directory = scratch.path().canonicalize().unwrap();
+    let library = r#"
+use std::fmt::Write;
+struct Buffer { count: usize }
+impl Write for Buffer {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.count += s.len();
+        Ok(())
+    }
+}
+pub fn length<T: std::fmt::Display>(value: T) -> usize {
+    let mut buffer = Buffer { count: 0 };
+    Write::write_fmt(&mut buffer, format_args!("{value}")).unwrap();
+    buffer.count
+}
+"#;
+    std::fs::write(
+        directory.join("main.rs"),
+        "fn main() { println!(\"{}\", a::length(123)); }",
+    )
+    .unwrap();
+    for optimized in [false, true] {
+        std::fs::write(directory.join("a.rs"), library).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
+        command.current_dir(&directory).args([
+            "build",
+            "a.rs",
+            "--crate-type",
+            "lib",
+            "-o",
+            "a.flib",
+        ]);
+        if optimized {
+            command.arg("-O");
+        }
+        successful(&mut command, "formatter-library");
+        std::fs::remove_file(directory.join("a.rs")).unwrap();
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
+        command
+            .current_dir(&directory)
+            .args(["build", "main.rs", "--extern", "a=a.flib", "-o", "program"]);
+        if optimized {
+            command.arg("-O");
+        }
+        successful(&mut command, "formatter-program");
+        let actual = successful(
+            &mut Command::new(directory.join("program")),
+            "formatter-run",
+        );
+        assert_eq!(actual.stdout, b"3\n");
+    }
+}
+
+#[test]
+fn macro_trait_impl_symbols_survive_shifted_dependency_indices() {
+    let scratch = scratch::Scratch::new("out/flib-macro-impl-identity");
+    let directory = scratch.path().canonicalize().unwrap();
+    for (name, source) in [
+        (
+            "traits",
+            r#"
+            pub trait Finish { fn finish(self) -> u32; }
+            #[macro_export]
+            macro_rules! make {
+                ($name:ident) => {
+                    pub struct $name;
+                    impl $crate::Finish for $name { fn finish(self) -> u32 { 42 } }
+                };
+            }
+        "#,
+        ),
+        ("padding", "pub fn value() -> u32 { 1 }"),
+        (
+            "a",
+            "traits::make!(Value); pub fn answer<T>(_: T) -> u32 { traits::Finish::finish(Value) }",
+        ),
+        (
+            "main",
+            "fn main() { println!(\"{} {}\", a::answer(0u8), padding::value()); }",
+        ),
+    ] {
+        std::fs::write(directory.join(format!("{name}.rs")), source).unwrap();
+    }
+    for name in ["traits", "padding", "a"] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_fluxc"));
+        command.current_dir(&directory).args([
+            "build",
+            &format!("{name}.rs"),
+            "--crate-type",
+            "lib",
+            "-o",
+            &format!("{name}.flib"),
+        ]);
+        if name == "a" {
+            command.args(["--extern", "traits=traits.flib"]);
+        }
+        successful(&mut command, "macro-identity-library");
+        std::fs::remove_file(directory.join(format!("{name}.rs"))).unwrap();
+    }
+    successful(
+        Command::new(env!("CARGO_BIN_EXE_fluxc"))
+            .current_dir(&directory)
+            .args([
+                "build",
+                "main.rs",
+                "--extern",
+                "padding=padding.flib",
+                "--extern",
+                "a=a.flib",
+                "-o",
+                "program",
+            ]),
+        "macro-identity-program",
+    );
+    let actual = successful(
+        &mut Command::new(directory.join("program")),
+        "macro-identity-run",
+    );
+    assert_eq!(actual.stdout, b"42 1\n");
+}

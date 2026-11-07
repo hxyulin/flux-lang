@@ -125,7 +125,7 @@ fn main() {
         "5\n41 42\ntrue\ntrue\ntrue\n"
     );
     for (label, args) in [("native", &[][..]), ("cargo-plan", &["--cargo"][..])] {
-        let _ = std::fs::remove_file(root.join("target/flux/app"));
+        let _ = std::fs::remove_file(root.join("target/flux/debug/app"));
         run(
             Command::new(env!("CARGO_BIN_EXE_flux"))
                 .args(["build", "--manifest-path"])
@@ -137,7 +137,7 @@ fn main() {
             &format!("{label}-build"),
         );
         let actual = run(
-            &mut Command::new(root.join("target/flux/app")),
+            &mut Command::new(root.join("target/flux/debug/app")),
             &root,
             &format!("{label}-run"),
         );

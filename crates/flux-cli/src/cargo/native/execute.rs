@@ -61,7 +61,7 @@ pub(super) fn run(
         String::new()
     };
     // Build scripts and the target graph follow the Cargo profile: `release`
-    // with `-O`, `dev` otherwise. An explicit setting overrides it.
+    // with `--release`, `dev` otherwise. An explicit setting overrides it.
     let optimize = build.is_some_and(|b| b.optimize);
     let debug_assertions = match build.and_then(|b| b.debug_assertions) {
         Some(enabled) => enabled,
@@ -98,7 +98,10 @@ pub(super) fn run(
     let mut outputs: Vec<Output> = plan.units.iter().map(|_| Output::default()).collect();
     let mut done: Vec<bool> = selected.iter().map(|s| !s).collect();
     let mut started = done.clone();
-    let jobs = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let jobs = options.jobs.map_or_else(
+        || std::thread::available_parallelism().map_or(1, |n| n.get()),
+        |n| n as usize,
+    );
     let (finished, completions) = std::sync::mpsc::channel::<(usize, Result<()>)>();
     let mut running = 0;
     let mut failure = None;
@@ -143,7 +146,7 @@ pub(super) fn run(
             // thread, while rustc units keep running in their workers.
             let next =
                 (0..plan.units.len()).find(|&i| ready(&started, i) && (script(i) || native_macros));
-            if let Some(index) = next.filter(|_| failure.is_none()) {
+            if let Some(index) = next.filter(|_| failure.is_none() && running < jobs) {
                 started[index] = true;
                 let host = HostSettings {
                     version: &version,
@@ -151,6 +154,8 @@ pub(super) fn run(
                     rustc: &rustc,
                     native_macros,
                     debug_assertions,
+                    release: optimize,
+                    jobs,
                 };
                 match flux_unit(&plan, &outputs, index, &root, &host) {
                     Ok(output) => {
@@ -215,7 +220,7 @@ pub(super) fn run(
                     start.elapsed()
                 );
             }
-            compile_plan(&prepared, options)
+            compile_plan(&prepared, options, jobs)
         }
         None => Ok(ExitCode::SUCCESS),
     }
@@ -224,12 +229,16 @@ pub(super) fn run(
 /// Serializes preparations of one workspace, which share its host directory.
 fn lock_directory(root: &Path) -> Result<std::fs::File> {
     let file = std::fs::File::create(root.join(".lock")).map_err(|e| e.to_string())?;
-    if let Err(std::fs::TryLockError::WouldBlock) = file.try_lock() {
-        eprintln!(
-            "waiting for another native host preparation in {}",
-            root.display()
-        );
-        file.lock().map_err(|e| e.to_string())?;
+    match file.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => {
+            eprintln!(
+                "waiting for another native host preparation in {}",
+                root.display()
+            );
+            file.lock().map_err(|e| e.to_string())?;
+        }
+        Err(error) => return Err(format!("cannot lock native build directory: {error}")),
     }
     Ok(file)
 }
@@ -295,6 +304,8 @@ struct HostSettings<'a> {
     rustc: &'a std::ffi::OsStr,
     native_macros: bool,
     debug_assertions: bool,
+    release: bool,
+    jobs: usize,
 }
 
 /// Compiles a build script with Flux and runs it, or builds a Flux macro host.
@@ -311,6 +322,8 @@ fn flux_unit(
         rustc,
         native_macros,
         debug_assertions,
+        release,
+        jobs,
     } = *host;
     let unit = &plan.units[index];
     let package = &plan.packages[unit.package];
@@ -371,10 +384,10 @@ fn flux_unit(
         .env("OUT_DIR", &out)
         .env("HOST", &plan.host)
         .env("TARGET", &plan.target)
-        .env("OPT_LEVEL", "0")
-        .env("DEBUG", "true")
-        .env("PROFILE", "debug")
-        .env("NUM_JOBS", "1")
+        .env("OPT_LEVEL", if release { "3" } else { "0" })
+        .env("DEBUG", if release { "false" } else { "true" })
+        .env("PROFILE", if release { "release" } else { "debug" })
+        .env("NUM_JOBS", jobs.to_string())
         .env(
             "RUSTC",
             if native_macros {
@@ -712,6 +725,7 @@ fn host_sources(
                 &outputs[id],
                 &unit.target.root,
                 cfg.clone(),
+                None,
             )?)
         } else {
             None
@@ -793,16 +807,16 @@ fn macro_exports(
     output: &Output,
     source: &std::path::Path,
     cfg: flux_hir::CrateCfg,
+    server: Option<&Path>,
 ) -> Result<Vec<flux_hir::ProcMacro>> {
     if let Some(exports) = &output.macros {
         return Ok(exports.clone());
     }
-    crate::proc_macro::exports(
-        rustc,
-        output.artifact.as_ref().ok_or("missing host macro")?,
-        source,
-        cfg,
-    )
+    let artifact = output.artifact.as_ref().ok_or("missing host macro")?;
+    if let Some(server) = server {
+        return crate::proc_macro::exports_from_server(server, artifact, source, cfg);
+    }
+    crate::proc_macro::exports(rustc, artifact, source, cfg)
 }
 
 fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<String, String>> {
@@ -1032,12 +1046,45 @@ fn parse_script(text: &str, out_dir: PathBuf) -> Result<ScriptOutput> {
     Ok(output)
 }
 
-fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<ExitCode> {
+fn compile_plan(
+    prepared: &Prepared,
+    options: crate::BuildOptions,
+    jobs: usize,
+) -> Result<ExitCode> {
+    for &root in &prepared.plan.root_units {
+        let status = compile_root(prepared, root, options, jobs)?;
+        if status != ExitCode::SUCCESS {
+            return Ok(status);
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn compile_root(
+    prepared: &Prepared,
+    root_unit: usize,
+    options: crate::BuildOptions,
+    jobs: usize,
+) -> Result<ExitCode> {
     let plan = &prepared.plan;
+    if plan.units[root_unit].target.kind == "proc-macro" {
+        return Ok(ExitCode::SUCCESS);
+    }
+    let mut needed = BTreeSet::new();
+    let mut pending = vec![root_unit];
+    while let Some(id) = pending.pop() {
+        if needed.insert(id) {
+            pending.extend(prerequisites(plan, id));
+        }
+    }
     let mut sources = Vec::new();
     let mut indices = BTreeMap::new();
     let mut native = flux_codegen::NativeLink::default();
+    let mut macro_server = None;
     for (id, unit) in plan.units.iter().enumerate() {
+        if !needed.contains(&id) {
+            continue;
+        }
         if unit.target.kind == "build-script"
             || (unit.domain == Domain::Host && unit.target.kind != "proc-macro")
         {
@@ -1058,11 +1105,15 @@ fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<Exi
         let mut cfg = crate::cargo::cfg(script.map_or(&[], |s| s.cfgs.as_slice()), &unit.features)?;
         let macros = if unit.target.kind == "proc-macro" {
             cfg.names.push(flux_intern::Symbol::intern("proc_macro"));
+            if prepared.outputs[id].macros.is_none() && macro_server.is_none() {
+                macro_server = Some(crate::proc_macro::rustc_server(&prepared.rustc)?);
+            }
             Some(macro_exports(
                 &prepared.rustc,
                 &prepared.outputs[id],
                 &unit.target.root,
                 cfg.clone(),
+                macro_server.as_deref(),
             )?)
         } else {
             None
@@ -1115,24 +1166,32 @@ fn compile_plan(prepared: &Prepared, options: crate::BuildOptions) -> Result<Exi
             environment: Some(env),
         });
     }
-    let root = *indices.get(&plan.root_unit).ok_or("missing root unit")?;
+    let root = *indices.get(&root_unit).ok_or("missing root unit")?;
     // Link arguments apply to the package's own binaries only.
-    let binary = &plan.units[plan.root_unit];
+    let binary = &plan.units[root_unit];
+    let library = binary.target.kind != "bin";
     if let Some(script) = (binary.build_script).and_then(|i| prepared.outputs[i].script.as_ref()) {
         let arguments: Vec<String> = (script.link_args.iter())
             .filter(|(name, _)| name.as_ref().is_none_or(|n| *n == binary.target.name))
             .map(|(_, argument)| argument.clone())
             .collect();
-        crate::cargo::link_arguments(
-            &mut native,
-            &arguments,
-            package_directory(plan, plan.root_unit)?,
-        )?;
+        crate::cargo::link_arguments(&mut native, &arguments, package_directory(plan, root_unit)?)?;
     }
     let output = plan
         .workspace_root
         .join("target/flux")
-        .join(&plan.units[plan.root_unit].target.name);
+        .join(if options.optimize { "release" } else { "debug" })
+        .join(if library {
+            format!("lib{}.flib", binary.target.name.replace('-', "_"))
+        } else {
+            binary.target.name.clone()
+        });
+    std::fs::create_dir_all(output.parent().ok_or("build output has no parent")?)
+        .map_err(|e| e.to_string())?;
+    if library || native == flux_codegen::NativeLink::default() {
+        return super::build::run(&sources, root, &output, options, jobs, library);
+    }
+    // Native linker overrides still use the source-graph linker.
     let success = crate::build::compile(CompileRequest {
         file: &sources[root].file,
         crate_name: &sources[root].name,

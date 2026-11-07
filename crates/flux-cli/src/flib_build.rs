@@ -266,6 +266,19 @@ pub(crate) fn compile(
         {
             eprintln!("warning: {warning}");
         }
+        let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
+        let freshness = crate::flib::freshness::Snapshot::capture(
+            &hir.items,
+            own,
+            &configuration,
+            &dependency_hashes,
+        )?;
+        crate::artifact_cache::record(
+            output,
+            freshness
+                .as_ref()
+                .filter(|_| hir.items.native_libraries.is_empty()),
+        )?;
     } else {
         let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
         let freshness = crate::flib::freshness::Snapshot::capture(
@@ -384,4 +397,35 @@ pub(crate) fn is_fresh(
         input.environment.as_ref(),
         Capability::Object,
     )
+}
+
+/// Checks an executable against its exact compiler, configuration, inputs and dependencies.
+pub(crate) fn is_binary_fresh(
+    input: &SourceInput,
+    output: &Path,
+    options: BuildOptions,
+    externs: &[(String, std::path::PathBuf)],
+) -> Result<bool, String> {
+    let (config, dependencies) = freshness_configuration(input, options, externs, CrateType::Bin)?;
+    crate::artifact_cache::is_fresh(output, &config, &dependencies, input.environment.as_ref())
+}
+
+fn freshness_configuration(
+    input: &SourceInput,
+    options: BuildOptions,
+    externs: &[(String, std::path::PathBuf)],
+    kind: CrateType,
+) -> Result<(Vec<u8>, Vec<[u8; 32]>), String> {
+    let known = crate::flib::semantic::DependencyState::new()?.dependencies;
+    let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
+    let artifacts = crate::flib::semantic::resolve_paths(&paths, &known)?;
+    let mut dependencies: Vec<_> = known.iter().map(|d| d.hash).collect();
+    dependencies.extend(artifacts.iter().map(|a| a.manifest.hash));
+    let mut aliases = Vec::new();
+    for (alias, path) in externs {
+        let data = std::fs::read(path).map_err(|e| e.to_string())?;
+        aliases.push((alias.clone(), crate::flib::semantic::manifest(&data)?.hash));
+    }
+    let config = configuration(input, options, kind, Capability::Object, &aliases)?;
+    Ok((config, dependencies))
 }

@@ -251,7 +251,7 @@ mod tests {
     fn semantic_depth_cannot_be_hidden_behind_previously_completed_allocations() {
         let mut e = Encoder::new();
         let mut shared = Arc::new(Value::Bool(true));
-        for _ in 0..126 {
+        for _ in 0..flux_hir::flib::MAX_NESTING_DEPTH - 2 {
             Value::Ref(shared.clone()).encode(&mut e).unwrap();
             shared = Arc::new(Value::Ref(shared));
         }
@@ -260,7 +260,7 @@ mod tests {
         assert!(Value::Ref(shared).encode(&mut e).is_err());
         let bytes = e.into_bytes();
         let mut d = Decoder::new(&bytes);
-        for _ in 0..127 {
+        for _ in 0..flux_hir::flib::MAX_NESTING_DEPTH - 1 {
             Value::decode(&mut d).unwrap();
         }
         d.finish().unwrap();

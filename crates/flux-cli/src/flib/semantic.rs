@@ -32,7 +32,7 @@ pub fn crate_hash(
 ) -> Result<[u8; 32], String> {
     let mut e = Encoder::new();
     let encode = |result: Result<(), flux_hir::flib::Error>| result.map_err(|e| e.to_string());
-    encode("FLIB-CRATE-ID-v1".encode(&mut e))?;
+    encode("FLIB-CRATE-ID-v2".encode(&mut e))?;
     encode(compiler_identity()?.as_slice().encode(&mut e))?;
     let data = items
         .crates
@@ -55,7 +55,12 @@ pub fn crate_hash(
         }
     }
     encode(sources.encode(&mut e))?;
-    encode(expansion_observations(items, krate, dependencies)?.encode(&mut e))?;
+    let observations = expansion_observations(items, krate, dependencies)?;
+    encode(
+        flux_hir::flib::digest(&observations)
+            .as_slice()
+            .encode(&mut e),
+    )?;
     let tracked = data.tracked_inputs();
     let files: Vec<_> = tracked
         .files
@@ -216,9 +221,11 @@ pub fn write_checked(checked: CheckedCrate<'_>) -> Result<Vec<u8>, String> {
         object
             .as_ref()
             .map(|bytes| flux_hir::flib::digest(bytes).to_vec()),
-        requirements.into_bytes(),
     )
         .encode(&mut linkage)
+        .map_err(|e| e.to_string())?;
+    linkage
+        .blob(&requirements.into_bytes())
         .map_err(|e| e.to_string())?;
     let mut freshness = freshness
         .map(super::freshness::Snapshot::to_bytes)
@@ -659,7 +666,7 @@ fn validate_linkage(metadata: &Metadata, object: Option<&[u8]>) -> Result<bool, 
         return Err("flux artifact target mismatch; rebuild the artifact".into());
     }
     let checksum = Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
-    Vec::<u8>::decode(&mut d).map_err(|e| e.to_string())?;
+    d.blob().map_err(|e| e.to_string())?;
     d.finish().map_err(|e| e.to_string())?;
     match (checksum, object) {
         (None, None) => Ok(false),
@@ -681,8 +688,7 @@ fn link_requirements(metadata: &Metadata) -> Result<&[u8], String> {
     u32::decode(&mut d).map_err(|e| e.to_string())?;
     String::decode(&mut d).map_err(|e| e.to_string())?;
     Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
-    let length = d.length().map_err(|e| e.to_string())?;
-    let bytes = d.read(length).map_err(|e| e.to_string())?;
+    let bytes = d.blob().map_err(|e| e.to_string())?;
     d.finish().map_err(|e| e.to_string())?;
     Ok(bytes)
 }

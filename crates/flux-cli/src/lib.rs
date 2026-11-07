@@ -5,6 +5,7 @@ pub mod proc_macro;
 pub mod builtins;
 pub mod flib;
 
+mod artifact_cache;
 mod build;
 mod cargo;
 mod driver;

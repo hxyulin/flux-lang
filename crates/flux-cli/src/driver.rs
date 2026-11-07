@@ -17,6 +17,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     #[command(hide = true)]
+    BuildUnit { request: PathBuf },
+    #[command(hide = true)]
     PackageDriver {
         #[command(subcommand)]
         command: cargo::Command,
@@ -197,6 +199,7 @@ pub fn compiler_main() -> ExitCode {
 /// Runs a command. `Ok(false)` means the input had errors.
 fn run(command: Command) -> Result<bool, String> {
     match command {
+        Command::BuildUnit { request } => cargo::native::build::worker(&request),
         Command::BuildBuiltins {
             native_object,
             optimize,
