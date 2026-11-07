@@ -2,6 +2,7 @@
 
 use super::{Decode, Decoder, Encode, Encoder, Error};
 use crate::def_map::{Binding, BindingKind, Def, Scope};
+use crate::item_tree::Uses;
 use crate::item_tree::{
     Abi, AnonConst, ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Block, Bound, Const, Derive,
     Discriminant, DynRef, Field, Function, GenericArgs, GenericParam, Generics, Impl, ImplTarget,
@@ -10,6 +11,19 @@ use crate::item_tree::{
     TraitType, TypeAlias, TypeOutlives, TypeRef, Use, UseCapture, UseKind, Variant, Visibility,
     WherePredicate,
 };
+
+// The index is derived from the original import sequence, never serialized.
+impl Encode for Uses {
+    fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        self[..].encode(e)
+    }
+}
+
+impl Decode for Uses {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        Ok(Vec::<Use>::decode(d)?.into_iter().collect())
+    }
+}
 
 macro_rules! record {
     ($ty:ty { $($field:ident),* $(,)? }) => {

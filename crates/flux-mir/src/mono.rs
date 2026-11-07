@@ -209,6 +209,10 @@ fn collect_roots(
             instances.push(instance);
         }
     }
+    // Static values and their vtables are fixed for this collection. Cache the
+    // complete traversal result, including empty answers, but still process
+    // reification and recursion depth separately for every use below.
+    let mut static_functions: FxHashMap<flux_hir::ConstId, Vec<Instance>> = FxHashMap::default();
     // All statics are emitted, but an ordinary constant becomes a root only
     // when reachable code uses it. Otherwise an unused pointer could trigger
     // unbounded monomorphization of a function that is never called.
@@ -223,6 +227,7 @@ fn collect_roots(
         }
         let mut found = Vec::new();
         value_functions(value, &mir.const_values, items, sigs, &mut found);
+        static_functions.insert(id, found.clone());
         for instance in found {
             reified.insert(instance);
             if (mir.instance_body(items, instance).is_some() || is_builtin_shim(items, instance))
@@ -359,8 +364,11 @@ fn collect_roots(
                         found.push(flux_solve::traits::resolve_instance(items, sigs, instance));
                     }
                     Operand::Const(Constant::Static { id, .. }) => {
-                        if let Some(value) = mir.const_values.items.get(*id) {
+                        if let Some(known) = static_functions.get(id) {
+                            found.extend_from_slice(known);
+                        } else if let Some(value) = mir.const_values.items.get(*id) {
                             value_functions(value, &mir.const_values, items, sigs, &mut found);
+                            static_functions.insert(*id, found.clone());
                         }
                     }
                     Operand::Const(Constant::Item { id, args, ty }) => {

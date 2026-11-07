@@ -444,8 +444,7 @@ pub(crate) fn resolve_predecessor(
             let mut import = None;
             if lowered.anchor == crate::PathAnchor::Plain {
                 loop {
-                    import = items.uses.iter().enumerate().rev().find(|(index, u)| !followed_imports.contains(index) && u.module == current
-                            && matches!(u.kind, crate::item_tree::UseKind::Named(alias) | crate::item_tree::UseKind::Module(alias) if alias == first));
+                    import = items.uses.named(current, first, &followed_imports);
                     if import.is_some() {
                         break;
                     }

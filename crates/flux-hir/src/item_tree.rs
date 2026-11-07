@@ -7,6 +7,7 @@ mod collect;
 #[path = "flib/crate_data.rs"]
 mod flib_data;
 mod generics;
+mod imports;
 mod sized_dispatch;
 
 pub(crate) use attributes::{attr_name, check_attr, check_attrs};
@@ -16,6 +17,7 @@ use attributes::{
 };
 pub(crate) use generics::lower_type;
 use generics::{collect_generics, collect_generics_with_drop};
+pub use imports::Uses;
 pub use sized_dispatch::SizedDispatch;
 
 use std::path::{Path as FsPath, PathBuf};
@@ -139,7 +141,7 @@ pub struct ItemTree {
     /// Free and associated constants.
     pub consts: LayeredArena<Const>,
     pub type_aliases: LayeredArena<TypeAlias>,
-    pub uses: Vec<Use>,
+    pub uses: Uses,
     /// Native libraries requested by literal foreign-block attributes.
     pub native_libraries: Vec<NativeLibrary>,
     /// What each module's names mean, imports included.
