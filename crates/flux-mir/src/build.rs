@@ -61,6 +61,7 @@ fn build_file_inner(
     required_functions: &[FunctionId],
 ) -> FileMir {
     // Signatures are final once type checking is done.
+    let _queries = flux_solve::remember_solver_queries(&hir.items, &typed.sigs);
     let _fields = flux_solve::remember_field_types(&typed.sigs);
     let _headers = flux_solve::remember_impl_headers(&hir.items, &typed.sigs);
     let source = imported.map_or(hir.items.core, |i| i.source_counts());

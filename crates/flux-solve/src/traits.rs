@@ -1030,6 +1030,21 @@ pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty
     if !ty.has_aliases() && !ty.has_opaques() {
         return ty;
     }
+    // A fresh normalizer can still be part of an ongoing selection's proof.
+    if SELECTION.with_borrow(|s| !s.active.is_empty()) {
+        return normalize_uncached(items, sigs, env, ty);
+    }
+    crate::query_cache::normalize(items, sigs, env, ty)
+}
+pub(crate) fn normalize_uncached(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Projection],
+    ty: Ty,
+) -> Ty {
+    if !ty.has_aliases() && !ty.has_opaques() {
+        return ty;
+    }
     let mut normalizer = Normalizer {
         items,
         sigs,
@@ -1259,6 +1274,17 @@ pub fn instance_ty(items: &ItemTree, sigs: &Signatures, ty: Ty, args: &[Ty]) -> 
 /// IntoIterator>::IntoIter` for `U: IntoIterator` is not `U`), so there
 /// a block's bounds must hold whatever the bounds in scope.
 pub fn select_impl(
+    items: &ItemTree,
+    sigs: &Signatures,
+    goal: Predicate,
+) -> Option<(ImplId, Vec<Ty>)> {
+    // Cached answers must not skip recursive cycle/depth checks or their cuts.
+    if SELECTION.with_borrow(|s| !s.active.is_empty()) {
+        return select_impl_uncached(items, sigs, goal);
+    }
+    crate::query_cache::select(items, sigs, goal)
+}
+pub(crate) fn select_impl_uncached(
     items: &ItemTree,
     sigs: &Signatures,
     goal: Predicate,
@@ -2294,4 +2320,47 @@ pub fn has_interior_mutability(items: &ItemTree, sigs: &Signatures, ty: Ty) -> b
         }
     }
     visit(items, sigs, ty, &mut rustc_hash::FxHashSet::default())
+}
+
+#[cfg(test)]
+mod query_cache_tests {
+    use super::*;
+
+    #[test]
+    fn active_selection_bypasses_completed_root_answers() {
+        let mut db = flux_hir::SourceDb::new();
+        let root = db.add(
+            "active_queries.rs",
+            "trait Value { type Out; } impl Value for bool { type Out = char; }",
+        );
+        let items = ItemTree::new(&mut db, root, Symbol::intern("active_queries"), false);
+        let imp = items.impls.iter().next().unwrap().0;
+        let trait_ = items.traits.iter().next().unwrap().0;
+        let trait_ref = TraitRef {
+            trait_,
+            name: Symbol::intern("Value"),
+            args: &[],
+        };
+        let goal = trait_ref.with_self(Ty::BOOL);
+        let mut sigs = Signatures::default();
+        sigs.impls.insert(imp, Ty::BOOL);
+        sigs.impl_traits.insert(imp, trait_ref);
+        sigs.impl_types.insert(
+            imp,
+            vec![(Symbol::intern("Out"), Ty::CHAR)].into_boxed_slice(),
+        );
+        sigs.impl_index = crate::impl_index::ImplIndex::new(&items, &sigs);
+        let alias = Ty::alias(alias_of(&items, trait_ref, Ty::BOOL, Symbol::intern("Out")));
+        let _scope = crate::remember_solver_queries(&items, &sigs);
+        assert!(select_impl(&items, &sigs, goal).is_some());
+        assert_eq!(normalize(&items, &sigs, &[], alias), Ty::CHAR);
+        {
+            let _reset = Selecting;
+            SELECTION.with_borrow_mut(|s| s.active.push(goal));
+            assert!(select_impl(&items, &sigs, goal).is_none());
+            assert_eq!(normalize(&items, &sigs, &[], alias), alias);
+        }
+        assert!(select_impl(&items, &sigs, goal).is_some());
+        assert_eq!(normalize(&items, &sigs, &[], alias), Ty::CHAR);
+    }
 }

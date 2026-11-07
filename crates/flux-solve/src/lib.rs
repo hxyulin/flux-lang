@@ -11,7 +11,9 @@ pub use flux_ty_ir::metadata::{transparent_object_tail, transparent_object_unsiz
 
 pub mod fn_regions;
 mod impl_headers;
+mod query_cache;
 pub use impl_headers::{ImplHeadersScope, remember_impl_headers};
+pub use query_cache::{SolverQueriesScope, remember_solver_queries};
 pub mod objects;
 mod struct_fields;
 pub mod traits;

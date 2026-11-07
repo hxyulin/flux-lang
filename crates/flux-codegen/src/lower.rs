@@ -192,6 +192,7 @@ fn lower_inner(
     mut timings: Option<&mut LoweringTimings>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
     let _shapes = shapes::scope(&typed.sigs);
+    let _queries = flux_solve::remember_solver_queries(&hir.items, &typed.sigs);
     let _fields = flux_solve::remember_field_types(&typed.sigs);
     let _headers = flux_solve::remember_impl_headers(&hir.items, &typed.sigs);
     let start = timings.is_some().then(std::time::Instant::now);

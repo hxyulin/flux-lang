@@ -192,6 +192,7 @@ pub fn infer_body(
     body: &Body,
     source_map: &BodySourceMap,
 ) -> InferenceResult {
+    let _queries = flux_solve::remember_solver_queries(items, sigs);
     let sig = &sigs[function];
     let data = &items.functions[function];
     let owner = Owner {
@@ -237,6 +238,7 @@ pub fn infer_const(
     body: &Body,
     source_map: &BodySourceMap,
 ) -> InferenceResult {
+    let _queries = flux_solve::remember_solver_queries(items, sigs);
     let data = &items.consts[konst];
     let ret = sigs.consts[konst];
     // A discriminant's `Self` is its enum, which is not generic.
