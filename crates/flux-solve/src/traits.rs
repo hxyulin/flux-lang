@@ -1484,6 +1484,16 @@ pub fn match_impl_sized(
     goal: Predicate,
     sized: bool,
 ) -> Option<Vec<Ty>> {
+    crate::impl_headers::match_impl(items, sigs, imp, goal, sized)
+}
+
+pub(crate) fn match_impl_sized_uncached(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    goal: Predicate,
+    sized: bool,
+) -> Option<Vec<Ty>> {
     let trait_ref = sigs.impl_traits.get(imp)?;
     if trait_ref.trait_ != goal.trait_ref.trait_ {
         return None;

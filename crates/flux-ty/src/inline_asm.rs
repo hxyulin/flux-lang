@@ -32,7 +32,11 @@ pub fn is_vector(items: &ItemTree, ty: Ty) -> bool {
 }
 
 pub fn supports(items: &ItemTree, sigs: &Signatures, ty: Ty, register: AsmRegister) -> bool {
+    if register.output_only() && matches!(ty.kind(), TyKind::FnPtr(_)) {
+        return false;
+    }
     match register.class() {
+        AsmRegister::Const => ty.as_int().is_some(),
         AsmRegister::Reg => match ty.kind() {
             TyKind::Int(i) => i.bits() <= 64 && (cfg!(target_arch = "aarch64") || i.bits() >= 16),
             TyKind::Float(_) => true,

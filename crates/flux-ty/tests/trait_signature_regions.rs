@@ -169,9 +169,11 @@ fn undeclared_nested_names_and_untracked_projections_are_rejected() {
             .iter()
             .any(|m| m.contains("undeclared lifetime"))
     );
+    let source = "trait Tr<'a> {} fn f<'a>(_: &'a dyn Tr<'a>) {} fn main() {}";
+    oracle(source, true);
+    assert!(resolve(source).2.is_empty());
     for source in [
         "trait Tr<'a> {} trait Sub<'a>: Tr<'a> {} fn main() {}",
-        "trait Tr<'a> {} fn f<'a>(_: &'a dyn Tr<'a>) {} fn main() {}",
         "trait Tr<'a> {} trait Sub<'a> where Self: Tr<'a> {} fn main() {}",
     ] {
         oracle(source, true);
@@ -180,7 +182,7 @@ fn undeclared_nested_names_and_untracked_projections_are_rejected() {
             messages
                 .iter()
                 .any(|m| m.contains("supertraits and associated type bounds")
-                    || m.contains("lifetime arguments on trait objects")
+                    || m.contains("lifetime parameters on traits")
                     || m.contains("qualified trait projections")),
             "{source}: {messages:?}"
         );

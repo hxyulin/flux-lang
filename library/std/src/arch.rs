@@ -26,6 +26,37 @@ pub fn __crc_detected() -> bool {
     }
 }
 
+/// Runtime query for the data-independent timing extension.
+#[doc(hidden)]
+pub fn __aarch64_dit_detected() -> bool {
+    if cfg!(target_feature = "dit") { return true; }
+    #[cfg(target_os = "macos")]
+    { query(b"hw.optional.arm.FEAT_DIT\0") }
+    #[cfg(target_os = "linux")]
+    { aarch64_hwcap(1 << 24) }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { false }
+}
+
+/// Runtime query for the speculation barrier extension.
+#[doc(hidden)]
+pub fn __aarch64_sb_detected() -> bool {
+    if cfg!(target_feature = "sb") { return true; }
+    #[cfg(target_os = "macos")]
+    { query(b"hw.optional.arm.FEAT_SB\0") }
+    #[cfg(target_os = "linux")]
+    { aarch64_hwcap(1 << 29) }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { false }
+}
+
+#[cfg(target_os = "linux")]
+fn aarch64_hwcap(mask: usize) -> bool {
+    unsafe extern "C" { fn getauxval(kind: usize) -> usize; }
+    // SAFETY: AT_HWCAP returns a scalar and takes no pointer arguments.
+    unsafe { getauxval(16) & mask != 0 }
+}
+
 #[cfg(target_os = "macos")]
 fn query(name: &[u8]) -> bool {
     unsafe extern "C" {

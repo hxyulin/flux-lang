@@ -1850,8 +1850,89 @@ impl Ctx<'_> {
         }
         match ty.kind() {
             TyKind::Infer(_) => self.new_var(false, origin),
+            TyKind::FnPtr(signature) if signature.regions.is_some() => {
+                self.fill_pointer_placeholders(signature, origin)
+            }
             _ => ty.map_children(|t| self.fill_placeholders(t, origin)),
         }
+    }
+
+    /// A pointer's recipe and signature share each captured wildcard. Filling
+    /// them independently would leave extra, unconstrained inference variables.
+    fn fill_pointer_placeholders(&mut self, signature: crate::FnSigTy, origin: TextRange) -> Ty {
+        fn rebuild(
+            cx: &mut Ctx<'_>,
+            ty: Ty,
+            recipe: (&[crate::FnRegion], &mut usize),
+            captures: (&[Ty], &[Ty]),
+            origin: TextRange,
+        ) -> Ty {
+            let (row, next) = recipe;
+            if let Some(crate::FnRegion::Type(index)) = row.get(*next)
+                && captures.0.get(*index as usize) == Some(&ty)
+            {
+                *next += 1;
+                return captures.1[*index as usize];
+            }
+            match ty.kind() {
+                TyKind::Ref(mutable, inner) => {
+                    *next += 1;
+                    Ty::new(TyKind::Ref(
+                        mutable,
+                        rebuild(cx, inner, (row, next), captures, origin),
+                    ))
+                }
+                TyKind::Adt(adt, args) => {
+                    *next += cx.items.structs[adt.strukt].generics.lifetimes.len();
+                    Ty::new(TyKind::Adt(
+                        adt,
+                        crate::ty::map_list(args, |ty| {
+                            rebuild(cx, ty, (row, next), captures, origin)
+                        }),
+                    ))
+                }
+                TyKind::Array(inner, length) => Ty::array_of(
+                    rebuild(cx, inner, (row, next), captures, origin),
+                    cx.fill_placeholders(length, origin),
+                ),
+                TyKind::Dynamic(object) => {
+                    *next += crate::regions::object_own_slots(cx.items, object);
+                    Ty::new(TyKind::Dynamic(
+                        object.map(|ty| rebuild(cx, ty, (row, next), captures, origin)),
+                    ))
+                }
+                _ => ty.map_children(|ty| rebuild(cx, ty, (row, next), captures, origin)),
+            }
+        }
+        let recipe = signature
+            .regions
+            .expect("pointer recipe checked before filling wildcards");
+        let captures: Vec<_> = recipe
+            .types
+            .iter()
+            .map(|&ty| self.fill_placeholders(ty, origin))
+            .collect();
+        let types: Vec<_> = signature
+            .inputs_output
+            .iter()
+            .zip(recipe.inputs_output)
+            .map(|(&ty, row)| rebuild(self, ty, (row, &mut 0), (recipe.types, &captures), origin))
+            .collect();
+        let rows: Vec<_> = recipe
+            .inputs_output
+            .iter()
+            .map(|row| row.to_vec())
+            .collect();
+        Ty::new(TyKind::FnPtr(crate::FnSigTy {
+            inputs_output: Ty::list(&types),
+            regions: Some(crate::FnPtrRegions::intern(
+                recipe.bound,
+                recipe.free,
+                &rows,
+                &captures,
+            )),
+            ..signature
+        }))
     }
 
     // Generic items.
@@ -2664,39 +2745,44 @@ impl Ctx<'_> {
             } => {
                 let count = prefix.len() + suffix.len();
                 let (elem, rest_ty) = match self.shallow(expected).kind() {
-                    TyKind::Array(elem, len) => match self.shallow(len).as_usize() {
-                        Some(n) if slice.is_none() && count != n as usize => {
-                            self.error(
-                                range,
-                                format!(
-                                    "pattern requires {count} element{} but array has {n}",
-                                    plural(count)
-                                ),
-                            );
-                            (elem, Ty::ERROR)
+                    TyKind::Array(elem, len) => {
+                        if slice.is_none() && matches!(self.shallow(len).kind(), TyKind::Infer(_)) {
+                            self.unify(len, Ty::usize_value(count as u64));
                         }
-                        Some(n) if count > n as usize => {
-                            self.error(
+                        match self.shallow(len).as_usize() {
+                            Some(n) if slice.is_none() && count != n as usize => {
+                                self.error(
+                                    range,
+                                    format!(
+                                        "pattern requires {count} element{} but array has {n}",
+                                        plural(count)
+                                    ),
+                                );
+                                (elem, Ty::ERROR)
+                            }
+                            Some(n) if count > n as usize => {
+                                self.error(
                                 range,
                                 format!(
                                     "pattern requires at least {count} element{} but array has {n}",
                                     plural(count)
                                 ),
                             );
-                            (elem, Ty::ERROR)
+                                (elem, Ty::ERROR)
+                            }
+                            Some(n) => {
+                                let rest = Ty::usize_value(n - count as u64);
+                                (elem, Ty::array_of(elem, rest))
+                            }
+                            None => {
+                                self.error(
+                                    range,
+                                    "cannot pattern-match on an array without a fixed length",
+                                );
+                                (elem, Ty::ERROR)
+                            }
                         }
-                        Some(n) => {
-                            let rest = Ty::usize_value(n - count as u64);
-                            (elem, Ty::array_of(elem, rest))
-                        }
-                        None => {
-                            self.error(
-                                range,
-                                "cannot pattern-match on an array without a fixed length",
-                            );
-                            (elem, Ty::ERROR)
-                        }
-                    },
+                    }
                     TyKind::Slice(elem) => (elem, expected),
                     TyKind::Error => (Ty::ERROR, Ty::ERROR),
                     _ => {
@@ -3063,7 +3149,7 @@ impl Ctx<'_> {
                 {
                     self.infer_expr(operand);
                     if !register.input_only() {
-                        self.check_place(id, operand, false);
+                        self.check_place(id, operand, register.output_only());
                     }
                 }
                 self.deferred.push(Deferred::InlineAsm { expr: id });
@@ -3480,6 +3566,11 @@ impl Ctx<'_> {
                 // of the operand, as in rustc's `check_expr_addr_of`.
                 if let Some(expected) = self.expected.get(id).copied()
                     && let TyKind::Ref(_, pointee) = self.shallow(expected).kind()
+                    && (!self.is_unsized(pointee)
+                        || matches!(
+                            self.body.exprs[self.blame(*expr)],
+                            Expr::Array(_) | Expr::Repeat { .. } | Expr::Closure { .. }
+                        ))
                 {
                     self.expect(*expr, pointee);
                 }
@@ -5273,6 +5364,25 @@ impl Ctx<'_> {
             if let Some((index, _)) = def.field(name)
                 && let Some(&field_ty) = field_types.get(index)
             {
+                if self.is_closure(value)
+                    && let TyKind::Adt(_, args) = ty.kind()
+                {
+                    let predicates = self
+                        .sigs
+                        .struct_predicates
+                        .get(strukt)
+                        .map_or(&[][..], |p| &**p);
+                    let projections = self
+                        .sigs
+                        .struct_projections
+                        .get(strukt)
+                        .map_or(&[][..], |p| &**p);
+                    if let Some(hint) =
+                        self.closure_hint_from(predicates, projections, args, field_ty)
+                    {
+                        self.closure_hints.insert(value, hint);
+                    }
+                }
                 self.expect(value, field_ty);
             }
             let value_ty = self.infer_expr(value);
@@ -7783,6 +7893,7 @@ impl Ctx<'_> {
                                 flux_hir::AsmRegister::Vreg => {
                                     matches!(modifier, 'v' | 'b' | 'h' | 's' | 'd' | 'q')
                                 }
+                                flux_hir::AsmRegister::Const => false,
                                 _ => unreachable!(),
                             };
                             if !valid {

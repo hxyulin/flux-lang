@@ -93,3 +93,21 @@ fn malformed_archives_are_rejected() {
     bad.pop();
     assert!(Archive::decode(&bad).is_err());
 }
+
+#[test]
+fn malformed_directory_is_rejected_even_with_a_valid_checksum() {
+    let bytes = metadata().encode().unwrap();
+    for (at, replacement, expected) in [
+        (52, 0u64.to_le_bytes(), "section tag"),
+        (56, u64::MAX.to_le_bytes(), "section range"),
+        (64, u64::MAX.to_le_bytes(), "section range"),
+    ] {
+        let mut bad = bytes.clone();
+        bad[at..at + replacement.len()].copy_from_slice(&replacement);
+        let end = bad.len() - 32;
+        let checksum = flux_hir::flib::digest(&bad[..end]);
+        bad[end..].copy_from_slice(&checksum);
+        let error = Metadata::decode(&bad, [42; 32]).unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}

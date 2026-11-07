@@ -223,17 +223,25 @@ pub enum AsmRegister {
     Vreg,
     InputReg,
     InputVreg,
+    OutputReg,
+    OutputVreg,
+    Const,
 }
 
 impl AsmRegister {
     pub const fn input_only(self) -> bool {
-        matches!(self, Self::InputReg | Self::InputVreg)
+        matches!(self, Self::InputReg | Self::InputVreg | Self::Const)
+    }
+
+    pub const fn output_only(self) -> bool {
+        matches!(self, Self::OutputReg | Self::OutputVreg)
     }
 
     pub const fn class(self) -> Self {
         match self {
-            Self::Reg | Self::InputReg => Self::Reg,
-            Self::Vreg | Self::InputVreg => Self::Vreg,
+            Self::Reg | Self::InputReg | Self::OutputReg => Self::Reg,
+            Self::Vreg | Self::InputVreg | Self::OutputVreg => Self::Vreg,
+            Self::Const => Self::Const,
         }
     }
 }

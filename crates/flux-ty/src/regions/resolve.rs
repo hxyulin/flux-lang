@@ -548,7 +548,8 @@ fn check_required_family_bounds(
             return;
         }
         let own = match ty.kind() {
-            TyKind::Ref(..) | TyKind::Dynamic(_) => 1,
+            TyKind::Ref(..) => 1,
+            TyKind::Dynamic(object) => super::object_own_slots(items, object),
             TyKind::Adt(adt, _) => items.structs[adt.strukt].generics.lifetimes.len(),
             TyKind::Opaque(o) => o.lifetimes as usize,
             TyKind::FnPtr(_) => {
@@ -757,7 +758,7 @@ pub(crate) fn resolve_regions(
             &t.generics,
             t.supertraits.iter(),
             items.is_core(t.loc.module),
-            false,
+            !t.generics.lifetimes.is_empty(),
             &mut list,
         );
         for ty in &t.types {
@@ -2307,16 +2308,20 @@ fn bound_regions_with_walker(
                 let mut lifetimes = Vec::new();
                 walker.trait_lifetimes(&w.bound.path, p.trait_ref.trait_, false, &mut lifetimes);
                 let lifetimes = lifetimes.into();
+                let fresh = walker.fresh.len();
                 let outer = if args.is_some_and(|a| a.parenthesized) {
                     Some(std::mem::replace(
                         &mut walker.elided,
-                        Elided::Is(Region::Erased),
+                        Elided::Fresh,
                     ))
                 } else {
                     None
                 };
                 let late_names = args.filter(|args|args.parenthesized).map(|args| enter_fn_binder(walker, args, p.trait_ref.args.first().copied()));
-                let types = p
+                // The binder probe may walk anonymous aliases too. The real
+                // input walk must start with the same fresh-region namespace.
+                walker.fresh.truncate(fresh);
+                let mut types: Vec<Box<[Region]>> = p
                     .trait_ref
                     .args
                     .iter()
@@ -2333,6 +2338,18 @@ fn bound_regions_with_walker(
                     })
                     .collect();
                 if let Some(outer) = outer {
+                    let first_fresh = walker.names.len() + fresh;
+                    for row in &mut types {
+                        let mut positions = rustc_hash::FxHashMap::default();
+                        for (position, region) in row.iter_mut().enumerate() {
+                            if let Region::Param(index) = *region
+                                && index as usize >= first_fresh {
+                                let first = *positions.entry(index).or_insert(position as u32);
+                                *region = Region::Late(first);
+                            }
+                        }
+                    }
+                    walker.fresh.truncate(fresh);
                     walker.elided = outer;
                 }
                 if let Some(names) = late_names { walker.late_names = names; }
@@ -2340,7 +2357,7 @@ fn bound_regions_with_walker(
                 TraitRefRegions {
                     bound: w.bound.bound_lifetimes.len() as u32,
                     lifetimes,
-                    args: types,
+                    args: types.into(),
                 }
             })
             .collect()
@@ -3158,6 +3175,9 @@ impl VarianceWalk<'_> {
             // `dyn Tr + 'a` is covariant in `'a`.
             TyKind::Dynamic(object) => {
                 self.slot(ambient);
+                for _ in 1..super::object_own_slots(self.items, object) {
+                    self.slot(ambient.xform(Variance::Invariant));
+                }
                 for ty in object_region_types(self.items, object) {
                     self.go(ty, ambient.xform(Variance::Invariant));
                 }

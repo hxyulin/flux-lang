@@ -366,6 +366,18 @@ impl Ctx<'_> {
         args: &[Ty],
         param: Ty,
     ) -> Option<Hint> {
+        let predicates = flux_solve::traits::predicates_of(self.items, self.sigs, function);
+        let projections = flux_solve::traits::declared_projections(self.items, self.sigs, function);
+        self.closure_hint_from(&predicates, &projections, args, param)
+    }
+
+    pub(super) fn closure_hint_from(
+        &mut self,
+        predicates: &[crate::Predicate],
+        projections: &[crate::Projection],
+        args: &[Ty],
+        param: Ty,
+    ) -> Option<Hint> {
         let mut param = self.shallow(param);
         while let TyKind::Ref(_, inner) = param.kind() {
             param = self.shallow(inner);
@@ -373,10 +385,10 @@ impl Ctx<'_> {
         if !matches!(param.kind(), TyKind::Infer(_) | TyKind::Param(_)) {
             return None;
         }
-        let (items, sigs) = (self.items, self.sigs);
+        let items = self.items;
         let mut kind: Option<ClosureKind> = None;
         let mut params = None;
-        for p in flux_solve::traits::predicates_of(items, sigs, function) {
+        for p in predicates {
             let Some(k) = crate::fn_trait_kind(items, p.trait_ref.trait_) else {
                 continue;
             };
@@ -390,8 +402,8 @@ impl Ctx<'_> {
         let (kind, params) = (kind?, params?);
         let range = TextRange::default();
         let params = self.normalize(params, range);
-        let ret = flux_solve::traits::declared_projections(items, sigs, function)
-            .into_iter()
+        let ret = projections
+            .iter()
             .find_map(|p| {
                 let is_output = crate::fn_trait_kind(items, p.alias.trait_)
                     == Some(ClosureKind::FnOnce)

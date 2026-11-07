@@ -8,7 +8,7 @@ mod digest;
 mod identity;
 mod items;
 mod macros;
-pub use archive::{read_items, write_items};
+pub use archive::{read_items, write_items, write_items_with_indices};
 pub use digest::digest;
 pub use identity::CrateIndices;
 

@@ -347,6 +347,9 @@ impl Validator<'_> {
                         }),
                 };
                 let unsizes = pointees.is_some_and(|(a, b)| {
+                    let (a, b) =
+                        flux_solve::transparent_object_unsize(self.items, &self.sigs.structs, a, b)
+                            .unwrap_or((a, b));
                     if let Some((x, y)) = flux_solve::array_unsize(self.sigs, a, b) {
                         return self.same(x, y);
                     }

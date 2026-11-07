@@ -127,7 +127,7 @@ pub(crate) fn resolve_dyn(
         _ => first.range,
     };
     let self_ty = object_self();
-    let Some((trait_ref, projections)) =
+    let Some((trait_ref, mut projections)) =
         crate::traits::trait_ref(items, module, t, first, self_ty, scope, errors)
     else {
         return Ty::ERROR;
@@ -155,6 +155,20 @@ pub(crate) fn resolve_dyn(
             at,
             format!("the trait `{}` is not dyn compatible", data.name),
         );
+    }
+    let inherited = inherited_projections(items, trait_ref, self_ty, scope, errors);
+    for projection in inherited {
+        if let Some(existing) = projections.iter().find(|p| p.alias == projection.alias) {
+            if existing.ty != projection.ty {
+                return fail(
+                    errors,
+                    d.range,
+                    "conflicting associated type bounds in trait object".into(),
+                );
+            }
+        } else {
+            projections.push(projection);
+        }
     }
     let assoc = flux_solve::objects::dyn_assoc(items, t);
     let mut names = Vec::new();
@@ -298,4 +312,63 @@ pub fn retains_auto_traits(sigs: &crate::Signatures, source: Ty, target: Ty) -> 
 /// Marker-only objects have no method slots beyond the common vtable header.
 pub fn is_auto_object(items: &ItemTree, ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Dynamic(object) if flux_solve::traits::is_auto_trait(items, object.trait_))
+}
+
+/// Instantiates associated equalities fixed by a principal's supertrait graph.
+/// These constraints are part of the trait declaration, not required syntax on
+/// every object use, such as `dyn IteratorOfBytes` inheriting `Item = u8`.
+pub(crate) fn inherited_projections(
+    items: &ItemTree,
+    principal: crate::TraitRef,
+    self_ty: Ty,
+    scope: TypeScope<'_>,
+    errors: &mut Vec<(TextRange, String)>,
+) -> Vec<crate::Projection> {
+    let mut pending = vec![principal];
+    let mut visited = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    while let Some(current) = pending.pop() {
+        if !visited.insert(current.trait_) {
+            continue;
+        }
+        let data = &items.traits[current.trait_];
+        let names = crate::generic_names(
+            items,
+            Some(flux_hir::Owner::Trait(current.trait_)),
+            &flux_hir::Generics::default(),
+        );
+        let local = TypeScope {
+            self_ty: Some(Ty::param(0, kw::SelfUpper)),
+            generics: &names,
+            defaults: scope.defaults,
+            ..TypeScope::default()
+        };
+        let arguments: Vec<_> = std::iter::once(self_ty)
+            .chain(current.args.iter().copied())
+            .collect();
+        let bounds = data.supertraits.iter().chain(data.generics.predicates.iter().filter(|p| {
+            matches!(&p.ty, flux_hir::TypeRef::Path(path) if path.as_name() == Some(kw::SelfUpper))
+        }).map(|p| &p.bound));
+        for bound in bounds {
+            if let Some((edge, equalities)) = crate::traits::resolve_bound(
+                items,
+                data.loc.module,
+                bound,
+                Ty::param(0, kw::SelfUpper),
+                local,
+                errors,
+            ) {
+                result.extend(
+                    equalities
+                        .into_iter()
+                        .map(|equality| equality.subst(&arguments)),
+                );
+                pending.push(crate::TraitRef {
+                    args: crate::ty::map_list(edge.args, |ty| ty.subst(&arguments)),
+                    ..edge
+                });
+            }
+        }
+    }
+    result
 }

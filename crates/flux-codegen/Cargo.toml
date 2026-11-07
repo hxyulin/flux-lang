@@ -19,6 +19,7 @@ flux-ty-ir.workspace = true
 rustc-hash = "2"
 smallvec = "1"
 keel-asm.workspace = true
+keel-asm-ir.workspace = true
 keel-codegen.workspace = true
 keel-frontend.workspace = true
 keel-ir.workspace = true

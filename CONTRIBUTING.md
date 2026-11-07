@@ -215,6 +215,10 @@ text show up without dedicated tests.
 
 For performance work, run `just bench` before and after on the same
 corpus, at least twice: timings vary by several percent between runs.
+For Fluxlib loading and writing, set `FLUX_METADATA_TIMINGS=1` when running
+`fluxc build` with `--timings`. It reports dependency discovery, compiler
+fingerprinting, envelope checksums, HIR and signature decoding, MIR decoding
+and validation, and encoding. Timings include nested work; do not sum them.
 Each compiler crate's `tests/scaling.rs` fails if a stage given four
 times the input takes six times as long, and `just corpus` fails on any
 file that takes too long for its size; extend them when you fix a

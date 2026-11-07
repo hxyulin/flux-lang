@@ -6,6 +6,14 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{ArrayLens, Diagnostic, Signatures};
 
+/// A checked dependency identity and the ownership lists produced by its loader.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedCrate<'a> {
+    pub krate: CrateId,
+    pub hash: [u8; 32],
+    pub indices: &'a CrateIndices,
+}
+
 /// Type information loaded before the compilation's source crate is collected.
 /// Imported bodies have no inference result; their checked MIR is supplied by
 /// the artifact body provider instead.
@@ -26,7 +34,7 @@ impl LoadedTypes {
         signatures: Signatures,
         loaded: &[(CrateId, [u8; 32])],
     ) -> Result<Self, Error> {
-        Self::checked(items, signatures, loaded, false)
+        Self::collected(items, signatures, loaded, false)
     }
 
     /// Accepts an authenticated built-in prefix and ordinary decoded dependencies.
@@ -42,13 +50,45 @@ impl LoadedTypes {
         let mut signatures = signatures;
         signatures.freeze();
         signatures.type_ids = signatures.type_ids.fork();
-        Self::checked(items, signatures, loaded, true)
+        Self::collected(items, signatures, loaded, true)
+    }
+
+    /// Reuses loader-produced ownership instead of rescanning the dependency graph.
+    pub fn from_metadata(
+        items: &ItemTree,
+        signatures: Signatures,
+        loaded: &[LoadedCrate<'_>],
+    ) -> Result<Self, Error> {
+        let builtins = items.has_artifact_builtins();
+        Self::checked(items, signatures, loaded, builtins)
+    }
+
+    fn collected(
+        items: &ItemTree,
+        signatures: Signatures,
+        loaded: &[(CrateId, [u8; 32])],
+        builtins: bool,
+    ) -> Result<Self, Error> {
+        let indices: Vec<_> = loaded
+            .iter()
+            .map(|&(id, _)| CrateIndices::collect(items, id))
+            .collect();
+        let loaded: Vec<_> = loaded
+            .iter()
+            .zip(&indices)
+            .map(|(&(krate, hash), indices)| LoadedCrate {
+                krate,
+                hash,
+                indices,
+            })
+            .collect();
+        Self::checked(items, signatures, &loaded, builtins)
     }
 
     fn checked(
         items: &ItemTree,
-        signatures: Signatures,
-        loaded: &[(CrateId, [u8; 32])],
+        mut signatures: Signatures,
+        loaded: &[LoadedCrate<'_>],
         builtins: bool,
     ) -> Result<Self, Error> {
         let mut hashes = FxHashMap::default();
@@ -59,13 +99,18 @@ impl LoadedTypes {
             for (index, data) in items.crates.iter().enumerate() {
                 if data.root.into_raw() < items.core.modules {
                     let krate = CrateId(index as u32);
-                    if !loaded.iter().any(|&(id, _)| id == krate) {
+                    if !loaded.iter().any(|d| d.krate == krate) {
                         return Err(Error("missing built-in crate identity"));
                     }
                 }
             }
         }
-        for &(krate, hash) in loaded {
+        for dependency in loaded {
+            let LoadedCrate {
+                krate,
+                hash,
+                indices,
+            } = *dependency;
             let data = items
                 .crates
                 .get(krate.0 as usize)
@@ -84,8 +129,7 @@ impl LoadedTypes {
             if hashes.insert(krate, hash).is_some() || !seen_hashes.insert(hash) {
                 return Err(Error("duplicate loaded crate identity"));
             }
-            let indices = CrateIndices::collect(items, krate);
-            for raw in indices.functions {
+            for &raw in &indices.functions {
                 let id = FunctionId::from_raw(raw);
                 if signatures.fns.get(id).is_none() || signatures.regions.fns.get(id).is_none() {
                     return Err(Error("missing loaded function signature"));
@@ -103,7 +147,7 @@ impl LoadedTypes {
                 }
                 functions.insert(id);
             }
-            for raw in indices.consts {
+            for &raw in &indices.consts {
                 let id = ConstId::from_raw(raw);
                 if signatures.consts.get(id).is_none()
                     || signatures.regions.consts.get(id).is_none()
@@ -112,7 +156,7 @@ impl LoadedTypes {
                 }
                 consts.insert(id);
             }
-            for raw in indices.structs {
+            for &raw in &indices.structs {
                 let id = flux_hir::StructId::from_raw(raw);
                 if signatures.structs.get(id).is_none()
                     || signatures.regions.structs.get(id).is_none()
@@ -120,7 +164,7 @@ impl LoadedTypes {
                     return Err(Error("missing loaded struct signature"));
                 }
             }
-            for raw in indices.traits {
+            for &raw in &indices.traits {
                 let id = flux_hir::TraitId::from_raw(raw);
                 if signatures.traits.get(id).is_none()
                     || signatures.regions.traits.get(id).is_none()
@@ -128,7 +172,7 @@ impl LoadedTypes {
                     return Err(Error("missing loaded trait signature"));
                 }
             }
-            for raw in indices.impls {
+            for &raw in &indices.impls {
                 let id = flux_hir::ImplId::from_raw(raw);
                 if signatures.impls.get(id).is_none() || signatures.regions.impls.get(id).is_none()
                 {
@@ -150,6 +194,7 @@ impl LoadedTypes {
         {
             return Err(Error("incomplete built-in signature prefix"));
         }
+        signatures.freeze();
         Ok(Self {
             signatures,
             source_counts: items.counts(),
@@ -190,7 +235,12 @@ impl LoadedTypes {
         items: &ItemTree,
         lens: Option<&ArrayLens<'_>>,
     ) -> (Signatures, Vec<Diagnostic>) {
-        crate::signatures_from(items, self.signatures.clone(), self.source_counts, lens)
+        crate::signatures_from(
+            items,
+            self.signatures.fork_for_extension(),
+            self.source_counts,
+            lens,
+        )
     }
 }
 

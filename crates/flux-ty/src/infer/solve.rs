@@ -668,7 +668,9 @@ impl Ctx<'_> {
                 args: Ty::list(&[&[self_ty][..], &alias.args[1..]].concat()),
                 ..alias
             };
-            return flux_solve::traits::closure_output(self.items, alias);
+            if let Some(output) = flux_solve::traits::closure_output(self.items, alias) {
+                return Some(output);
+            }
         }
         let pred = Predicate {
             self_ty,

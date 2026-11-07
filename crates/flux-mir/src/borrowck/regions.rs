@@ -1474,12 +1474,12 @@ impl<'a> Cx<'a> {
             arg_vars,
             proof,
             known_self,
-            None,
+            proof.map(|(environment, _)| environment),
         )
     }
 
-    /// Opaque caller bounds may prove legacy selections from the original
-    /// represented argument rows. Other callers retain the existing guard.
+    /// Original caller bounds and complete argument rows can prove nested
+    /// selections. Written inputs without occurrence tables stay unsupported.
     #[allow(clippy::too_many_arguments)]
     fn impl_region_goal_with_inputs(
         &mut self,
@@ -1699,6 +1699,17 @@ impl<'a> Cx<'a> {
         let args: Vec<_> = std::iter::once(goal.predicate.self_ty)
             .chain(goal.predicate.trait_ref.args.iter().copied())
             .collect();
+        let declaration = self.sigs.traits.get(goal.predicate.trait_ref.trait_)?;
+        let header_rows = if !associated && !declaration.header_projections.is_empty() {
+            flux_ty::regions::trait_bound_regions(
+                self.items,
+                self.sigs,
+                goal.predicate.trait_ref.trait_,
+            )?
+            .2
+        } else {
+            Box::default()
+        };
         for p in self
             .sigs
             .traits
@@ -1729,7 +1740,8 @@ impl<'a> Cx<'a> {
                     .find(|(projection, _)| projection == p)
                     .map_or(&[][..], |(_, row)| row.as_ref())
             } else {
-                &[]
+                declaration.header_projections.iter().position(|projection| projection == p)
+                    .and_then(|index| header_rows.get(index)).map_or(&[][..], |row| row.as_ref())
             };
             let expected = self.instantiate_sig(p.ty, table, &mut |region| match region {
                 Region::Static => Some(STATIC),
@@ -1994,6 +2006,36 @@ impl<'a> Cx<'a> {
                 return false;
             }
             return self.impl_prove_super(goal, &bounds, depth + 1);
+        }
+        if flux_ty::fn_trait_kind(self.items, goal.predicate.trait_ref.trait_).is_some()
+            && let TyKind::FnPtr(signature) = goal.predicate.self_ty.kind()
+        {
+            if !flux_solve::traits::holds(self.items, self.sigs, &[], goal.predicate) {
+                return false;
+            }
+            let Some(&tuple) = goal.predicate.trait_ref.args.first() else {
+                return false;
+            };
+            let TyKind::Tuple(types) = tuple.kind() else {
+                return false;
+            };
+            let (Some(own), Some(input)) = (goal.vars.first(), goal.vars.get(1)) else {
+                return false;
+            };
+            let mut offset = 0;
+            let mut rows = Vec::new();
+            for &ty in types {
+                let count = self.slots(ty) as usize;
+                let Some(row) = input.get(offset..offset + count) else {
+                    return false;
+                };
+                rows.push(row.to_vec());
+                offset += count;
+            }
+            return offset == input.len()
+                && self
+                    .pointer_inputs(signature, own, types, &rows, range)
+                    .is_some();
         }
         let selected = self.matching_impl(goal.predicate);
         let Some((imp, args)) = selected else {
@@ -2667,7 +2709,7 @@ impl<'a> Cx<'a> {
             (TyKind::Dynamic(a), TyKind::Dynamic(b))
                 if a.trait_ == b.trait_ && a.assoc_names == b.assoc_names =>
             {
-                own_slot(next, out)
+                (0..flux_ty::regions::object_own_slots(self.items, a)).all(|_| own_slot(next, out))
                     && flux_ty::regions::object_region_types(self.items, a)
                         .zip(flux_ty::regions::object_region_types(self.items, b))
                         .all(|(a, b)| self.reveal_sig(f, a, b, own, next, out))
@@ -2703,7 +2745,7 @@ impl<'a> Cx<'a> {
             };
             self.hidden_projections(h);
             for &b in &h.outlives {
-                self.hidden_type_outlives(h.ty, &h.vars, b, h.range);
+                self.stored_type_outlives(h.ty, &h.vars, b, Category::OpaqueType, h.range);
             }
             for &v in &h.vars {
                 if !h.outlives.is_empty() {
@@ -3186,7 +3228,8 @@ impl<'a> Cx<'a> {
                         .all(|&t| self.inst(t, own, next, map, args, arg_vars, out))
             }
             TyKind::Dynamic(object) => {
-                own_slot(next, out)
+                (0..flux_ty::regions::object_own_slots(self.items, object))
+                    .all(|_| own_slot(next, out))
                     && flux_ty::regions::object_region_types(self.items, object)
                         .all(|ty| self.inst(ty, own, next, map, args, arg_vars, out))
             }
@@ -3989,7 +4032,8 @@ impl<'a> Cx<'a> {
             (TyKind::Dynamic(a), TyKind::Dynamic(b))
                 if a.trait_ == b.trait_ && a.assoc_names == b.assoc_names =>
             {
-                slot(t, v, binding, eqs)
+                (0..flux_ty::regions::object_own_slots(self.items, a))
+                    .all(|_| slot(t, v, binding, eqs))
                     && flux_ty::regions::object_region_types(self.items, a)
                         .zip(flux_ty::regions::object_region_types(self.items, b))
                         .all(|(a, b)| self.match_at(a, table, t, b, vars, v, binding, eqs))
@@ -4298,6 +4342,9 @@ impl<'a> Cx<'a> {
             // Covariant in its lifetime bound.
             TyKind::Dynamic(object) => {
                 slot(self, next, variance);
+                for _ in 1..flux_ty::regions::object_own_slots(self.items, object) {
+                    slot(self, next, variance.xform(Variance::Invariant));
+                }
                 for ty in flux_ty::regions::object_region_types(self.items, object) {
                     self.relate_at(
                         ty,
@@ -4586,10 +4633,10 @@ impl<'a> Cx<'a> {
             // (or `'static` behind a raw pointer): what the value holds
             // must outlive it, as rustc's `T: 'a` for the unsizing.
             Rvalue::Unsize(op, to)
-                if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn())
+                if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if self.sigs.metadata(p) == flux_ty::Metadata::VTable)
                     || flux_solve::box_pointee(*to)
                         .or_else(|| flux_ty::shared_pointee(self.items, *to))
-                        .is_some_and(|p| p.is_dyn()) =>
+                        .is_some_and(|p| self.sigs.metadata(p) == flux_ty::Metadata::VTable) =>
             {
                 let (op_ty, vars) = self.operand_regions(op);
                 // The reference's own region relates; then the object's
@@ -4629,6 +4676,17 @@ impl<'a> Cx<'a> {
                     TyKind::Ref(_, object) | TyKind::RawPtr(_, object) => Some(object),
                     _ => flux_solve::box_pointee(*to)
                         .or_else(|| flux_ty::shared_pointee(self.items, *to)),
+                };
+                let (pointee, object) = match object.and_then(|object| {
+                    flux_solve::transparent_object_unsize(
+                        self.items,
+                        &self.sigs.structs,
+                        pointee,
+                        object,
+                    )
+                }) {
+                    Some((source, target)) => (source, Some(target)),
+                    None => (pointee, object),
                 };
                 let mut callable_principal_checked = false;
                 if let Some(object) = object
@@ -4780,7 +4838,9 @@ impl<'a> Cx<'a> {
                     && let TyKind::Dynamic(d) = object.kind()
                 {
                     let mut rows = vec![inner.to_vec()];
-                    let start = usize::from(matches!(dest_ty.kind(), TyKind::Ref(..))) + 1;
+                    let object_start = usize::from(matches!(dest_ty.kind(), TyKind::Ref(..)));
+                    let owner_count = self.items.traits[d.trait_].generics.lifetimes.len();
+                    let start = object_start + 1 + owner_count;
                     let mut at = start;
                     for &arg in d.args {
                         let count = self.slots(arg) as usize;
@@ -4803,7 +4863,7 @@ impl<'a> Cx<'a> {
                     self.prove(
                         flux_solve::traits::dyn_principal(pointee, d),
                         &rows,
-                        &[],
+                        dest_vars.get(object_start + 1..start).unwrap_or(&[]),
                         range,
                         0,
                     );
@@ -4815,7 +4875,8 @@ impl<'a> Cx<'a> {
                     let offset = usize::from(matches!(dest_ty.kind(), TyKind::Ref(..)));
                     let object_vars = dest_vars.get(offset..).unwrap_or(&[]);
                     let mut rows = vec![inner.to_vec()];
-                    let mut at = 1;
+                    let owner_count = self.items.traits[d.trait_].generics.lifetimes.len();
+                    let mut at = 1 + owner_count;
                     for &arg in d.args {
                         let count = self.slots(arg) as usize;
                         let Some(row) = object_vars.get(at..at + count) else {
@@ -4829,14 +4890,23 @@ impl<'a> Cx<'a> {
                         at += count;
                     }
                     if let TyKind::Dynamic(source) = pointee.kind() {
-                        if source.trait_ != d.trait_ && d.args.iter().any(|&ty| self.slots(ty) != 0)
+                        if source.trait_ != d.trait_
+                            && (owner_count != 0 || d.args.iter().any(|&ty| self.slots(ty) != 0))
                         {
                             self.errors.push(Diagnostic::new(
                                 range,
                                 "inherited object argument regions are not supported yet",
                             ));
                         } else if source.trait_ == d.trait_ {
-                            let mut from_at = 1;
+                            for index in 1..1 + owner_count {
+                                if let (Some(&from), Some(&to)) =
+                                    (inner.get(index), object_vars.get(index))
+                                {
+                                    self.outlives(from, to, category, range);
+                                    self.outlives(to, from, category, range);
+                                }
+                            }
+                            let mut from_at = 1 + owner_count;
                             for (i, (&from, &to)) in source.args.iter().zip(d.args).enumerate() {
                                 let count = self.slots(from) as usize;
                                 let Some(actual) = inner.get(from_at..from_at + count) else {
@@ -4893,7 +4963,14 @@ impl<'a> Cx<'a> {
                         }
                         let alias =
                             flux_solve::traits::alias_of(self.items, reference, pointee, name);
-                        let Some(actual) = self.normalize_regions(alias, &rows, 0) else {
+                        let alias_rows = if owner == d.trait_ {
+                            rows.clone()
+                        } else {
+                            std::iter::once(rows[0].clone())
+                                .chain(reference.args.iter().map(|_| Vec::new()))
+                                .collect()
+                        };
+                        let Some(actual) = self.normalize_regions(alias, &alias_rows, 0) else {
                             self.errors.push(Diagnostic::new(
                                 range,
                                 "object equality input regions are not supported yet",
@@ -4920,11 +4997,12 @@ impl<'a> Cx<'a> {
                     } else {
                         inner
                     };
-                    for &v in stored {
-                        self.outlives(v, bound, category, range);
-                    }
-                    if !pointee.is_dyn() {
-                        self.type_outlives(pointee, bound, range);
+                    if pointee.is_dyn() {
+                        for &v in stored {
+                            self.outlives(v, bound, category, range);
+                        }
+                    } else {
+                        self.stored_type_outlives(pointee, stored, bound, category, range);
                     }
                 }
             }
@@ -5588,6 +5666,13 @@ impl<'a> Cx<'a> {
             Some(flux_hir::Owner::Impl(imp)) => sigs.regions.impls.get(imp).map(|r| (imp, r)),
             _ => None,
         };
+        let owner_schema = match owner {
+            Some(flux_hir::Owner::Trait(trait_)) => {
+                flux_ty::regions::trait_bound_regions(items, sigs, trait_)
+            }
+            _ => None,
+        };
+        let mut owner_declared = Vec::new();
         let mut bounds: Vec<(flux_ty::Predicate, &[Region], TraitRefRegions)> = Vec::new();
         match (owner, block) {
             (Some(flux_hir::Owner::Trait(t)), _) => {
@@ -5633,34 +5718,33 @@ impl<'a> Cx<'a> {
                         },
                     ));
                 }
-                for &p in list.iter().skip(1) {
-                    // TraitRegions has no predicate/projection tables. Keep
-                    // region-free owner bounds, but never invent the missing
-                    // tables for region-bearing owner requirements.
-                    if self.slots(p.self_ty) != 0
-                        || p.trait_ref.args.iter().any(|&t| self.slots(t) != 0)
-                        || !sigs
-                            .regions
-                            .traits
-                            .get(p.trait_ref.trait_)
-                            .is_some_and(|r| r.names.is_empty())
+                if let Some((selfs, traits, equalities)) = &owner_schema {
+                    if selfs.len() != list.len() - 1
+                        || traits.len() != list.len() - 1
+                        || equalities.len() != sigs.traits[t].header_projections.len()
                     {
                         self.errors.push(Diagnostic::new(
                             range,
-                            "trait method owner bound regions are not supported yet",
+                            "trait method owner region tables do not match",
                         ));
+                    } else {
+                        for ((&predicate, row), contract) in
+                            list.iter().skip(1).zip(selfs).zip(traits)
+                        {
+                            bounds.push((predicate, row, contract.clone()));
+                        }
+                        owner_declared.extend(
+                            sigs.traits[t]
+                                .header_projections
+                                .iter()
+                                .copied()
+                                .zip(equalities.iter().cloned()),
+                        );
                     }
-                    bounds.push((p, &[], TraitRefRegions::default()));
-                }
-                if regions.owner != 0
-                    && sigs
-                        .traits
-                        .get(t)
-                        .is_some_and(|s| !s.header_projections.is_empty())
-                {
+                } else if list.len() > 1 || !sigs.traits[t].header_projections.is_empty() {
                     self.errors.push(Diagnostic::new(
                         range,
-                        "trait method owner projection regions are not supported yet",
+                        "trait method owner region tables cannot be resolved",
                     ));
                 }
             }
@@ -5689,6 +5773,11 @@ impl<'a> Cx<'a> {
             ));
         }
         let mut declared: Vec<(flux_ty::traits::Projection, &[Region])> = Vec::new();
+        declared.extend(
+            owner_declared
+                .iter()
+                .map(|(projection, row)| (*projection, row.as_ref())),
+        );
         if let Some((imp, r)) = block {
             let list = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
             declared.extend(
@@ -5754,7 +5843,7 @@ impl<'a> Cx<'a> {
             );
         }
         self.call_projections = previous;
-        let mut inputs = Vec::new();
+        let mut inputs = vec![None; owner_declared.len()];
         if let Some((imp, _)) = block {
             let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
             for index in 0..projections.len() {
@@ -7424,7 +7513,14 @@ impl<'a> Cx<'a> {
 
     /// Materialize stored associated fields while the hidden value's rows are
     /// available. A bare associated type cannot recover its output lifetimes.
-    fn hidden_type_outlives(&mut self, ty: Ty, vars: &[Var], bound: Var, range: TextRange) {
+    fn stored_type_outlives(
+        &mut self,
+        ty: Ty,
+        vars: &[Var],
+        bound: Var,
+        category: Category,
+        range: TextRange,
+    ) {
         let hidden_ty = ty;
         let mut pending = vec![(ty, vars.to_vec(), Vec::<flux_hir::StructId>::new())];
         let mut seen = FxHashSet::default();
@@ -7438,7 +7534,7 @@ impl<'a> Cx<'a> {
                 continue;
             }
             for &var in &vars {
-                self.outlives(var, bound, Category::OpaqueType, range);
+                self.outlives(var, bound, category, range);
             }
             let (children, mut at): (Vec<Ty>, usize) = match ty.kind() {
                 TyKind::Adt(adt, args) => (

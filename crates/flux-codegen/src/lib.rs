@@ -13,11 +13,13 @@
 //! calls the Rust `main` and returns 0. A failed MIR assertion calls libc's
 //! `abort`, as a panic does with `panic=abort`.
 
+mod aarch64_asm;
 mod error;
 pub use error::{Error, Stage};
 mod linux;
 mod lower;
 mod native;
+mod profile;
 
 use std::path::{Path, PathBuf};
 
@@ -40,7 +42,10 @@ pub fn compile_object(
 }
 
 /// Completed or failed backend scopes. `None` means the scope was not reached.
-/// These are not a total: error formatting and destruction of backend temporaries
+/// Codegen excludes encoding done by its chunk callback; assembly includes that
+/// encoding and final object emission. A codegen failure can retain partial assembly
+/// time when earlier chunks were encoded. These are not a total: error formatting
+/// and destruction of backend temporaries
 /// can happen outside the measured calls.
 #[derive(Default, Debug)]
 pub struct ObjectTimings {
@@ -89,51 +94,88 @@ fn compile_object_inner(
         ));
     }
     measured(timings.as_deref_mut().map(|t| &mut t.optimize), || {
-        keel_opt::optimize_with_tier(module, tier)
-    })
-    .map_err(Error::optimize)?;
-    let program = measured(timings.as_deref_mut().map(|t| &mut t.codegen), || {
-        let selector = if tier == OptimizationTier::Full {
-            keel_codegen::SelectionTier::Full
-        } else {
-            keel_codegen::SelectionTier::Baseline
-        };
-        keel_codegen::compile_program_with_pipeline(
-            module,
-            target,
-            &keel_codegen::CodegenPipeline {
-                selector: &selector,
-                allocator: &keel_codegen::regalloc::AllocationTier::Full,
+        profile::optimize(module, tier)
+    })?;
+    let selector = if tier == OptimizationTier::Full {
+        keel_codegen::SelectionTier::Full
+    } else {
+        keel_codegen::SelectionTier::Baseline
+    };
+    let pipeline = keel_codegen::CodegenPipeline {
+        selector: &selector,
+        allocator: &keel_codegen::regalloc::AllocationTier::Full,
+    };
+    let mut assembler = match target {
+        Target::Aarch64AppleDarwin => {
+            Some(keel_asm::ObjectAssembler::for_target(target).map_err(Error::assemble)?)
+        }
+        Target::X86_64LinuxGnu => {
+            let features = keel_codegen::x86_features::module_features(module, Default::default())
+                .map_err(Error::codegen)?;
+            Some(
+                keel_asm::ObjectAssembler::with_features(
+                    target,
+                    keel_asm::TargetFeatures::default(),
+                    features,
+                )
+                .map_err(Error::assemble)?,
+            )
+        }
+        Target::Aarch64LinuxGnu | Target::Wasm32UnknownUnknown => None,
+    };
+    let timed = timings.is_some();
+    let mut encoding = std::time::Duration::ZERO;
+    let mut emitted = false;
+    let start = timed.then(std::time::Instant::now);
+    let result = keel_codegen::compile_program_chunks_with_pipeline(
+        module,
+        target,
+        &pipeline,
+        &mut |mut chunk| {
+            if let Some(assembler) = &mut assembler {
+                let start = timed.then(std::time::Instant::now);
+                if target == Target::Aarch64AppleDarwin {
+                    for item in &mut chunk.items {
+                        if let keel_asm_ir::Item::Text(text) = item
+                            && let std::borrow::Cow::Owned(rewritten) =
+                                aarch64_asm::system_aliases(text)
+                        {
+                            *text = rewritten;
+                        }
+                    }
+                }
+                assembler.push(chunk);
+                emitted = true;
+                if let Some(start) = start {
+                    encoding += start.elapsed();
+                }
+            }
+        },
+    );
+    if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
+        // Encoding happens inside the codegen callback. Keep the two scopes exclusive.
+        timings.codegen = Some(start.elapsed().saturating_sub(encoding));
+        timings.assemble = emitted.then_some(encoding);
+    }
+    result.map_err(Error::codegen)?;
+    let start = timed.then(std::time::Instant::now);
+    let result = match assembler {
+        Some(assembler) => assembler.finish().map_err(Error::assemble),
+        None => Err(Error::message(
+            Stage::Codegen,
+            match target {
+                Target::Aarch64LinuxGnu => "code generation for AArch64 Linux is not supported yet",
+                Target::Wasm32UnknownUnknown => {
+                    "code generation for WebAssembly is not supported yet"
+                }
+                _ => unreachable!("supported object targets have an assembler"),
             },
-        )
-    })
-    .map_err(Error::codegen)?;
-    measured(timings.map(|t| &mut t.assemble), || {
-        let object = match target {
-            Target::Aarch64AppleDarwin => {
-                keel_asm::assemble_program_object(&program, keel_asm::TargetFeatures::default())
-            }
-            Target::X86_64LinuxGnu => {
-                let features =
-                    keel_codegen::x86_features::module_features(module, Default::default())
-                        .map_err(Error::codegen)?;
-                keel_asm::x86::assemble_program_object_with_features(&program, features)
-            }
-            Target::Aarch64LinuxGnu => {
-                return Err(Error::message(
-                    Stage::Codegen,
-                    "code generation for AArch64 Linux is not supported yet",
-                ));
-            }
-            Target::Wasm32UnknownUnknown => {
-                return Err(Error::message(
-                    Stage::Codegen,
-                    "code generation for WebAssembly is not supported yet",
-                ));
-            }
-        };
-        object.map_err(Error::assemble)
-    })
+        )),
+    };
+    if let (Some(timings), Some(start)) = (timings, start) {
+        timings.assemble = Some(encoding + start.elapsed());
+    }
+    result
 }
 
 /// Links `object` against the C library into an executable at `output`.

@@ -113,6 +113,47 @@ fn truncated_item_records_return_errors() {
     }
 }
 
+#[test]
+fn rejected_macro_ancestry_does_not_append_semantic_records() {
+    let mut original = SourceDb::new();
+    let root = original.add(
+        "bad.rs",
+        "macro_rules! m { () => {} } pub struct S; pub fn f() {}",
+    );
+    let mut hir = flux_hir::lower(&mut original, root, Symbol::intern("bad"));
+    assert!(hir.diagnostics.is_empty());
+    let owner = hir.items.main_crate();
+    let scope = CrateIndices::collect(&hir.items, owner).macro_scopes[0];
+    let scope = flux_hir::MacroScopeId::from_raw(scope);
+    hir.items.macro_scopes[scope].parent = Some(scope);
+    let bytes = encode(&hir.items, owner);
+    let mut db = SourceDb::new();
+    let noise = db.add("noise.rs", "pub struct Existing; pub fn existing() {}");
+    let mut items = flux_hir::lower(&mut db, noise, Symbol::intern("noise")).items;
+    let before = items.counts();
+    let crates = items.crates.len();
+    let files = items.files.len();
+    let macros = items.macro_scopes.len();
+    let mut ids = IdMap::strict();
+    for index in 0..owner.0 {
+        let dep = CrateId(index);
+        CrateIndices::collect(&items, dep)
+            .add_decode_mapping(&mut ids, dep, index + 1)
+            .unwrap();
+    }
+    let error = read_items(&mut items, &mut db, &mut Decoder::with_ids(&bytes, ids)).unwrap_err();
+    assert_eq!(error.to_string(), "invalid macro scope ancestry");
+    assert_eq!(items.counts(), before);
+    assert_eq!(
+        (
+            items.crates.len(),
+            items.files.len(),
+            items.macro_scopes.len()
+        ),
+        (crates, files, macros)
+    );
+}
+
 fn imported(source: &str) -> (SourceDb, ItemTree, CrateId) {
     imported_edition(source, flux_syntax::Edition::E2024)
 }

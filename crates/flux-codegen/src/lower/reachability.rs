@@ -15,6 +15,14 @@ pub(super) struct Roots {
 
 pub(super) fn library(hir: &Hir, sigs: &Signatures, mir: &FileMir, krate: CrateId) -> Roots {
     let mut reach = Reach::new(hir, sigs, mir, krate);
+    for (id, function) in hir.items.functions.iter() {
+        if !function.is_extern
+            && function.link_name.is_some()
+            && hir.items.modules[function.loc.module].krate == krate
+        {
+            reach.function(id, true);
+        }
+    }
     let mut modules = vec![hir.items.module_of(krate)];
     let mut seen = FxHashSet::default();
     while let Some(module) = modules.pop() {
@@ -52,9 +60,12 @@ pub(super) fn executable(
     let krate = hir.items.main_crate();
     let mut reach = Reach::new(hir, sigs, mir, krate);
     for (id, f) in hir.items.functions.iter() {
-        if f.name.as_str() == "main"
+        if (f.name.as_str() == "main"
             && f.loc.module == hir.items.module_of(krate)
-            && f.owner.is_none()
+            && f.owner.is_none())
+            || (!f.is_extern
+                && f.link_name.is_some()
+                && hir.items.modules[f.loc.module].krate == krate)
         {
             reach.function(id, true);
         }

@@ -83,7 +83,18 @@ fn sibling_artifacts_resolve_transitive_hashes_before_semantic_loading() {
             .collect::<Vec<_>>(),
         ["a", "b"]
     );
-    let state = initial.load(std::slice::from_ref(&b_path)).unwrap();
+    let state = initial
+        .load(&[b_path.clone(), a_path.clone(), b_path.clone()])
+        .unwrap();
+    assert_eq!(state.roots, [b_hash, a_hash, b_hash]);
+    assert_eq!(
+        state
+            .dependencies
+            .iter()
+            .filter(|d| d.hash == a_hash || d.hash == b_hash)
+            .count(),
+        2,
+    );
     let loaded_b = state
         .dependencies
         .iter()

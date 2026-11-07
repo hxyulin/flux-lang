@@ -832,7 +832,7 @@ pub struct Function {
     pub target_features: Option<Box<[Symbol]>>,
     /// Declared in an `extern` block, so defined elsewhere (in C).
     pub is_extern: bool,
-    /// An explicit native symbol for a foreign function declaration only.
+    /// An explicit native symbol, from `link_name` or `no_mangle`.
     pub link_name: Option<Symbol>,
     /// The ABI written on the function, or its `extern` block's.
     pub abi: Abi,

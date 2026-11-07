@@ -92,7 +92,13 @@ impl Ctx<'_> {
                 }
                 _ => None,
             }
-            && let TyKind::Dynamic(d) = self.shallow(target).kind()
+            && let Some((pointee, target)) = flux_solve::transparent_object_unsize(
+                self.items,
+                &self.sigs.structs,
+                self.shallow(pointee),
+                self.shallow(target),
+            )
+            && let TyKind::Dynamic(d) = target.kind()
             && (from == to || from == Mutability::Mut)
         {
             let target = self.shallow(target);
@@ -119,6 +125,19 @@ impl Ctx<'_> {
             let (p, q) = (self.shallow(p), self.shallow(q));
             if let Some(equalities) = self.array_unsize(p, q) {
                 if equalities.into_iter().all(|(a, b)| self.unify(a, b)) {
+                    self.unsizes.insert(expr, expected);
+                } else {
+                    let range = self.range(blamed);
+                    self.mismatch(expected, actual, range);
+                }
+                return;
+            }
+            if !q.is_dyn()
+                && let Some((source, target)) =
+                    flux_solve::transparent_object_unsize(self.items, &self.sigs.structs, p, q)
+                && let TyKind::Dynamic(object) = target.kind()
+            {
+                if self.unsize_to_dyn(source, target, object, blamed) {
                     self.unsizes.insert(expr, expected);
                 } else {
                     let range = self.range(blamed);
@@ -605,6 +624,12 @@ impl Ctx<'_> {
             if let Some(equalities) = self.array_unsize(p, q) {
                 return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
             }
+            if !q.is_dyn()
+                && let Some((source, _)) =
+                    flux_solve::transparent_object_unsize(self.items, &self.sigs.structs, p, q)
+            {
+                return !self.sigs.is_unsized(source);
+            }
             match (p.kind(), q.kind()) {
                 (TyKind::Array(elem, _), TyKind::Slice(wanted)) => {
                     return self.can_unify(elem, wanted);
@@ -641,7 +666,13 @@ impl Ctx<'_> {
             ) if (from == to || from == Mutability::Mut)
                 && !(matches!(actual.kind(), TyKind::RawPtr(..))
                     && matches!(expected.kind(), TyKind::Ref(..)))
-                && let TyKind::Dynamic(d) = self.shallow(object).kind()
+                && let Some((pointee, object)) = flux_solve::transparent_object_unsize(
+                    self.items,
+                    &self.sigs.structs,
+                    self.shallow(pointee),
+                    self.shallow(object),
+                )
+                && let TyKind::Dynamic(d) = object.kind()
                 && !self.can_unify(pointee, object) =>
             {
                 let pointee = self.shallow(pointee);

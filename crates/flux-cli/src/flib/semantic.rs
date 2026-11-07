@@ -5,7 +5,52 @@ use flux_hir::{CrateId, ItemTree, SourceDb};
 use flux_mir::FileMir;
 use flux_ty::Signatures;
 
-use super::{Archive, Metadata, Section, compiler_identity};
+use super::{Archive, ArchiveIndex, Metadata, MetadataIndex, Section, compiler_identity};
+
+/// Framing and checksums are checked once against immutable artifact bytes.
+#[derive(Debug)]
+struct ArtifactIndex {
+    archive: ArchiveIndex,
+    metadata: MetadataIndex,
+}
+
+impl ArtifactIndex {
+    fn decode(bytes: &[u8]) -> Result<Self, String> {
+        let archive = super::time("archive decode", || ArchiveIndex::decode(bytes))
+            .map_err(|e| e.to_string())?;
+        let compiler = compiler_identity()?;
+        let metadata = super::time("metadata envelope", || {
+            MetadataIndex::decode(archive.metadata(bytes), compiler)
+        })
+        .map_err(|e| e.to_string())?;
+        let index = Self { archive, metadata };
+        super::time("linkage validation", || validate_linkage(index.view(bytes)))?;
+        Ok(index)
+    }
+
+    fn view<'a>(&'a self, bytes: &'a [u8]) -> ArtifactView<'a> {
+        ArtifactView { bytes, index: self }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ArtifactView<'a> {
+    bytes: &'a [u8],
+    index: &'a ArtifactIndex,
+}
+
+impl<'a> ArtifactView<'a> {
+    fn section(self, tag: u32) -> Result<&'a [u8], String> {
+        self.index
+            .metadata
+            .section(self.index.archive.metadata(self.bytes), tag)
+            .ok_or_else(|| format!("missing flux metadata section {tag}"))
+    }
+
+    fn object(self) -> Option<&'a [u8]> {
+        self.index.archive.object(self.bytes)
+    }
+}
 
 /// An exact crate identity already present in a compilation.
 #[derive(Debug, Clone)]
@@ -30,6 +75,22 @@ pub fn crate_hash(
     dependencies: &[Dependency],
     configuration: &[u8],
 ) -> Result<[u8; 32], String> {
+    crate_hash_with_indices(
+        items,
+        krate,
+        &CrateIndices::collect(items, krate),
+        dependencies,
+        configuration,
+    )
+}
+
+pub(crate) fn crate_hash_with_indices(
+    items: &ItemTree,
+    krate: CrateId,
+    indices: &CrateIndices,
+    dependencies: &[Dependency],
+    configuration: &[u8],
+) -> Result<[u8; 32], String> {
     let mut e = Encoder::new();
     let encode = |result: Result<(), flux_hir::flib::Error>| result.map_err(|e| e.to_string());
     encode("FLIB-CRATE-ID-v2".encode(&mut e))?;
@@ -45,7 +106,7 @@ pub fn crate_hash(
     encode(data.environment.as_deref().encode(&mut e))?;
     encode(data.cfg.as_deref().encode(&mut e))?;
     let mut sources = Vec::new();
-    for index in CrateIndices::collect(items, krate).files {
+    for &index in &indices.files {
         let file = items
             .files
             .get(&flux_hir::FileId(index))
@@ -55,7 +116,9 @@ pub fn crate_hash(
         }
     }
     encode(sources.encode(&mut e))?;
-    let observations = expansion_observations(items, krate, dependencies)?;
+    // Observations are a hash input, not one bounded metadata record.
+    // Digest the complete stream before encoding it in the crate identity.
+    let observations = expansion_observations(items, krate, indices, dependencies)?;
     encode(
         flux_hir::flib::digest(&observations)
             .as_slice()
@@ -91,9 +154,9 @@ pub fn crate_hash(
 fn expansion_observations(
     items: &ItemTree,
     krate: CrateId,
+    own: &CrateIndices,
     dependencies: &[Dependency],
 ) -> Result<Vec<u8>, String> {
-    let own = CrateIndices::collect(items, krate);
     let mut ids = IdMap::strict();
     own.add_mapping(&mut ids, krate, 0)
         .map_err(|e| e.to_string())?;
@@ -126,7 +189,7 @@ fn expansion_observations(
             .map_err(|e| e.to_string())?;
     }
     let mut e = Encoder::with_ids(ids);
-    for raw in own.files {
+    for &raw in &own.files {
         let file = items
             .files
             .get(&flux_hir::FileId(raw))
@@ -172,6 +235,14 @@ pub struct CheckedCrate<'a> {
 
 /// Writes already checked metadata. This function never checks or lowers source.
 pub fn write_checked(checked: CheckedCrate<'_>) -> Result<Vec<u8>, String> {
+    let indices = CrateIndices::collect(checked.items, checked.krate);
+    write_checked_with_indices(checked, &indices)
+}
+
+pub(crate) fn write_checked_with_indices(
+    checked: CheckedCrate<'_>,
+    indices: &CrateIndices,
+) -> Result<Vec<u8>, String> {
     let CheckedCrate {
         items,
         sigs,
@@ -184,7 +255,7 @@ pub fn write_checked(checked: CheckedCrate<'_>) -> Result<Vec<u8>, String> {
         freshness,
     } = checked;
     let mut ids = IdMap::strict();
-    CrateIndices::collect(items, krate)
+    indices
         .add_mapping(&mut ids, krate, 0)
         .map_err(|e| e.to_string())?;
     for (i, dep) in dependencies.iter().enumerate() {
@@ -203,16 +274,19 @@ pub fn write_checked(checked: CheckedCrate<'_>) -> Result<Vec<u8>, String> {
     let hashes: Vec<_> = dependencies.iter().map(|d| d.hash.to_vec()).collect();
     hashes.encode(&mut identity).map_err(|e| e.to_string())?;
     let mut names = Encoder::with_ids(ids.clone());
-    flux_hir::flib::write_items(items, krate, &mut names).map_err(|e| e.to_string())?;
+    super::time("HIR encode", || {
+        flux_hir::flib::write_items_with_indices(items, krate, indices, &mut names)
+    })
+    .map_err(|e| e.to_string())?;
     let mut types = Encoder::with_ids(ids.clone());
-    sigs.encode_flib(&mut types).map_err(|e| e.to_string())?;
+    super::time("signature encode", || sigs.encode_flib(&mut types)).map_err(|e| e.to_string())?;
     validate_required_instances(items, required_instances)?;
     let mut requirements = Encoder::with_ids(ids.clone());
     required_instances
         .encode(&mut requirements)
         .map_err(|e| e.to_string())?;
     let mut bodies = Encoder::with_ids(ids);
-    mir.encode_flib(&mut bodies).map_err(|e| e.to_string())?;
+    super::time("MIR encode", || mir.encode_flib(&mut bodies)).map_err(|e| e.to_string())?;
     let mut linkage = Encoder::new();
     let target = artifact_target()?;
     (
@@ -267,8 +341,9 @@ pub fn load_checked(
     mir: &mut FileMir,
     dependencies: &[Dependency],
 ) -> Result<Loaded, String> {
+    let index = ArtifactIndex::decode(bytes)?;
     load_checked_with_resolver(
-        bytes,
+        index.view(bytes),
         db,
         items,
         sigs,
@@ -279,7 +354,7 @@ pub fn load_checked(
 }
 
 fn load_checked_with_resolver(
-    bytes: &[u8],
+    artifact: ArtifactView<'_>,
     db: &mut SourceDb,
     items: &mut ItemTree,
     sigs: &mut Signatures,
@@ -287,18 +362,7 @@ fn load_checked_with_resolver(
     dependencies: &[Dependency],
     resolver: std::sync::Arc<dyn flux_hir::ProcMacroResolver>,
 ) -> Result<Loaded, String> {
-    let archive = Archive::decode(bytes).map_err(|e| e.to_string())?;
-    let metadata =
-        Metadata::decode(&archive.metadata, compiler_identity()?).map_err(|e| e.to_string())?;
-    let section = |tag| {
-        metadata
-            .sections
-            .iter()
-            .find(|s| s.tag == tag)
-            .map(|s| s.bytes.as_slice())
-            .ok_or_else(|| format!("missing flux metadata section {tag}"))
-    };
-    validate_linkage(&metadata, archive.object.as_deref())?;
+    let section = |tag| artifact.section(tag);
     let mut identity = Decoder::new(section(1)?);
     let name = flux_intern::Symbol::decode(&mut identity).map_err(|e| e.to_string())?;
     let hash = decode_hash(&mut identity)?;
@@ -320,7 +384,10 @@ fn load_checked_with_resolver(
     }
     let mut names = Decoder::with_ids(section(3)?, ids);
     names.set_proc_macro_resolver(resolver);
-    let (krate, indices) = flux_hir::flib::read_items(items, db, &mut names).map_err(|e| {
+    let (krate, indices) = super::time("HIR decode and append", || {
+        flux_hir::flib::read_items(items, db, &mut names)
+    })
+    .map_err(|e| {
         names
             .proc_macro_error()
             .map_or_else(|| e.to_string(), str::to_owned)
@@ -330,17 +397,21 @@ fn load_checked_with_resolver(
         return Err("inconsistent flux crate identity".into());
     }
     let mut types = Decoder::with_ids(section(5)?, names.ids.clone());
-    sigs.decode_flib_into(&mut types, items)
-        .map_err(|e| e.to_string())?;
+    super::time("signature decode", || {
+        sigs.decode_flib_into(&mut types, items)
+    })
+    .map_err(|e| e.to_string())?;
     types.finish().map_err(|e| e.to_string())?;
-    let mut requirements = Decoder::with_ids(link_requirements(&metadata)?, names.ids.clone());
+    let mut requirements = Decoder::with_ids(link_requirements(artifact)?, names.ids.clone());
     let required_instances =
         Vec::<flux_ty::Instance>::decode(&mut requirements).map_err(|e| e.to_string())?;
     requirements.finish().map_err(|e| e.to_string())?;
     validate_required_instances(items, &required_instances)?;
     let mut bodies = Decoder::with_ids(section(8)?, names.ids);
-    mir.decode_flib_into(&mut bodies, items, sigs)
-        .map_err(|e| e.to_string())?;
+    super::time("MIR decode and validation", || {
+        mir.decode_flib_into(&mut bodies, items, sigs)
+    })
+    .map_err(|e| e.to_string())?;
     bodies.finish().map_err(|e| e.to_string())?;
     for &raw in &indices.functions {
         let id = flux_hir::FunctionId::from_raw(raw);
@@ -360,7 +431,7 @@ fn load_checked_with_resolver(
             hash,
             indices,
         },
-        object: archive.object,
+        object: artifact.object().map(<[u8]>::to_vec),
         required_instances,
     })
 }
@@ -382,15 +453,12 @@ pub struct Manifest {
 
 /// Reads and validates the identity envelope without loading semantic records.
 pub fn manifest(bytes: &[u8]) -> Result<Manifest, String> {
-    let archive = Archive::decode(bytes).map_err(|e| e.to_string())?;
-    let metadata =
-        Metadata::decode(&archive.metadata, compiler_identity()?).map_err(|e| e.to_string())?;
-    let identity = metadata
-        .sections
-        .iter()
-        .find(|s| s.tag == 1)
-        .ok_or("missing flux identity section")?;
-    let mut d = Decoder::new(&identity.bytes);
+    let index = ArtifactIndex::decode(bytes)?;
+    manifest_from_view(index.view(bytes))
+}
+
+fn manifest_from_view(artifact: ArtifactView<'_>) -> Result<Manifest, String> {
+    let mut d = Decoder::new(artifact.section(1)?);
     let name = String::decode(&mut d).map_err(|e| e.to_string())?;
     let hash = decode_hash(&mut d)?;
     let dependencies = Vec::<Vec<u8>>::decode(&mut d)
@@ -402,7 +470,7 @@ pub fn manifest(bytes: &[u8]) -> Result<Manifest, String> {
         })
         .collect::<Result<_, _>>()?;
     d.finish().map_err(|e| e.to_string())?;
-    let linkable = validate_linkage(&metadata, archive.object.as_deref())?;
+    let linkable = artifact.object().is_some();
     Ok(Manifest {
         name,
         hash,
@@ -415,8 +483,27 @@ pub fn manifest(bytes: &[u8]) -> Result<Manifest, String> {
 #[derive(Debug)]
 pub struct Resolved {
     pub path: std::path::PathBuf,
-    pub bytes: Vec<u8>,
+    bytes: Vec<u8>,
+    index: ArtifactIndex,
     pub manifest: Manifest,
+}
+
+impl Resolved {
+    fn new(path: std::path::PathBuf, bytes: Vec<u8>) -> Result<Self, String> {
+        let index = ArtifactIndex::decode(&bytes)?;
+        let manifest = manifest_from_view(index.view(&bytes))?;
+        Ok(Self {
+            path,
+            bytes,
+            index,
+            manifest,
+        })
+    }
+
+    /// The immutable bytes whose framing and checksums were validated.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
 /// Resolves exact dependency hashes among explicit paths and their sibling Fluxlibs.
@@ -424,22 +511,29 @@ pub fn resolve_paths(
     paths: &[std::path::PathBuf],
     known: &[Dependency],
 ) -> Result<Vec<Resolved>, String> {
+    resolve_paths_inner(paths, known).map(|(artifacts, _)| artifacts)
+}
+
+fn resolve_paths_inner(
+    paths: &[std::path::PathBuf],
+    known: &[Dependency],
+) -> Result<(Vec<Resolved>, Vec<[u8; 32]>), String> {
     let mut candidates = std::collections::BTreeMap::new();
+    let mut explicit = std::collections::BTreeMap::new();
     let mut roots = Vec::new();
     let mut directories = std::collections::BTreeSet::new();
     for path in paths {
+        if let Some(&hash) = explicit.get(path) {
+            roots.push(hash);
+            continue;
+        }
         let bytes =
             std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let info = manifest(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        roots.push(info.hash);
-        candidates.insert(
-            info.hash,
-            Resolved {
-                path: path.clone(),
-                bytes,
-                manifest: info,
-            },
-        );
+        let artifact =
+            Resolved::new(path.clone(), bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        roots.push(artifact.manifest.hash);
+        explicit.insert(path.clone(), artifact.manifest.hash);
+        candidates.insert(artifact.manifest.hash, artifact);
         directories.insert(
             path.parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -465,15 +559,16 @@ pub fn resolve_paths(
         }
         siblings.sort();
         for path in siblings {
+            if explicit.contains_key(&path) {
+                continue;
+            }
             let Ok(bytes) = std::fs::read(&path) else {
                 continue;
             };
-            let Ok(info) = manifest(&bytes) else { continue };
-            candidates.entry(info.hash).or_insert(Resolved {
-                path,
-                bytes,
-                manifest: info,
-            });
+            let Ok(artifact) = Resolved::new(path, bytes) else {
+                continue;
+            };
+            candidates.entry(artifact.manifest.hash).or_insert(artifact);
         }
     }
     fn visit(
@@ -503,10 +598,10 @@ pub fn resolve_paths(
     let mut known = known.iter().map(|d| d.hash).collect();
     let mut active = std::collections::BTreeSet::new();
     let mut out = Vec::new();
-    for root in roots {
+    for &root in &roots {
         visit(root, &mut candidates, &mut known, &mut active, &mut out)?;
     }
-    Ok(out)
+    Ok((out, roots))
 }
 
 /// Dependency state assembled before lowering the current source crate.
@@ -519,6 +614,8 @@ pub struct DependencyState {
     pub dependencies: Vec<Dependency>,
     pub objects: Vec<(std::path::PathBuf, Vec<u8>)>,
     pub required_instances: Vec<flux_ty::Instance>,
+    /// Exact identities in the order of the explicit paths passed to `load`.
+    pub roots: Vec<[u8; 32]>,
 }
 
 impl DependencyState {
@@ -570,15 +667,20 @@ impl DependencyState {
             dependencies,
             objects: Vec::new(),
             required_instances: Vec::new(),
+            roots: Vec::new(),
         })
     }
 
     /// Loads exact artifact dependencies. Failure consumes the unpublished staging state.
     pub fn load(mut self, paths: &[std::path::PathBuf]) -> Result<Self, String> {
         let resolver = std::sync::Arc::new(crate::proc_macro::FlibHostResolver::default());
-        for artifact in resolve_paths(paths, &self.dependencies)? {
+        let (artifacts, roots) = super::time("dependency discovery", || {
+            resolve_paths_inner(paths, &self.dependencies)
+        })?;
+        self.roots = roots;
+        for artifact in artifacts {
             let loaded = load_checked_with_resolver(
-                &artifact.bytes,
+                artifact.index.view(&artifact.bytes),
                 &mut self.db,
                 &mut self.items,
                 &mut self.sigs,
@@ -621,40 +723,27 @@ pub fn is_fresh(
     environment: Option<&std::collections::BTreeMap<String, String>>,
     capability: Capability,
 ) -> Result<bool, String> {
-    let archive = match Archive::decode(bytes) {
-        Ok(a) => a,
+    let index = match ArtifactIndex::decode(bytes) {
+        Ok(index) => index,
         Err(_) => return Ok(false),
     };
-    if capability == Capability::Object && archive.object.is_none() {
+    let artifact = index.view(bytes);
+    if capability == Capability::Object && artifact.object().is_none() {
         return Ok(false);
     }
-    let metadata = match Metadata::decode(&archive.metadata, compiler_identity()?) {
-        Ok(m) => m,
-        Err(_) => return Ok(false),
-    };
-    if validate_linkage(&metadata, archive.object.as_deref()).is_err() {
+    let section = artifact.section(2)?;
+    if section.is_empty() {
         return Ok(false);
     }
-    let Some(section) = metadata.sections.iter().find(|s| s.tag == 2) else {
-        return Ok(false);
-    };
-    if section.bytes.is_empty() {
-        return Ok(false);
-    }
-    let snapshot = match super::freshness::Snapshot::from_bytes(&section.bytes) {
+    let snapshot = match super::freshness::Snapshot::from_bytes(section) {
         Ok(s) => s,
         Err(_) => return Ok(false),
     };
     snapshot.is_fresh(configuration, dependencies, environment)
 }
 
-fn validate_linkage(metadata: &Metadata, object: Option<&[u8]>) -> Result<bool, String> {
-    let section = metadata
-        .sections
-        .iter()
-        .find(|s| s.tag == 9)
-        .ok_or("missing flux link requirements")?;
-    let mut d = Decoder::new(&section.bytes);
+fn validate_linkage(artifact: ArtifactView<'_>) -> Result<bool, String> {
+    let mut d = Decoder::new(artifact.section(9)?);
     let abi = u32::decode(&mut d).map_err(|e| e.to_string())?;
     if abi != 2 {
         return Err(format!(
@@ -668,7 +757,7 @@ fn validate_linkage(metadata: &Metadata, object: Option<&[u8]>) -> Result<bool, 
     let checksum = Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
     d.blob().map_err(|e| e.to_string())?;
     d.finish().map_err(|e| e.to_string())?;
-    match (checksum, object) {
+    match (checksum, artifact.object()) {
         (None, None) => Ok(false),
         (Some(checksum), Some(bytes)) if checksum.as_slice() == flux_hir::flib::digest(bytes) => {
             Ok(true)
@@ -677,14 +766,9 @@ fn validate_linkage(metadata: &Metadata, object: Option<&[u8]>) -> Result<bool, 
     }
 }
 
-fn link_requirements(metadata: &Metadata) -> Result<&[u8], String> {
-    let section = metadata
-        .sections
-        .iter()
-        .find(|s| s.tag == 9)
-        .ok_or("missing flux link requirements")?;
+fn link_requirements(artifact: ArtifactView<'_>) -> Result<&[u8], String> {
     // Three bounded fields precede the length-delimited structural instance stream.
-    let mut d = Decoder::new(&section.bytes);
+    let mut d = Decoder::new(artifact.section(9)?);
     u32::decode(&mut d).map_err(|e| e.to_string())?;
     String::decode(&mut d).map_err(|e| e.to_string())?;
     Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;

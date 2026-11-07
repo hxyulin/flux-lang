@@ -182,19 +182,15 @@ impl Cx<'_> {
         let TyKind::Dynamic(object) = goal.predicate.self_ty.kind() else {
             return None;
         };
-        if flux_ty::fn_trait_kind(self.items, object.trait_).is_some()
-            || !self.items.traits[object.trait_]
-                .generics
-                .lifetimes
-                .is_empty()
-        {
+        if flux_ty::fn_trait_kind(self.items, object.trait_).is_some() {
             return None;
         }
         let row = goal.vars.first()?;
         if row.len() != self.slots(goal.predicate.self_ty) as usize {
             return None;
         }
-        let mut at = 1;
+        let own = flux_ty::regions::object_own_slots(self.items, object);
+        let mut at = own;
         let mut args = Vec::new();
         for (index, ty) in flux_ty::regions::object_region_types(self.items, object).enumerate() {
             let end = at + self.slots(ty) as usize;
@@ -210,7 +206,7 @@ impl Cx<'_> {
         let root = ImplRegionGoal {
             predicate: flux_solve::traits::dyn_principal(goal.predicate.self_ty, object),
             vars: std::iter::once(row.clone()).chain(args).collect(),
-            lifetimes: Vec::new(),
+            lifetimes: row.get(1..own)?.to_vec(),
             bound: Vec::new(),
         };
         let mut goals = Vec::new();

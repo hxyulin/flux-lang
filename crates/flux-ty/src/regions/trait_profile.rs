@@ -447,6 +447,13 @@ fn method_profile(
             return Err(fail(None, TraitProfileReason::OwnerMetadata));
         }
         let mut expected_projections = Vec::new();
+        let declaration = &sigs.traits[trait_];
+        if declaration.header_projections.iter().any(|projection| {
+            !matches!(projection.alias.args[0].kind(), TyKind::Param(parameter) if parameter.index == 0)
+        }) || super::trait_bound_regions(items, sigs, trait_).is_none() {
+            return Err(fail(None, TraitProfileReason::SupertraitRegions));
+        }
+        expected_projections.extend_from_slice(&declaration.header_projections);
         for family in &data.types {
             if family.bounds.iter().any(|bound| {
                 !bound.bound_lifetimes.is_empty()
@@ -791,7 +798,7 @@ fn written_type(t: &TypeRef, region_free: bool) -> bool {
             bound.bound_lifetimes.is_empty()
                 && bound.path.args.iter().flatten().all(|args| {
                     !args.parenthesized
-                        && args.lifetimes.is_empty()
+                        && (!region_free || args.lifetimes.is_empty())
                         && args.types.iter().all(|ty| written_type(ty, false))
                         && args.bindings.iter().all(|binding| {
                             binding.args.is_none() && written_type(&binding.ty, false)
@@ -831,7 +838,8 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
                 || flux_solve::objects::supertraits_of(items, object.trait_)
                     .iter()
                     .any(|&trait_| {
-                        !items.traits[trait_].generics.lifetimes.is_empty()
+                        (trait_ != object.trait_
+                            && !items.traits[trait_].generics.lifetimes.is_empty())
                             || crate::fn_trait_kind(items, trait_).is_some()
                     })
                 || object.auto_traits.iter().any(|marker| {
@@ -861,16 +869,15 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
             {
                 return None;
             }
-            object
-                .args
-                .iter()
-                .chain(object.assoc_tys)
-                .try_fold(1, |count, &arg| {
+            object.args.iter().chain(object.assoc_tys).try_fold(
+                super::object_own_slots(items, object),
+                |count, &arg| {
                     if arg.has_aliases() || arg.has_opaques() || arg.has_infer() || arg.is_dyn() {
                         return None;
                     }
                     Some(count + type_slots(items, sigs, arg, params)?)
-                })
+                },
+            )
         }
         TyKind::Param(p) if (p.index as usize) < params => Some(0),
         TyKind::Int(_)
@@ -962,7 +969,9 @@ fn region_free_edges(
         b.path.qself.is_none()
             && b.path.args.iter().flatten().all(|a| {
                 a.lifetimes.is_empty()
-                    && a.bindings.is_empty()
+                    && a.bindings.iter().all(|binding| {
+                        associated && binding.args.is_none() && written_type(&binding.ty, false)
+                    })
                     && !a.parenthesized
                     && a.types.iter().all(|t| written_type(t, true))
             })
@@ -1010,11 +1019,13 @@ fn region_free_edges(
         }
     }
     let mut supers = Vec::new();
+    let mut header = Vec::new();
     for b in &t.supertraits {
-        if let Some((edge, _)) =
+        if let Some((edge, projections)) =
             crate::traits::resolve_bound(items, t.loc.module, b, self_ty, scope, &mut errors)
         {
             supers.push(edge);
+            header.extend(projections);
         }
     }
     let resolved =
@@ -1027,6 +1038,7 @@ fn region_free_edges(
             own.push(p);
         }
     }
+    header.extend_from_slice(&resolved.projections);
     // Independently verify associated-bound metadata without imposing the root
     // profile's ban on associated items on a general region-free supertrait.
     let mut type_bounds = Vec::new();
@@ -1048,7 +1060,8 @@ fn region_free_edges(
     if !errors.is_empty()
         || supers.as_slice() != sig.supertraits.as_ref()
         || own.as_slice() != predicates.as_ref()
-        || !resolved.projections.is_empty()
+        || (!associated && !header.is_empty())
+        || (associated && header.as_slice() != sig.header_projections.as_ref())
         || type_bounds.as_slice() != sig.type_bounds.as_ref()
     {
         return Err(fail(TraitProfileReason::SupertraitMetadata));

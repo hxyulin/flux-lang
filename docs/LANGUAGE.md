@@ -1606,7 +1606,7 @@ On AArch64, `core::arch::aarch64` (also reexported as `std::arch::aarch64`)
 provides distinct `uint8x16_t`,
 `uint16x8_t`, `uint64x2_t`, `uint8x8_t` and `uint64x1_t` types, with their
 Rust sizes/alignments and Copy/Clone/Debug. The bounded API includes
-`vld1q_u8`, `vdupq_n_u8`, `vceqq_u8`, `vandq_u8`, `vorrq_u8`,
+`vld1q_u8`, `vld1q_u8_x2` (returning `uint8x16x2_t`), `vdupq_n_u8`, `vceqq_u8`, `vandq_u8`, `vorrq_u8`,
 `vreinterpretq_u16_u8`, `vreinterpretq_u64_u8`, `vreinterpret_u64_u8`,
 `vgetq_lane_u64::<LANE>`, `vget_lane_u64::<LANE>`,
 `vshrn_n_u16::<N>` and `vpmaxq_u8`. Calls require an unsafe context;
@@ -1615,7 +1615,7 @@ wrappers support unsafe function pointers; closures calling them inside an
 unsafe block can satisfy Fn bounds. Safe pointer conversions and direct
 Fn-bound use of the target-feature items are rejected. On AArch64, explicit
 unsafe functions with bodies, including const functions and methods, may carry
-`#[target_feature(enable = "neon")]` or `enable = "crc"`.
+`#[target_feature(enable = "neon")]`, `crc`, `sha2`, `sha3`, `dit` or `sb`.
 Safe annotated functions, other features,
 foreign declarations, required trait methods and `inline(always)` combinations
 remain rejected. The attribute does not relax ordinary unsafe call rules.
@@ -1624,8 +1624,8 @@ and exactly eight byte stores. Pairwise maximum uses scalarized shuffles and
 packed unsigned comparison/selection; native `shrn`/`umaxp` selection is not
 implemented in the pinned Keel IR.
 
-`std::arch::is_aarch64_feature_detected!("crc")` queries the runtime CPU through
-macOS sysctl or Linux HWCAP. Imported aliases and explicit std in no_std crates
+`std::arch::is_aarch64_feature_detected!` accepts `"crc"`, `"dit"` and `"sb"`,
+querying the runtime CPU through macOS sysctl or Linux HWCAP. Imported aliases and explicit std in no_std crates
 work. Other feature names remain explicitly unsupported. The macro is not
 available directly under the std root, matching Rust's namespace.
 Unsafe `__crc32b` and `__crc32d` provide reflected IEEE CRC folding with scalar
@@ -1776,10 +1776,11 @@ reject; non-Unicode paths remain representable. Windows paths, general file
 handles, writing and directory iteration remain unsupported.
 `env::current_dir()` obtains the native Unix current directory, preserves path
 bytes, retries with a larger buffer on ERANGE, and returns OS failures.
-`env::consts::{OS, FAMILY, ARCH}` describes the fixed target. `env::var(&str)`
-returns UTF-8 values or VarError, preserving non-Unicode Unix bytes in an owned
-OsString. NUL or `=` in keys reports NotPresent. Other OS-string key types and
-environment mutation are not implemented. Sized `Rc<T>` supports shared
+`env::consts::{OS, FAMILY, ARCH}` describes the fixed target. `env::var` accepts
+`AsRef<OsStr>` keys and returns UTF-8 values or VarError, preserving non-Unicode
+Unix bytes in an owned OsString. NUL or `=` in keys reports NotPresent.
+Unsafe `env::set_var` and `remove_var` use Unix `setenv` and `unsetenv`.
+Callers must exclude concurrent environment access, as their safety contracts require. Sized `Rc<T>` supports shared
 ownership, clone-on-write and unique extraction, and remains neither Send nor
 Sync. Atomics and
 synchronization follow the bounded APIs described above.
@@ -1966,3 +1967,16 @@ not erase that default. Multiple containing bounds may be inferred in bodies;
 ambiguous defaults in declarations reject. An elided containing lifetime whose
 shared default row cannot be represented reports an unsupported diagnostic;
 write the object lifetime explicitly in that case.
+
+Shared borrows of immutable statics may appear inside promoted arrays and enum
+values, including cyclic static graphs. The promoted reference retains the
+static allocation's address. Non-generic free functions accept `no_mangle`;
+edition 2024 requires the `unsafe(no_mangle)` spelling. These definitions are
+retained even when only native code references their symbol.
+
+Inline assembly also accepts tied `inlateout` operands, `lateout` places and
+integer-literal `const` operands. Late outputs use conservatively tied registers
+seeded without reading the output place. Function-pointer late outputs, separate
+input/output expressions and general const expressions remain unsupported.
+AArch64 DIT register access, immediate enable/disable and the SB instruction are
+encoded after register allocation for the pinned assembler.

@@ -7,7 +7,11 @@
 //! Of the type checker's crates it depends on `flux-ty-ir` alone, so it
 //! cannot reach into inference.
 
+pub use flux_ty_ir::metadata::{transparent_object_tail, transparent_object_unsize};
+
 pub mod fn_regions;
+mod impl_headers;
+pub use impl_headers::{ImplHeadersScope, remember_impl_headers};
 pub mod objects;
 mod struct_fields;
 pub mod traits;

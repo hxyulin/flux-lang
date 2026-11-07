@@ -7,7 +7,16 @@ use std::sync::Arc;
 /// Writes one crate's names, items, scopes, macro tokens and diagnostic sources.
 /// The encoder must map this crate at slot zero and its dependency references.
 pub fn write_items(items: &ItemTree, krate: CrateId, e: &mut Encoder) -> Result<(), Error> {
-    let indices = CrateIndices::collect(items, krate);
+    write_items_with_indices(items, krate, &CrateIndices::collect(items, krate), e)
+}
+
+/// Writes items using ownership already collected for this unchanged item tree.
+pub fn write_items_with_indices(
+    items: &ItemTree,
+    krate: CrateId,
+    indices: &CrateIndices,
+    e: &mut Encoder,
+) -> Result<(), Error> {
     for (_, table) in indices.tables() {
         table.len().encode(e)?;
     }
@@ -194,13 +203,16 @@ pub fn read_items(
     }
     // File slots are reserved by appending diagnostic-only records. They cannot
     // become semantic inputs if a later record rejects the artifact.
-    for source in &sources {
-        let file = db.add_metadata_source(source.path.clone(), source.text.clone(), source.edition);
+    for source in &mut sources {
+        let len = source.text.len() as u32;
+        let file = db.add_metadata_source(
+            std::mem::take(&mut source.path),
+            std::mem::take(&mut source.text),
+            source.edition,
+        );
         if source.included {
             let base = db.allocate_metadata_include(file)?;
-            indices
-                .source_ranges
-                .push((file.0, base, base + source.text.len() as u32));
+            indices.source_ranges.push((file.0, base, base + len));
         }
         indices.files.push(file.0);
     }
@@ -214,7 +226,7 @@ pub fn read_items(
     let consts: Vec<crate::Const> = read_records(counts[5], d)?;
     let aliases: Vec<crate::TypeAlias> = read_records(counts[6], d)?;
     let macros: Vec<crate::MacroDef> = read_records(counts[7], d)?;
-    let scopes = read_records(counts[8], d)?;
+    let scopes: Vec<crate::MacroScope> = read_records(counts[8], d)?;
     let def_scopes = read_records(counts[0], d)?;
     let uses: Vec<crate::item_tree::Use> = Decode::decode(d)?;
     let sized: rustc_hash::FxHashMap<crate::FunctionId, crate::SizedDispatch> = Decode::decode(d)?;
@@ -313,12 +325,64 @@ pub fn read_items(
     {
         return Err(Error("artifact index contains nonowned declarations"));
     }
-    let mut staged = items.clone();
-    staged.crates.push(data);
+    // Reject all fallible invariants before appending semantic records.
+    for (&index, scope) in indices.macro_scopes.iter().zip(&scopes) {
+        if scope.parent.is_some_and(|p| p.into_raw() >= index)
+            || scope.jump.is_some_and(|p| p.into_raw() >= index)
+        {
+            return Err(Error("invalid macro scope ancestry"));
+        }
+    }
+    let valid_file =
+        |id: FileId| items.files.contains_key(&id) || d.ids.contains_owned(IdKind::File, id.0);
+    if modules.iter().any(|x| !valid_file(x.file)) {
+        return Err(Error("invalid module diagnostic file"));
+    }
+    if functions.iter().any(|x| !valid_file(x.loc.file)) {
+        return Err(Error("invalid function diagnostic file"));
+    }
+    if structs.iter().any(|x| !valid_file(x.loc.file)) {
+        return Err(Error("invalid struct diagnostic file"));
+    }
+    if traits.iter().any(|x| !valid_file(x.loc.file)) {
+        return Err(Error("invalid trait diagnostic file"));
+    }
+    if impls.iter().any(|x| !valid_file(x.file)) {
+        return Err(Error("invalid impl diagnostic file"));
+    }
+    if consts.iter().any(|x| !valid_file(x.loc.file)) {
+        return Err(Error("invalid constant diagnostic file"));
+    }
+    if aliases.iter().any(|x| !valid_file(x.loc.file)) {
+        return Err(Error("invalid alias diagnostic file"));
+    }
+    if macros.iter().any(|x| !valid_file(x.file)) {
+        return Err(Error("invalid macro diagnostic file"));
+    }
+    let mut expansions = rustc_hash::FxHashMap::default();
+    for (&index, source) in indices.files.iter().zip(&sources) {
+        if let Some(wire) = source.expansion {
+            expansions.insert(FileId(index), FileId(d.ids.get(IdKind::File, wire)?));
+        }
+    }
+    for &index in &indices.files {
+        let mut file = FileId(index);
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(&parent) = expansions
+            .get(&file)
+            .or_else(|| items.expansion_files.get(&file))
+        {
+            if !valid_file(parent) || !seen.insert(file) {
+                return Err(Error("invalid expansion source ancestry"));
+            }
+            file = parent;
+        }
+    }
+    items.crates.push(data);
     macro_rules! append {
         ($field:ident,$values:ident) => {
             for value in $values {
-                staged.$field.alloc(value);
+                items.$field.alloc(value);
             }
         };
     }
@@ -331,129 +395,65 @@ pub fn read_items(
     append!(type_aliases, aliases);
     append!(macros, macros);
     append!(macro_scopes, scopes);
-    staged.def_map.scopes.extend(def_scopes);
-    staged.uses.extend(uses);
-    staged.sized_dispatch.extend(sized);
+    items.def_map.scopes.extend(def_scopes);
+    items.uses.extend(uses);
+    items.sized_dispatch.extend(sized);
     for (key, values) in associated {
-        staged.assoc.entry(key).or_default().extend(values);
+        items.assoc.entry(key).or_default().extend(values);
     }
     for (key, values) in trait_impls {
-        staged.trait_impls.entry(key).or_default().extend(values);
+        items.trait_impls.entry(key).or_default().extend(values);
     }
-    staged.ctor_fns.extend(constructors);
-    staged.default_variants.extend(defaults);
-    staged.exported_macros.extend(exported);
-    staged.block_modules.extend(blocks);
-    staged.anon_consts.extend(anonymous);
-    staged.native_libraries.extend(native);
-    for &index in &indices.macro_scopes {
-        let scope = &staged.macro_scopes[Idx::from_raw(index)];
-        if scope.parent.is_some_and(|p| p.into_raw() >= index)
-            || scope.jump.is_some_and(|p| p.into_raw() >= index)
-        {
-            return Err(Error("invalid macro scope ancestry"));
-        }
-    }
+    items.ctor_fns.extend(constructors);
+    items.default_variants.extend(defaults);
+    items.exported_macros.extend(exported);
+    items.block_modules.extend(blocks);
+    items.anon_consts.extend(anonymous);
+    items.native_libraries.extend(native);
     for &index in &indices.traits {
         let id = Idx::from_raw(index);
-        for &function in &staged.traits[id].functions {
-            staged
+        for &function in &items.traits[id].functions {
+            items
                 .trait_fns
-                .entry(staged.functions[function].name)
+                .entry(items.functions[function].name)
                 .or_default()
                 .push(id);
         }
-        for &constant in &staged.traits[id].consts {
-            if let Some(name) = staged.consts[constant].name {
-                staged.trait_fns.entry(name).or_default().push(id);
+        for &constant in &items.traits[id].consts {
+            if let Some(name) = items.consts[constant].name {
+                items.trait_fns.entry(name).or_default().push(id);
             }
         }
     }
     for &index in &indices.macro_scopes {
         let id = Idx::from_raw(index);
-        staged
+        items
             .macro_names
-            .entry(staged.macro_scopes[id].name)
+            .entry(items.macro_scopes[id].name)
             .or_default()
             .push(id);
     }
-    for (&index, source) in indices.files.iter().zip(sources) {
+    for &index in &indices.files {
         let file = FileId(index);
-        let expansion = source
-            .expansion
-            .map(|wire| d.ids.get(IdKind::File, wire).map(FileId))
-            .transpose()?;
+        let expansion = expansions.get(&file).copied();
         let base = db.file(file).range_base;
         db.set_metadata_origin(file, base, expansion);
-        let record = db.file(file).clone();
-        if let Some(origin) = record.expansion_of {
-            staged.expansion_files.insert(file, origin);
+        if let Some(origin) = expansion {
+            items.expansion_files.insert(file, origin);
         }
-        staged.insert_file(file, Arc::new(record));
+        items.insert_file(file, Arc::new(db.file(file).clone()));
     }
-    let valid_file = |id: FileId| staged.files.contains_key(&id);
-    for &index in &indices.modules {
-        if !valid_file(staged.modules[Idx::from_raw(index)].file) {
-            return Err(Error("invalid module diagnostic file"));
-        }
-    }
-    for &index in &indices.functions {
-        if !valid_file(staged.functions[Idx::from_raw(index)].loc.file) {
-            return Err(Error("invalid function diagnostic file"));
-        }
-    }
-    for &index in &indices.structs {
-        if !valid_file(staged.structs[Idx::from_raw(index)].loc.file) {
-            return Err(Error("invalid struct diagnostic file"));
-        }
-    }
-    for &index in &indices.traits {
-        if !valid_file(staged.traits[Idx::from_raw(index)].loc.file) {
-            return Err(Error("invalid trait diagnostic file"));
-        }
-    }
-    for &index in &indices.impls {
-        if !valid_file(staged.impls[Idx::from_raw(index)].file) {
-            return Err(Error("invalid impl diagnostic file"));
-        }
-    }
-    for &index in &indices.consts {
-        if !valid_file(staged.consts[Idx::from_raw(index)].loc.file) {
-            return Err(Error("invalid constant diagnostic file"));
-        }
-    }
-    for &index in &indices.type_aliases {
-        if !valid_file(staged.type_aliases[Idx::from_raw(index)].loc.file) {
-            return Err(Error("invalid alias diagnostic file"));
-        }
-    }
-    for &index in &indices.macros {
-        if !valid_file(staged.macros[Idx::from_raw(index)].file) {
-            return Err(Error("invalid macro diagnostic file"));
-        }
-    }
-    for &index in &indices.files {
-        let mut file = FileId(index);
-        let mut seen = std::collections::BTreeSet::new();
-        while let Some(&parent) = staged.expansion_files.get(&file) {
-            if !valid_file(parent) || !seen.insert(file) {
-                return Err(Error("invalid expansion source ancestry"));
-            }
-            file = parent;
-        }
-    }
-    staged
+    items
         .artifact_files
         .insert(krate, indices.files.iter().copied().map(FileId).collect());
     if indices.macros.iter().any(|&id| {
         matches!(
-            staged.macros[Idx::from_raw(id)].kind,
+            items.macros[Idx::from_raw(id)].kind,
             crate::MacroKind::ProcMacro(_)
         )
     }) {
         db.note_metadata_proc_macros();
     }
-    *items = staged;
     Ok((krate, indices))
 }
 fn read_records<T: Decode>(count: usize, d: &mut Decoder<'_>) -> Result<Vec<T>, Error> {

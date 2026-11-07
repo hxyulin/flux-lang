@@ -132,7 +132,11 @@ pub(crate) fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Dia
 }
 
 /// Rust forbids an explicitly aligned type anywhere in a packed by-value field.
-pub(crate) fn check_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+pub(crate) fn check_declarations(
+    items: &ItemTree,
+    sigs: &Signatures,
+    first: u32,
+) -> Vec<Diagnostic> {
     fn aligned(
         items: &ItemTree,
         sigs: &Signatures,
@@ -199,7 +203,7 @@ pub(crate) fn check_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Dia
         }
     }
     let mut errors = Vec::new();
-    for (id, data) in items.structs.iter() {
+    for (id, data) in items.structs.iter().skip(first as usize) {
         if data.repr_pack.is_some() {
             let parameters = flux_solve::unsized_params(items, None, &data.generics);
             let bounds = sigs.struct_predicates.get(id).map_or(&[][..], |b| b);

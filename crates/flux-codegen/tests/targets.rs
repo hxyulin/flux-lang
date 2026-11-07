@@ -346,3 +346,101 @@ fn linux_native_link_preserves_output_on_failure() {
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+/// Keep the batch API as an independent reference for chunk layout and metadata.
+fn batch_object(module: &keel_ir::Module, target: Target, tier: OptimizationTier) -> Vec<u8> {
+    let selector = if tier == OptimizationTier::Full {
+        keel_codegen::SelectionTier::Full
+    } else {
+        keel_codegen::SelectionTier::Baseline
+    };
+    let program = keel_codegen::compile_program_with_pipeline(
+        module,
+        target,
+        &keel_codegen::CodegenPipeline {
+            selector: &selector,
+            allocator: &keel_codegen::regalloc::AllocationTier::Full,
+        },
+    )
+    .unwrap();
+    match target {
+        Target::Aarch64AppleDarwin => {
+            keel_asm::assemble_program_object(&program, Default::default()).unwrap()
+        }
+        Target::X86_64LinuxGnu => {
+            let features =
+                keel_codegen::x86_features::module_features(module, Default::default()).unwrap();
+            keel_asm::x86::assemble_program_object_with_features(&program, features).unwrap()
+        }
+        _ => panic!("unexpected comparison target {target:?}"),
+    }
+}
+
+#[test]
+fn streamed_objects_preserve_symbols_relocations_and_unwind_metadata() {
+    let source = r#"
+        struct Pair { left: u64, right: u64 }
+        static DATA: [u8; 4] = [3, 5, 7, 11];
+        static CALL: fn(u64) -> u64 = compute;
+        #[inline(never)]
+        fn compute(mut value: u64) -> u64 {
+            let mut i = 0;
+            while i < DATA.len() {
+                if value & 1 == 0 { value += DATA[i] as u64; }
+                else { value ^= DATA[i] as u64; }
+                i += 1;
+            }
+            value
+        }
+        fn pair(value: u64) -> Pair { Pair { left: compute(value), right: (CALL)(value + 1) } }
+        fn main() { let pair = pair(13); println!("{} {}", pair.left, pair.right); }
+    "#;
+    let (_, _, hir) = flux_hir::lower_text("streamed.rs", source);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
+    for target in [Target::Aarch64AppleDarwin, Target::X86_64LinuxGnu] {
+        for tier in [OptimizationTier::None, OptimizationTier::Full] {
+            let mut optimized = module.clone();
+            let actual = flux_codegen::compile_object(&mut optimized, target, tier).unwrap();
+            let expected = batch_object(&optimized, target, tier);
+            assert_eq!(actual, expected, "{target:?} {tier:?}");
+            let (timed, scopes) =
+                flux_codegen::compile_object_with_timings(&mut module.clone(), target, tier);
+            assert_eq!(timed.unwrap(), expected, "timed {target:?} {tier:?}");
+            assert!(scopes.codegen.is_some() && scopes.assemble.is_some());
+        }
+    }
+}
+
+#[test]
+fn streaming_preserves_assembly_error_stage_and_diagnostic() {
+    let mut module =
+        keel_ir::parse("func @probe() -> i64 {\nblock0:\n v0 = iconst.i64 7\n return v0\n}\n")
+            .unwrap();
+    module
+        .assembly
+        .push(".text\n.this_directive_is_invalid\n".into());
+    let target = Target::X86_64LinuxGnu;
+    let program = keel_codegen::compile_program_with_pipeline(
+        &module,
+        target,
+        &keel_codegen::CodegenPipeline {
+            selector: &keel_codegen::SelectionTier::Baseline,
+            allocator: &keel_codegen::regalloc::AllocationTier::Full,
+        },
+    )
+    .unwrap();
+    let expected =
+        keel_asm::x86::assemble_program_object_with_features(&program, Default::default())
+            .unwrap_err();
+    let (actual, scopes) =
+        flux_codegen::compile_object_with_timings(&mut module, target, OptimizationTier::None);
+    let actual = actual.unwrap_err();
+    assert_eq!(actual.stage(), flux_codegen::Stage::Assemble);
+    assert_eq!(actual.to_string(), expected.to_string());
+    assert!(scopes.codegen.is_some() && scopes.assemble.is_some());
+}

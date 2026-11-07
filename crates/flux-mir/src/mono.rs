@@ -191,6 +191,19 @@ fn collect_roots(
             }
         }
     }
+    if roots.is_none() {
+        for (function, data) in items.functions.iter() {
+            if !data.is_extern && data.link_name.is_some() && mir.bodies.get(function).is_some() {
+                let instance = Instance {
+                    function,
+                    args: &[],
+                };
+                if depths.insert(instance, 0).is_none() {
+                    instances.push(instance);
+                }
+            }
+        }
+    }
     for &instance in additional_roots {
         if depths.insert(instance, 0).is_none() {
             instances.push(instance);
@@ -263,6 +276,7 @@ fn collect_roots(
             }
             if matches!(ty.kind(), TyKind::Adt(..))
                 && sigs.metadata(ty) == flux_ty::Metadata::VTable
+                && flux_solve::transparent_object_tail(items, &sigs.structs, ty).is_none()
             {
                 let owner = &items.functions[body.owner.unwrap_or(caller.function)];
                 let mut error = Diagnostic::new(
@@ -289,6 +303,12 @@ fn collect_roots(
                     let mut vtables = Vec::new();
                     if let (Some(concrete), Some(object)) =
                         (pointee(items, from), pointee(items, to))
+                        && let Some((concrete, object)) = flux_solve::transparent_object_unsize(
+                            items,
+                            &sigs.structs,
+                            concrete,
+                            object,
+                        )
                         && object.is_dyn()
                         && !concrete.is_dyn()
                     {
@@ -1354,7 +1374,10 @@ pub fn expand_intrinsics(
         // Of a trait object: through its vtable, code generation's.
         let arg_ty = generic_args.first().copied().unwrap_or(Ty::ERROR);
         let name = intrinsic.name();
-        if matches!(name, "size_of_val" | "align_of_val" | "drop_in_place") && arg_ty.is_dyn() {
+        if (matches!(name, "size_of_val" | "align_of_val")
+            && sigs.metadata(arg_ty) == flux_ty::Metadata::VTable)
+            || (name == "drop_in_place" && arg_ty.is_dyn())
+        {
             continue;
         }
         if name == "drop_in_place" {

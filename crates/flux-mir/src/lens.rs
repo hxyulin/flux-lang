@@ -67,11 +67,6 @@ fn eval_lens_from(
         let clean = typed.consts.iter().all(|(_, r)| r.diagnostics.is_empty())
             && typed.bodies.iter().all(|(_, r)| r.diagnostics.is_empty());
         let mut consts = ArenaMap::new();
-        if let Some(imported) = imported {
-            for (id, body) in imported.mir().consts.iter() {
-                consts.insert(id, body.clone());
-            }
-        }
         for (id, result) in typed.consts.iter() {
             if result.diagnostics.is_empty() && result.missing_lens.is_empty() {
                 let body = match shared(ClosureOwner::Const(id)) {
@@ -87,13 +82,6 @@ fn eval_lens_from(
             }
         }
         let mut bodies = ArenaMap::new();
-        if let Some(imported) = imported {
-            for (id, body) in imported.mir().bodies.iter() {
-                if items.functions[id].is_const {
-                    bodies.insert(id, body.clone());
-                }
-            }
-        }
         for (id, result) in typed.bodies.iter() {
             if result.diagnostics.is_empty() && result.missing_lens.is_empty() {
                 let body = match shared(ClosureOwner::Function(id)) {

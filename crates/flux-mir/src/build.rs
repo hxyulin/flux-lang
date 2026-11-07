@@ -38,7 +38,20 @@ pub fn build_file_from(
     imported: &crate::imported::ImportedMir,
     required_functions: &[FunctionId],
 ) -> FileMir {
-    build_file_inner(hir, typed, Some(imported), required_functions)
+    let mut mir = build_file_inner(hir, typed, Some(imported), required_functions);
+    imported.copy_bodies_into(&mut mir);
+    mir
+}
+
+/// Builds local MIR while borrowing dependencies, then moves their templates into output.
+pub fn build_file_from_owned(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: crate::imported::ImportedMir,
+    required_functions: &[FunctionId],
+) -> FileMir {
+    let mir = build_file_inner(hir, typed, Some(&imported), required_functions);
+    imported.finish(mir)
 }
 
 fn build_file_inner(
@@ -49,7 +62,13 @@ fn build_file_inner(
 ) -> FileMir {
     // Signatures are final once type checking is done.
     let _fields = flux_solve::remember_field_types(&typed.sigs);
-    let mut diagnostics = crate::alignment::check_declarations(&hir.items, &typed.sigs);
+    let _headers = flux_solve::remember_impl_headers(&hir.items, &typed.sigs);
+    let source = imported.map_or(hir.items.core, |i| i.source_counts());
+    let mut diagnostics = crate::alignment::check_declarations(
+        &hir.items,
+        &typed.sigs,
+        imported.map_or(0, |i| i.source_counts().structs),
+    );
     let check = |body: &Body, file, is_const, requirements: &crate::borrowck::Requirements| {
         let (found, own) = check_body(hir, typed, body, is_const, requirements);
         let found: Vec<_> = found
@@ -113,6 +132,10 @@ fn build_file_inner(
     // The callees whose targets are queued already.
     let mut expanded = rustc_hash::FxHashSet::default();
     while let Some(id) = queue.pop() {
+        // Their callees were collected by required_functions before source checking.
+        if imported.is_some_and(|i| i.mir().bodies.get(id).is_some()) {
+            continue;
+        }
         let provider = shared(ClosureOwner::Function(id));
         // Source and cached-library bodies retain the source inference gate.
         // Only decoded user bodies deliberately have no inference record.
@@ -143,17 +166,6 @@ fn build_file_inner(
         add_closures(built.closures, &mut queue);
         bodies.insert(id, built.body);
     }
-    if let Some(imported) = imported {
-        for (id, body) in imported.mir().bodies.iter() {
-            bodies.insert(id, body.clone());
-        }
-        for (id, body) in imported.mir().consts.iter() {
-            consts.insert(id, body.clone());
-        }
-        for (&key, body) in &imported.mir().closures {
-            closures.insert(key, body.clone());
-        }
-    }
     // Code that type checking should have ruled out, in a program
     // without errors: a bug in flux, which must not compile to a trap.
     let bugs = bugs(hir, &bodies, &closures, &consts);
@@ -168,26 +180,35 @@ fn build_file_inner(
     diagnostics.extend(bugs.iter().cloned());
     // Patterns that name constants are checked with their values; rustc
     // does not borrow-check the bodies whose patterns have errors.
-    diagnostics.extend(crate::borrowck::check_impl_methods(&hir.items, &typed.sigs));
+    diagnostics.extend(crate::borrowck::check_impl_methods_from(
+        &hir.items,
+        &typed.sigs,
+        source.impls,
+    ));
     diagnostics.extend(crate::borrowck::check_signature_projection_requirements(
         &hir.items,
         &typed.sigs,
+        source.functions,
     ));
     diagnostics.extend(crate::borrowck::check_adt_declarations(
         &hir.items,
         &typed.sigs,
+        source,
     ));
-    diagnostics.extend(crate::borrowck::check_impl_supertraits(
+    diagnostics.extend(crate::borrowck::check_impl_supertraits_from(
         &hir.items,
         &typed.sigs,
+        source.impls,
     ));
-    diagnostics.extend(crate::borrowck::check_impl_associated_bounds(
+    diagnostics.extend(crate::borrowck::check_impl_associated_bounds_from(
         &hir.items,
         &typed.sigs,
+        source.impls,
     ));
-    diagnostics.extend(crate::borrowck::check_impl_associated_values(
+    diagnostics.extend(crate::borrowck::check_impl_associated_values_from(
         &hir.items,
         &typed.sigs,
+        source.impls,
     ));
     let (found, failed) = check_patterns(hir, typed, &bodies, &consts, &unchecked, true, imported);
     diagnostics.extend(found);
@@ -487,14 +508,6 @@ fn check_clean_patterns(
         }
         bodies.insert(id, body);
     }
-    if let Some(imported) = imported {
-        for (id, body) in imported.mir().bodies.iter() {
-            bodies.insert(id, body.clone());
-        }
-        for (id, body) in imported.mir().consts.iter() {
-            consts.insert(id, body.clone());
-        }
-    }
     check_patterns(hir, typed, &bodies, &consts, &[], false, imported)
 }
 
@@ -791,7 +804,12 @@ fn evaluate_consts(
     if let Some(imported) = imported {
         evaluator = evaluator.with_provider(imported);
     }
-    let mut checked = evaluate_discriminants(items, &mut evaluator, discriminants);
+    let mut checked = evaluate_discriminants(
+        items,
+        &mut evaluator,
+        discriminants,
+        imported.map_or(0, |i| i.source_counts().structs),
+    );
     let mut wanted: Vec<flux_ty::ConstInstance> = items
         .consts
         .iter()
@@ -851,9 +869,10 @@ fn evaluate_discriminants(
     items: &ItemTree,
     evaluator: &mut crate::eval::Evaluator<'_>,
     table: &mut crate::Discriminants,
+    first: u32,
 ) -> Vec<flux_hir::Diagnostic> {
     let mut diagnostics = Vec::new();
-    for (id, s) in items.structs.iter() {
+    for (id, s) in items.structs.iter().skip(first as usize) {
         if !s.has_const_discriminants() {
             continue;
         }
@@ -2844,6 +2863,32 @@ impl Builder<'_> {
         self.lower_reborrowed(expr, dest);
     }
 
+    /// Late outputs use a tied register conservatively. Seed that register
+    /// without reading the possibly uninitialized output place.
+    fn asm_output_seed(&mut self, ty: Ty, range: TextRange) -> Operand {
+        let value = match ty.kind() {
+            TyKind::Int(int) => return Operand::Const(Constant::int(0, int)),
+            TyKind::Float(float) => return Operand::Const(Constant::Float { bits: 0, ty: float }),
+            TyKind::RawPtr(..) => Rvalue::Cast(Operand::Const(Constant::int(0, IntTy::Usize)), ty),
+            TyKind::Array(elem, length) => {
+                let zero = self.asm_output_seed(elem, range);
+                Rvalue::Repeat(zero, length)
+            }
+            TyKind::Adt(adt, _) => {
+                let fields = flux_solve::fields(&self.typed.sigs, ty).unwrap_or_default();
+                let values = fields
+                    .iter()
+                    .map(|&ty| self.asm_output_seed(ty, range))
+                    .collect();
+                Rvalue::Aggregate(AggregateKind::Struct(adt.strukt), values)
+            }
+            _ => unreachable!("checked assembly output type"),
+        };
+        let local = self.temp(ty);
+        self.assign(&local.into(), value, range);
+        self.read(local.into())
+    }
+
     /// The value of `expr` if rustc would promote a borrow of it to a
     /// constant: literals and aggregates built without executing user code.
     /// Every stored field and nested reference must itself be promotable;
@@ -3102,6 +3147,9 @@ impl Builder<'_> {
     ) -> Option<(ConstId, Vec<crate::eval::StaticProjection>)> {
         use crate::eval::{StaticProjection, Value};
         match &body.exprs[expr] {
+            Expr::Path(Res::Static(id)) if !self.items.consts[*id].is_static_mut() => {
+                Some((*id, Vec::new()))
+            }
             Expr::Path(res @ (Res::Const(_) | Res::Assoc { .. })) => {
                 let constant = types.consts.get(expr).copied().or(match res {
                     Res::Const(konst) => Some(flux_ty::ConstInstance {
@@ -3353,11 +3401,12 @@ impl Builder<'_> {
                     let place = self.lower_place(operand);
                     let ty = self.place_ty(&place);
                     let snapshot = self.temp(ty);
-                    self.assign(
-                        &snapshot.into(),
-                        Rvalue::Use(Operand::Copy(place.clone())),
-                        range,
-                    );
+                    let input = if register.output_only() {
+                        self.asm_output_seed(ty, range)
+                    } else {
+                        Operand::Copy(place.clone())
+                    };
+                    self.assign(&snapshot.into(), Rvalue::Use(input), range);
                     places.push(place);
                     inputs.push(self.read(snapshot.into()));
                     tys.push(ty);

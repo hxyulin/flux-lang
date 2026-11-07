@@ -2091,6 +2091,30 @@ impl Collector<'_> {
             ));
         }
         for attr in attrs.iter() {
+            if attr_name(attr) == Some("no_mangle") {
+                let valid = attr
+                    .meta()
+                    .is_some_and(|m| m.token_tree().is_none() && m.eq_token().is_none());
+                if self.items.edition(ctx.module) == flux_syntax::Edition::E2024
+                    && attr.meta().is_some_and(|m| m.unsafe_token().is_none())
+                {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        attr.syntax().text_range(),
+                        "unsafe attribute used without unsafe",
+                    ));
+                }
+                if !valid || in_extern_block || owner.is_some() || f.generic_param_list().is_some()
+                {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        attr.syntax().text_range(),
+                        "`no_mangle` requires a non-generic free function",
+                    ));
+                } else {
+                    link_name = f.name().map(|name| Symbol::intern(name.text()));
+                }
+                continue;
+            }
+
             if attr_name(attr) == Some("link_name") {
                 let name = super::attributes::link_name_attr(attr, &mut self.items.diagnostics);
                 if in_extern_block && link_name.is_none() {

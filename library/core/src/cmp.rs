@@ -33,6 +33,25 @@ impl<T: ?Sized> Eq for *const T {}
 impl<T: ?Sized> PartialEq for *mut T { fn eq(&self,other:&Self)->bool {*self==*other} }
 impl<T: ?Sized> Eq for *mut T {}
 
+// Thin pointer ordering compares addresses without reading the pointees.
+impl<T> PartialOrd for *const T {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl<T> Ord for *const T {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if *self < *other { Less } else if *self > *other { Greater } else { Equal }
+    }
+}
+impl<T> PartialOrd for *mut T {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl<T> Ord for *mut T {
+    fn cmp(&self, other: &Self) -> Ordering {
+        if *self < *other { Less } else if *self > *other { Greater } else { Equal }
+    }
+}
+
+
 impl PartialEq for i8 { fn eq(&self, other: &i8) -> bool { *self == *other } fn ne(&self, other: &i8) -> bool { *self != *other } }
 impl Eq for i8 {}
 impl PartialEq for i16 { fn eq(&self, other: &i16) -> bool { *self == *other } fn ne(&self, other: &i16) -> bool { *self != *other } }

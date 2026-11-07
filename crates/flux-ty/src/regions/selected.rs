@@ -178,7 +178,8 @@ impl Binding<'_> {
             return Some(());
         }
         let direct = match pattern.kind() {
-            TyKind::Ref(..) | TyKind::Dynamic(_) => 1,
+            TyKind::Ref(..) => 1,
+            TyKind::Dynamic(object) => super::object_own_slots(self.items, object),
             TyKind::Adt(adt, _) => self.items.structs[adt.strukt].generics.lifetimes.len(),
             TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Closure(..) | TyKind::FnPtr(_) => {
                 return (own.is_empty() && row.is_empty()).then_some(());

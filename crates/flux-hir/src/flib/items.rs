@@ -328,7 +328,7 @@ record!(Scope {
     macros,
     anonymous_traits
 });
-variants!(crate::AsmRegister {0=>Reg,1=>Vreg,2=>InputReg,3=>InputVreg});
+variants!(crate::AsmRegister {0=>Reg,1=>Vreg,2=>InputReg,3=>InputVreg,4=>OutputReg,5=>OutputVreg,6=>Const});
 variants!(crate::AsmTemplatePiece {0=>Text(text),1=>Operand{index,modifier}});
 record!(crate::AsmOptions {
     nomem,

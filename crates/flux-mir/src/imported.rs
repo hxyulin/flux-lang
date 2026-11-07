@@ -267,6 +267,47 @@ impl ImportedMir {
         }
     }
 
+    /// Compatibility for callers retaining a borrowed provider after MIR construction.
+    pub(crate) fn copy_bodies_into(&self, target: &mut FileMir) {
+        for (id, body) in self.mir.bodies.iter() {
+            target.bodies.insert(id, body.clone());
+        }
+        for (id, body) in self.mir.consts.iter() {
+            target.consts.insert(id, body.clone());
+        }
+        for (&key, body) in &self.mir.closures {
+            target.closures.insert(key, body.clone());
+        }
+    }
+
+    /// Code generation needs the full graph; moving it here avoids copies while checking.
+    pub(crate) fn finish(self, source: FileMir) -> FileMir {
+        fn append<T, V>(
+            base: &mut flux_arena::ArenaMap<T, V>,
+            mut source: flux_arena::ArenaMap<T, V>,
+        ) {
+            let keys: Vec<_> = source.iter().map(|(id, _)| id).collect();
+            for id in keys {
+                base.insert(
+                    id,
+                    source.remove(id).expect("collected source entry exists"),
+                );
+            }
+        }
+        let mut mir = self.mir;
+        append(&mut mir.bodies, source.bodies);
+        append(&mut mir.consts, source.consts);
+        mir.closures.extend(source.closures);
+        append(&mut mir.const_values.items, source.const_values.items);
+        mir.const_values
+            .instances
+            .extend(source.const_values.instances);
+        append(&mut mir.discriminants, source.discriminants);
+        mir.diagnostics = source.diagnostics;
+        mir.bugs = source.bugs;
+        mir
+    }
+
     /// Copies checked dependency MIR into a fresh compilation's evaluation tables.
     /// Existing entries are errors rather than silently replacing checked bodies.
     pub fn seed_into(&self, target: &mut FileMir) -> Result<(), Error> {

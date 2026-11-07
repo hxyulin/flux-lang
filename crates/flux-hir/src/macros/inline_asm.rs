@@ -127,45 +127,51 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                     "assembly operands cannot follow options".into(),
                 ));
             }
-            if kind != "inout" && kind != "in" {
+            if !matches!(kind, "inout" | "inlateout" | "in" | "lateout" | "const") {
                 return Err((
                     tokens[at].range(),
                     format!("assembly operand `{kind}` is not supported yet"),
                 ));
             }
             at += 1;
-            if tokens.get(at).is_none_or(|t| t.kind != T!['(']) {
-                return Err((range, "expected `(`".into()));
-            }
-            at += 1;
-            let register = match tokens.get(at).map(|t| t.text.as_str()) {
-                Some("reg") => AsmRegister::Reg,
-                Some("vreg") => AsmRegister::Vreg,
-                _ => {
-                    return Err((
-                        tokens.get(at).map_or(range, Tok::range),
-                        "assembly register class is not supported yet".into(),
-                    ));
+            let register = if kind == "const" {
+                AsmRegister::Const
+            } else {
+                if tokens.get(at).is_none_or(|t| t.kind != T!['(']) {
+                    return Err((range, "expected `(`".into()));
+                }
+                at += 1;
+                let register = match tokens.get(at).map(|t| t.text.as_str()) {
+                    Some("reg") => AsmRegister::Reg,
+                    Some("vreg") => AsmRegister::Vreg,
+                    _ => {
+                        return Err((range, "assembly register class is not supported yet".into()));
+                    }
+                };
+                at += 1;
+                if tokens.get(at).is_none_or(|t| t.kind != T![')']) {
+                    return Err((range, "expected `)`".into()));
+                }
+                at += 1;
+                match (kind, register) {
+                    ("in", AsmRegister::Reg) => AsmRegister::InputReg,
+                    ("in", AsmRegister::Vreg) => AsmRegister::InputVreg,
+                    ("lateout", AsmRegister::Reg) => AsmRegister::OutputReg,
+                    ("lateout", AsmRegister::Vreg) => AsmRegister::OutputVreg,
+                    _ => register,
                 }
             };
-            at += 1;
-            if tokens.get(at).is_none_or(|t| t.kind != T![')']) {
-                return Err((range, "expected `)`".into()));
-            }
-            at += 1;
             let n = parser::fragment_len(&input, at, parser::Fragment::Expr)
                 .filter(|&n| n > 0)
                 .ok_or((range, "expected an assembly operand expression".into()))?;
+            if kind == "const" && (n != 1 || tokens[at].kind != SyntaxKind::INT_NUMBER) {
+                return Err((
+                    range,
+                    "only integer literals are supported as assembly constants".into(),
+                ));
+            }
             expressions.push(tokens[at..at + n].to_vec());
-            registers.push(if kind == "in" {
-                match register {
-                    AsmRegister::Reg => AsmRegister::InputReg,
-                    AsmRegister::Vreg => AsmRegister::InputVreg,
-                    _ => unreachable!(),
-                }
-            } else {
-                register
-            });
+            registers.push(register);
             if name.is_none() && names.iter().any(Option::is_some) {
                 return Err((
                     tokens[at].range(),

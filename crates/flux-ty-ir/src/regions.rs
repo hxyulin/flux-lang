@@ -342,6 +342,11 @@ pub fn object_region_types(items: &ItemTree, object: crate::DynTy) -> impl Itera
         .take(count)
 }
 
+/// The object bound followed by its principal's explicit lifetime arguments.
+pub fn object_own_slots(items: &ItemTree, object: crate::DynTy) -> usize {
+    1 + items.traits[object.trait_].generics.lifetimes.len()
+}
+
 /// The occurrence row of one declared object associated equality, after its
 /// independent object bound and principal argument rows.
 pub fn object_associated_range(
@@ -352,11 +357,12 @@ pub fn object_associated_range(
     if crate::fn_trait_kind(items, object.trait_).is_some() {
         return None;
     }
-    let mut at = 1 + object
-        .args
-        .iter()
-        .map(|&ty| slots(items, ty))
-        .sum::<usize>();
+    let mut at = object_own_slots(items, object)
+        + object
+            .args
+            .iter()
+            .map(|&ty| slots(items, ty))
+            .sum::<usize>();
     for (&associated, &ty) in object.assoc_names.iter().zip(object.assoc_tys) {
         let end = at + slots(items, ty);
         if associated == name {
@@ -392,9 +398,10 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
             opaque.lifetimes as usize + opaque.args.iter().map(|&t| slots(items, t)).sum::<usize>()
         }
         TyKind::Dynamic(object) => {
-            1 + object_region_types(items, object)
-                .map(|ty| slots(items, ty))
-                .sum::<usize>()
+            object_own_slots(items, object)
+                + object_region_types(items, object)
+                    .map(|ty| slots(items, ty))
+                    .sum::<usize>()
         }
         TyKind::FnPtr(sig) => sig.regions.map_or(0, |r| {
             r.free as usize + r.types.iter().map(|&ty| slots(items, ty)).sum::<usize>()
@@ -483,7 +490,9 @@ fn instantiate_at<R: Copy>(
             }
         }
         TyKind::Dynamic(object) => {
-            own_slot(next, out);
+            for _ in 0..object_own_slots(items, object) {
+                own_slot(next, out);
+            }
             for ty in object_region_types(items, object) {
                 instantiate_at(items, ty, own, next, region, args, out);
             }

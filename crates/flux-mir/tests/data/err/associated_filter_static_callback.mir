@@ -1,0 +1,10 @@
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 89..98: associated type projection lifetime requirements are not satisfied by the impl header

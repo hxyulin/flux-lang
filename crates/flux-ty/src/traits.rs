@@ -315,16 +315,14 @@ fn supertrait_with_type(items: &ItemTree, t: TraitId, name: Symbol) -> Option<Tr
             seen.push(sup);
             let last = bound.path.segments.len().saturating_sub(1);
             let forwarded = bound.path.args(last).is_none_or(|args| {
-                args.bindings.is_empty()
-                    && args.types.iter().enumerate().all(|(i, ty)| match ty {
-                        flux_hir::TypeRef::Path(p) => {
-                            p.qself.is_none()
-                                && p.segments.len() == 1
-                                && data.generics.params.get(i).map(|g| g.name)
-                                    == Some(p.segments[0])
-                        }
-                        _ => false,
-                    })
+                args.types.iter().enumerate().all(|(i, ty)| match ty {
+                    flux_hir::TypeRef::Path(p) => {
+                        p.qself.is_none()
+                            && p.segments.len() == 1
+                            && data.generics.params.get(i).map(|g| g.name) == Some(p.segments[0])
+                    }
+                    _ => false,
+                })
             });
             if !forwarded {
                 continue;

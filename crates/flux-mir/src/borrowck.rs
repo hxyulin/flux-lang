@@ -127,8 +127,16 @@ pub fn check(
 /// could not know: rustc's "`impl` item signature doesn't match `trait`
 /// item signature".
 pub fn check_impl_methods(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+    check_impl_methods_from(items, sigs, items.core.impls)
+}
+
+pub(crate) fn check_impl_methods_from(
+    items: &ItemTree,
+    sigs: &Signatures,
+    first: u32,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    for (imp, data) in items.impls.iter().skip(items.core.impls as usize) {
+    for (imp, data) in items.impls.iter().skip(first as usize) {
         let Some(t) = data.trait_ else { continue };
         for &method in &data.functions {
             let function = &items.functions[method];
@@ -154,10 +162,18 @@ pub fn check_impl_methods(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic
 /// Supertraits must hold for every lifetime allowed by the impl header,
 /// including when the impl has no methods and nothing uses it.
 pub fn check_impl_supertraits(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+    check_impl_supertraits_from(items, sigs, items.core.impls)
+}
+
+pub(crate) fn check_impl_supertraits_from(
+    items: &ItemTree,
+    sigs: &Signatures,
+    first: u32,
+) -> Vec<Diagnostic> {
     items
         .impls
         .iter()
-        .skip(items.core.impls as usize)
+        .skip(first as usize)
         .filter_map(|(imp, data)| {
             data.trait_?;
             let message = match regions::impl_supertraits_match(items, sigs, imp) {
@@ -174,7 +190,15 @@ pub fn check_impl_supertraits(items: &ItemTree, sigs: &Signatures) -> Vec<Diagno
 
 /// Check associated-value bound predicates and equalities at the declaration.
 pub fn check_impl_associated_bounds(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
-    items.impls.iter().skip(items.core.impls as usize).filter_map(|(imp, data)| {
+    check_impl_associated_bounds_from(items, sigs, items.core.impls)
+}
+
+pub(crate) fn check_impl_associated_bounds_from(
+    items: &ItemTree,
+    sigs: &Signatures,
+    first: u32,
+) -> Vec<Diagnostic> {
+    items.impls.iter().skip(first as usize).filter_map(|(imp, data)| {
         data.trait_?;
         let message = match regions::impl_associated_bounds_match(items, sigs, imp) {
             Some(true) => return None,
@@ -189,7 +213,15 @@ pub fn check_impl_associated_bounds(items: &ItemTree, sigs: &Signatures) -> Vec<
 
 /// Associated value projections must select a valid impl even if unused.
 pub fn check_impl_associated_values(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
-    items.impls.iter().skip(items.core.impls as usize).filter_map(|(imp, data)| {
+    check_impl_associated_values_from(items, sigs, items.core.impls)
+}
+
+pub(crate) fn check_impl_associated_values_from(
+    items: &ItemTree,
+    sigs: &Signatures,
+    first: u32,
+) -> Vec<Diagnostic> {
+    items.impls.iter().skip(first as usize).filter_map(|(imp, data)| {
         data.trait_?;
         let message = match regions::impl_associated_values_match(items, sigs, imp) {
             Some(true) => return None,

@@ -430,11 +430,15 @@ impl Cx<'_> {
     }
 }
 
-pub(crate) fn check_adt_declarations(items: &ItemTree, sigs: &Signatures) -> Vec<Diagnostic> {
+pub(crate) fn check_adt_declarations(
+    items: &ItemTree,
+    sigs: &Signatures,
+    from: flux_hir::ItemCounts,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let body = Body::empty(None);
     let none = Requirements::default();
-    for (id, data) in items.structs.iter().skip(items.core.structs as usize) {
+    for (id, data) in items.structs.iter().skip(from.structs as usize) {
         if !sigs.structs[id]
             .iter()
             .any(|&ty| type_has_adt_contract(items, sigs, ty))
@@ -547,7 +551,7 @@ pub(crate) fn check_adt_declarations(items: &ItemTree, sigs: &Signatures) -> Vec
             });
         }
     }
-    for (imp, data) in items.impls.iter().skip(items.core.impls as usize) {
+    for (imp, data) in items.impls.iter().skip(from.impls as usize) {
         let values = sigs.impl_types.get(imp).map_or(&[][..], |values| values);
         if !type_has_adt_contract(items, sigs, sigs.impls[imp])
             && !values
@@ -632,7 +636,7 @@ pub(crate) fn check_adt_declarations(items: &ItemTree, sigs: &Signatures) -> Vec
     }
     // Required methods and foreign declarations have no MIR body. Their
     // nominal signature requirements still hold universally at declaration.
-    for (function, data) in items.functions.iter().skip(items.core.functions as usize) {
+    for (function, data) in items.functions.iter().skip(from.functions as usize) {
         let Some(signature) = sigs.fns.get(function) else {
             continue;
         };
@@ -776,7 +780,7 @@ pub(crate) fn check_adt_declarations(items: &ItemTree, sigs: &Signatures) -> Vec
     }
     // Initializer bodies have no function owner. Check the written constant
     // signature under its original impl owner, even for an unused `None`.
-    for (konst, data) in items.consts.iter().skip(items.core.consts as usize) {
+    for (konst, data) in items.consts.iter().skip(from.consts as usize) {
         let Some(&ty) = sigs.consts.get(konst) else {
             continue;
         };

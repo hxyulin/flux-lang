@@ -98,8 +98,8 @@ pub fn discriminant_bits(
 }
 
 pub use build::{
-    build, build_file, build_file_from, build_file_with_roots, check_clean_bodies,
-    check_clean_bodies_from,
+    build, build_file, build_file_from, build_file_from_owned, build_file_with_roots,
+    check_clean_bodies, check_clean_bodies_from,
 };
 pub use lens::{check_file, check_file_from};
 

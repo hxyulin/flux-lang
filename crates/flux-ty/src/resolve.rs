@@ -1742,7 +1742,12 @@ pub fn struct_type(
     }
     let ty = Ty::adt(strukt, def.name, &args);
     let tail = metadata::tail(scope.struct_fields, ty, |id| items.structs[id].is_enum());
-    if matches!(tail.kind(), TyKind::Dynamic(_)) {
+    if matches!(tail.kind(), TyKind::Dynamic(_))
+        && scope
+            .struct_fields
+            .and_then(|fields| metadata::transparent_object_tail(items, fields, ty))
+            .is_none()
+    {
         errors.push((
             at,
             "trait object tails in structs are not supported yet".into(),

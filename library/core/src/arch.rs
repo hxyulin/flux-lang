@@ -754,6 +754,18 @@ pub mod aarch64 {
         unsafe { __neon_vld1q_u8(ptr) }
     }
 
+    /// Two consecutive sixteen-byte vectors.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint8x16x2_t(pub uint8x16_t, pub uint8x16_t);
+
+    /// Reads thirty-two readable bytes without an alignment requirement.
+    pub unsafe fn vld1q_u8_x2(ptr: *const u8) -> uint8x16x2_t {
+        // SAFETY: the caller provides thirty-two readable bytes.
+        unsafe { uint8x16x2_t(vld1q_u8(ptr), vld1q_u8(ptr.add(16))) }
+    }
+
     /// Duplicates a byte into all sixteen lanes.
     #[target_feature(enable = "neon")]
     pub fn vdupq_n_u8(value: u8) -> uint8x16_t {

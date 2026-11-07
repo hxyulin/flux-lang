@@ -53,7 +53,7 @@ use flux_mir::{
 };
 use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
 use flux_ty_ir::type_identity::DefinitionKeys;
-use keel_frontend::{FunctionBuilder, Variable};
+use keel_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use keel_ir::ConvertOp;
 use keel_ir::{
     AbiParam, ArgExt, Block, BlockCall, CallConv, DataInit, DataItem, DataObject, FuncDecl,
@@ -193,6 +193,7 @@ fn lower_inner(
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
     let _shapes = shapes::scope(&typed.sigs);
     let _fields = flux_solve::remember_field_types(&typed.sigs);
+    let _headers = flux_solve::remember_impl_headers(&hir.items, &typed.sigs);
     let start = timings.is_some().then(std::time::Instant::now);
     let monomorphic = |id: FunctionId| {
         let function = &hir.items.functions[id];
@@ -334,7 +335,7 @@ fn lower_inner(
         .functions
         .iter()
         .map(|(id, f)| {
-            let name = if f.is_extern {
+            let name = if f.is_extern || f.link_name.is_some() {
                 f.link_name.unwrap_or(f.name).to_string()
             } else {
                 // The function's path: its crate, its modules, and its
@@ -399,7 +400,15 @@ fn lower_inner(
         instances: std::cell::RefCell::new(FxHashMap::default()),
     };
     let mut declared_abort = false;
-    let mut declared = FxHashSet::default();
+    let mut declared: FxHashSet<_> = instances
+        .iter()
+        .filter(|&&instance| {
+            !items.functions[instance.function].is_extern
+                && items.functions[instance.function].link_name.is_some()
+                && compilation.is_none_or(|c| owns_instance(items, instance, c))
+        })
+        .map(|instance| symbols[&instance.function].clone())
+        .collect();
     let layouts = Layouts::new(items, &typed.sigs, &mir.discriminants);
     for (id, function) in hir.items.functions.iter() {
         // The same C function may be declared in several modules.
@@ -464,6 +473,7 @@ fn lower_inner(
         .collect();
     let names = |id: flux_hir::ConstId| items.const_name(id);
     let mut ctx = Ctx {
+        builder_context: FunctionBuilderContext::new(),
         hir,
         typed,
         compilation,
@@ -484,6 +494,8 @@ fn lower_inner(
         )
         .with_imported(&mir.const_values, &mir.discriminants),
         instance_values: collected.const_values,
+        resolved_instances: FxHashMap::default(),
+        normalized_signatures: FxHashMap::default(),
         symbols: &symbols,
         statics: &statics,
         reified: collected.reified,
@@ -825,10 +837,9 @@ fn owns_static(
     }
 }
 
-/// The symbol of `instance`: its function's, with a hash as a last
-/// segment, as rustc's legacy mangling does, if it has generic arguments
-/// or is in one of a generic struct's blocks, which may each have a
-/// function of its name. The hash covers the arguments and the block.
+/// The symbol of `instance`, disambiguating generic arguments and impls.
+/// Separate objects hash stable identities. Private whole-program instances
+/// use an ordinal from this module's instance table.
 fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> String {
     if let Some(symbol) = symbols.instances.borrow().get(&instance) {
         return symbol.clone();
@@ -853,15 +864,16 @@ fn instance_symbol_uncached(hir: &Hir, symbols: &Symbols<'_>, instance: Instance
     if instance.args.is_empty() && block.is_none() {
         return base.clone();
     }
+    if !symbols.separate {
+        // Private whole-program instances only need distinct names within this
+        // module. Avoid encoding and hashing their complete type identities.
+        let suffix = format!("__flux_instance{}", symbols.instances.borrow().len());
+        return format!("{}{}{suffix}E", &base[..base.len() - 1], suffix.len());
+    }
     // The encoding uses stable item identities in separate objects.
     let mut key = Vec::new();
     let mut feed = |bytes: &[u8]| key.extend_from_slice(bytes);
     feed(base.as_bytes());
-    if !symbols.separate {
-        // The legacy whole-program base can name several core impl methods.
-        // Separate bases already include the stable definition identity.
-        feed(&instance.function.into_raw().to_le_bytes());
-    }
     for &arg in instance.args {
         encode_type(arg, symbols, &mut feed);
     }
@@ -1004,8 +1016,8 @@ fn is_fat(sigs: &Signatures, ty: Ty) -> bool {
 }
 
 /// A pointer to a trait object: its address, then its vtable's.
-fn is_dyn_ptr(ty: Ty) -> bool {
-    matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if p.is_dyn())
+fn is_dyn_ptr(sigs: &Signatures, ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if sigs.metadata(p) == flux_ty::Metadata::VTable)
 }
 
 /// What a pointer or `Box` of type `ty` points to.
@@ -1017,13 +1029,13 @@ fn pointee_of(ty: Ty) -> Option<Ty> {
 }
 
 /// A `Box` of a trait object.
-fn is_dyn_box(ty: Ty) -> bool {
-    flux_solve::box_pointee(ty).is_some_and(|p| p.is_dyn())
+fn is_dyn_box(sigs: &Signatures, ty: Ty) -> bool {
+    flux_solve::box_pointee(ty).is_some_and(|p| sigs.metadata(p) == flux_ty::Metadata::VTable)
 }
 
 /// The second leaf of a fat pointer: a length, or a vtable's address.
-fn metadata_leaf(ty: Ty) -> Ty {
-    if is_dyn_ptr(ty) {
+fn metadata_leaf(sigs: &Signatures, ty: Ty) -> Ty {
+    if is_dyn_ptr(sigs, ty) {
         address_leaf()
     } else {
         Ty::int(IntTy::Usize)
@@ -1050,7 +1062,7 @@ fn leaves_uncached(sigs: &Signatures, ty: Ty, out: &mut TypeLeaves) {
     }
     if is_fat(sigs, ty) {
         out.push(address_leaf());
-        out.push(metadata_leaf(ty));
+        out.push(metadata_leaf(sigs, ty));
         return;
     }
     if let Some(variants) = flux_solve::variants(sigs, ty) {
@@ -1213,6 +1225,8 @@ struct ReferencedStorage {
 }
 
 struct Ctx<'a> {
+    /// Reuse SSA construction tables across functions without retaining their state.
+    builder_context: FunctionBuilderContext,
     hir: &'a Hir,
     typed: &'a TypedFile,
     compilation: Option<Compilation<'a>>,
@@ -1226,6 +1240,10 @@ struct Ctx<'a> {
     /// Evaluates the others, for the instances that use them.
     evaluator: flux_mir::eval::Evaluator<'a>,
     instance_values: FxHashMap<flux_ty::ConstInstance, flux_mir::eval::Value>,
+    /// Trait selection and argument normalization are fixed during lowering.
+    resolved_instances: FxHashMap<Instance, Instance>,
+    /// Normalization reads the fixed items and signatures of this lowering.
+    normalized_signatures: FxHashMap<Instance, FnSig>,
     symbols: &'a Symbols<'a>,
     /// The data object of each static.
     statics: &'a FxHashMap<flux_hir::ConstId, String>,
@@ -1255,6 +1273,34 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    fn resolve_instance(&mut self, instance: Instance) -> Instance {
+        if instance.args.is_empty()
+            && !matches!(
+                self.hir.items.functions[instance.function].owner,
+                Some(Owner::Trait(_))
+            )
+        {
+            return instance;
+        }
+        *self.resolved_instances.entry(instance).or_insert_with(|| {
+            flux_solve::traits::resolve_instance(&self.hir.items, &self.typed.sigs, instance)
+        })
+    }
+
+    fn normalized_signature(&mut self, instance: Instance) -> FnSig {
+        self.normalized_signatures
+            .entry(instance)
+            .or_insert_with(|| {
+                flux_solve::traits::instance_sig(
+                    &self.hir.items,
+                    &self.typed.sigs,
+                    instance.function,
+                    instance.args,
+                )
+            })
+            .clone()
+    }
+
     /// The discriminant of variant `variant` of enum `strukt`, as bits.
     fn discriminant(&mut self, strukt: flux_hir::StructId, variant: u32) -> u128 {
         let items = &self.hir.items;
@@ -1266,12 +1312,7 @@ impl Ctx<'_> {
     /// `instance`, whose MIR is `body` with its generic arguments
     /// substituted.
     fn function(&mut self, instance: Instance, body: &Body, pointer_wrapper: bool) -> Function {
-        let sig = &flux_solve::traits::instance_sig(
-            &self.hir.items,
-            &self.typed.sigs,
-            instance.function,
-            instance.args,
-        );
+        let sig = &self.normalized_signature(instance);
         let takes_location = !pointer_wrapper && self.takes_location(instance);
         let c_abi = self.hir.items.functions[instance.function].abi.is_c();
         let signature = self.instance_signature(instance, sig, pointer_wrapper);
@@ -1283,7 +1324,10 @@ impl Ctx<'_> {
             },
             signature,
         );
-        function.local = self.compilation.is_none();
+        function.local = self.compilation.is_none()
+            && self.hir.items.functions[instance.function]
+                .link_name
+                .is_none();
         function.attrs = attrs(sig);
         if !pointer_wrapper {
             let data = &self.hir.items.functions[instance.function];
@@ -1333,6 +1377,7 @@ impl Ctx<'_> {
         } else {
             Convention::RustFast
         };
+        let builder_context = std::mem::take(&mut self.builder_context);
         let lower = Lower {
             ctx: self,
             sigs: &typed.sigs,
@@ -1341,7 +1386,7 @@ impl Ctx<'_> {
             convention,
             takes_location,
             caller_location: None,
-            b: FunctionBuilder::new(&mut function),
+            b: FunctionBuilder::with_context(&mut function, builder_context),
             blocks: Vec::new(),
             vars: Vec::new(),
             variable_lists: SlicePool::default(),
@@ -1353,7 +1398,7 @@ impl Ctx<'_> {
             address_align: FxHashMap::default(),
             panic_block: None,
         };
-        lower.body();
+        self.builder_context = lower.body();
         function
     }
 
@@ -2185,7 +2230,7 @@ impl Lower<'_, '_, '_> {
         address
     }
 
-    fn body(mut self) {
+    fn body(mut self) -> FunctionBuilderContext {
         let body = self.body;
         let sigs = self.sigs;
         // The parameters are stored where they live first, which may
@@ -2301,7 +2346,7 @@ impl Lower<'_, '_, '_> {
             self.b.ins().trap();
         }
         self.b.seal_all_blocks();
-        self.b.finalize();
+        self.b.finalize_with_context()
     }
 
     /// Where `place`'s value is, and its type. Going through a pointer
@@ -3007,7 +3052,11 @@ impl Lower<'_, '_, '_> {
                 address_flags(&self.address_align, address, Type::Ptr),
             ));
             let at = self.offset(address, 8);
-            let meta = if is_dyn_ptr(ty) { Type::Ptr } else { Type::I64 };
+            let meta = if is_dyn_ptr(sigs, ty) {
+                Type::Ptr
+            } else {
+                Type::I64
+            };
             out.push(self.b.ins().load_with_flags(
                 meta,
                 at,
@@ -3521,11 +3570,20 @@ impl Lower<'_, '_, '_> {
                 };
                 smallvec![values[0], values[1], metadata]
             }
-            Rvalue::Unsize(operand, to) if is_dyn_ptr(*to) || is_dyn_box(*to) => {
+            Rvalue::Unsize(operand, to)
+                if is_dyn_ptr(self.sigs, *to) || is_dyn_box(self.sigs, *to) =>
+            {
                 let from = self.body.operand_ty(operand, self.sigs);
                 let (Some(pointee_of), Some(object)) = (pointee_of(from), pointee_of(*to)) else {
                     unreachable!("unsizing is of pointers")
                 };
+                let (pointee_of, object) = flux_solve::transparent_object_unsize(
+                    &self.ctx.hir.items,
+                    &self.sigs.structs,
+                    pointee_of,
+                    object,
+                )
+                .expect("validated transparent object unsizing");
                 let leaves = self.operand(operand);
                 // Weakening a raw pointer's mutability retains the same
                 // object and vtable; it is not a supertrait upcast.
@@ -3617,7 +3675,11 @@ impl Lower<'_, '_, '_> {
             .count();
         let mut input_constraints = Vec::new();
         let mut template_indices = Vec::new();
-        for (input_index, (operand, register)) in inputs.iter().zip(registers).enumerate() {
+        for (operand, register) in inputs.iter().zip(registers) {
+            if *register == AsmRegister::Const {
+                template_indices.push(usize::MAX);
+                continue;
+            }
             let ty = self.body.operand_ty(operand, self.sigs);
             let mut value = self.operand(operand)[0];
             let original = self.b.function().value_type(value);
@@ -3664,7 +3726,7 @@ impl Lower<'_, '_, '_> {
                 "w"
             };
             if register.input_only() {
-                template_indices.push(output_count + input_index);
+                template_indices.push(output_count + arguments.len() - 1);
                 input_constraints.push(class.to_owned());
             } else {
                 template_indices.push(types.len());
@@ -3695,6 +3757,15 @@ impl Lower<'_, '_, '_> {
                 }
                 AsmTemplatePiece::Operand { index, modifier } => {
                     use std::fmt::Write;
+                    if registers[*index as usize] == AsmRegister::Const {
+                        let Operand::Const(Constant::Int { bits, .. }) = inputs[*index as usize]
+                        else {
+                            unreachable!("assembly constant is an integer literal");
+                        };
+                        write!(text, "{bits}").unwrap();
+                        continue;
+                    }
+
                     let modifier = if cfg!(target_arch = "x86_64") {
                         match modifier {
                             Some('l') => 'b',
@@ -4198,14 +4269,10 @@ impl Lower<'_, '_, '_> {
                 target,
             } if flux_mir::vtable::virtual_call(
                 &self.ctx.hir.items,
-                flux_solve::traits::resolve_instance(
-                    &self.ctx.hir.items,
-                    &self.ctx.typed.sigs,
-                    Instance {
-                        function: *func,
-                        args: generic_args,
-                    },
-                ),
+                self.ctx.resolve_instance(Instance {
+                    function: *func,
+                    args: generic_args,
+                }),
             )
             .is_some() =>
             {
@@ -4436,14 +4503,10 @@ impl Lower<'_, '_, '_> {
                     return;
                 }
                 let callee = self.callee(*func, generic_args);
-                let resolved = flux_solve::traits::resolve_instance(
-                    items,
-                    &self.ctx.typed.sigs,
-                    Instance {
-                        function: *func,
-                        args: generic_args,
-                    },
-                );
+                let resolved = self.ctx.resolve_instance(Instance {
+                    function: *func,
+                    args: generic_args,
+                });
                 let location = self
                     .ctx
                     .takes_location(resolved)
@@ -4838,20 +4901,11 @@ impl Lower<'_, '_, '_> {
     }
 
     fn pointer_callee(&mut self, function: FunctionId, args: GenericArgs) -> FuncRef {
-        let instance = flux_solve::traits::resolve_instance(
-            &self.ctx.hir.items,
-            self.sigs,
-            Instance { function, args },
-        );
+        let instance = self.ctx.resolve_instance(Instance { function, args });
         if self.ctx.compilation.is_some()
             && self.ctx.hir.items.functions[instance.function].track_caller
         {
-            let sig = flux_solve::traits::instance_sig(
-                &self.ctx.hir.items,
-                self.sigs,
-                instance.function,
-                instance.args,
-            );
+            let sig = self.ctx.normalized_signature(instance);
             let sig = ctx_signature(self.sigs, &self.ctx.layouts, &sig, true);
             self.b
                 .import_function(&self.ctx.pointer_symbol(instance), sig)
@@ -4865,22 +4919,12 @@ impl Lower<'_, '_, '_> {
             function: func,
             args: generic_args,
         };
-        let instance = flux_solve::traits::resolve_instance(
-            &self.ctx.hir.items,
-            &self.ctx.typed.sigs,
-            instance,
-        );
-        let (func, generic_args) = (instance.function, instance.args);
+        let instance = self.ctx.resolve_instance(instance);
         if let Some(&callee) = self.callees.get(&instance) {
             return callee;
         }
-        let function = &self.ctx.hir.items.functions[func];
-        let sig = flux_solve::traits::instance_sig(
-            &self.ctx.hir.items,
-            &self.ctx.typed.sigs,
-            func,
-            generic_args,
-        );
+        let sig = self.ctx.normalized_signature(instance);
+        let function = &self.ctx.hir.items.functions[instance.function];
         let mut sig = if function.abi.is_c() {
             c_signature(self.sigs, &self.ctx.layouts, &sig, function.is_variadic)
         } else {

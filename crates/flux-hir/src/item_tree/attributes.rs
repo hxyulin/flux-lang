@@ -225,7 +225,9 @@ pub(super) fn target_feature_attr(
             Ok(features) => {
                 for feature in features.split(',') {
                     if !match std::env::consts::ARCH {
-                        "aarch64" => matches!(feature, "neon" | "crc" | "sha2" | "sha3"),
+                        "aarch64" => {
+                            matches!(feature, "neon" | "crc" | "sha2" | "sha3" | "dit" | "sb")
+                        }
                         "x86_64" => matches!(
                             feature,
                             "sse"

@@ -7,6 +7,21 @@ const META_MAGIC: &[u8; 8] = b"FLUXMETA";
 const VERSION: u32 = 1;
 const MAX_METADATA: usize = 512 * 1024 * 1024;
 
+/// Opt-in metadata timings include nested work; phases must not be summed.
+pub(crate) fn time<T>(phase: &str, f: impl FnOnce() -> T) -> T {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let enabled = *ENABLED.get_or_init(|| std::env::var_os("FLUX_METADATA_TIMINGS").is_some());
+    let start = enabled.then(std::time::Instant::now);
+    let result = f();
+    if let Some(start) = start {
+        eprintln!(
+            "metadata timing: {phase}: {:.3} ms (inclusive)",
+            start.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    result
+}
+
 /// An invalid or incompatible Fluxlib artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Error(&'static str);
@@ -67,13 +82,48 @@ impl Metadata {
         for section in sections {
             out.extend_from_slice(&section.bytes);
         }
-        let checksum = flux_hir::flib::digest(&out);
+        let checksum = time("metadata checksum write", || flux_hir::flib::digest(&out));
         out.extend_from_slice(&checksum);
         Ok(out)
     }
 
-    /// Checks framing and compiler identity before exposing any section payload.
+    /// Checks framing and compiler identity before copying section payloads.
     pub fn decode(bytes: &[u8], compiler: [u8; 32]) -> Result<Self, Error> {
+        let index = MetadataIndex::decode(bytes, compiler)?;
+        Ok(Self {
+            compiler,
+            sections: index
+                .sections
+                .iter()
+                .map(|s| Section {
+                    tag: s.tag,
+                    bytes: bytes[s.bytes.clone()].to_vec(),
+                })
+                .collect(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct SectionRange {
+    tag: u32,
+    bytes: std::ops::Range<usize>,
+}
+
+/// Checked section ranges, retained with the immutable metadata they describe.
+#[derive(Debug)]
+pub(crate) struct MetadataIndex {
+    sections: Vec<SectionRange>,
+}
+
+impl MetadataIndex {
+    pub(crate) fn section<'a>(&self, bytes: &'a [u8], tag: u32) -> Option<&'a [u8]> {
+        self.sections
+            .iter()
+            .find(|s| s.tag == tag)
+            .map(|s| &bytes[s.bytes.clone()])
+    }
+    pub(crate) fn decode(bytes: &[u8], compiler: [u8; 32]) -> Result<Self, Error> {
         if bytes.len() < 84 || bytes.len() > MAX_METADATA || &bytes[..8] != META_MAGIC {
             return Err(Error("invalid flux metadata header"));
         }
@@ -86,7 +136,10 @@ impl Metadata {
             ));
         }
         let payload_end = bytes.len() - 32;
-        if flux_hir::flib::digest(&bytes[..payload_end]) != bytes[payload_end..] {
+        if time("metadata checksum", || {
+            flux_hir::flib::digest(&bytes[..payload_end])
+        }) != bytes[payload_end..]
+        {
             return Err(Error(
                 "flux metadata checksum mismatch; rebuild the artifact",
             ));
@@ -117,18 +170,18 @@ impl Metadata {
             end = start
                 .checked_add(len)
                 .ok_or(Error("invalid metadata section range"))?;
-            let payload = bytes
+            bytes
                 .get(start..end)
                 .ok_or(Error("truncated metadata section"))?;
-            sections.push(Section {
+            sections.push(SectionRange {
                 tag,
-                bytes: payload.to_vec(),
+                bytes: start..end,
             });
         }
         if end != bytes.len() {
             return Err(Error("trailing metadata bytes"));
         }
-        Ok(Self { compiler, sections })
+        Ok(Self { sections })
     }
 }
 
@@ -167,6 +220,30 @@ impl Archive {
 
     /// Reads exactly one metadata member and at most one native object.
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let index = ArchiveIndex::decode(bytes)?;
+        Ok(Self {
+            metadata: index.metadata(bytes).to_vec(),
+            object: index.object(bytes).map(<[u8]>::to_vec),
+        })
+    }
+}
+
+/// Checked archive ranges; payloads stay in the caller's byte buffer.
+#[derive(Debug)]
+pub(crate) struct ArchiveIndex {
+    metadata: std::ops::Range<usize>,
+    object: Option<std::ops::Range<usize>>,
+}
+
+impl ArchiveIndex {
+    pub(crate) fn metadata<'a>(&self, bytes: &'a [u8]) -> &'a [u8] {
+        &bytes[self.metadata.clone()]
+    }
+
+    pub(crate) fn object<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
+        self.object.as_ref().map(|range| &bytes[range.clone()])
+    }
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
         if bytes.get(..8) != Some(ARCHIVE_MAGIC.as_slice()) {
             return Err(Error("invalid fluxlib archive"));
         }
@@ -190,7 +267,7 @@ impl Archive {
                 .map_err(|_| Error("invalid archive size"))?;
             at += 60;
             let end = at.checked_add(size).ok_or(Error("invalid archive size"))?;
-            let data = bytes
+            bytes
                 .get(at..end)
                 .ok_or(Error("truncated archive member"))?;
             match name {
@@ -198,9 +275,9 @@ impl Archive {
                     if size > MAX_METADATA {
                         return Err(Error("metadata is too large"));
                     }
-                    metadata = Some(data.to_vec());
+                    metadata = Some(at..end);
                 }
-                "flux.o/" if object.is_none() => object = Some(data.to_vec()),
+                "flux.o/" if object.is_none() => object = Some(at..end),
                 _ => return Err(Error("unsupported or duplicate fluxlib member")),
             }
             at = end;
@@ -248,9 +325,11 @@ pub fn compiler_identity() -> Result<[u8; 32], String> {
     }
     let path =
         std::env::current_exe().map_err(|e| format!("cannot identify flux compiler: {e}"))?;
-    let bytes =
-        std::fs::read(&path).map_err(|e| format!("cannot fingerprint {}: {e}", path.display()))?;
-    let id = flux_hir::flib::digest(&bytes);
+    let id = time("compiler executable fingerprint", || {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| format!("cannot fingerprint {}: {e}", path.display()))?;
+        Ok::<_, String>(flux_hir::flib::digest(&bytes))
+    })?;
     Ok(*COMPILER_ID.get_or_init(|| id))
 }
 

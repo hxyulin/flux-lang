@@ -55,6 +55,9 @@ fn source_array_lengths_use_imported_mir_and_values_without_inference() {
         "b.rs",
         r#"
         pub const SIZE:usize=dep::add(dep::BASE);
+        pub const SECOND:usize=SIZE + 1;
+        pub const TABLE:[u8; SECOND]=[0; SECOND];
+        pub fn use_table(_: [u8; TABLE.len()])->usize { TABLE.len() }
         pub fn use_array(_: [u8; SIZE])->usize { SIZE }
         pub fn forward()->u32 { dep::identity(3u32) }
     "#,
@@ -95,6 +98,26 @@ fn source_array_lengths_use_imported_mir_and_values_without_inference() {
         .unwrap()
         .0;
     assert_eq!(checked.sigs[array].params[0].array_len(), Some(6));
+    let table = consumer
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| {
+            consumer.items.modules[f.loc.module].krate == current && f.name.as_str() == "use_table"
+        })
+        .unwrap()
+        .0;
+    assert_eq!(checked.sigs[table].params[0].array_len(), Some(7));
+    for (id, signature) in loaded.signatures().fns.iter() {
+        assert!(
+            std::ptr::eq(signature, &checked.sigs.fns[id]),
+            "imported signature {id:?} was copied"
+        );
+    }
+    let mir = flux_mir::build_file_from_owned(&consumer, &checked, imported, &roots.functions);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    assert!(mir.bodies.get(array).is_some());
+
     assert_eq!(
         checked.sigs.hidden,
         loaded.signatures().hidden,

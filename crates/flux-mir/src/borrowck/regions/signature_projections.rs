@@ -4,9 +4,10 @@ use super::*;
 pub(crate) fn check_signature_projection_requirements(
     items: &ItemTree,
     sigs: &Signatures,
+    first: u32,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    for (function, data) in items.functions.iter().skip(items.core.functions as usize) {
+    for (function, data) in items.functions.iter().skip(first as usize) {
         let Some(regions) = sigs.regions.fns.get(function) else {
             continue;
         };
@@ -252,6 +253,9 @@ mod tests {
         assert_eq!(&*rows.0[0], &[Region::Param(0)]);
         // This metadata control is independent of the existing admission gate
         // for this lifetime-bearing trait's associated-output signature.
-        assert!(check_signature_projection_requirements(&hir.items, &sigs).is_empty());
+        assert!(
+            check_signature_projection_requirements(&hir.items, &sigs, hir.items.core.functions)
+                .is_empty()
+        );
     }
 }

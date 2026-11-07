@@ -398,6 +398,13 @@ fn main() {
         assert_eq!(pair_stores, [Type::Vector(VectorType::I8x16)]);
         let narrow_name = narrow.name.clone();
         let pair_name = pair.name.clone();
+        // Inspect these bodies even after inlining removes their last calls.
+        for function in &mut module.functions {
+            if function.name == narrow_name || function.name == pair_name {
+                function.attrs.used = true;
+            }
+        }
+        module.sync_function_attrs();
         for tier in [
             keel_opt::OptimizationTier::None,
             keel_opt::OptimizationTier::Full,

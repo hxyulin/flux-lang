@@ -37,8 +37,8 @@ pub use flux_ty_ir::regions::{
     AliasRegions, CallbackBinder, FamilyRegions, FnRegions, IMPL_SELF_ARG, ImplRegions,
     LifetimeName, OpaqueBoundRegions, OpaqueRegions, Outlives, ProjectionSelection, Region,
     RegionSigs, StructRegions, TRAIT_LIFETIMES_ARG, TraitRefRegions, TraitRegions, TypeArgRegions,
-    Variance, has_projection_inputs, instantiate, object_associated_range, object_region_types,
-    slots,
+    Variance, has_projection_inputs, instantiate, object_associated_range, object_own_slots,
+    object_region_types, slots,
 };
 
 pub use crate::fn_regions::variances as fn_pointer_variances;
@@ -47,6 +47,7 @@ pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
     "lifetimes in associated type annotations are not supported yet";
 
 mod method_binders;
+mod object;
 mod resolve;
 mod selected;
 mod selected_signatures;
@@ -316,22 +317,6 @@ impl<'a> Walker<'a> {
             // A trait object's lifetime bound, as written, or rustc's
             // default: the reference it is behind, `'static` elsewhere.
             (TypeRef::Dyn(d), TyKind::Dynamic(object)) => {
-                for bound in &d.bounds {
-                    let (trait_, _) = self.items.resolve_trait(self.module, bound);
-                    if trait_.is_some_and(|id| !self.items.traits[id].generics.lifetimes.is_empty())
-                        || bound
-                            .path
-                            .args
-                            .iter()
-                            .flatten()
-                            .any(|a| !a.lifetimes.is_empty())
-                    {
-                        self.errors.push((
-                            bound.range,
-                            "lifetime arguments on trait objects are not supported yet".to_owned(),
-                        ));
-                    }
-                }
                 let r = match d.lifetime {
                     Some(l) if l.is_anonymous() => self.elide(l.range),
                     Some(l) => self.named(l),
@@ -404,8 +389,13 @@ impl<'a> Walker<'a> {
         if crate::fn_trait_kind(self.items, object.trait_).is_some() {
             return;
         }
+        let start = out.len();
+        self.trait_lifetimes(path, object.trait_, false, out);
+        let owner = out[start..].to_vec();
+        let mut rows = Vec::new();
         let arguments = path.args(path.segments.len().saturating_sub(1));
         for (i, &ty) in object.args.iter().enumerate() {
+            let start = out.len();
             if let Some(written) = arguments.and_then(|args| args.types.get(i)) {
                 self.walk(written, ty, out);
             } else {
@@ -417,13 +407,29 @@ impl<'a> Walker<'a> {
                     ));
                 }
             }
+            rows.push(out[start..].into());
         }
+        let inherited = object::object_equalities(
+            self.items,
+            crate::TraitRef {
+                trait_: object.trait_,
+                name: object.name,
+                args: object.args,
+            },
+            &owner,
+            &rows,
+        );
         // Names follow the declaring-trait order, not written equality order.
         for (&name, &ty) in object.assoc_names.iter().zip(object.assoc_tys) {
             if let Some(written) =
                 arguments.and_then(|args| args.bindings.iter().find(|binding| binding.name == name))
             {
                 self.walk(&written.ty, ty, out);
+            } else if let Some((_, row)) = inherited.as_ref().and_then(|rows| {
+                rows.iter()
+                    .find(|(projection, _)| projection.alias.name == name)
+            }) {
+                out.extend_from_slice(row);
             } else {
                 out.extend(std::iter::repeat_n(Region::Erased, slots(self.items, ty)));
                 if slots(self.items, ty) != 0 {
@@ -1420,7 +1426,8 @@ fn stored_regions<R: Copy>(items: &ItemTree, ty: Ty, regions: &[R]) -> Vec<R> {
                 *next += slots(items, ty);
                 return;
             }
-            TyKind::Ref(..) | TyKind::Dynamic(_) => 1,
+            TyKind::Ref(..) => 1,
+            TyKind::Dynamic(object) => object_own_slots(items, object),
             TyKind::Adt(adt, _) => items.structs[adt.strukt].generics.lifetimes.len(),
             TyKind::Opaque(opaque) => opaque.lifetimes as usize,
             TyKind::FnPtr(sig) => sig.regions.map_or(0, |r| r.free as usize),
@@ -1647,7 +1654,7 @@ fn implied_at<R: Copy + PartialEq>(
         }
         TyKind::Dynamic(object) => {
             let bound = regions.get(*next).copied();
-            *next += 1;
+            *next += object_own_slots(items, object);
             // Well-formed occurrences of an object inherit a principal's
             // static Self contract. This is an occurrence obligation/assumption,
             // not a property of its erased Ty or of a free lifetime by itself.

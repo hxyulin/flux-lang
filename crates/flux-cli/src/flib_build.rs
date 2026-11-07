@@ -2,7 +2,7 @@
 
 use crate::build::SourceInput;
 use crate::flib::semantic::Capability;
-use crate::flib::semantic::{CheckedCrate, crate_hash, write_checked};
+use crate::flib::semantic::{CheckedCrate, crate_hash_with_indices, write_checked_with_indices};
 use crate::{BuildOptions, CrateType, report_all};
 use flux_hir::flib::{Encode, Encoder};
 use std::path::Path;
@@ -42,11 +42,15 @@ pub(crate) fn compile(
     };
     let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
     let mut state = timings.time("dependency artifact load", || {
-        crate::flib::semantic::DependencyState::new()?.load(&paths)
+        crate::flib::time(
+            "dependency state initialization",
+            crate::flib::semantic::DependencyState::new,
+        )?
+        .load(&paths)
     })?;
     let mut aliases = Vec::new();
     let mut imports = Vec::new();
-    for (alias, path) in externs {
+    for ((alias, _), &hash) in externs.iter().zip(&state.roots) {
         if imports
             .iter()
             .any(|(name, _)| name == &flux_intern::Symbol::intern(alias))
@@ -59,16 +63,13 @@ pub(crate) fn compile(
         ) {
             return Err(format!("external crate alias `{alias}` is reserved"));
         }
-        let bytes =
-            std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let manifest = crate::flib::semantic::manifest(&bytes)?;
         let dependency = state
             .dependencies
             .iter()
-            .find(|d| d.hash == manifest.hash)
+            .find(|d| d.hash == hash)
             .ok_or("missing loaded dependency")?;
         imports.push((flux_intern::Symbol::intern(alias), dependency.krate));
-        aliases.push((alias.clone(), manifest.hash));
+        aliases.push((alias.clone(), hash));
     }
     let builtin_count = state
         .items
@@ -85,17 +86,22 @@ pub(crate) fn compile(
     if capability == Capability::Object && state.objects.len() != loaded_hashes.len() {
         return Err("a dependency Fluxlib has no native object".into());
     }
-    let all_hashes: Vec<_> = state
+    let loaded_metadata: Vec<_> = state
         .dependencies
         .iter()
-        .map(|d| (d.krate, d.hash))
+        .filter(|d| {
+            state.items.has_artifact_builtins()
+                || loaded_hashes.iter().any(|&(id, _)| d.krate == id)
+        })
+        .map(|d| flux_ty::flib::LoadedCrate {
+            krate: d.krate,
+            hash: d.hash,
+            indices: &d.indices,
+        })
         .collect();
-    let loaded = if state.items.has_artifact_builtins() {
-        flux_ty::flib::LoadedTypes::with_builtin_prefix(&state.items, state.sigs, &all_hashes)
-    } else {
-        flux_ty::flib::LoadedTypes::new(&state.items, state.sigs, &loaded_hashes)
-    }
-    .map_err(|e| e.to_string())?;
+    let loaded =
+        flux_ty::flib::LoadedTypes::from_metadata(&state.items, state.sigs, &loaded_metadata)
+            .map_err(|e| e.to_string())?;
     let imported = if let Some(suite) = crate::builtins::active() {
         flux_mir::imported::ImportedMir::with_builtin_prefix(
             &state.items,
@@ -133,7 +139,14 @@ pub(crate) fn compile(
     });
     let own = hir.items.main_crate();
     let configuration = configuration(input, options, kind, capability, &aliases)?;
-    let hash = crate_hash(&hir.items, own, &state.dependencies, &configuration)?;
+    let own_indices = flux_hir::flib::CrateIndices::collect(&hir.items, own);
+    let hash = crate_hash_with_indices(
+        &hir.items,
+        own,
+        &own_indices,
+        &state.dependencies,
+        &configuration,
+    )?;
     let hashes: Vec<_> = state
         .dependencies
         .iter()
@@ -162,7 +175,7 @@ pub(crate) fn compile(
         return Ok(false);
     }
     let mir = timings.time("mir build + checks", || {
-        flux_mir::build_file_from(&hir, &typed, &imported, &roots.functions)
+        flux_mir::build_file_from_owned(&hir, &typed, imported, &roots.functions)
     });
     errors.extend(mir.diagnostics.iter().cloned());
     if !errors.is_empty() {
@@ -267,12 +280,14 @@ pub(crate) fn compile(
             eprintln!("warning: {warning}");
         }
         let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
-        let freshness = crate::flib::freshness::Snapshot::capture(
+        let freshness = crate::flib::freshness::Snapshot::capture_with_indices(
             &hir.items,
             own,
+            &own_indices,
             &configuration,
             &dependency_hashes,
         )?;
+        // Native library contents are not part of the HIR input trace.
         crate::artifact_cache::record(
             output,
             freshness
@@ -281,23 +296,27 @@ pub(crate) fn compile(
         )?;
     } else {
         let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
-        let freshness = crate::flib::freshness::Snapshot::capture(
+        let freshness = crate::flib::freshness::Snapshot::capture_with_indices(
             &hir.items,
             own,
+            &own_indices,
             &configuration,
             &dependency_hashes,
         )?;
-        let bytes = write_checked(CheckedCrate {
-            items: &hir.items,
-            sigs: &typed.sigs,
-            mir: &mir,
-            krate: own,
-            hash,
-            dependencies: &state.dependencies,
-            object,
-            required_instances: &object_requirements,
-            freshness: freshness.as_ref(),
-        })?;
+        let bytes = write_checked_with_indices(
+            CheckedCrate {
+                items: &hir.items,
+                sigs: &typed.sigs,
+                mir: &mir,
+                krate: own,
+                hash,
+                dependencies: &state.dependencies,
+                object,
+                required_instances: &object_requirements,
+                freshness: freshness.as_ref(),
+            },
+            &own_indices,
+        )?;
         crate::flib::write_atomic(output, &bytes)
             .map_err(|e| format!("cannot write {}: {e}", output.display()))?;
     }
@@ -379,17 +398,7 @@ pub(crate) fn is_fresh(
     let Ok(bytes) = std::fs::read(output) else {
         return Ok(false);
     };
-    let known = crate::flib::semantic::DependencyState::new()?.dependencies;
-    let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
-    let artifacts = crate::flib::semantic::resolve_paths(&paths, &known)?;
-    let mut dependencies: Vec<_> = known.iter().map(|d| d.hash).collect();
-    dependencies.extend(artifacts.iter().map(|a| a.manifest.hash));
-    let mut aliases = Vec::new();
-    for (alias, path) in externs {
-        let data = std::fs::read(path).map_err(|e| e.to_string())?;
-        aliases.push((alias.clone(), crate::flib::semantic::manifest(&data)?.hash));
-    }
-    let config = configuration(input, options, CrateType::Lib, Capability::Object, &aliases)?;
+    let (config, dependencies) = freshness_configuration(input, options, externs, CrateType::Lib)?;
     crate::flib::semantic::is_fresh(
         &bytes,
         &config,

@@ -1,0 +1,36 @@
+fn leak<'a>() -> Box<dyn Borrowed<Item = &u32>> {
+    let mut _0: Box<dyn Borrowed<Item = &u32>>;
+    let _1: Box<Iter<u32>>;
+    let _2: [u32; 1]; // local
+    let _3: Iter<u32>;
+    let _4: &[u32; 1];
+    let _5: &[u32];
+
+    bb0: {
+        _2 = [const 1_u32];
+        _4 = &_2;
+        _5 = copy _4 as &[u32] (unsize);
+        _3 = iter::<u32>(copy _5) -> bb1;
+    }
+
+    bb1: {
+        _1 = new::<Iter<u32>>(move _3) -> bb2;
+    }
+
+    bb2: {
+        StorageDead(_2);
+        _0 = move _1 as Box<dyn Borrowed<Item = &u32>> (unsize);
+        return;
+    }
+}
+
+fn main() -> () {
+    let mut _0: ();
+
+    bb0: {
+        _0 = const ();
+        return;
+    }
+}
+
+error 186..191: `local` does not live long enough

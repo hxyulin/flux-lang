@@ -41,6 +41,22 @@ impl Snapshot {
         configuration: &[u8],
         dependencies: &[[u8; 32]],
     ) -> Result<Option<Self>, String> {
+        Self::capture_with_indices(
+            items,
+            krate,
+            &CrateIndices::collect(items, krate),
+            configuration,
+            dependencies,
+        )
+    }
+
+    pub(crate) fn capture_with_indices(
+        items: &ItemTree,
+        krate: CrateId,
+        indices: &CrateIndices,
+        configuration: &[u8],
+        dependencies: &[[u8; 32]],
+    ) -> Result<Option<Self>, String> {
         let data = items
             .crates
             .get(krate.0 as usize)
@@ -52,7 +68,7 @@ impl Snapshot {
             .map_err(|e| format!("cannot snapshot compilation directory: {e}"))?;
         let root = items.modules[data.root].file;
         let mut inputs = BTreeMap::new();
-        for id in CrateIndices::collect(items, krate).files {
+        for &id in &indices.files {
             let id = flux_hir::FileId(id);
             let file = items.files.get(&id).ok_or("missing snapshot source")?;
             if file.expansion_of.is_some() {

@@ -15,11 +15,14 @@ impl core::fmt::Display for VarError {
 }
 impl core::error::Error for VarError {}
 
-unsafe extern "C" { fn getenv(name: *const u8) -> *mut u8; }
+unsafe extern "C" {
+    fn getenv(name: *const u8) -> *mut u8;
+    fn setenv(name: *const u8, value: *const u8, overwrite: i32) -> i32;
+    fn unsetenv(name: *const u8) -> i32;
+}
 
 /// Reads a variable, retaining non-Unicode values in VarError::NotUnicode.
-/// Other forms of OS-string keys and environment mutation are not exposed.
-pub fn var(key: &str) -> Result<String, VarError> {
+pub fn var<K: AsRef<crate::ffi::OsStr>>(key: K) -> Result<String, VarError> {
     match var_os(key) {
         Some(value) => value.into_string().map_err(VarError::NotUnicode),
         None => Err(VarError::NotPresent),
@@ -39,6 +42,50 @@ pub fn var_os<K: AsRef<crate::ffi::OsStr>>(key: K) -> Option<OsString> {
         // SAFETY: the non-null getenv result is a readable terminated value.
         unsafe { copy_environment_string(value) }
     } }) }
+}
+
+
+/// Sets a process environment variable, retaining Unix OS-string bytes.
+///
+/// # Safety
+/// The caller must ensure no other thread reads or changes the environment
+/// during this call, including through native libraries.
+///
+/// # Panics
+/// Panics for an empty key, a key containing `=` or NUL, a value containing
+/// NUL, or an operating-system failure.
+pub unsafe fn set_var<K: AsRef<crate::ffi::OsStr>, V: AsRef<crate::ffi::OsStr>>(key: K, value: V) {
+    let key = environment_key(key.as_ref());
+    let value = value.as_ref().as_encoded_bytes();
+    assert!(!value.contains(&0), "environment variable value contains NUL");
+    let mut value = value.to_vec();
+    value.push(0);
+    // SAFETY: the caller excludes concurrent environment access, and both
+    // buffers are terminated C strings with no embedded NUL.
+    assert!(unsafe { setenv(key.as_ptr(), value.as_ptr(), 1) } == 0, "cannot set environment variable");
+}
+
+/// Removes a process environment variable.
+///
+/// # Safety
+/// The caller must ensure no other thread reads or changes the environment
+/// during this call, including through native libraries.
+///
+/// # Panics
+/// Panics for an empty key, a key containing `=` or NUL, or an operating-system failure.
+pub unsafe fn remove_var<K: AsRef<crate::ffi::OsStr>>(key: K) {
+    let key = environment_key(key.as_ref());
+    // SAFETY: the caller excludes concurrent environment access, and key is a
+    // terminated C string with no embedded NUL.
+    assert!(unsafe { unsetenv(key.as_ptr()) } == 0, "cannot remove environment variable");
+}
+
+fn environment_key(key: &crate::ffi::OsStr) -> Vec<u8> {
+    let bytes = key.as_encoded_bytes();
+    assert!(!bytes.is_empty() && !bytes.contains(&b'=') && !bytes.contains(&0), "invalid environment variable name");
+    let mut key = bytes.to_vec();
+    key.push(0);
+    key
 }
 
 unsafe fn copy_environment_string(pointer: *const u8) -> Vec<u8> {
@@ -70,7 +117,7 @@ pub fn vars_os() -> VarsOs {
     unsafe extern "C" { static mut environ: *mut *mut u8; }
     let mut entries = Vec::new();
     // SAFETY: the native process environment is a terminated array of readable
-    // C strings. No environment mutation is exposed by this facade. Each entry
+    // C strings. Unsafe mutation requires callers to exclude readers. Each entry
     // is copied, so the returned iterator borrows no native environment memory.
     unsafe {
         #[cfg(target_os = "macos")]

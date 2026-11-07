@@ -76,3 +76,68 @@ impl Signatures {
         matches!(self.metadata(ty), Metadata::Length | Metadata::VTable)
     }
 }
+
+/// The vtable-bearing tail of a single-field transparent wrapper.
+/// Restricting wrappers to one type parameter and no lifetime parameters
+/// preserves both the data address and the tail's complete occurrence row.
+pub fn transparent_object_tail(
+    items: &flux_hir::ItemTree,
+    fields: &LayeredArenaMap<Struct, &'static [Ty]>,
+    mut ty: Ty,
+) -> Option<Ty> {
+    for _ in 0..256 {
+        if ty.is_dyn() {
+            return Some(ty);
+        }
+        ty = transparent_field(items, fields, ty)?;
+    }
+    None
+}
+
+/// Peels the same transparent wrappers from both ends of an object coercion.
+pub fn transparent_object_unsize(
+    items: &flux_hir::ItemTree,
+    fields: &LayeredArenaMap<Struct, &'static [Ty]>,
+    mut source: Ty,
+    mut target: Ty,
+) -> Option<(Ty, Ty)> {
+    for _ in 0..256 {
+        if target.is_dyn() {
+            return Some((source, target));
+        }
+        match (source.kind(), target.kind()) {
+            (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => {}
+            _ => return None,
+        }
+        source = transparent_field(items, fields, source)?;
+        target = transparent_field(items, fields, target)?;
+    }
+    None
+}
+
+fn transparent_field(
+    items: &flux_hir::ItemTree,
+    fields: &LayeredArenaMap<Struct, &'static [Ty]>,
+    ty: Ty,
+) -> Option<Ty> {
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return None;
+    };
+    let data = &items.structs[adt.strukt];
+    if data.is_enum()
+        || data.is_union
+        || args.len() != 1
+        || !data.generics.lifetimes.is_empty()
+        || (!data.repr_transparent
+            && items
+                .lang_enums
+                .get(&flux_intern::Symbol::intern("manually_drop"))
+                != Some(&adt.strukt))
+    {
+        return None;
+    }
+    let [field] = *fields.get(adt.strukt)? else {
+        return None;
+    };
+    Some(field.subst(args))
+}
