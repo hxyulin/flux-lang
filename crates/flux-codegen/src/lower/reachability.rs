@@ -101,6 +101,7 @@ struct Reach<'a> {
     exposed: FxHashSet<StructId>,
     opaque: FxHashSet<StructId>,
     opaque_traits: FxHashMap<TraitId, Vec<Ty>>,
+    callback_bounds: FxHashMap<TraitId, Vec<flux_ty::Predicate>>,
     dropped: FxHashSet<StructId>,
     traits: FxHashSet<TraitId>,
     impls: FxHashSet<flux_hir::ImplId>,
@@ -135,6 +136,7 @@ impl<'a> Reach<'a> {
             exposed: FxHashSet::default(),
             opaque: FxHashSet::default(),
             opaque_traits: FxHashMap::default(),
+            callback_bounds: FxHashMap::default(),
             dropped: FxHashSet::default(),
             traits: FxHashSet::default(),
             impls: FxHashSet::default(),
@@ -601,6 +603,24 @@ impl<'a> Reach<'a> {
     }
 
     fn call(&mut self, f: FunctionId, args: flux_ty::GenericArgs, runtime: bool) {
+        if runtime && let Some(bounds) = self.sigs.fn_predicates.get(f) {
+            for bound in bounds {
+                let bound = bound.subst(args);
+                if !self.available(bound.self_ty) {
+                    // A generic callback can invoke this trait on a private
+                    // adapter supplied by an exported template. Its own saved
+                    // methods may call monomorphic helpers in this object.
+                    self.expose_trait(bound.trait_ref.trait_);
+                    let bounds = self
+                        .callback_bounds
+                        .entry(bound.trait_ref.trait_)
+                        .or_default();
+                    if !bounds.contains(&bound) {
+                        bounds.push(bound);
+                    }
+                }
+            }
+        }
         // Symbolic templates do not provide the concrete bounds required for
         // instance selection. Retain matching implementations conservatively.
         if args.iter().any(|ty| ty.has_params()) {
@@ -696,6 +716,22 @@ impl<'a> Reach<'a> {
             erase_unresolved(left, &mut memo),
             erase_unresolved(right, &mut memo),
         )
+    }
+
+    fn callback_available(&self, imp: flux_hir::ImplId, self_ty: Ty, trait_: TraitId) -> bool {
+        self.callback_bounds.get(&trait_).is_some_and(|bounds| {
+            bounds.iter().any(|bound| {
+                self.template_matches(self_ty, bound.self_ty)
+                    && self.sigs.impl_traits.get(imp).is_some_and(|header| {
+                        header.args.len() == bound.trait_ref.args.len()
+                            && header
+                                .args
+                                .iter()
+                                .zip(bound.trait_ref.args)
+                                .all(|(&left, &right)| self.template_matches(left, right))
+                    })
+            })
+        })
     }
 
     fn call_available(&self, ty: Ty, trait_: TraitId) -> bool {
@@ -967,7 +1003,8 @@ impl<'a> Reach<'a> {
                 }
                 let eligible = match imp.trait_ {
                     Some(t) => {
-                        self.trait_available(self_ty, t)
+                        (self.trait_available(self_ty, t)
+                            || self.callback_available(id, self_ty, t))
                             && (!self.own(self.items.traits[t].loc.module)
                                 || self.traits.contains(&t))
                     }

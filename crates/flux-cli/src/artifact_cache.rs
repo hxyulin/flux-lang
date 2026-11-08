@@ -10,7 +10,9 @@ use crate::flib::freshness::Snapshot;
 struct Record {
     version: u32,
     output: [u8; 32],
-    snapshot: Vec<u8>,
+    snapshot: Option<Vec<u8>>,
+    semantic: [u8; 32],
+    native: crate::native_link::Snapshot,
 }
 
 fn path(output: &Path) -> PathBuf {
@@ -19,9 +21,14 @@ fn path(output: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub(crate) fn record(output: &Path, snapshot: Option<&Snapshot>) -> Result<(), String> {
-    let Some(snapshot) = snapshot else {
-        // A previous tracked build must not authorize an untracked one.
+pub(crate) fn record(
+    output: &Path,
+    snapshot: Option<&Snapshot>,
+    semantic: [u8; 32],
+    native: Option<crate::native_link::Snapshot>,
+) -> Result<(), String> {
+    let Some(native) = native else {
+        // An untracked link must not inherit an older tracked result.
         match std::fs::remove_file(path(output)) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -30,9 +37,11 @@ pub(crate) fn record(output: &Path, snapshot: Option<&Snapshot>) -> Result<(), S
         return Ok(());
     };
     let record = Record {
-        version: 1,
+        version: 2,
         output: hash_file(output)?,
-        snapshot: snapshot.to_bytes()?,
+        snapshot: snapshot.map(Snapshot::to_bytes).transpose()?,
+        semantic,
+        native,
     };
     crate::flib::write_atomic(
         &path(output),
@@ -41,25 +50,45 @@ pub(crate) fn record(output: &Path, snapshot: Option<&Snapshot>) -> Result<(), S
     .map_err(|e| e.to_string())
 }
 
+fn read(output: &Path) -> Option<Record> {
+    let bytes = std::fs::read(path(output)).ok()?;
+    let record: Record = serde_json::from_slice(&bytes).ok()?;
+    (record.version == 2).then_some(record)
+}
+
 pub(crate) fn is_fresh(
     output: &Path,
     configuration: &[u8],
     dependencies: &[[u8; 32]],
     environment: Option<&BTreeMap<String, String>>,
 ) -> Result<bool, String> {
-    let Ok(bytes) = std::fs::read(path(output)) else {
+    let Some(record) = read(output) else {
         return Ok(false);
     };
-    let Ok(record) = serde_json::from_slice::<Record>(&bytes) else {
+    let Some(bytes) = &record.snapshot else {
         return Ok(false);
     };
-    if record.version != 1 || hash_file(output).ok() != Some(record.output) {
+    let Ok(snapshot) = Snapshot::from_bytes(bytes) else {
+        return Ok(false);
+    };
+    if !snapshot.is_fresh(configuration, dependencies, environment)? {
         return Ok(false);
     }
-    let Ok(snapshot) = Snapshot::from_bytes(&record.snapshot) else {
-        return Ok(false);
-    };
-    snapshot.is_fresh(configuration, dependencies, environment)
+    Ok(record.native.is_fresh() && hash_file(output).ok() == Some(record.output))
+}
+
+/// Called only after current macro expansion and HIR diagnostics have completed.
+pub(crate) fn is_semantically_fresh(
+    output: &Path,
+    semantic: [u8; 32],
+    native: &flux_codegen::NativeLink,
+) -> bool {
+    read(output).is_some_and(|record| {
+        record.semantic == semantic
+            && record.native.matches_request(native)
+            && record.native.is_fresh()
+            && hash_file(output).ok() == Some(record.output)
+    })
 }
 
 /// Stream large objects rather than allocating a buffer the size of the executable.

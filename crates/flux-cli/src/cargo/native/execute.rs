@@ -358,7 +358,7 @@ fn flux_unit(
     let artifact = directory.join("build-script");
     let (sources, native) = host_sources(plan, outputs, index, version)?;
     eprintln!("flux host {} build-script ({index})", package.name);
-    if !crate::build::compile(CompileRequest {
+    if !crate::build::compile_cached(CompileRequest {
         file: &unit.target.root,
         crate_name: &stem,
         output: &artifact,
@@ -1189,21 +1189,5 @@ fn compile_root(
         });
     std::fs::create_dir_all(output.parent().ok_or("build output has no parent")?)
         .map_err(|e| e.to_string())?;
-    if library || native == flux_codegen::NativeLink::default() {
-        return super::build::run(&sources, root, &output, options, jobs, library);
-    }
-    // Native linker overrides still use the source-graph linker.
-    let success = crate::build::compile(CompileRequest {
-        file: &sources[root].file,
-        crate_name: &sources[root].name,
-        output: &output,
-        sources: &sources,
-        options,
-        native,
-    })?;
-    Ok(if success {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    super::build::run(&sources, root, &output, options, jobs, library, &native)
 }

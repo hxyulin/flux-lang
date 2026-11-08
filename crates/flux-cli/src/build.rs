@@ -132,29 +132,65 @@ impl SourceInput {
 // driver error formatting, program execution, and process/global teardown.
 pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
     let mut timings = Timings::new(request.options.timings, "compile scoped elapsed");
-    compile_inner(request, &mut timings, None)
+    compile_inner(request, &mut timings, None, None)
 }
 
-/// Compiles a generated root under its original physical path, preserving
-/// relative modules, includes, and source locations without rewriting source.
-pub(crate) fn compile_generated(request: CompileRequest<'_>, text: &str) -> Result<bool, String> {
+/// Reuses a host executable only; callers must still run it or invoke its macros.
+pub(crate) fn compile_cached(request: CompileRequest<'_>) -> Result<bool, String> {
+    compile_host_cached(request, None)
+}
+
+/// Preserves source-relative loading for a wrapper generated from checked physical text.
+pub(crate) fn compile_generated_cached(
+    request: CompileRequest<'_>,
+    text: &str,
+    original: &str,
+) -> Result<bool, String> {
+    compile_host_cached(request, Some((text, original)))
+}
+
+fn compile_host_cached(
+    request: CompileRequest<'_>,
+    generated: Option<(&str, &str)>,
+) -> Result<bool, String> {
+    let cache = crate::host_cache::HostCache::new(&request, generated)?;
+    if let Some(cache) = &cache
+        && cache.is_fresh(&request)?
+    {
+        eprintln!("fresh flux host {}", request.crate_name);
+        return Ok(true);
+    }
+    crate::host_cache::invalidate(request.output)?;
     let mut timings = Timings::new(request.options.timings, "compile scoped elapsed");
-    compile_inner(request, &mut timings, Some(text))
+    compile_inner(
+        request,
+        &mut timings,
+        generated.map(|(text, _)| text),
+        cache
+            .as_ref()
+            .map(|cache| (cache, generated.map(|(_, original)| original))),
+    )
 }
 
 fn compile_inner(
     request: CompileRequest<'_>,
     timings: &mut Timings,
     generated: Option<&str>,
+    cache: Option<(&crate::host_cache::HostCache, Option<&str>)>,
 ) -> Result<bool, String> {
+    let cache_request = &request;
+    let mut linked_inputs = None;
     let CompileRequest {
         file,
         crate_name,
         output,
         options,
         sources,
-        mut native,
-    } = request;
+        native,
+    } = &request;
+    let mut native = native.clone();
+    let (file, crate_name, output, options, sources) =
+        (*file, *crate_name, *output, *options, *sources);
     let suite = crate::builtins::active();
     // `core`'s files are parsed with the database.
     let (mut db, root) = timings.time("database + root load/parse", || {
@@ -348,14 +384,14 @@ fn compile_inner(
             for library in &hir.items.native_libraries {
                 native.add_library(*library);
             }
-            let warnings = timings.time("link", || {
+            let (warnings, consumed) = timings.time("link", || {
                 if builtin_object {
                     let builtin = suite
                         .expect("native suite selected")
                         .object
                         .as_deref()
                         .expect("native object exists");
-                    return flux_codegen::link_objects(
+                    return flux_codegen::link_objects_with_inputs(
                         &[
                             flux_codegen::ObjectInput {
                                 name: crate_name,
@@ -372,15 +408,30 @@ fn compile_inner(
                     )
                     .map_err(|error| error.to_string());
                 }
-                flux_codegen::link_executable_with_libraries(&object, target, output, &native)
-                    .map_err(|error| error.to_string())
+                flux_codegen::link_objects_with_inputs(
+                    &[flux_codegen::ObjectInput {
+                        name: "flux.o",
+                        bytes: &object,
+                    }],
+                    target,
+                    output,
+                    &native,
+                )
+                .map_err(|error| error.to_string())
             })?;
+            linked_inputs = Some(consumed);
             for warning in warnings {
                 eprintln!("warning: {warning}");
             }
         }
     }
     report_all(&db, &mut errors);
+    if errors.is_empty()
+        && let Some((cache, original)) = cache
+        && let Some(consumed) = &linked_inputs
+    {
+        cache.record(cache_request, &hir.items, original, consumed)?;
+    }
     Ok(errors.is_empty())
 }
 

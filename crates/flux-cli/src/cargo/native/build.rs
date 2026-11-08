@@ -49,10 +49,12 @@ struct Request {
     externs: Vec<(String, PathBuf)>,
     output: PathBuf,
     library: bool,
+    metadata_only: bool,
     optimize: bool,
     fast_build: bool,
     debug_assertions: bool,
     timings: bool,
+    native: crate::native_link::Request,
 }
 
 impl Request {
@@ -105,10 +107,12 @@ impl Request {
             externs: Vec::new(),
             output: PathBuf::new(),
             library: true,
+            metadata_only: false,
             optimize: options.optimize,
             fast_build: options.fast_build,
             debug_assertions: options.debug_assertions(),
             timings: options.timings,
+            native: Default::default(),
         })
     }
 
@@ -168,17 +172,30 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
         debug_assertions: Some(request.debug_assertions),
         timings: request.timings,
     };
+    let native = request.native.link();
     let fresh = if request.library {
-        crate::flib_build::is_fresh(&source, &request.output, options, &request.externs)?
+        crate::flib_build::is_fresh_with_capability(
+            &source,
+            &request.output,
+            options,
+            &request.externs,
+            request.metadata_only,
+        )?
     } else {
-        crate::flib_build::is_binary_fresh(&source, &request.output, options, &request.externs)?
+        crate::flib_build::is_binary_fresh(
+            &source,
+            &request.output,
+            options,
+            &request.externs,
+            &native,
+        )?
     };
     if fresh {
         eprintln!("Fresh {}", request.name);
         return Ok(true);
     }
     eprintln!("Compiling {}", request.name);
-    crate::flib_build::compile(
+    crate::flib_build::compile_native(
         &source,
         &request.output,
         options,
@@ -187,8 +204,9 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
         } else {
             CrateType::Bin
         },
-        false,
+        request.metadata_only,
         &request.externs,
+        &native,
     )
 }
 
@@ -199,6 +217,7 @@ pub(super) fn run(
     options: BuildOptions,
     jobs: usize,
     library: bool,
+    native: &flux_codegen::NativeLink,
 ) -> Result<ExitCode, String> {
     let parent = output.parent().ok_or("build output has no parent")?;
     let directory = parent.join("deps");
@@ -220,6 +239,12 @@ pub(super) fn run(
     let mut requests: BTreeMap<usize, (PathBuf, Request)> = BTreeMap::new();
     for &index in &needed {
         let mut request = Request::new(&sources[index], options)?;
+        if index == root && !library {
+            request.native = native.into();
+        }
+        // Native-linked executables keep one whole-program backend pass. The
+        // DAG caches checked MIR instead of multiplying generic native objects.
+        request.metadata_only = (index != root) && !library && *native != Default::default();
         // Identity excludes plan position, compiler version, timing output and dependency contents.
         // Configuration and compiler changes are checked by the artifact's input snapshot.
         let identity = serde_json::to_vec(&(
@@ -228,6 +253,7 @@ pub(super) fn run(
             &request.edition,
             &request.package,
             &request.cfg,
+            request.metadata_only,
         ))
         .map_err(|e| e.to_string())?;
         let hash = blake3::hash(&identity).to_hex();

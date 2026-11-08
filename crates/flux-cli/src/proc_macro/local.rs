@@ -173,6 +173,8 @@ pub struct Export {
 
 pub struct PreparedSource {
     pub text: String,
+    /// Physical root bytes used to generate the wrapper.
+    pub original: String,
     pub exports: Vec<Export>,
     pub path: PathBuf,
     pub mirror: PathBuf,
@@ -190,7 +192,8 @@ pub fn prepare_source_with_cfg(
 ) -> Result<PreparedSource, String> {
     let text = std::fs::read_to_string(source)
         .map_err(|e| format!("cannot read procedural macro source: {e}"))?;
-    let (text, exports) = transform(&text, cfg)?;
+    let original_text = text;
+    let (text, exports) = transform(&original_text, cfg)?;
     let mirror = output.join("sources");
     let parent = source
         .parent()
@@ -241,6 +244,7 @@ pub fn prepare_source_with_cfg(
     }
     Ok(PreparedSource {
         text,
+        original: original_text,
         exports,
         path,
         mirror,

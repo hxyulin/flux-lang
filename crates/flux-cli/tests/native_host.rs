@@ -360,6 +360,13 @@ dependencies=["shared"]
     // Only the generated file changes, so only rustc's dep-info sees it.
     let stderr = rerun("edited-generated", b"100\n");
     assert!(stderr.contains("rustc host macros proc-macro"), "{stderr}");
+    // Force real target work: an unchanged macro expansion may now reuse the
+    // checked target and correctly omit MIR/backend timing scopes.
+    let main = std::fs::read_to_string(f.root.join("app/src/main.rs")).unwrap();
+    f.write(
+        "app/src/main.rs",
+        &format!("{main}\n// timed source edit\n"),
+    );
     let output = f.run(
         "build",
         "timed",

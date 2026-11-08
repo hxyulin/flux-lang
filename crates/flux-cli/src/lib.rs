@@ -10,6 +10,8 @@ mod build;
 mod cargo;
 mod driver;
 mod flib_build;
+mod host_cache;
+mod native_link;
 mod package;
 mod proc_macro_native;
 

@@ -6,7 +6,7 @@ pub(crate) fn link(
     objects: &[ObjectInput<'_>],
     output: &Path,
     native: &NativeLink,
-) -> Result<Vec<String>, Error> {
+) -> Result<(Vec<String>, crate::NativeLinkInputs), Error> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         native::link(objects, output, native)
@@ -14,6 +14,21 @@ pub(crate) fn link(
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
         let _ = (objects, output, native);
+        Err(Error::message(
+            Stage::Link,
+            "x86-64 Linux linking requires a native Linux host",
+        ))
+    }
+}
+
+pub(crate) fn inputs(native: &NativeLink) -> Result<crate::NativeLinkInputs, Error> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        native::inputs(native)
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = native;
         Err(Error::message(
             Stage::Link,
             "x86-64 Linux linking requires a native Linux host",
@@ -47,11 +62,14 @@ mod native {
         Ok(path)
     }
 
-    pub(super) fn link(
-        objects: &[ObjectInput<'_>],
-        output: &Path,
-        native: &NativeLink,
-    ) -> Result<Vec<String>, Error> {
+    struct Resolved {
+        names: Vec<String>,
+        paths: Vec<PathBuf>,
+        startup: usize,
+        interpreter: PathBuf,
+    }
+
+    fn resolve(native: &NativeLink) -> Result<Resolved, Error> {
         let mut names = vec![
             "crt1.o".to_owned(),
             "crti.o".to_owned(),
@@ -106,19 +124,79 @@ mod native {
             }
         }
         names.extend(["libgcc.a".into(), "crtend.o".into(), "crtn.o".into()]);
-        let files: Vec<_> = names
+        let paths = names
             .iter()
             .map(|name| {
-                let path = if Path::new(name).is_absolute() {
-                    PathBuf::from(name)
+                if Path::new(name).is_absolute() {
+                    Ok(PathBuf::from(name))
                 } else {
-                    runtime_file(name)?
-                };
-                std::fs::read(&path).map_err(|e| {
-                    Error::io(Stage::Sdk, &format!("cannot read {}", path.display()), e)
+                    runtime_file(name)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let interpreter = runtime_file("ld-linux-x86-64.so.2")?;
+        Ok(Resolved {
+            names,
+            paths,
+            startup,
+            interpreter,
+        })
+    }
+
+    fn read_inputs(resolved: &Resolved) -> Result<Vec<Vec<u8>>, Error> {
+        resolved
+            .paths
+            .iter()
+            .map(|path| {
+                std::fs::read(path).map_err(|error| {
+                    Error::io(
+                        Stage::Sdk,
+                        &format!("cannot read {}", path.display()),
+                        error,
+                    )
                 })
             })
-            .collect::<Result<_, _>>()?;
+            .collect()
+    }
+
+    fn consumed_inputs(resolved: &Resolved, files: &[Vec<u8>]) -> crate::NativeLinkInputs {
+        let mut result = crate::NativeLinkInputs::default();
+        result.string("linux-native-link-v2");
+        result
+            .context
+            .extend_from_slice(&(resolved.names.len() as u64).to_le_bytes());
+        for (name, bytes) in resolved.names.iter().zip(files) {
+            result.string(name);
+            result.contents(bytes);
+        }
+        // The interpreter's path is embedded; its bytes are not read by the
+        // linker. CLI freshness can still track the installed interpreter file.
+        result.bytes(resolved.interpreter.as_os_str().as_encoded_bytes());
+        result.files = resolved.paths.clone();
+        result.files.push(resolved.interpreter.clone());
+        result
+    }
+
+    pub(super) fn inputs(native: &NativeLink) -> Result<crate::NativeLinkInputs, Error> {
+        let resolved = resolve(native)?;
+        let files = read_inputs(&resolved)?;
+        Ok(consumed_inputs(&resolved, &files))
+    }
+
+    pub(super) fn link(
+        objects: &[ObjectInput<'_>],
+        output: &Path,
+        native: &NativeLink,
+    ) -> Result<(Vec<String>, crate::NativeLinkInputs), Error> {
+        let resolved = resolve(native)?;
+        let files = read_inputs(&resolved)?;
+        let consumed = consumed_inputs(&resolved, &files);
+        let Resolved {
+            names,
+            startup,
+            interpreter,
+            ..
+        } = resolved;
         let mut inputs: Vec<_> = names
             .iter()
             .zip(&files)
@@ -131,7 +209,6 @@ mod native {
                 bytes: o.bytes,
             }),
         );
-        let interpreter = runtime_file("ld-linux-x86-64.so.2")?;
         let executable = keel_link::elf::link(
             &inputs,
             keel_link::elf::Options {
@@ -141,7 +218,47 @@ mod native {
         )
         .map_err(|e| Error::message(Stage::Link, e))?;
         install(&executable.bytes, output)?;
-        Ok(executable.warnings)
+        Ok((executable.warnings, consumed))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn consumed_runtime_bytes_survive_a_file_rollback() {
+            let root =
+                std::env::temp_dir().join(format!("flux-runtime-rollback-{}", std::process::id()));
+            std::fs::create_dir_all(&root).unwrap();
+            let path = root.join("runtime.o");
+            let resolved = Resolved {
+                names: vec!["runtime.o".into()],
+                paths: vec![path.clone()],
+                startup: 1,
+                interpreter: root.join("interpreter"),
+            };
+            std::fs::write(&path, b"A").unwrap();
+            let before = consumed_inputs(&resolved, &read_inputs(&resolved).unwrap());
+            std::fs::write(&path, b"B").unwrap();
+            let bytes = read_inputs(&resolved).unwrap();
+            std::fs::write(&path, b"A").unwrap();
+            let after = consumed_inputs(&resolved, &read_inputs(&resolved).unwrap());
+            assert_eq!(before, after);
+            assert_ne!(consumed_inputs(&resolved, &bytes).context, after.context);
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
+        fn freshness_resolution_includes_runtime_and_interpreter() {
+            let resolved = resolve(&NativeLink::default()).unwrap();
+            assert_eq!(resolved.startup, 3);
+            assert_eq!(&resolved.names[..3], ["crt1.o", "crti.o", "crtbegin.o"]);
+            assert!(resolved.paths.iter().all(|path| path.is_file()));
+            let tracked = inputs(&NativeLink::default()).unwrap();
+            assert_eq!(&tracked.files[..resolved.paths.len()], resolved.paths);
+            assert_eq!(tracked.files.last(), Some(&resolved.interpreter));
+            assert!(!tracked.context.is_empty());
+        }
     }
 
     // Replace only a complete executable, preserving the old destination on

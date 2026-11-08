@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use flux_hir::flib::{CrateIndices, Decode, Decoder, Encode, Encoder, Error, digest};
-use flux_hir::{CrateId, ItemTree, MacroKind};
+use flux_hir::{CrateId, ItemTree};
 
 const MAGIC: &[u8; 8] = b"FLUXFRSH";
 const VERSION: u32 = 1;
@@ -33,8 +33,9 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Captures checked physical sources, or declines reuse for untracked inputs.
-    /// Includes and environment macros use the HIR input trace. Host macros
-    /// can observe arbitrary external state and are not reusable yet.
+    /// Call only after complete successful HIR lowering and checking. Includes
+    /// and environment macros use the HIR input trace. Actual host invocations
+    /// decline this pre-expansion path; importing unused macros does not.
     pub fn capture(
         items: &ItemTree,
         krate: CrateId,
@@ -57,11 +58,44 @@ impl Snapshot {
         configuration: &[u8],
         dependencies: &[[u8; 32]],
     ) -> Result<Option<Self>, String> {
+        Self::capture_checked_root(items, krate, indices, configuration, dependencies, None)
+    }
+
+    /// A generated wrapper is reusable only with its exact generated text in
+    /// configuration and the original physical root checked against disk.
+    pub(crate) fn capture_generated(
+        items: &ItemTree,
+        krate: CrateId,
+        configuration: &[u8],
+        original: Option<(&Path, &str)>,
+    ) -> Result<Option<Self>, String> {
+        Self::capture_checked_root(
+            items,
+            krate,
+            &CrateIndices::collect(items, krate),
+            configuration,
+            &[],
+            original,
+        )
+    }
+
+    fn capture_checked_root(
+        items: &ItemTree,
+        krate: CrateId,
+        indices: &CrateIndices,
+        configuration: &[u8],
+        dependencies: &[[u8; 32]],
+        original: Option<(&Path, &str)>,
+    ) -> Result<Option<Self>, String> {
         let data = items
             .crates
             .get(krate.0 as usize)
             .ok_or("invalid snapshot crate")?;
-        if has_untracked_host(items, krate)? {
+        let tracked = data.tracked_inputs();
+        // Only actual host invocations have untracked execution effects.
+        // Merely importing or reexporting a macro does not execute its code.
+        // An empty token result still occupies an outer trace entry.
+        if !tracked.macro_outputs.is_empty() {
             return Ok(None);
         }
         let current = std::env::current_dir()
@@ -78,8 +112,15 @@ impl Snapshot {
             let Ok(bytes) = std::fs::read(&path) else {
                 return Ok(None);
             };
-            // A generated in-memory root is not the physical file at that path.
-            if bytes != file.text().as_bytes() {
+            let expected = if id == root {
+                original
+                    .filter(|(original, _)| absolute(&current, original) == path)
+                    .map(|(_, text)| text.as_bytes())
+                    .unwrap_or_else(|| file.text().as_bytes())
+            } else {
+                file.text().as_bytes()
+            };
+            if bytes != expected {
                 return Ok(None);
             }
             let Ok(resolved) = std::fs::canonicalize(&path) else {
@@ -112,7 +153,6 @@ impl Snapshot {
                 }
             }
         }
-        let tracked = data.tracked_inputs();
         for (path, hash) in &tracked.files {
             let path = absolute(&current, path);
             let Ok(bytes) = std::fs::read(&path) else {
@@ -237,25 +277,6 @@ fn alternative_module(path: &Path) -> Option<PathBuf> {
     } else {
         None
     }
-}
-
-fn has_untracked_host(items: &ItemTree, own: CrateId) -> Result<bool, String> {
-    let mut reachable = BTreeSet::new();
-    let mut pending = vec![own];
-    while let Some(id) = pending.pop() {
-        if !reachable.insert(id.0) {
-            continue;
-        }
-        let data = items
-            .crates
-            .get(id.0 as usize)
-            .ok_or("invalid snapshot dependency")?;
-        pending.extend(data.dependencies.iter().map(|(_, id)| *id));
-    }
-    Ok(items.macros.iter().any(|(_, definition)| {
-        reachable.contains(&definition.krate.0)
-            && matches!(definition.kind, MacroKind::ProcMacro(_))
-    }))
 }
 
 fn read_environment(

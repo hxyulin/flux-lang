@@ -221,7 +221,7 @@ fn diamond_build_reuses_inputs_and_recovers_from_failures() {
         "#[link(name={library:?})] unsafe extern \"C\" {{}} fn main(){{println!(\"native link\");}}\n"
     ));
     f.success(&[], "second");
-    assert!(f.success(&[], "second").contains("Compiling app"));
+    assert!(f.success(&[], "second").contains("Fresh app"));
     f.run(b"native link\n");
     let invalid = f.build(&["-j", "0"], "second");
     assert!(!invalid.status.success());

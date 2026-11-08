@@ -117,7 +117,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
         },
     );
     let executable = output.join("host");
-    if !crate::build::compile_generated(
+    if !crate::build::compile_generated_cached(
         CompileRequest {
             file: &source,
             crate_name: &name,
@@ -132,6 +132,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
             native: Default::default(),
         },
         &runner,
+        &prepared.original,
     )? {
         return Err("cannot compile procedural macro host with flux".into());
     }

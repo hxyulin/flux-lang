@@ -58,10 +58,23 @@ dependency state, forks runtime type identities and creates solver caches on
 its worker thread. Worker stacks reserve 8 MiB for recursive parsing and
 constant evaluation.
 
-Freshness records reuse complete crate artifacts and executables. A stale
-crate repeats its local semantic checks and code generation; per-body results
-are not persisted. Definition keys used by artifacts include source revision
-identity and must not be treated as edit-stable incremental cache keys.
+Freshness records reuse complete crate artifacts and executables. Native-linked
+binaries cache checked dependency MIR, then lower one whole-program backend
+module; ordinary object builds retain separately compiled dependency objects.
+Native records re-resolve archives, search paths, runtime files and SDK interface
+semantics, and verify the bytes actually consumed during linking.
+
+Procedural macros still execute before their consumers can reuse checked code.
+After HIR lowering, the canonical crate identity includes actual expansion tokens,
+hygiene, includes, environment observations and exact dependencies. An unchanged
+identity can reuse checked MIR/native results after current diagnostics pass.
+This is crate-level reuse; per-body results are not persisted. Definition keys
+include source revision identity and are not edit-stable query keys.
+
+Compiled Flux build scripts and macro hosts have separate whole-graph freshness
+records, including generated-wrapper contents and original physical roots.
+Reusing their executable does not skip build-script execution or macro expansion.
+Unsupported or untracked host inputs decline reuse.
 
 The Cargo compatibility path (`--cargo`) prepares host tools with Cargo, then
 compiles the source graph together. It does not use the native per-crate reuse

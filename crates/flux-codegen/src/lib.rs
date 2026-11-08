@@ -29,7 +29,7 @@ pub use lower::{
     Compilation, LoweredCrate, LoweringTimings, OutputKind, lower_crate,
     lower_crate_with_requirements, lower_module, lower_with_timings,
 };
-pub use native::NativeLink;
+pub use native::{NativeLink, NativeLinkInputs};
 
 /// Verifies, optimizes and compiles `module` to an object file for
 /// `target`.
@@ -234,6 +234,31 @@ pub fn link_executable_with_libraries(
     link_objects(&[input], target, output, native)
 }
 
+/// Resolves native-library and platform inputs for executable freshness checks.
+///
+/// Repeating this resolution detects changes in search-path precedence. Dynamic
+/// interfaces include their resolved exports and weak exports in `context`, so
+/// transitive SDK reexports remain tracked without a second interface parser.
+///
+/// # Errors
+///
+/// Returns the same SDK, runtime-file and native-library resolution failures as
+/// executable linking. A freshness caller can treat these failures as a miss.
+pub fn native_link_inputs(target: Target, native: &NativeLink) -> Result<NativeLinkInputs, Error> {
+    match target {
+        Target::Aarch64AppleDarwin => Ok(native::darwin(native)?.inputs()),
+        Target::X86_64LinuxGnu => linux::inputs(native),
+        Target::Aarch64LinuxGnu => Err(Error::message(
+            Stage::Link,
+            "linking for AArch64 Linux is not supported yet",
+        )),
+        Target::Wasm32UnknownUnknown => Err(Error::message(
+            Stage::Link,
+            "linking for WebAssembly is not supported yet",
+        )),
+    }
+}
+
 /// One native object supplied to the executable link.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectInput<'a> {
@@ -260,57 +285,34 @@ pub fn link_objects(
     output: &Path,
     native: &NativeLink,
 ) -> Result<Vec<String>, Error> {
+    link_objects_with_inputs(objects, target, output, native).map(|(warnings, _)| warnings)
+}
+
+/// Links an executable and reports the native inputs actually consumed.
+///
+/// The returned context includes digests of the retained archive/runtime bytes
+/// passed to the linker, not a later filesystem read. Freshness callers can
+/// compare it with pre-link and post-link inspections to reject input races.
+///
+/// # Errors
+///
+/// Returns the same linking and output-writing errors as [`link_objects`].
+pub fn link_objects_with_inputs(
+    objects: &[ObjectInput<'_>],
+    target: Target,
+    output: &Path,
+    native: &NativeLink,
+) -> Result<(Vec<String>, NativeLinkInputs), Error> {
     match target {
         Target::Aarch64AppleDarwin => {
-            let sdk = macos_sdk()?;
-            let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), &sdk)
-                .map_err(|message| Error::message(Stage::Sdk, message))?;
-            let mut dylibs = vec![system];
-            let mut archives = Vec::new();
-            let libraries = [sdk.join("usr/lib")];
-            let frameworks = [sdk.join("System/Library/Frameworks")];
-            for library in &native.libraries {
-                // Darwin's libc and libm are umbrella aliases of libSystem,
-                // already included for the executable's runtime entry point.
-                if library.kind == flux_hir::NativeKind::Dylib
-                    && matches!(library.name.as_str(), "c" | "m" | "System")
-                {
-                    continue;
-                }
-                // ld64's default `-search_paths_first` order.
-                let found = native::find(
-                    *library,
-                    native,
-                    &libraries,
-                    &frameworks,
-                    &["tbd", "dylib", "so", "a"],
-                )?;
-                let path = match found {
-                    native::Found::Archive(path, bytes) => {
-                        if !archives.iter().any(|(p, _)| *p == path) {
-                            archives.push((path, bytes));
-                        }
-                        continue;
-                    }
-                    native::Found::Interface(path) => path,
-                    native::Found::Shared(path) => {
-                        return Err(Error::message(
-                            Stage::Link,
-                            format!(
-                                "linking the Mach-O shared library {} is not supported yet; \
-                                 the linker reads only `.tbd` interfaces",
-                                path.display()
-                            ),
-                        ));
-                    }
-                };
-                let dylib = keel_link::Dylib::from_tbd(&path, &sdk)
-                    .map_err(|message| Error::message(Stage::Sdk, message))?;
-                // Aliases such as libpthread name a library already present.
-                if !dylibs.iter().any(|d| d.install_name == dylib.install_name) {
-                    dylibs.push(dylib);
-                }
-            }
+            let resolved = native::darwin(native)?;
+            let consumed = resolved.inputs();
+            let native::DarwinLibraries {
+                sdk_version,
+                dylibs,
+                archives,
+                ..
+            } = resolved;
             let names: Vec<_> = archives
                 .iter()
                 .map(|(path, _)| path.to_string_lossy().into_owned())
@@ -329,9 +331,6 @@ pub fn link_objects(
                 )
                 .collect();
             let defaults = keel_link::Options::default();
-            // The SDK the executable was built against: Darwin picks some
-            // runtime behavior by it, such as the malloc zone.
-            let sdk_version = sdk_version(&sdk).unwrap_or(defaults.minimum_macos);
             let executable = keel_link::link(
                 &inputs,
                 keel_link::Options {
@@ -345,7 +344,7 @@ pub fn link_objects(
             .map_err(|message| Error::message(Stage::Link, message))?;
             keel_link::write_signed(&executable, output)
                 .map_err(|message| Error::message(Stage::Write, message))?;
-            Ok(executable.warnings)
+            Ok((executable.warnings, consumed))
         }
         Target::X86_64LinuxGnu => linux::link(objects, output, native),
         Target::Aarch64LinuxGnu => Err(Error::message(

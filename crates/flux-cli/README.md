@@ -221,13 +221,26 @@ position. Records are replaced atomically. This follows [quon](https://github.co
 build DAG and per-node freshness, while using flux's own checked artifacts and
 HIR input trace.
 
-Procedural macros can read arbitrary external state. Their hosts and consuming
-crates rebuild each invocation. Build scripts also recompile and rerun each
-invocation; byte-identical generated files let target crates stay fresh.
-Builds with native linker overrides retain the source-graph compiler path,
-without target artifact caching or parallel target compilation. Executables with
-source-level native library links also relink each time, since those libraries
-are not tracked by the HIR input trace.
+Compiled Flux host executables are reused when their compiler, source graph,
+includes, configuration, observed environment and native runtime inputs match.
+Generated macro-host wrappers also check the original physical root and exact
+wrapper contents. Build scripts still execute each invocation. Procedural macros
+still expand each invocation because they can read arbitrary external state.
+When the current expanded crate identity matches a previous checked result,
+`Reused <crate> after expansion` skips type checking, MIR and backend work.
+Current expansion diagnostics and side effects are retained. Importing or
+reexporting an unused macro does not force expansion: only crates with actual
+host invocations decline the ordinary physical-input freshness path. Changed
+dependency identities still invalidate consumers.
+
+Native linker requests stay in the artifact graph. Binaries with build-script
+linker requests use checked-MIR dependency artifacts and one whole-program
+backend pass, preserving cross-crate optimization. Other builds retain their
+separate native dependency objects. Executable freshness re-resolves native
+libraries and checks their contents, search precedence, symlink targets, platform
+runtime and dynamic interfaces. Records are accepted only when the linker
+consumed the tracked inputs. A native-only change rebuilds the final executable
+while leaving unchanged checked Rust libraries reusable.
 
 Build scripts receive package, feature, target cfg, and profile variables, plus
 `DEP_*` metadata from direct dependencies with `links` declarations. Both
@@ -237,8 +250,8 @@ require ASCII. Unknown modern directives and unsupported linker arguments
 fail explicitly. Native library and search-path directives reach target linking.
 Build scripts receive the `-j` limit in `NUM_JOBS`.
 
-Each invocation recompiles and reruns build scripts with Flux. A rustc host unit
-is reused when its command, its dependencies' fingerprints, and every source
+Each invocation runs build scripts with Flux, reusing their compiled executables
+when inputs match. A rustc host unit is reused when its command, its dependencies' fingerprints, and every source
 file and environment variable in its rustc dep-info are unchanged; otherwise it
 is rebuilt. Independent rustc units run in parallel within the `-j` limit,
 while Flux compiles and runs build scripts on the driver thread. Host tools use
@@ -308,7 +321,8 @@ unaligned `u128` reads and ordered-set queries. The generated source generator
 reported that the AST was up to date; `difftest gen 42` matched the Rust bootstrap.
 Dependency sources were not patched and no fallback to rustc was enabled.
 Native C build tools remain necessary for dependencies such as BLAKE3.
-Build-script native linker overrides still use the whole source graph path.
+Native-linked builds cache checked dependency MIR and retain a whole-program
+backend pass.
 
 Native spans support root-context `resolved_at` while retaining source locations.
 Mixed-site contexts and inputs carrying non-root macro_rules hygiene remain
