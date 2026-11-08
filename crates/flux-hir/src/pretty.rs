@@ -534,6 +534,12 @@ impl Printer<'_> {
                         self.out.push_str(", ");
                     }
                     self.expr(expr);
+                    if let Some((_, output)) =
+                        asm.outputs.iter().find(|(index, _)| *index as usize == i)
+                    {
+                        self.out.push_str(" => ");
+                        self.expr(*output);
+                    }
                 }
                 self.out.push(')');
             }

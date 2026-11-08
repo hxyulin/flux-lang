@@ -240,6 +240,10 @@ fn debug_assertions_flag_overrides_optimization_default() {
             "debug assertions true true\n",
         ),
         (
+            &["--fast-build", "-C", "debug-assertions"][..],
+            "debug assertions true true\n",
+        ),
+        (
             &["-Cdebug-assertions=no"][..],
             "no debug assertions false false\n",
         ),
@@ -386,12 +390,12 @@ fn compare_program(root: &Path, dir: &Path, program: &Path) -> Vec<String> {
     } else {
         None
     };
-    for optimize in [false, true] {
+    for suffix in ["", "-O", "--fast-build"] {
+        let optimize = !suffix.is_empty();
         let expected = match &release {
             Some(release) if optimize => release,
             _ => &debug,
         };
-        let suffix = if optimize { "-O" } else { "" };
         let executable = dir.join(format!("{name}-flux{suffix}"));
         let mut flux = Command::new(env!("CARGO_BIN_EXE_fluxc"));
         flux.current_dir(root)
@@ -400,7 +404,7 @@ fn compare_program(root: &Path, dir: &Path, program: &Path) -> Vec<String> {
             .arg("-o")
             .arg(&executable);
         if optimize {
-            flux.arg("-O");
+            flux.arg(suffix);
         }
         if let Err(message) = compile(&mut flux, "flux") {
             failures.push(format!("{name}{suffix}: {message}"));

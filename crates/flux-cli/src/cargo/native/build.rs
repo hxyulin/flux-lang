@@ -1,7 +1,7 @@
-//! Dependency-ordered Fluxlib builds. Each compiler runs in its own process.
+//! Dependency-ordered Fluxlib builds sharing immutable compiler-owned libraries.
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::ExitCode;
 
 use flux_hir::{ProcMacro, ProcMacroKind, ProcMacroResolver};
 use flux_intern::Symbol;
@@ -18,6 +18,24 @@ struct Macro {
     descriptor: Vec<u8>,
 }
 
+/// Reports a failed job during unwinding too, so the scheduler can stop
+/// waiting before the thread scope propagates the worker's panic.
+struct JobCompletion {
+    sender: std::sync::mpsc::Sender<(usize, Result<bool, String>)>,
+    index: usize,
+    result: Option<Result<bool, String>>,
+}
+
+impl Drop for JobCompletion {
+    fn drop(&mut self) {
+        let result = self
+            .result
+            .take()
+            .unwrap_or_else(|| Err("compiler unit panicked".into()));
+        let _ = self.sender.send((self.index, result));
+    }
+}
+
 #[derive(Deserialize, Serialize)]
 struct Request {
     file: PathBuf,
@@ -32,6 +50,7 @@ struct Request {
     output: PathBuf,
     library: bool,
     optimize: bool,
+    fast_build: bool,
     debug_assertions: bool,
     timings: bool,
 }
@@ -87,6 +106,7 @@ impl Request {
             output: PathBuf::new(),
             library: true,
             optimize: options.optimize,
+            fast_build: options.fast_build,
             debug_assertions: options.debug_assertions(),
             timings: options.timings,
         })
@@ -144,6 +164,7 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
     let source = request.source()?;
     let options = BuildOptions {
         optimize: request.optimize,
+        fast_build: request.fast_build,
         debug_assertions: Some(request.debug_assertions),
         timings: request.timings,
     };
@@ -230,7 +251,6 @@ pub(super) fn run(
         .map_err(|e| e.to_string())?;
         requests.insert(index, (path, request));
     }
-    let compiler = std::env::current_exe().map_err(|e| e.to_string())?;
     let (finished, completions) = std::sync::mpsc::channel();
     let mut started = BTreeSet::new();
     let mut done = BTreeSet::new();
@@ -253,17 +273,24 @@ pub(super) fn run(
                     }
                     started.insert(index);
                     running += 1;
-                    let compiler = &compiler;
                     let finished = finished.clone();
-                    scope.spawn(move || {
-                        let result = Command::new(compiler)
-                            .arg("build-unit")
-                            .arg(path)
-                            .env_remove("FLUX_COMPILER_PROBE")
-                            .status()
-                            .map_err(|e| format!("cannot start compiler unit: {e}"));
-                        let _ = finished.send((index, result));
-                    });
+                    // Compilation used to run on a process's main thread.
+                    // Recursive parsing and evaluation need more than the
+                    // default 2 MiB Rust worker stack.
+                    std::thread::Builder::new()
+                        .stack_size(8 * 1024 * 1024)
+                        .spawn_scoped(scope, move || {
+                            let mut completion = JobCompletion {
+                                sender: finished,
+                                index,
+                                result: None,
+                            };
+                            // Each job owns its source/dependency state and creates
+                            // solver scopes on this thread. Only immutable builtins
+                            // and the synchronized interners are shared across jobs.
+                            completion.result = Some(worker(path));
+                        })
+                        .map_err(|error| format!("cannot start compiler unit: {error}"))?;
                 }
             }
             if running == 0 {
@@ -272,14 +299,11 @@ pub(super) fn run(
             let (index, result) = completions.recv().map_err(|e| e.to_string())?;
             running -= 1;
             match result {
-                Ok(status) if status.success() => {
+                Ok(true) => {
                     done.insert(index);
                 }
-                Ok(status) => {
-                    failure.get_or_insert(format!(
-                        "compilation of {} failed: {status}",
-                        sources[index].name
-                    ));
+                Ok(false) => {
+                    failure.get_or_insert(format!("compilation of {} failed", sources[index].name));
                 }
                 Err(error) => {
                     failure.get_or_insert(error);
@@ -302,4 +326,40 @@ pub(super) fn run(
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn panicking_job_notifies_scheduler() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _completion = JobCompletion {
+                sender,
+                index: 7,
+                result: None,
+            };
+            panic!("test compiler job panic");
+        });
+        let (index, result) = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(index, 7);
+        assert_eq!(result.unwrap_err(), "compiler unit panicked");
+        assert!(worker.join().is_err());
+    }
+
+    #[test]
+    fn completed_job_reports_its_result_once() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        drop(JobCompletion {
+            sender,
+            index: 3,
+            result: Some(Ok(true)),
+        });
+        assert_eq!(receiver.recv().unwrap(), (3, Ok(true)));
+        assert!(receiver.recv().is_err());
+    }
 }

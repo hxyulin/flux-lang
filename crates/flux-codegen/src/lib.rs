@@ -38,7 +38,24 @@ pub fn compile_object(
     target: Target,
     tier: OptimizationTier,
 ) -> Result<Vec<u8>, Error> {
-    compile_object_inner(module, target, tier, None)
+    compile_object_inner(module, target, tier, None, None)
+}
+
+/// Uses the short IR pipeline with full native instruction selection.
+/// This is the compiler's opt-in fast-build policy; the ordinary tier-based
+/// entry point retains its existing selection policy.
+///
+/// # Errors
+/// Returns a staged backend error for invalid IR or failed optimization,
+/// native code generation or assembly.
+pub fn compile_fast_object(module: &mut keel_ir::Module, target: Target) -> Result<Vec<u8>, Error> {
+    compile_object_inner(
+        module,
+        target,
+        OptimizationTier::Fast,
+        Some(keel_codegen::SelectionTier::Full),
+        None,
+    )
 }
 
 /// Completed or failed backend scopes. `None` means the scope was not reached.
@@ -63,7 +80,24 @@ pub fn compile_object_with_timings(
     tier: OptimizationTier,
 ) -> (Result<Vec<u8>, Error>, ObjectTimings) {
     let mut timings = ObjectTimings::default();
-    let result = compile_object_inner(module, target, tier, Some(&mut timings));
+    let result = compile_object_inner(module, target, tier, None, Some(&mut timings));
+    (result, timings)
+}
+
+/// The timed equivalent of [`compile_fast_object`].
+/// The result contains the same errors; timings retain completed scopes on failure.
+pub fn compile_fast_object_with_timings(
+    module: &mut keel_ir::Module,
+    target: Target,
+) -> (Result<Vec<u8>, Error>, ObjectTimings) {
+    let mut timings = ObjectTimings::default();
+    let result = compile_object_inner(
+        module,
+        target,
+        OptimizationTier::Fast,
+        Some(keel_codegen::SelectionTier::Full),
+        Some(&mut timings),
+    );
     (result, timings)
 }
 
@@ -79,6 +113,7 @@ fn compile_object_inner(
     module: &mut keel_ir::Module,
     target: Target,
     tier: OptimizationTier,
+    selection: Option<keel_codegen::SelectionTier>,
     mut timings: Option<&mut ObjectTimings>,
 ) -> Result<Vec<u8>, Error> {
     if let Err(errors) = measured(timings.as_deref_mut().map(|t| &mut t.verify), || {
@@ -96,11 +131,11 @@ fn compile_object_inner(
     measured(timings.as_deref_mut().map(|t| &mut t.optimize), || {
         profile::optimize(module, tier)
     })?;
-    let selector = if tier == OptimizationTier::Full {
+    let selector = selection.unwrap_or(if tier == OptimizationTier::Full {
         keel_codegen::SelectionTier::Full
     } else {
         keel_codegen::SelectionTier::Baseline
-    };
+    });
     let pipeline = keel_codegen::CodegenPipeline {
         selector: &selector,
         allocator: &keel_codegen::regalloc::AllocationTier::Full,

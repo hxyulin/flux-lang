@@ -204,7 +204,7 @@ pub(crate) fn compile(
                         required_functions: &roots.functions,
                         required_instances: &roots.instances,
                         builtin_object: crate::builtins::active()
-                            .is_some_and(|s| s.use_object(options.optimize)),
+                            .is_some_and(|s| s.use_object(options.optimized())),
                     },
                 )
             })
@@ -214,14 +214,14 @@ pub(crate) fn compile(
             })?;
         let mut module = lowered.module;
         object_requirements = lowered.required_instances;
-        let tier = if options.optimize {
-            flux_codegen::OptimizationTier::Full
-        } else {
-            flux_codegen::OptimizationTier::None
-        };
+        let tier = options.tier();
         let object = if options.timings {
             let (result, backend) = timings.time("backend (inclusive)", || {
-                flux_codegen::compile_object_with_timings(&mut module, target, tier)
+                if options.fast_build {
+                    flux_codegen::compile_fast_object_with_timings(&mut module, target)
+                } else {
+                    flux_codegen::compile_object_with_timings(&mut module, target, tier)
+                }
             });
             for (name, duration) in [
                 ("  backend verify", backend.verify),
@@ -234,6 +234,8 @@ pub(crate) fn compile(
                 }
             }
             result
+        } else if options.fast_build {
+            flux_codegen::compile_fast_object(&mut module, target)
         } else {
             flux_codegen::compile_object(&mut module, target, tier)
         };
@@ -245,7 +247,8 @@ pub(crate) fn compile(
             name: &input.name,
             bytes: &object,
         }];
-        if let Some(suite) = crate::builtins::active().filter(|s| s.use_object(options.optimize)) {
+        if let Some(suite) = crate::builtins::active().filter(|s| s.use_object(options.optimized()))
+        {
             inputs.push(flux_codegen::ObjectInput {
                 name: "flux-builtins",
                 bytes: suite
@@ -362,6 +365,7 @@ fn configuration(
     }
 
     encode(options.optimize.encode(&mut e))?;
+    encode(options.fast_build.encode(&mut e))?;
     encode(options.debug_assertions().encode(&mut e))?;
     encode(
         match kind {

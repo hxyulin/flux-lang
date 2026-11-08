@@ -1594,12 +1594,15 @@ Unknown names are rejected.
 Native Linux comparisons cover both optimization modes and match rustc.
 
 On x86-64, `core::arch::asm!` supports Intel syntax with `in(reg)` and
-`inout(reg)` operands. Registers accept 16/32/64-bit integers, floats, thin pointers
+`inout(reg)` operands, plus `lateout` outputs and split `inout`/`inlateout`
+operands with `=>` when the input and output have the same type. Registers accept 16/32/64-bit integers, floats, thin pointers
 and function pointers. Modifiers `l`, `x`, `e` and `r` select low-byte,
 halfword, word and doubleword names. `nomem`, `readonly`, `preserves_flags`,
 `nostack` and `pure` retain the existing bounded assembly interface.
-Fixed registers, separate outputs, SIMD register classes and the `att_syntax`
-option remain unsupported. The backend translates Rust register modifiers to
+`reg_byte` accepts 8-bit integers. `xmm_reg` accepts 32/64-bit integers,
+floats and the embedded 128-bit x86 SIMD types; its optional `x` modifier
+selects the XMM name. Fixed registers, discarded outputs, wider SIMD register
+classes and the `att_syntax` option remain unsupported. The backend translates Rust register modifiers to
 Keel's GNU operands and switches syntax for the template's Intel operand order.
 
 On AArch64, `core::arch::aarch64` (also reexported as `std::arch::aarch64`)

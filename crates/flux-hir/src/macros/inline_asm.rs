@@ -12,6 +12,7 @@ pub(crate) struct ParsedAsm {
     pub registers: Box<[AsmRegister]>,
     pub options: AsmOptions,
     pub expressions: Vec<Vec<Tok>>,
+    pub outputs: Vec<(u32, Vec<Tok>)>,
 }
 
 pub(crate) fn parse_call(call: SyntaxNode<'_>) -> Result<ParsedAsm, Error> {
@@ -36,6 +37,7 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
     let mut text = String::new();
     let mut names = Vec::new();
     let mut expressions = Vec::new();
+    let mut outputs = Vec::new();
     let mut registers = Vec::new();
     let mut options = AsmOptions::default();
     let mut seen_options = Vec::new();
@@ -144,6 +146,8 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                 let register = match tokens.get(at).map(|t| t.text.as_str()) {
                     Some("reg") => AsmRegister::Reg,
                     Some("vreg") => AsmRegister::Vreg,
+                    Some("reg_byte") => AsmRegister::RegByte,
+                    Some("xmm_reg") => AsmRegister::XmmReg,
                     _ => {
                         return Err((range, "assembly register class is not supported yet".into()));
                     }
@@ -154,6 +158,10 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                 }
                 at += 1;
                 match (kind, register) {
+                    ("in", AsmRegister::RegByte) => AsmRegister::InputRegByte,
+                    ("lateout", AsmRegister::RegByte) => AsmRegister::OutputRegByte,
+                    ("in", AsmRegister::XmmReg) => AsmRegister::InputXmmReg,
+                    ("lateout", AsmRegister::XmmReg) => AsmRegister::OutputXmmReg,
                     ("in", AsmRegister::Reg) => AsmRegister::InputReg,
                     ("in", AsmRegister::Vreg) => AsmRegister::InputVreg,
                     ("lateout", AsmRegister::Reg) => AsmRegister::OutputReg,
@@ -181,10 +189,20 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
             names.push(name);
             at += n;
             if tokens.get(at).is_some_and(|t| t.kind == T![=]) {
-                return Err((
-                    tokens[at].range(),
-                    "separate assembly output places are not supported yet".into(),
-                ));
+                if !matches!(kind, "inout" | "inlateout")
+                    || tokens.get(at + 1).is_none_or(|t| t.kind != T![>])
+                {
+                    return Err((
+                        tokens[at].range(),
+                        "expected `=>` after an inout operand".into(),
+                    ));
+                }
+                at += 2;
+                let n = parser::fragment_len(&input, at, parser::Fragment::Expr)
+                    .filter(|&n| n > 0)
+                    .ok_or((range, "expected an assembly output place".into()))?;
+                outputs.push(((registers.len() - 1) as u32, tokens[at..at + n].to_vec()));
+                at += n;
             }
         }
         if at < tokens.len() {
@@ -215,6 +233,7 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
         registers: registers.into(),
         options,
         expressions,
+        outputs,
     })
 }
 

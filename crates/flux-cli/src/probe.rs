@@ -87,6 +87,7 @@ fn compile(probe: Probe) -> Result<(), String> {
     let api = runtime.join("proc_macro.flib");
     let options = crate::BuildOptions {
         optimize: false,
+        fast_build: false,
         timings: false,
         debug_assertions: None,
     };

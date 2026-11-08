@@ -49,6 +49,28 @@ Evaluation, monomorphization and codegen implement their own stages using that
 identity. Backend failures expose `flux_codegen::Error::stage()` and standard
 error sources while retaining existing diagnostic text.
 
+## Build reuse
+
+The native package driver schedules dependency-ordered crate jobs under one
+worker budget. Jobs share immutable built-in items, signatures and MIR, and
+the synchronized symbol and type interners. Each job owns its source and
+dependency state, forks runtime type identities and creates solver caches on
+its worker thread. Worker stacks reserve 8 MiB for recursive parsing and
+constant evaluation.
+
+Freshness records reuse complete crate artifacts and executables. A stale
+crate repeats its local semantic checks and code generation; per-body results
+are not persisted. Definition keys used by artifacts include source revision
+identity and must not be treated as edit-stable incremental cache keys.
+
+The Cargo compatibility path (`--cargo`) prepares host tools with Cargo, then
+compiles the source graph together. It does not use the native per-crate reuse
+scheduler. Clean-build and edit-build measurements must identify the path.
+
+`--fast-build` selects Keel's short optimizer pipeline with full native
+instruction selection. `-O` retains the full optimizer pipeline. Fast mode
+participates in artifact freshness and has its own native output directory.
+
 ## Parsing
 
 Parsing has three stages. Each is a plain function from owned data to

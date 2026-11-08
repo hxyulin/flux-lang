@@ -124,6 +124,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
             output: &executable,
             options: crate::BuildOptions {
                 optimize: false,
+                fast_build: false,
                 timings: false,
                 debug_assertions: None,
             },

@@ -1288,10 +1288,18 @@ impl Ctx<'_> {
         match &body.exprs[expr] {
             Expr::Pin(inner) => self.consume(*inner, uses),
             Expr::InlineAsm(asm) => {
+                for (_, output) in &asm.outputs {
+                    self.borrow(*output, None, uses);
+                }
                 for (&operand, register) in
                     body.lists[asm.operands].iter().zip(asm.registers.iter())
                 {
-                    if register.input_only() {
+                    if register.input_only()
+                        || asm
+                            .outputs
+                            .iter()
+                            .any(|(index, _)| body.lists[asm.operands][*index as usize] == operand)
+                    {
                         self.consume(operand, uses);
                     } else {
                         self.borrow(operand, None, uses);
@@ -1904,7 +1912,10 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut FxHashSet<Bindin
             Expr::Tuple(list) | Expr::Array(list) => {
                 stack.extend(body.lists[*list].iter().copied())
             }
-            Expr::InlineAsm(asm) => stack.extend(body.lists[asm.operands].iter().copied()),
+            Expr::InlineAsm(asm) => {
+                stack.extend(body.lists[asm.operands].iter().copied());
+                stack.extend(asm.outputs.iter().map(|(_, expr)| *expr));
+            }
             Expr::Pin(inner) => stack.push(*inner),
             Expr::Repeat { value, .. } => stack.push(*value),
             Expr::Index { base, index } => {

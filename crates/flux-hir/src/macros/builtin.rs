@@ -240,7 +240,11 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
         Builtin::Asm => {
             let asm = super::inline_asm::parse(cx.toks, cx.call)?;
             cx.quote("(", &mut out);
-            for expr in asm.expressions {
+            for expr in asm
+                .expressions
+                .into_iter()
+                .chain(asm.outputs.into_iter().map(|(_, expr)| expr))
+            {
                 out.extend(expr);
                 cx.quote(",", &mut out);
             }

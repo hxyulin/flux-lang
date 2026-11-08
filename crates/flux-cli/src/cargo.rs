@@ -30,6 +30,9 @@ pub(crate) enum Command {
         options: Options,
         #[arg(short = 'r', long = "release", short_alias = 'O')]
         optimize: bool,
+        /// Use a short optimization pipeline for faster builds.
+        #[arg(long, conflicts_with = "optimize")]
+        fast_build: bool,
         /// Print host preparation and compilation timings.
         #[arg(long)]
         timings: bool,
@@ -213,9 +216,13 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     if !options.cargo {
         let build = match command {
             Command::Build {
-                optimize, timings, ..
+                optimize,
+                fast_build,
+                timings,
+                ..
             } => Some(crate::BuildOptions {
                 optimize: *optimize,
+                fast_build: *fast_build,
                 timings: *timings,
                 debug_assertions: None,
             }),
@@ -312,7 +319,10 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         path.display()
     );
     let Command::Build {
-        optimize, timings, ..
+        optimize,
+        fast_build,
+        timings,
+        ..
     } = command
     else {
         return Ok(ExitCode::SUCCESS);
@@ -435,12 +445,20 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     let executable = metadata
         .target_directory
         .join("flux")
-        .join(if *optimize { "release" } else { "debug" })
+        .join(if *fast_build {
+            "fast"
+        } else if *optimize {
+            "release"
+        } else {
+            "debug"
+        })
         .join(&target.name);
     std::fs::create_dir_all(executable.parent().expect("target output has a parent"))
         .map_err(|e| format!("cannot create executable directory: {e}"))?;
-    let debug_assertions =
-        profile_debug_assertions(&metadata.workspace_root.join("Cargo.toml"), *optimize)?;
+    let debug_assertions = profile_debug_assertions(
+        &metadata.workspace_root.join("Cargo.toml"),
+        *optimize || *fast_build,
+    )?;
     drop(preparation);
     let ok = build::compile(CompileRequest {
         file: &main.file,
@@ -449,6 +467,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         sources: &sources,
         options: crate::BuildOptions {
             optimize: *optimize,
+            fast_build: *fast_build,
             timings: *timings,
             debug_assertions: Some(debug_assertions),
         },

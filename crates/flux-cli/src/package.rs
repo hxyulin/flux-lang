@@ -35,6 +35,9 @@ pub(crate) struct Options {
     /// Enable Flux/Keel backend optimization (not a Cargo release profile).
     #[arg(short = 'O', long)]
     optimize: bool,
+    /// Use a short optimization pipeline for faster builds.
+    #[arg(long, conflicts_with = "optimize")]
+    fast_build: bool,
     /// Print scoped compilation timings (excludes execution of the program).
     #[arg(long)]
     timings: bool,
@@ -77,10 +80,11 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
             .map_err(|e| format!("cannot create output directory: {e}"))?;
         let build_options = BuildOptions {
             optimize: options.optimize,
+            fast_build: options.fast_build,
             timings: options.timings,
             debug_assertions: Some(crate::cargo::profile_debug_assertions(
                 &options.manifest_path,
-                options.optimize,
+                options.optimize || options.fast_build,
             )?),
         };
         let compiled = compile_libraries(&plan, build_options)?;

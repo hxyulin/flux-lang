@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use flux_codegen::{OptimizationTier, Target};
+use flux_codegen::Target;
 use flux_hir::SourceDb;
 use flux_intern::Symbol;
 
@@ -271,7 +271,7 @@ fn compile_inner(
         if errors.is_empty() {
             let target = Target::host()
                 .ok_or("flux can only compile for arm64 macOS and x86-64 Linux hosts")?;
-            let builtin_object = suite.is_some_and(|s| s.use_object(options.optimize));
+            let builtin_object = suite.is_some_and(|s| s.use_object(options.optimized()));
             let hashes = if builtin_object {
                 crate::builtins::graph_hashes(&hir.items)?
             } else {
@@ -317,14 +317,14 @@ fn compile_inner(
                     return Ok(false);
                 }
             };
-            let tier = if options.optimize {
-                OptimizationTier::Full
-            } else {
-                OptimizationTier::None
-            };
+            let tier = options.tier();
             let object = if options.timings {
                 let (result, backend) = timings.time("backend (inclusive)", || {
-                    flux_codegen::compile_object_with_timings(&mut module, target, tier)
+                    if options.fast_build {
+                        flux_codegen::compile_fast_object_with_timings(&mut module, target)
+                    } else {
+                        flux_codegen::compile_object_with_timings(&mut module, target, tier)
+                    }
                 });
                 for (name, duration) in [
                     ("  backend verify", backend.verify),
@@ -338,8 +338,12 @@ fn compile_inner(
                 }
                 result.map_err(|error| error.to_string())?
             } else {
-                flux_codegen::compile_object(&mut module, target, tier)
-                    .map_err(|error| error.to_string())?
+                let result = if options.fast_build {
+                    flux_codegen::compile_fast_object(&mut module, target)
+                } else {
+                    flux_codegen::compile_object(&mut module, target, tier)
+                };
+                result.map_err(|error| error.to_string())?
             };
             for library in &hir.items.native_libraries {
                 native.add_library(*library);

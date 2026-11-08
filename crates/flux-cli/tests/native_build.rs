@@ -43,6 +43,11 @@ impl Fixture {
         std::fs::write(path, text).unwrap();
     }
     fn build(&self, args: &[&str], value: &str) -> Output {
+        let mut command = self.command(args, value);
+        support::process::run(&mut command, self.path(), "build", Duration::from_secs(120))
+            .completed()
+    }
+    fn command(&self, args: &[&str], value: &str) -> Command {
         let mut paths = vec![self.path().join("tools")];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
@@ -56,8 +61,7 @@ impl Fixture {
             .env("CARGO_HOME", self.path().join("cache"))
             .env("COMPILER_TRAP", self.path().join("compiler-was-called"))
             .env("BUILD_VALUE", value);
-        support::process::run(&mut command, self.path(), "build", Duration::from_secs(120))
-            .completed()
+        command
     }
     fn success(&self, args: &[&str], value: &str) -> String {
         let output = self.build(args, value);
@@ -72,6 +76,55 @@ impl Fixture {
         support::oracle::success(&output, "native executable");
         assert_eq!(output.stdout, expected);
     }
+}
+
+#[test]
+fn concurrent_crates_share_builtins_and_keep_type_identities_separate() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[workspace]\nmembers=['app','left','right']\ndefault-members=['app']\nresolver='3'\n",
+    );
+    f.write("app/Cargo.toml", "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nleft={path='../left'}\nright={path='../right'}\n");
+    f.write("Cargo.lock", "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['left','right']\n[[package]]\nname='left'\nversion='0.1.0'\n[[package]]\nname='right'\nversion='0.1.0'\n");
+    for (name, ty, value) in [("left", "u32", 11), ("right", "u64", 13)] {
+        f.write(
+            &format!("{name}/Cargo.toml"),
+            &format!("[package]\nname='{name}'\nversion='0.1.0'\nedition='2024'\n"),
+        );
+        f.write(&format!("{name}/src/lib.rs"), &format!("pub struct Item(pub {ty}); pub fn identity()->core::any::TypeId{{core::any::TypeId::of::<Item>()}} pub fn value()->{ty}{{{value}}}"));
+    }
+    f.write("app/src/main.rs", "fn main(){assert_ne!(left::identity(),right::identity());println!(\"{} {} {}\",cfg!(debug_assertions),left::value(),right::value());}");
+    let mut command = f.command(&["-j", "4"], "unused");
+    command.env("FLUX_BUILTINS_TRACE", "1");
+    let output = support::process::run(
+        &mut command,
+        f.path(),
+        "shared-builtins",
+        Duration::from_secs(120),
+    )
+    .completed();
+    support::oracle::success(&output, "shared builtins build");
+    let trace = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(
+        trace.matches("flux builtins: suite ").count()
+            + trace.matches("flux builtins: source (").count(),
+        1,
+        "{trace}"
+    );
+    f.run(b"true 11 13\n");
+
+    let first = f.success(&["-j", "4", "--fast-build"], "unused");
+    assert!(first.contains("Compiling app"), "{first}");
+    let fresh = f.success(&["-j", "4", "--fast-build"], "unused");
+    assert!(fresh.contains("Fresh app"), "{fresh}");
+    let fast = Command::new(f.path().join("target/flux/fast/app"))
+        .output()
+        .unwrap();
+    support::oracle::success(&fast, "fast build executable");
+    assert_eq!(fast.stdout, b"false 11 13\n");
+    let conflict = f.build(&["-O", "--fast-build"], "unused");
+    assert!(!conflict.status.success());
 }
 
 #[test]
@@ -277,4 +330,51 @@ fn arena_library_export_dispatch_terminates() {
     .completed();
     support::oracle::success(&output, "generic library export dispatch");
     assert!(f.path().join("arena.flib").is_file());
+}
+
+#[cfg(target_arch = "x86_64")]
+#[test]
+fn x86_asm_survives_library_artifact_reuse() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[workspace]\nmembers=['app','helper']\ndefault-members=['app']\nresolver='3'\n",
+    );
+    f.write("app/Cargo.toml", "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nhelper={path='../helper'}\n");
+    f.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    f.write("Cargo.lock", "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['helper']\n[[package]]\nname='helper'\nversion='0.1.0'\n");
+    f.write("helper/src/lib.rs", r#"
+use core::arch::{asm, x86_64::__m128i};
+pub fn byte(input:u8)->u8 {
+    let output:u8;
+    // SAFETY: only the declared byte register is modified.
+    unsafe { asm!("xor {0}, 0xff", inout(reg_byte) input => output, options(pure,nomem,nostack)); }
+    output
+}
+pub fn mask(a:__m128i,b:__m128i)->u32 {
+    let equal:__m128i;
+    let mask:u32;
+    // SAFETY: SSE2 is baseline; the instructions use only declared registers.
+    unsafe {
+        asm!("pcmpeqb {a}, {b}", a=inlateout(xmm_reg)a=>equal, b=in(xmm_reg)b, options(pure,nomem,nostack,preserves_flags));
+        asm!("pmovmskb {mask:e}, {a}", mask=lateout(reg)mask, a=in(xmm_reg)equal, options(pure,nomem,nostack,preserves_flags));
+    }
+    mask
+}
+"#);
+    let source = "fn main(){let a=unsafe{core::arch::x86_64::_mm_set1_epi8(1)};println!(\"{} {}\",helper::byte(0xa5),helper::mask(a,a));}";
+    f.write("app/src/main.rs", source);
+    assert!(f.success(&[], "unused").contains("Compiling helper"));
+    f.run(b"90 65535\n");
+    f.write(
+        "app/src/main.rs",
+        &format!("{source}\n// rebuild only the consumer\n"),
+    );
+    let rebuilt = f.success(&[], "unused");
+    assert!(rebuilt.contains("Fresh helper"), "{rebuilt}");
+    assert!(rebuilt.contains("Compiling app"), "{rebuilt}");
+    f.run(b"90 65535\n");
 }

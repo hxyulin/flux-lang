@@ -99,6 +99,9 @@ pub(crate) struct BuildOptions {
     /// Optimize with keel's full pipeline.
     #[arg(short = 'O')]
     pub(crate) optimize: bool,
+    /// Use a short optimization pipeline for faster builds.
+    #[arg(long, conflicts_with = "optimize")]
+    pub(crate) fast_build: bool,
     /// Print scoped compilation timings (excludes execution of the program).
     #[arg(long)]
     pub(crate) timings: bool,
@@ -116,7 +119,31 @@ pub(crate) struct BuildOptions {
 impl BuildOptions {
     /// Whether `cfg(debug_assertions)` holds for the compiled crates.
     pub(crate) fn debug_assertions(&self) -> bool {
-        self.debug_assertions.unwrap_or(!self.optimize)
+        self.debug_assertions.unwrap_or(!self.optimized())
+    }
+
+    pub(crate) fn optimized(&self) -> bool {
+        self.optimize || self.fast_build
+    }
+
+    pub(crate) fn tier(&self) -> flux_codegen::OptimizationTier {
+        if self.fast_build {
+            flux_codegen::OptimizationTier::Fast
+        } else if self.optimize {
+            flux_codegen::OptimizationTier::Full
+        } else {
+            flux_codegen::OptimizationTier::None
+        }
+    }
+
+    pub(crate) fn profile_name(&self) -> &'static str {
+        if self.fast_build {
+            "fast"
+        } else if self.optimize {
+            "release"
+        } else {
+            "debug"
+        }
     }
 }
 

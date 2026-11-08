@@ -120,6 +120,7 @@ target/debug/fluxc build-builtins   # prebuild the built-in library (optional)
 ```sh
 target/debug/fluxc run tests/run/fib.rs        # compile and run a program
 target/debug/fluxc build tests/run/fib.rs -O   # write an optimized executable
+target/debug/fluxc build tests/run/fib.rs --fast-build # shorter optimization pipeline
 target/debug/fluxc mir tests/run/fib.rs        # print its MIR
 target/debug/fluxc check examples/*.rs         # report syntax errors
 target/debug/flux package build --manifest-path path/to/Cargo.toml
@@ -127,6 +128,11 @@ target/debug/flux package build --manifest-path path/to/Cargo.toml
 
 Without `build-builtins`, each run compiles the built-in library from source
 first, which adds about half a second.
+
+`--fast-build` uses fewer optimizer passes and keeps native instruction selection
+enabled. Generated programs can run slower than with `-O`. The options are mutually
+exclusive. Native package builds put fast-mode outputs in `target/flux/fast`;
+debug assertions follow the release profile unless explicitly overridden.
 
 </details>
 

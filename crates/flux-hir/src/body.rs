@@ -226,15 +226,27 @@ pub enum AsmRegister {
     OutputReg,
     OutputVreg,
     Const,
+    RegByte,
+    InputRegByte,
+    OutputRegByte,
+    XmmReg,
+    InputXmmReg,
+    OutputXmmReg,
 }
 
 impl AsmRegister {
     pub const fn input_only(self) -> bool {
-        matches!(self, Self::InputReg | Self::InputVreg | Self::Const)
+        matches!(
+            self,
+            Self::InputReg | Self::InputVreg | Self::InputRegByte | Self::InputXmmReg | Self::Const
+        )
     }
 
     pub const fn output_only(self) -> bool {
-        matches!(self, Self::OutputReg | Self::OutputVreg)
+        matches!(
+            self,
+            Self::OutputReg | Self::OutputVreg | Self::OutputRegByte | Self::OutputXmmReg
+        )
     }
 
     pub const fn class(self) -> Self {
@@ -242,6 +254,8 @@ impl AsmRegister {
             Self::Reg | Self::InputReg | Self::OutputReg => Self::Reg,
             Self::Vreg | Self::InputVreg | Self::OutputVreg => Self::Vreg,
             Self::Const => Self::Const,
+            Self::RegByte | Self::InputRegByte | Self::OutputRegByte => Self::RegByte,
+            Self::XmmReg | Self::InputXmmReg | Self::OutputXmmReg => Self::XmmReg,
         }
     }
 }
@@ -267,6 +281,8 @@ pub struct InlineAsm {
     pub registers: Box<[AsmRegister]>,
     /// Inputs and inout places, evaluated once in source order.
     pub operands: SliceId<ExprId>,
+    /// Separate output places of split inout operands, indexed by operand.
+    pub outputs: Box<[(u32, ExprId)]>,
     pub options: AsmOptions,
 }
 

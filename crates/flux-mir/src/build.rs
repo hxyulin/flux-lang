@@ -3392,20 +3392,38 @@ impl Builder<'_> {
                 let mut places = Vec::new();
                 let mut inputs = Vec::new();
                 let mut tys = Vec::new();
-                for (&operand, register) in
-                    body.lists[asm.operands].iter().zip(asm.registers.iter())
+                for (index, (&operand, register)) in body.lists[asm.operands]
+                    .iter()
+                    .zip(asm.registers.iter())
+                    .enumerate()
                 {
                     if register.input_only() {
                         inputs.push(self.lower_operand(operand));
                         continue;
                     }
-                    let place = self.lower_place(operand);
+                    let output = asm
+                        .outputs
+                        .iter()
+                        .find(|(i, _)| *i as usize == index)
+                        .map(|(_, expr)| *expr);
+                    let separate_input = output.map(|_| {
+                        let input = self.lower_operand(operand);
+                        let snapshot = self.temp(self.own_ty(operand));
+                        // Output-place evaluation may change the input's source.
+                        self.assign(&snapshot.into(), Rvalue::Use(input), range);
+                        self.read(snapshot.into())
+                    });
+                    let place = self.lower_place(output.unwrap_or(operand));
                     let ty = self.place_ty(&place);
                     let snapshot = self.temp(ty);
                     let input = if register.output_only() {
                         self.asm_output_seed(ty, range)
                     } else {
-                        Operand::Copy(place.clone())
+                        if let Some(input) = separate_input {
+                            input
+                        } else {
+                            Operand::Copy(place.clone())
+                        }
                     };
                     self.assign(&snapshot.into(), Rvalue::Use(input), range);
                     places.push(place);

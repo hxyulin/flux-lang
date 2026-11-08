@@ -2509,13 +2509,21 @@ impl<'a> Ctx<'a> {
             }
         } else if let Some(asm) = asm {
             if let Some(ast::Expr::TupleExpr(tuple)) = expr {
-                let operands = self.lower_expr_list(tuple.fields());
+                let mut fields = tuple.fields();
+                let operands = self.lower_expr_list(fields.by_ref().take(asm.registers.len()));
+                let outputs = asm
+                    .outputs
+                    .iter()
+                    .zip(fields)
+                    .map(|((index, _), expr)| (*index, self.lower_expr(expr)))
+                    .collect();
                 self.alloc_expr(
                     Expr::InlineAsm(crate::InlineAsm {
                         template: asm.template,
                         registers: asm.registers,
                         options: asm.options,
                         operands,
+                        outputs,
                     }),
                     range,
                 )

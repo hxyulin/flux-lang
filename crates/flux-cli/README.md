@@ -190,8 +190,9 @@ selects rustc-built macro hosts; there is no automatic fallback. The `--cargo`
 adapter retains its rustc host default. Host and target units retain separate
 features and `OUT_DIR`s.
 
-Target crates compile in dependency order, with independent libraries running
-in separate compiler processes. `-j N` bounds concurrent compiler processes;
+Target crates compile in dependency order. Independent libraries run on scoped
+worker threads that share immutable builtins and keep per-crate state separate.
+`-j N` bounds concurrent crate compilations;
 the default is the available CPU count. Libraries become checked `.flib`
 artifacts under `target/flux/debug/deps/` or `target/flux/release/deps/`.
 Dependents load these artifacts instead of compiling the library's source again.

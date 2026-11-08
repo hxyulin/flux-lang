@@ -3692,7 +3692,7 @@ impl Lower<'_, '_, '_> {
                 let packed = Type::Vector(match self.ctx.layouts.of(ty).size {
                     8 => keel_ir::VectorType::I8x8,
                     16 => keel_ir::VectorType::I8x16,
-                    _ => unreachable!("validated AArch64 vector width"),
+                    _ => unreachable!("validated assembly vector width"),
                 });
                 value = self.b.ins().load_with_flags(
                     packed,
@@ -3706,7 +3706,7 @@ impl Lower<'_, '_, '_> {
                     Type::I64
                 };
                 value = self.b.ins().convert(ConvertOp::Bitcast, int, value);
-            } else if register.class() == AsmRegister::Vreg
+            } else if matches!(register.class(), AsmRegister::Vreg | AsmRegister::XmmReg)
                 && let Some(int) = ty.as_int()
             {
                 let float = if int.bits() <= 32 {
@@ -3721,7 +3721,7 @@ impl Lower<'_, '_, '_> {
                 value = self.b.ins().convert(ConvertOp::Bitcast, float, value);
             }
             arguments.push(value);
-            let class = if register.class() == AsmRegister::Reg {
+            let class = if matches!(register.class(), AsmRegister::Reg | AsmRegister::RegByte) {
                 "r"
             } else {
                 "w"
@@ -3734,7 +3734,9 @@ impl Lower<'_, '_, '_> {
                 input_constraints.push(types.len().to_string());
                 types.push(self.b.function().value_type(value));
                 transports.push((original, widened, vector.then_some(ty)));
-                constraints.push(format!("={class}"));
+                // Keep outputs distinct from unrelated inputs even when their
+                // incoming values are equal. This is conservative for late outputs.
+                constraints.push(format!("=&{class}"));
             }
         }
         constraints.extend(input_constraints);
@@ -3768,12 +3770,16 @@ impl Lower<'_, '_, '_> {
                     }
 
                     let modifier = if cfg!(target_arch = "x86_64") {
-                        match modifier {
-                            Some('l') => 'b',
-                            Some('x') => 'w',
-                            Some('e') => 'k',
-                            Some('r') | None => 'q',
-                            _ => unreachable!("validated x86 register modifier"),
+                        match registers[*index as usize].class() {
+                            AsmRegister::RegByte => 'b',
+                            AsmRegister::XmmReg => 'x',
+                            _ => match modifier {
+                                Some('l') => 'b',
+                                Some('x') => 'w',
+                                Some('e') => 'k',
+                                Some('r') | None => 'q',
+                                _ => unreachable!("validated x86 register modifier"),
+                            },
                         }
                     } else {
                         modifier.unwrap_or(match registers[*index as usize].class() {

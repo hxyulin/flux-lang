@@ -3151,7 +3151,19 @@ impl Ctx<'_> {
                 {
                     self.infer_expr(operand);
                     if !register.input_only() {
-                        self.check_place(id, operand, register.output_only());
+                        let output = asm
+                            .outputs
+                            .iter()
+                            .find(|(index, _)| body.lists[asm.operands][*index as usize] == operand)
+                            .map(|(_, expr)| *expr);
+                        if let Some(output) = output {
+                            self.infer_expr(output);
+                        }
+                        self.check_place(
+                            id,
+                            output.unwrap_or(operand),
+                            output.is_some() || register.output_only(),
+                        );
                     }
                 }
                 self.deferred.push(Deferred::InlineAsm { expr: id });
@@ -7867,6 +7879,14 @@ impl Ctx<'_> {
                         .zip(asm.registers.iter())
                     {
                         let ty = self.resolve(self.expr_types[operand], reported);
+                        if let Some((_, output)) = asm.outputs.iter().find(|(index, _)| {
+                            self.body.lists[asm.operands][*index as usize] == operand
+                        }) {
+                            let output_ty = self.resolve(self.expr_types[*output], reported);
+                            if ty != Ty::ERROR && output_ty != Ty::ERROR && ty != output_ty {
+                                self.error(self.range(*output), "different types for split assembly operands are not supported yet");
+                            }
+                        }
                         if ty != Ty::ERROR
                             && !crate::inline_asm::supports(self.items, self.sigs, ty, register)
                         {
@@ -7895,6 +7915,8 @@ impl Ctx<'_> {
                                 flux_hir::AsmRegister::Vreg => {
                                     matches!(modifier, 'v' | 'b' | 'h' | 's' | 'd' | 'q')
                                 }
+                                flux_hir::AsmRegister::RegByte => false,
+                                flux_hir::AsmRegister::XmmReg => modifier == 'x',
                                 flux_hir::AsmRegister::Const => false,
                                 _ => unreachable!(),
                             };

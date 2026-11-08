@@ -28,6 +28,7 @@ fn cached_unicode_ident_normalized_manifest_selects_2021_library() {
             bin: None,
             lib: false,
             optimize: false,
+            fast_build: false,
             timings: false,
             macro_host_compiler: MacroHostCompiler::Rustc,
         },

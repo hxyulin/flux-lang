@@ -62,7 +62,7 @@ pub(super) fn run(
     };
     // Build scripts and the target graph follow the Cargo profile: `release`
     // with `--release`, `dev` otherwise. An explicit setting overrides it.
-    let optimize = build.is_some_and(|b| b.optimize);
+    let optimize = build.is_some_and(|b| b.optimized());
     let debug_assertions = match build.and_then(|b| b.debug_assertions) {
         Some(enabled) => enabled,
         None => crate::cargo::profile_debug_assertions(
@@ -366,6 +366,7 @@ fn flux_unit(
         native,
         options: crate::BuildOptions {
             optimize: false,
+            fast_build: false,
             timings: false,
             debug_assertions: Some(debug_assertions),
         },
@@ -1180,7 +1181,7 @@ fn compile_root(
     let output = plan
         .workspace_root
         .join("target/flux")
-        .join(if options.optimize { "release" } else { "debug" })
+        .join(options.profile_name())
         .join(if library {
             format!("lib{}.flib", binary.target.name.replace('-', "_"))
         } else {

@@ -8,6 +8,11 @@ fn index(count: &mut usize) -> usize {
 
 fn main() {
     let source=19u64;
+    let split: u64;
+    // SAFETY: only the declared general-purpose register is changed.
+    unsafe { asm!("add {0}, {0}, #1", inout(reg) source => split, options(pure, nomem, nostack)); }
+    assert_eq!(split, 20);
+    assert_eq!(source, 19);
     let mut total=4u64;
     let mut float=2.0f64;
     let source_float=3.5f64;

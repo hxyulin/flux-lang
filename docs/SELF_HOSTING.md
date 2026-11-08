@@ -902,7 +902,7 @@ target/stage0/fluxc build-builtins
 target/stage0/flux build --offline -O -p flux-cli --bin fluxc --timings
 ```
 
-Stage 1 is written to `target/flux/fluxc`. With `-O`, the stage-1 build takes
+Stage 1 is written to `target/flux/release/fluxc`. With `-O`, the stage-1 build takes
 debug assertions from `[profile.release]`, which leaves them off, as Cargo
 does. Run the self-host source graphs and the compiler audit with the same
 stage-0 profile:

@@ -49,6 +49,37 @@ fn full_tier_uses_target_selection_for_offset_loads() {
 }
 
 #[test]
+fn fast_build_uses_full_selection_and_preserves_timed_output() {
+    let source = "func @probe(ptr) -> i64 {\nblock0(v0: ptr):\n v1 = iconst.i64 8\n v2 = ptradd v0, v1\n v3 = load.i64 v2\n return v3\n}\n";
+    let mut module = keel_ir::parse(source).unwrap();
+    let mut timed_module = module.clone();
+    let actual =
+        flux_codegen::compile_fast_object(&mut module, Target::Aarch64AppleDarwin).unwrap();
+    let selected = keel_codegen::compile_program_with_pipeline(
+        &module,
+        Target::Aarch64AppleDarwin,
+        &keel_codegen::CodegenPipeline {
+            selector: &keel_codegen::SelectionTier::Full,
+            allocator: &keel_codegen::regalloc::AllocationTier::Full,
+        },
+    )
+    .unwrap();
+    let selected = keel_asm::assemble_program(&selected, Default::default()).unwrap();
+    assert_eq!(actual, selected.to_macho().unwrap());
+    let (timed, parts) = flux_codegen::compile_fast_object_with_timings(
+        &mut timed_module,
+        Target::Aarch64AppleDarwin,
+    );
+    assert_eq!(actual, timed.unwrap());
+    assert!(
+        parts.verify.is_some()
+            && parts.optimize.is_some()
+            && parts.codegen.is_some()
+            && parts.assemble.is_some()
+    );
+}
+
+#[test]
 fn supported_object_formats_and_unimplemented_linux_target() {
     let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main() { println!(\"{}\", 42); }");
     assert!(hir.diagnostics.is_empty());
