@@ -20,16 +20,18 @@ mod linux;
 mod lower;
 mod native;
 mod profile;
+mod units;
 
 use std::path::{Path, PathBuf};
 
-pub use keel_ir::Target;
+pub use keel_ir::{Module, Target};
 pub use keel_opt::OptimizationTier;
 pub use lower::{
     Compilation, LoweredCrate, LoweringTimings, OutputKind, lower_crate,
-    lower_crate_with_requirements, lower_module, lower_with_timings,
+    lower_crate_with_requirements, lower_module, lower_partitioned_crate, lower_with_timings,
 };
 pub use native::{NativeLink, NativeLinkInputs};
+pub use units::split_fast_module;
 
 /// Verifies, optimizes and compiles `module` to an object file for
 /// `target`.

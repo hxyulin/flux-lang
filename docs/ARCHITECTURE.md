@@ -71,6 +71,27 @@ identity can reuse checked MIR/native results after current diagnostics pass.
 This is crate-level reuse; per-body results are not persisted. Definition keys
 include source revision identity and are not edit-stable query keys.
 
+`flux-ty-ir::query_identity` supplies separate edit-stable paths and reverse
+lookups for query references. Callers supply crate namespaces independent of
+source revisions and fingerprint query inputs separately. Impl headers identify
+method owners; ambiguous, generated and unsupported definitions decline reuse.
+These keys do not replace artifact or runtime type identities.
+
+The opt-in fast-build backend partitions reified Rust functions into fixed
+symbol-hash buckets for functions and shared data. Private read-only data follows
+its sole consuming unit through initializer references, reducing cache misses
+when literal contents change. A monotone worklist propagates consumer sets through
+cycles; shared, mutable and unreferenced data retain symbol-hash placement.
+Units carry only needed derived declarations, and canonical symbol order keeps
+cache keys independent of traversal order. Source symbol paths use query identities, with
+artifact fallbacks where identity is unsupported. Imported objects retain their
+existing symbol contracts. The binary borrows the graph's worker budget after
+its dependencies complete. Unit persistence hashes complete IR, including unused
+indirect signatures, and validates object bytes before reuse. Opaque assembly
+and debug context keep one module and decline this cache. Each unit retains only
+its latest cached object. Full optimization continues to use the existing
+whole-program backend.
+
 Compiled Flux build scripts and macro hosts have separate whole-graph freshness
 records, including generated-wrapper contents and original physical roots.
 Reusing their executable does not skip build-script execution or macro expansion.

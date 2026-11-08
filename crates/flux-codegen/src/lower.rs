@@ -52,6 +52,7 @@ use flux_mir::{
     ProjectionElem, Rvalue, StatementKind, TerminatorKind, UnOp,
 };
 use flux_ty::{FnSig, GenericArgs, IntTy, Mutability, Signatures, Ty, TyKind, TypedFile};
+use flux_ty_ir::query_identity;
 use flux_ty_ir::type_identity::DefinitionKeys;
 use keel_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use keel_ir::ConvertOp;
@@ -73,7 +74,7 @@ pub fn lower_module(
     typed: &TypedFile,
     mir: &FileMir,
 ) -> Result<Module, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, None, None).map(|lowered| lowered.module)
+    lower_inner(hir, typed, mir, None, None, SymbolIdentity::Artifact).map(|lowered| lowered.module)
 }
 
 /// Time spent in parts of lowering, for `--timings`. Each field sums its part
@@ -100,7 +101,15 @@ pub fn lower_with_timings(
     compilation: Option<Compilation<'_>>,
     timings: &mut LoweringTimings,
 ) -> Result<Module, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, compilation, Some(timings)).map(|lowered| lowered.module)
+    lower_inner(
+        hir,
+        typed,
+        mir,
+        compilation,
+        Some(timings),
+        SymbolIdentity::Artifact,
+    )
+    .map(|lowered| lowered.module)
 }
 
 /// Which crate an object defines. Dependencies supply their own non-generic code.
@@ -181,7 +190,66 @@ pub fn lower_crate_with_requirements(
     mir: &FileMir,
     compilation: Compilation<'_>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, Some(compilation), None)
+    lower_inner(
+        hir,
+        typed,
+        mir,
+        Some(compilation),
+        None,
+        SymbolIdentity::Artifact,
+    )
+}
+
+/// Lowers a fast-build program with edit-stable source symbols and the reified Rust ABI.
+///
+/// Source-owned definitions use query identities; imported and built-in symbols
+/// retain artifact identities. These source objects must not be mixed with source
+/// objects lowered through [`lower_crate`]. Unsupported query identities fall back
+/// to artifact identities, so some edits can still invalidate unrelated units.
+/// Runtime type IDs retain their existing artifact identity.
+///
+/// When no external object supplies definitions, generated instances have one
+/// owner in this program and need no weak ODR sections. Ordinary weak symbols
+/// retain their binding. Imported and built-in object contracts remain unchanged.
+///
+/// # Errors
+/// Returns the same diagnostics as [`lower_crate_with_requirements`].
+pub fn lower_partitioned_crate(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Compilation<'_>,
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    let mut lowered = lower_inner(
+        hir,
+        typed,
+        mir,
+        Some(compilation),
+        None,
+        SymbolIdentity::Query,
+    )?;
+    if matches!(compilation.kind, OutputKind::Executable)
+        && compilation.imported.is_empty()
+        && !compilation.builtin_object
+    {
+        for function in &mut lowered.module.functions {
+            if function.weak_odr {
+                function.weak_odr = false;
+                function.attrs.noninterposable = function.hidden && !function.attrs.weak;
+            }
+        }
+        for object in &mut lowered.module.data {
+            object.weak_odr = false;
+        }
+        lowered.module.sync_function_attrs();
+    }
+    Ok(lowered)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SymbolIdentity {
+    Artifact,
+    Query,
 }
 
 fn lower_inner(
@@ -190,6 +258,7 @@ fn lower_inner(
     mir: &FileMir,
     compilation: Option<Compilation<'_>>,
     mut timings: Option<&mut LoweringTimings>,
+    identity: SymbolIdentity,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
     let _shapes = shapes::scope(&typed.sigs);
     let _queries = flux_solve::remember_solver_queries(&hir.items, &typed.sigs);
@@ -332,6 +401,13 @@ fn lower_inner(
     let items = &hir.items;
     let identities = compilation.map_or(&[][..], |c| c.crate_hashes);
     let definitions = std::cell::RefCell::new(DefinitionKeys::new(items, identities));
+    let queries = (identity == SymbolIdentity::Query).then(|| {
+        QuerySymbols::new(
+            items,
+            compilation.expect("query symbols require object ownership"),
+        )
+    });
+    let mut query_functions = FxHashSet::default();
     let names: FxHashMap<FunctionId, String> = items
         .functions
         .iter()
@@ -378,11 +454,22 @@ fn lower_inner(
                 let identity;
                 if compilation.is_some() || id.index() >= items.core.functions as usize {
                     identity = if compilation.is_some() {
-                        definition_symbol(
-                            &mut definitions.borrow_mut(),
-                            flux_hir::flib::IdKind::Function,
-                            id.into_raw(),
-                        )
+                        if let Some(key) = queries.as_ref().and_then(|queries| {
+                            queries.definition(
+                                items,
+                                flux_hir::flib::IdKind::Function,
+                                id.into_raw(),
+                            )
+                        }) {
+                            query_functions.insert(id);
+                            content_symbol("query_definition", key)
+                        } else {
+                            definition_symbol(
+                                &mut definitions.borrow_mut(),
+                                flux_hir::flib::IdKind::Function,
+                                id.into_raw(),
+                            )
+                        }
                     } else {
                         format!("__flux_f{}", id.index())
                     };
@@ -397,6 +484,15 @@ fn lower_inner(
         names,
         separate: compilation.is_some(),
         definitions,
+        queries,
+        query_functions,
+        query_all_instances: identity == SymbolIdentity::Query
+            && compilation.is_some_and(|c| {
+                matches!(c.kind, OutputKind::Executable)
+                    && c.imported.is_empty()
+                    && !c.builtin_object
+            }),
+        query_type_keys: std::cell::RefCell::new(FxHashMap::default()),
         type_keys: std::cell::RefCell::new(FxHashMap::default()),
         instances: std::cell::RefCell::new(FxHashMap::default()),
     };
@@ -459,11 +555,17 @@ fn lower_inner(
             let identity;
             if compilation.is_some() || id.index() >= items.core.consts as usize {
                 identity = if compilation.is_some() {
-                    definition_symbol(
-                        &mut symbols.definitions.borrow_mut(),
-                        flux_hir::flib::IdKind::Const,
-                        id.into_raw(),
-                    )
+                    if let Some(key) = symbols.queries.as_ref().and_then(|queries| {
+                        queries.definition(items, flux_hir::flib::IdKind::Const, id.into_raw())
+                    }) {
+                        content_symbol("query_definition", key)
+                    } else {
+                        definition_symbol(
+                            &mut symbols.definitions.borrow_mut(),
+                            flux_hir::flib::IdKind::Const,
+                            id.into_raw(),
+                        )
+                    }
                 } else {
                     format!("__flux_s{}", id.index())
                 };
@@ -763,11 +865,102 @@ fn data_key(items: &[DataItem], align: u32) -> Vec<u8> {
     key
 }
 
+struct QuerySymbols {
+    definitions: query_identity::DefinitionKeys,
+    sources: FxHashSet<flux_hir::CrateId>,
+}
+
+impl QuerySymbols {
+    fn new(items: &flux_hir::ItemTree, compilation: Compilation<'_>) -> Self {
+        use flux_hir::flib::{Encode, Encoder};
+        let mut sources = FxHashSet::default();
+        let namespaces: Vec<_> = items
+            .crates
+            .iter()
+            .enumerate()
+            .filter_map(|(index, data)| {
+                let krate = flux_hir::CrateId(index as u32);
+                let source = data.root.index() >= items.core.modules as usize
+                    && !compilation.imported.contains(&krate)
+                    && match compilation.kind {
+                        OutputKind::Library(owner) => krate == owner,
+                        OutputKind::Executable => true,
+                        OutputKind::BuiltinSuite => false,
+                    };
+                let mut namespace = Encoder::new();
+                if source {
+                    "flux-unit-source-v1".encode(&mut namespace).ok()?;
+                    data.name.encode(&mut namespace).ok()?;
+                    let root = &items.modules[data.root];
+                    items
+                        .files
+                        .get(&root.file)?
+                        .path
+                        .encode(&mut namespace)
+                        .ok()?;
+                    format!("{:?}", data.edition).encode(&mut namespace).ok()?;
+                    sources.insert(krate);
+                } else {
+                    // Imported type references retain exact artifact ownership even
+                    // inside a source function's edit-stable instance identity.
+                    "flux-unit-artifact-reference-v1"
+                        .encode(&mut namespace)
+                        .ok()?;
+                    let (_, hash) = compilation
+                        .crate_hashes
+                        .iter()
+                        .find(|(id, _)| *id == krate)?;
+                    hash.as_slice().encode(&mut namespace).ok()?;
+                }
+                Some((krate, namespace.into_bytes()))
+            })
+            .collect();
+        let namespaces: Vec<_> = namespaces
+            .iter()
+            .map(|(id, key)| (*id, key.as_slice()))
+            .collect();
+        Self {
+            definitions: query_identity::DefinitionKeys::new(items, &namespaces),
+            sources,
+        }
+    }
+
+    fn definition(
+        &self,
+        items: &flux_hir::ItemTree,
+        kind: flux_hir::flib::IdKind,
+        raw: u32,
+    ) -> Option<&[u8]> {
+        let module = match kind {
+            flux_hir::flib::IdKind::Function if raw >= items.core.functions => {
+                items
+                    .functions
+                    .get(flux_arena::Idx::from_raw(raw))?
+                    .loc
+                    .module
+            }
+            flux_hir::flib::IdKind::Const if raw >= items.core.consts => {
+                items.consts.get(flux_arena::Idx::from_raw(raw))?.loc.module
+            }
+            _ => return None,
+        };
+        if self.sources.contains(&items.modules[module].krate) {
+            self.definitions.key(kind, raw)
+        } else {
+            None
+        }
+    }
+}
+
 struct Symbols<'a> {
     names: FxHashMap<FunctionId, String>,
     separate: bool,
     /// The keys of definitions, under the compilation's crate identities.
     definitions: std::cell::RefCell<DefinitionKeys<'a>>,
+    queries: Option<QuerySymbols>,
+    query_functions: FxHashSet<FunctionId>,
+    query_all_instances: bool,
+    query_type_keys: std::cell::RefCell<FxHashMap<Ty, Vec<u8>>>,
     type_keys: std::cell::RefCell<FxHashMap<Ty, Vec<u8>>>,
     /// The symbol of each instance named so far.
     instances: std::cell::RefCell<FxHashMap<Instance, String>>,
@@ -876,7 +1069,13 @@ fn instance_symbol_uncached(hir: &Hir, symbols: &Symbols<'_>, instance: Instance
     let mut feed = |bytes: &[u8]| key.extend_from_slice(bytes);
     feed(base.as_bytes());
     for &arg in instance.args {
-        encode_type(arg, symbols, &mut feed);
+        if symbols.query_all_instances || symbols.query_functions.contains(&instance.function) {
+            encode_query_type(arg, symbols, &mut feed);
+        } else {
+            // Imported and built-in instances must retain exactly the names
+            // expected by their separately compiled objects.
+            encode_type(arg, symbols, &mut feed);
+        }
     }
     use std::fmt::Write;
     let mut hash = String::new();
@@ -891,6 +1090,28 @@ fn encode_type(ty: Ty, symbols: &Symbols<'_>, feed: &mut impl FnMut(&[u8])) {
     let key = keys.entry(ty).or_insert_with(|| {
         (symbols.definitions.borrow_mut().stable_key(ty))
             .expect("code generation uses fully resolved types")
+    });
+    feed(key);
+}
+
+fn encode_query_type(ty: Ty, symbols: &Symbols<'_>, feed: &mut impl FnMut(&[u8])) {
+    let mut keys = symbols.query_type_keys.borrow_mut();
+    let key = keys.entry(ty).or_insert_with(|| {
+        symbols
+            .queries
+            .as_ref()
+            .and_then(|queries| queries.definitions.type_key(ty))
+            .unwrap_or_else(|| {
+                let artifact = symbols
+                    .definitions
+                    .borrow_mut()
+                    .stable_key(ty)
+                    .expect("code generation uses fully resolved types");
+                let mut key = b"flux-unit-artifact-type-fallback-v1".to_vec();
+                key.extend_from_slice(&(artifact.len() as u64).to_le_bytes());
+                key.extend_from_slice(&artifact);
+                key
+            })
     });
     feed(key);
 }
@@ -5549,4 +5770,265 @@ fn static_slice_metadata(sigs: &Signatures, pointer: Ty, stored: Ty) -> Option<u
         return len.as_usize();
     }
     None
+}
+
+#[cfg(test)]
+mod partition_identity_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn graph(source: &str) -> Hir {
+        let mut db = flux_hir::SourceDb::new();
+        let root = db.add("/partition-identity/lib.rs", source);
+        flux_hir::lower_sources(
+            &mut db,
+            &[flux_hir::SourceCrate {
+                root,
+                name: flux_intern::Symbol::intern("partition_test"),
+                dependencies: Vec::new(),
+            }],
+        )
+    }
+
+    fn lower(source: &str, revision: u8, identity: SymbolIdentity) -> Module {
+        lower_with_builtin_object(source, revision, identity, false)
+    }
+
+    fn lower_with_builtin_object(
+        source: &str,
+        revision: u8,
+        identity: SymbolIdentity,
+        builtin_object: bool,
+    ) -> Module {
+        let hir = graph(source);
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let typed = flux_mir::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = flux_mir::build_file(&hir, &typed);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        let own = hir.items.main_crate();
+        let hashes: Vec<_> = hir
+            .items
+            .crates
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let id = flux_hir::CrateId(index as u32);
+                (id, [if id == own { revision } else { 7 }; 32])
+            })
+            .collect();
+        typed.sigs.type_ids.set_crate_hashes(&hashes);
+        let (id, item) = hir
+            .items
+            .structs
+            .iter()
+            .find(|(_, item)| item.name.as_str() == "Own")
+            .unwrap();
+        let own_type = Ty::adt(id, item.name, &[]);
+        let runtime_id = typed.sigs.type_ids.of(&hir.items, own_type).unwrap();
+        let compilation = Compilation {
+            kind: OutputKind::Executable,
+            crate_hashes: &hashes,
+            imported: &[],
+            builtin_object,
+            required_functions: &[],
+            required_instances: &[],
+        };
+        let module = match identity {
+            SymbolIdentity::Artifact => {
+                lower_crate_with_requirements(&hir, &typed, &mir, compilation)
+                    .unwrap()
+                    .module
+            }
+            SymbolIdentity::Query => {
+                lower_partitioned_crate(&hir, &typed, &mir, compilation)
+                    .unwrap()
+                    .module
+            }
+        };
+        assert_eq!(
+            runtime_id,
+            typed.sigs.type_ids.of(&hir.items, own_type).unwrap(),
+            "backend naming must not change runtime type IDs"
+        );
+        keel_ir::verify_module(&module).unwrap();
+        module
+    }
+
+    const SOURCE: &str = "struct Own(u8); static NUMBER: u8 = 7; fn changed() -> u8 { 1 } fn untouched() -> u8 { 3 } fn identity<T>(x: T) -> T { x } fn main() { let value = identity(Own(NUMBER)); println!(\"{} {} {}\", changed(), untouched(), value.0); }";
+
+    #[test]
+    fn partitioned_symbols_survive_unrelated_edits_and_crate_revision_changes() {
+        let before = lower(SOURCE, 1, SymbolIdentity::Query);
+        let after = lower(
+            &SOURCE.replace("-> u8 { 1 }", "-> u8 { 2 }"),
+            2,
+            SymbolIdentity::Query,
+        );
+        let names = |module: &Module| {
+            module
+                .functions
+                .iter()
+                .filter(|f| f.name.contains("__flux_query_definition_"))
+                .map(|f| f.name.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        assert!(!names(&before).is_empty());
+        assert_eq!(
+            names(&before),
+            names(&after),
+            "body edits must not rename source-owned instances"
+        );
+        let all_names = |module: &Module| {
+            module
+                .functions
+                .iter()
+                .map(|f| f.name.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            all_names(&before),
+            all_names(&after),
+            "whole-graph generic wrappers must use edit-stable source type arguments too"
+        );
+        let data = |module: &Module| {
+            module
+                .data
+                .iter()
+                .filter(|d| d.name.contains("__flux_query_definition_"))
+                .map(|d| d.name.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        assert!(!data(&before).is_empty());
+        assert_eq!(
+            data(&before),
+            data(&after),
+            "body edits must not rename source statics"
+        );
+        let ordinary = lower(SOURCE, 1, SymbolIdentity::Artifact);
+        let ordinary_names: BTreeSet<_> = ordinary.functions.iter().map(|f| &f.name).collect();
+        assert!(
+            names(&before)
+                .iter()
+                .all(|name| !ordinary_names.contains(name)),
+            "query and artifact source names must occupy separate domains"
+        );
+    }
+
+    #[test]
+    fn partitioned_lowering_removes_whole_program_odr() {
+        let ordinary = lower(SOURCE, 1, SymbolIdentity::Artifact);
+        let partitioned = lower(SOURCE, 1, SymbolIdentity::Query);
+        assert!(
+            ordinary.functions.iter().any(|f| f.weak_odr),
+            "test must reach a generic instance"
+        );
+        assert!(
+            partitioned.functions.iter().all(|f| !f.weak_odr),
+            "whole-program instances have one partition owner"
+        );
+        assert!(partitioned.data.iter().all(|d| !d.weak_odr));
+    }
+
+    #[test]
+    fn external_builtin_object_names_and_odr_contracts_remain_unchanged() {
+        let ordinary = lower_with_builtin_object(SOURCE, 1, SymbolIdentity::Artifact, true);
+        let partitioned = lower_with_builtin_object(SOURCE, 1, SymbolIdentity::Query, true);
+        let builtins = |module: &Module| {
+            module
+                .functions
+                .iter()
+                .filter(|f| !f.name.contains("partition_test"))
+                .map(|f| f.name.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        assert!(!builtins(&ordinary).is_empty());
+        assert_eq!(
+            builtins(&ordinary),
+            builtins(&partitioned),
+            "external built-in object names must retain artifact identity"
+        );
+        assert!(
+            partitioned.functions.iter().any(|f| f.weak_odr),
+            "external object instances must retain ODR linkage"
+        );
+    }
+
+    #[test]
+    fn imported_object_symbols_keep_artifact_arguments_and_odr_linkage() {
+        let mut db = flux_hir::SourceDb::new();
+        let dependency = db.add(
+            "/partition-identity/dep.rs",
+            "pub fn imported<T>(x: T) -> T { x } pub fn value() -> u8 { 5 }",
+        );
+        let root = db.add("/partition-identity/main.rs", "struct Own(u8); fn main() { let x = dep::imported(Own(dep::value())); println!(\"{}\", x.0); }");
+        let hir = flux_hir::lower_sources(
+            &mut db,
+            &[
+                flux_hir::SourceCrate {
+                    root: dependency,
+                    name: flux_intern::Symbol::intern("dep"),
+                    dependencies: Vec::new(),
+                },
+                flux_hir::SourceCrate {
+                    root,
+                    name: flux_intern::Symbol::intern("app"),
+                    dependencies: vec![(flux_intern::Symbol::intern("dep"), 0)],
+                },
+            ],
+        );
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let typed = flux_mir::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = flux_mir::build_file(&hir, &typed);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        let hashes: Vec<_> = hir
+            .items
+            .crates
+            .iter()
+            .enumerate()
+            .map(|(index, _)| (flux_hir::CrateId(index as u32), [index as u8; 32]))
+            .collect();
+        let dep = flux_hir::CrateId(
+            hir.items
+                .crates
+                .iter()
+                .position(|c| c.name.as_str() == "dep")
+                .unwrap() as u32,
+        );
+        let compilation = Compilation {
+            kind: OutputKind::Executable,
+            crate_hashes: &hashes,
+            imported: &[dep],
+            builtin_object: false,
+            required_functions: &[],
+            required_instances: &[],
+        };
+        let ordinary = lower_crate_with_requirements(&hir, &typed, &mir, compilation)
+            .unwrap()
+            .module;
+        let partitioned = lower_partitioned_crate(&hir, &typed, &mir, compilation)
+            .unwrap()
+            .module;
+        let names = |module: &Module| {
+            module
+                .functions
+                .iter()
+                .map(|f| &f.name)
+                .chain(module.decls.iter().map(|f| &f.name))
+                .filter(|name| name.starts_with("_ZN3dep"))
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        };
+        assert!(!names(&ordinary).is_empty());
+        assert_eq!(names(&ordinary), names(&partitioned));
+        assert!(
+            partitioned
+                .functions
+                .iter()
+                .filter(|f| f.name.starts_with("_ZN3dep"))
+                .any(|f| f.weak_odr)
+        );
+        keel_ir::verify_module(&partitioned).unwrap();
+    }
 }

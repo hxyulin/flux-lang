@@ -368,7 +368,7 @@ pub fn stable_key(
     })
 }
 
-fn stable_key_with(
+pub(crate) fn stable_key_with(
     canonical_ty: Ty,
     mut definition_key: impl FnMut(IdKind, u32) -> Result<Vec<u8>, &'static str>,
 ) -> Result<Vec<u8>, &'static str> {
@@ -468,7 +468,7 @@ fn identity_children(ty: Ty) -> Vec<Ty> {
     children
 }
 
-fn identity_postorder(root: Ty) -> Result<Vec<Ty>, &'static str> {
+pub(crate) fn identity_postorder(root: Ty) -> Result<Vec<Ty>, &'static str> {
     let mut pending = vec![(root, false)];
     let mut depths = FxHashMap::<Ty, u32>::default();
     let mut ordered = Vec::new();

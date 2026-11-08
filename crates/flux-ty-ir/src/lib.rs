@@ -11,6 +11,7 @@ pub mod fn_regions;
 pub mod impl_index;
 pub mod in_scope;
 pub mod metadata;
+pub mod query_identity;
 pub mod regions;
 pub mod traits;
 pub mod ty;

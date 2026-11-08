@@ -50,6 +50,7 @@ struct Request {
     output: PathBuf,
     library: bool,
     metadata_only: bool,
+    backend_jobs: usize,
     optimize: bool,
     fast_build: bool,
     debug_assertions: bool,
@@ -108,6 +109,7 @@ impl Request {
             output: PathBuf::new(),
             library: true,
             metadata_only: false,
+            backend_jobs: 1,
             optimize: options.optimize,
             fast_build: options.fast_build,
             debug_assertions: options.debug_assertions(),
@@ -195,19 +197,21 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
         return Ok(true);
     }
     eprintln!("Compiling {}", request.name);
-    crate::flib_build::compile_native(
-        &source,
-        &request.output,
-        options,
-        if request.library {
-            CrateType::Lib
-        } else {
-            CrateType::Bin
-        },
-        request.metadata_only,
-        &request.externs,
-        &native,
-    )
+    crate::backend_workers::with_limit(request.backend_jobs, || {
+        crate::flib_build::compile_native(
+            &source,
+            &request.output,
+            options,
+            if request.library {
+                CrateType::Lib
+            } else {
+                CrateType::Bin
+            },
+            request.metadata_only,
+            &request.externs,
+            &native,
+        )
+    })
 }
 
 pub(super) fn run(
@@ -241,6 +245,8 @@ pub(super) fn run(
         let mut request = Request::new(&sources[index], options)?;
         if index == root && !library {
             request.native = native.into();
+            // Every needed dependency is finished before the binary starts.
+            request.backend_jobs = jobs;
         }
         // Native-linked executables keep one whole-program backend pass. The
         // DAG caches checked MIR instead of multiplying generic native objects.

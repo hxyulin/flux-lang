@@ -54,6 +54,7 @@ pub(crate) fn compile_native(
     externs: &[(String, std::path::PathBuf)],
     native: &flux_codegen::NativeLink,
 ) -> Result<bool, String> {
+    let units = crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?;
     let whole_program = kind == CrateType::Bin && *native != Default::default();
     let mut timings = crate::build::Timings::new(options.timings, "compile scoped elapsed");
     let capability = if metadata_only {
@@ -258,7 +259,7 @@ pub(crate) fn compile_native(
             .collect();
         let lowered = timings
             .time("mono + keel lowering", || {
-                if whole_program && !builtin_object {
+                if whole_program && !builtin_object && units.get() == 1 {
                     // Preserve whole-program ownership and cross-crate inlining.
                     return flux_codegen::lower_module(&hir, &typed, &mir).map(|module| {
                         flux_codegen::LoweredCrate {
@@ -267,7 +268,12 @@ pub(crate) fn compile_native(
                         }
                     });
                 }
-                flux_codegen::lower_crate_with_requirements(
+                let lower = if units.get() > 1 {
+                    flux_codegen::lower_partitioned_crate
+                } else {
+                    flux_codegen::lower_crate_with_requirements
+                };
+                lower(
                     &hir,
                     &typed,
                     &mir,
@@ -291,38 +297,49 @@ pub(crate) fn compile_native(
         let mut module = lowered.module;
         object_requirements = lowered.required_instances;
         let tier = options.tier();
-        let object = if options.timings {
-            let (result, backend) = timings.time("backend (inclusive)", || {
-                if options.fast_build {
-                    flux_codegen::compile_fast_object_with_timings(&mut module, target)
-                } else {
-                    flux_codegen::compile_object_with_timings(&mut module, target, tier)
-                }
-            });
-            for (name, duration) in [
-                ("  backend verify", backend.verify),
-                ("  backend optimize", backend.optimize),
-                ("  backend native codegen", backend.codegen),
-                ("  backend assemble", backend.assemble),
-            ] {
-                if let Some(duration) = duration {
-                    timings.record(name, duration);
-                }
-            }
-            result
-        } else if options.fast_build {
-            flux_codegen::compile_fast_object(&mut module, target)
+        let object = if units.get() > 1 {
+            timings.time("backend units (parallel inclusive)", || {
+                crate::backend_units::compile(module, units, target, output)
+            })?
         } else {
-            flux_codegen::compile_object(&mut module, target, tier)
+            let object = if options.timings {
+                let (result, backend) = timings.time("backend (inclusive)", || {
+                    if options.fast_build {
+                        flux_codegen::compile_fast_object_with_timings(&mut module, target)
+                    } else {
+                        flux_codegen::compile_object_with_timings(&mut module, target, tier)
+                    }
+                });
+                for (name, duration) in [
+                    ("  backend verify", backend.verify),
+                    ("  backend optimize", backend.optimize),
+                    ("  backend native codegen", backend.codegen),
+                    ("  backend assemble", backend.assemble),
+                ] {
+                    if let Some(duration) = duration {
+                        timings.record(name, duration);
+                    }
+                }
+                result
+            } else if options.fast_build {
+                flux_codegen::compile_fast_object(&mut module, target)
+            } else {
+                flux_codegen::compile_object(&mut module, target, tier)
+            };
+            vec![object.map_err(|e| e.to_string())?]
         };
-        Some(object.map_err(|e| e.to_string())?)
+        Some(object)
     };
     if kind == CrateType::Bin {
         let object = object.expect("executable compilation emits an object");
-        let mut inputs = vec![flux_codegen::ObjectInput {
-            name: &input.name,
-            bytes: &object,
-        }];
+        let names: Vec<_> = (0..object.len())
+            .map(|index| format!("{}-{index}", input.name))
+            .collect();
+        let mut inputs: Vec<_> = object
+            .iter()
+            .zip(&names)
+            .map(|(bytes, name)| flux_codegen::ObjectInput { name, bytes })
+            .collect();
         if let Some(suite) = crate::builtins::active().filter(|s| s.use_object(options.optimized()))
         {
             inputs.push(flux_codegen::ObjectInput {
@@ -392,7 +409,10 @@ pub(crate) fn compile_native(
                 krate: own,
                 hash,
                 dependencies: &state.dependencies,
-                object,
+                object: object.map(|mut objects| {
+                    assert_eq!(objects.len(), 1, "library output has one object");
+                    objects.pop().expect("one library object")
+                }),
                 required_instances: &object_requirements,
                 freshness: freshness.as_ref(),
             },
@@ -456,6 +476,11 @@ fn configuration(
     encode((kind == CrateType::Bin && *native != Default::default()).encode(&mut e))?;
     encode(options.optimize.encode(&mut e))?;
     encode(options.fast_build.encode(&mut e))?;
+    encode(
+        crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?
+            .get()
+            .encode(&mut e),
+    )?;
     encode(options.debug_assertions().encode(&mut e))?;
     encode(
         match kind {

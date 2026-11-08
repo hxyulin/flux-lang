@@ -307,24 +307,33 @@ fn compile_inner(
         if errors.is_empty() {
             let target = Target::host()
                 .ok_or("flux can only compile for arm64 macOS and x86-64 Linux hosts")?;
+            let units = crate::backend_units::count(options.fast_build)?;
             let builtin_object = suite.is_some_and(|s| s.use_object(options.optimized()));
-            let hashes = if builtin_object {
+            let hashes = if builtin_object || units.get() > 1 {
                 crate::builtins::graph_hashes(&hir.items)?
             } else {
                 Vec::new()
             };
-            let compilation = builtin_object.then(|| {
-                let roots = roots.as_ref().expect("native suite has providers");
-                flux_codegen::Compilation {
+            let compilation =
+                (builtin_object || units.get() > 1).then(|| flux_codegen::Compilation {
                     kind: flux_codegen::OutputKind::Executable,
                     crate_hashes: &hashes,
                     imported: &[],
-                    required_functions: &roots.functions,
-                    required_instances: &roots.instances,
-                    builtin_object: true,
-                }
-            });
-            let lowered = if options.timings {
+                    required_functions: roots.as_ref().map_or(&[][..], |roots| &roots.functions),
+                    required_instances: roots.as_ref().map_or(&[][..], |roots| &roots.instances),
+                    builtin_object,
+                });
+            let lowered = if units.get() > 1 {
+                timings.time("mono + keel lowering", || {
+                    flux_codegen::lower_partitioned_crate(
+                        &hir,
+                        &typed,
+                        &mir,
+                        compilation.expect("partitioned ABI selected"),
+                    )
+                    .map(|lowered| lowered.module)
+                })
+            } else if options.timings {
                 let mut parts = flux_codegen::LoweringTimings::default();
                 let lowered = timings.time("mono + keel lowering (inclusive)", || {
                     flux_codegen::lower_with_timings(&hir, &typed, &mir, compilation, &mut parts)
@@ -354,70 +363,64 @@ fn compile_inner(
                 }
             };
             let tier = options.tier();
-            let object = if options.timings {
-                let (result, backend) = timings.time("backend (inclusive)", || {
-                    if options.fast_build {
-                        flux_codegen::compile_fast_object_with_timings(&mut module, target)
-                    } else {
-                        flux_codegen::compile_object_with_timings(&mut module, target, tier)
-                    }
-                });
-                for (name, duration) in [
-                    ("  backend verify", backend.verify),
-                    ("  backend optimize", backend.optimize),
-                    ("  backend native codegen", backend.codegen),
-                    ("  backend assemble", backend.assemble),
-                ] {
-                    if let Some(duration) = duration {
-                        timings.phases.push((name, duration));
-                    }
-                }
-                result.map_err(|error| error.to_string())?
+            let objects = if units.get() > 1 {
+                timings.time("backend units (parallel inclusive)", || {
+                    crate::backend_units::compile(module, units, target, output)
+                })?
             } else {
-                let result = if options.fast_build {
-                    flux_codegen::compile_fast_object(&mut module, target)
+                let object = if options.timings {
+                    let (result, backend) = timings.time("backend (inclusive)", || {
+                        if options.fast_build {
+                            flux_codegen::compile_fast_object_with_timings(&mut module, target)
+                        } else {
+                            flux_codegen::compile_object_with_timings(&mut module, target, tier)
+                        }
+                    });
+                    for (name, duration) in [
+                        ("  backend verify", backend.verify),
+                        ("  backend optimize", backend.optimize),
+                        ("  backend native codegen", backend.codegen),
+                        ("  backend assemble", backend.assemble),
+                    ] {
+                        if let Some(duration) = duration {
+                            timings.phases.push((name, duration));
+                        }
+                    }
+                    result.map_err(|error| error.to_string())?
                 } else {
-                    flux_codegen::compile_object(&mut module, target, tier)
+                    let result = if options.fast_build {
+                        flux_codegen::compile_fast_object(&mut module, target)
+                    } else {
+                        flux_codegen::compile_object(&mut module, target, tier)
+                    };
+                    result.map_err(|error| error.to_string())?
                 };
-                result.map_err(|error| error.to_string())?
+                vec![object]
             };
             for library in &hir.items.native_libraries {
                 native.add_library(*library);
             }
-            let (warnings, consumed) = timings.time("link", || {
-                if builtin_object {
-                    let builtin = suite
+            let names: Vec<_> = (0..objects.len())
+                .map(|index| format!("flux-{index}"))
+                .collect();
+            let mut inputs: Vec<_> = objects
+                .iter()
+                .zip(&names)
+                .map(|(bytes, name)| flux_codegen::ObjectInput { name, bytes })
+                .collect();
+            if builtin_object {
+                inputs.push(flux_codegen::ObjectInput {
+                    name: "flux-builtins",
+                    bytes: suite
                         .expect("native suite selected")
                         .object
                         .as_deref()
-                        .expect("native object exists");
-                    return flux_codegen::link_objects_with_inputs(
-                        &[
-                            flux_codegen::ObjectInput {
-                                name: crate_name,
-                                bytes: &object,
-                            },
-                            flux_codegen::ObjectInput {
-                                name: "flux-builtins",
-                                bytes: builtin,
-                            },
-                        ],
-                        target,
-                        output,
-                        &native,
-                    )
-                    .map_err(|error| error.to_string());
-                }
-                flux_codegen::link_objects_with_inputs(
-                    &[flux_codegen::ObjectInput {
-                        name: "flux.o",
-                        bytes: &object,
-                    }],
-                    target,
-                    output,
-                    &native,
-                )
-                .map_err(|error| error.to_string())
+                        .expect("native object exists"),
+                });
+            }
+            let (warnings, consumed) = timings.time("link", || {
+                flux_codegen::link_objects_with_inputs(&inputs, target, output, &native)
+                    .map_err(|error| error.to_string())
             })?;
             linked_inputs = Some(consumed);
             for warning in warnings {

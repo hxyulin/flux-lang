@@ -6,6 +6,8 @@ pub mod builtins;
 pub mod flib;
 
 mod artifact_cache;
+mod backend_units;
+mod backend_workers;
 mod build;
 mod cargo;
 mod driver;

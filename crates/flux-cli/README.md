@@ -233,6 +233,33 @@ reexporting an unused macro does not force expansion: only crates with actual
 host invocations decline the ordinary physical-input freshness path. Changed
 dependency identities still invalidate consumers.
 
+Fast binary builds have an opt-in partition experiment:
+
+```sh
+FLUX_BACKEND_UNITS=8 FLUX_BACKEND_CACHE=1 flux build --fast-build -j8
+```
+
+`FLUX_BACKEND_UNITS` accepts 1 through 256 and defaults to 1. It has no effect
+outside fast-build mode. Native graph builds share `-j` with backend workers;
+the binary starts after its dependency jobs finish. Standalone `fluxc` builds
+use one backend worker. Library artifacts retain their existing object format.
+Partitioning uses the cross-object Rust ABI and can change generated-code
+performance. Full optimization retains its existing whole-program path.
+Private read-only data used by one unit stays with that unit, including private
+initializer chains. Editing a literal then replaces its consumer's unit rather
+than moving the literal between symbol-hash buckets. Shared data, mutable data
+and data without a function consumer retain symbol-hash placement.
+
+`FLUX_BACKEND_CACHE=1` stores one object per unit beside the executable, keyed
+by compiler, target and complete unit IR. Each reuse checks the object digest.
+Each unit keeps only its latest cached object; edits replace that slot rather
+than accumulating previous revisions.
+Source functions use separate edit-stable symbol identities; unsupported
+identities retain revision-based names and can reduce reuse. Opaque module
+assembly and debug context retain one module and decline unit caching.
+This cache still runs HIR, type checking, MIR and monomorphization after an
+actual source change. It does not provide per-body frontend incrementality.
+
 Native linker requests stay in the artifact graph. Binaries with build-script
 linker requests use checked-MIR dependency artifacts and one whole-program
 backend pass, preserving cross-crate optimization. Other builds retain their
