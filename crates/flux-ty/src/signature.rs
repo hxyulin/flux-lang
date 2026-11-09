@@ -853,13 +853,49 @@ pub(super) fn extend_signatures(
         if is_lang_struct(items, id, "phantom_data") {
             continue;
         }
+        let fields = sigs.structs[id];
+        let mut used: Vec<bool> = s
+            .generics
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, parameter)| {
+                parameter.is_const() || fields.iter().any(|&field| uses_param(field, i as u32))
+            })
+            .collect();
+        // A stored F also uses T when a declared equality fixes F::Output = T.
+        // Ordinary trait arguments do not determine their parameters this way.
+        loop {
+            let mut progress = false;
+            for projection in sigs.struct_projections.get(id).into_iter().flatten() {
+                if (0..used.len()).any(|i| {
+                    !used[i]
+                        && projection
+                            .alias
+                            .args
+                            .iter()
+                            .chain(projection.alias.family_args)
+                            .any(|&ty| uses_param(ty, i as u32))
+                }) {
+                    continue;
+                }
+                for (i, used) in used.iter_mut().enumerate() {
+                    if !*used && uses_param(projection.ty, i as u32) {
+                        *used = true;
+                        progress = true;
+                    }
+                }
+            }
+            if !progress {
+                break;
+            }
+        }
         for (i, param) in s.generics.params.iter().enumerate() {
-            let fields = sigs.structs[id];
             // Const parameters need not be used, as in rustc.
             if param.is_const() {
                 continue;
             }
-            if !fields.iter().any(|&f| uses_param(f, i as u32)) && !fields.contains(&Ty::ERROR) {
+            if !used[i] && !fields.contains(&Ty::ERROR) {
                 error(
                     s.loc.file,
                     param.range,

@@ -176,3 +176,13 @@ fn deep_iterator_chain() {
 fn tokio_prerequisites() {
     support::oracle::compare_fixture("tokio_prerequisites");
 }
+
+#[test]
+fn object_callbacks() {
+    support::oracle::compare_fixture("object_callbacks");
+}
+
+#[test]
+fn futures_collection_prerequisites() {
+    support::oracle::compare_fixture("futures_collection_prerequisites");
+}

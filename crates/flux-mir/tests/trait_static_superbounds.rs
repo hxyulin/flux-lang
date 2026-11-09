@@ -148,7 +148,7 @@ fn static_superbounds_match_rustc() {
 }
 
 #[test]
-fn named_superbounds_remain_explicitly_unsupported() {
+fn named_self_superbounds_are_represented() {
     let source = "trait P<'a>:'a{fn get(&'a self)->&'a u32;}fn main(){}";
     let root = std::env::temp_dir().join(format!("flux-named-superbound-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
@@ -169,12 +169,8 @@ fn named_superbounds_remain_explicitly_unsupported() {
     let (_, _, hir) = flux_hir::lower_text(&path, source);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let typed = flux_mir::check_file(&hir);
-    assert!(
-        typed.diagnostics.iter().any(|diagnostic| {
-            diagnostic.message == "lifetime parameters on traits are not supported yet"
-        }),
-        "{:?}",
-        typed.diagnostics
-    );
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -297,14 +297,6 @@ impl Builder<'_> {
                 row
             }
             (TypeRef::Dyn(d), TyKind::Dynamic(dynamic)) => {
-                if dynamic
-                    .args
-                    .iter()
-                    .chain(dynamic.assoc_tys)
-                    .any(|&t| t.has_params() || crate::regions::slots(self.items, t) != 0)
-                {
-                    self.errors.push((TextRange::default(), "trait object argument regions inside function pointers are not supported yet".into()));
-                }
                 for bound in &d.bounds {
                     let (trait_, _) = self.items.resolve_trait(self.module, bound);
                     if trait_.is_some_and(|id| !self.items.traits[id].generics.lifetimes.is_empty())
@@ -321,14 +313,47 @@ impl Builder<'_> {
                         ));
                     }
                 }
-                vec![match d.lifetime {
-                    Some(l) => self.lifetime(Some(l), l.range),
-                    None if self.elision_only => return Vec::new(),
+                let region = match d.lifetime {
+                    Some(l) => Some(self.lifetime(Some(l), l.range)),
+                    None if self.elision_only => None,
                     None if crate::regions::object_has_static_self(self.items, dynamic.trait_) => {
-                        FnRegion::Static
+                        Some(FnRegion::Static)
                     }
-                    None => enclosing.unwrap_or(FnRegion::Static),
-                }]
+                    None => Some(enclosing.unwrap_or(FnRegion::Static)),
+                };
+                let mut row: Vec<_> = region.into_iter().collect();
+                if crate::fn_trait_kind(self.items, dynamic.trait_).is_some() {
+                    if dynamic
+                        .args
+                        .iter()
+                        .chain(dynamic.assoc_tys)
+                        .any(|&ty| ty.has_params() || crate::regions::slots(self.items, ty) != 0)
+                    {
+                        self.errors.push((TextRange::default(),
+                            "callable trait object argument regions inside function pointers are not supported yet".into()));
+                    }
+                    return row;
+                }
+                // Match the ordinary object region layout: the object bound,
+                // principal arguments, then equalities in declaring-trait order.
+                if let Some(bound) = d.bounds.iter().find(|bound| {
+                    self.items.resolve_trait(self.module, bound).0 == Some(dynamic.trait_)
+                }) {
+                    let args = bound.path.args(bound.path.segments.len().saturating_sub(1));
+                    for (index, &ty) in dynamic.args.iter().enumerate() {
+                        let written = args.and_then(|args| args.types.get(index));
+                        row.extend(self.object_argument(written, ty));
+                    }
+                    for (&name, &ty) in dynamic.assoc_names.iter().zip(dynamic.assoc_tys) {
+                        let written = args
+                            .and_then(|args| {
+                                args.bindings.iter().find(|binding| binding.name == name)
+                            })
+                            .map(|binding| &binding.ty);
+                        row.extend(self.object_argument(written, ty));
+                    }
+                }
+                row
             }
             (TypeRef::Ptr { pointee, .. }, TyKind::RawPtr(_, inner)) => self.walk(pointee, inner),
             (TypeRef::Array { elem, .. }, TyKind::Array(inner, _))
@@ -378,6 +403,21 @@ impl Builder<'_> {
             }
             _ => self.capture(written, ty),
         }
+    }
+
+    fn object_argument(&mut self, written: Option<&TypeRef>, ty: Ty) -> Vec<FnRegion> {
+        if let Some(written) = written {
+            return self.walk(written, ty);
+        }
+        if ty.has_params()
+            || ty.has_aliases()
+            || ty.has_infer()
+            || crate::regions::slots(self.items, ty) != 0
+        {
+            self.errors.push((TextRange::default(),
+                "inherited trait object argument regions inside function pointers are not supported yet".into()));
+        }
+        Vec::new()
     }
 }
 
@@ -451,7 +491,12 @@ pub fn variances(
                         self.go(ty, row, at, variance)?;
                     }
                 }
-                TyKind::Dynamic(_) => self.slot(row, at, variance)?,
+                TyKind::Dynamic(object) => {
+                    self.slot(row, at, variance)?;
+                    for ty in crate::regions::object_region_types(self.items, object) {
+                        self.go(ty, row, at, variance.xform(V::Invariant))?;
+                    }
+                }
                 TyKind::Adt(adt, args) => {
                     let lifetimes = self.items.structs[adt.strukt].generics.lifetimes.len();
                     let table = self.sigs.regions.structs.get(adt.strukt);

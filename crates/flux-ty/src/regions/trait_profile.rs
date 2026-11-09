@@ -410,7 +410,7 @@ fn method_profile(
     {
         return Err(fail(None, TraitProfileReason::AssociatedItems));
     }
-    if data.is_unsafe {
+    if data.is_unsafe && !projected {
         return Err(fail(None, TraitProfileReason::UnsafeTrait));
     }
     if diagnosed(diagnostics, data.loc.file, data.def_range) {
@@ -920,13 +920,13 @@ fn region_free_edges(
         .trait_predicates
         .get(id)
         .ok_or(fail(TraitProfileReason::MissingMetadata))?;
-    // TraitRegions has no predicate/projection region tables. Root type-parameter
+    // TraitRegions has no predicate/projection region tables. Root Self/type-parameter
     // outlives bounds have their own reconstructible table; other edges must
     // remain region-free. Missing tables cannot stand for represented regions.
     let represented_outlives = associated
         && t.generics.outlives.is_empty()
         && t.generics.type_outlives.iter().all(|bound| {
-            matches!(&bound.ty, TypeRef::Path(path) if path.as_name().is_some_and(|name|t.generics.params.iter().any(|p|p.name==name)))
+            matches!(&bound.ty, TypeRef::Path(path) if path.as_name().is_some_and(|name| name == flux_intern::kw::SelfUpper || t.generics.params.iter().any(|p|p.name==name)))
         })
         && super::resolve::trait_outlives_contract(items,sigs,id).as_deref() == Some(regions.outlives.as_ref());
     if !t.generics.outlives.is_empty()
@@ -1369,6 +1369,32 @@ pub(crate) fn lifetime_marker_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsafe_object_callback_contracts() {
+        let source = "unsafe trait Tr<'a,T>:'a{fn raw(self)->*mut(dyn core::future::Future<Output=T>+'a);unsafe fn drop(_: *mut(dyn core::future::Future<Output=T>+'a));}fn main(){}";
+        let (_, file, hir) = flux_hir::lower_text("unsafe-profile.rs", source);
+        let (sigs, diagnostics) = crate::signatures(&hir.items);
+        let (owner, _) = hir
+            .items
+            .traits
+            .iter()
+            .find(|(_, t)| t.loc.file == file)
+            .unwrap();
+        assert!(
+            generic_method_profile(&hir.items, &hir.diagnostics, &sigs, owner).is_ok(),
+            "{:?}; {diagnostics:?}",
+            generic_method_profile(&hir.items, &hir.diagnostics, &sigs, owner)
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let mut bad = sigs.clone();
+        bad.regions.traits.get_mut(owner).unwrap().outlives = Box::default();
+        assert!(generic_method_profile(&hir.items, &hir.diagnostics, &bad, owner).is_err());
+        let mut bad = sigs.clone();
+        let method = hir.items.traits[owner].functions[1];
+        bad.regions.fns.get_mut(method).unwrap().owner = 0;
+        assert!(generic_method_profile(&hir.items, &hir.diagnostics, &bad, owner).is_err());
+    }
 
     #[test]
     fn ordinary_associated_bounds_reconstruct_contracts() {

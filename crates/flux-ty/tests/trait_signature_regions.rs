@@ -224,10 +224,7 @@ fn abstract_self_outlives_is_elaborated() {
     let source = "trait Tr<'a> where Self: 'a {} fn f<'a, N: Tr<'a>>() {} fn main() {}";
     oracle(source, true);
     let (hir, sigs, messages) = resolve(source);
-    assert_eq!(
-        messages,
-        ["lifetime parameters on traits are not supported yet"]
-    );
+    assert!(messages.is_empty(), "{messages:?}");
     let (id, _) = hir
         .items
         .functions

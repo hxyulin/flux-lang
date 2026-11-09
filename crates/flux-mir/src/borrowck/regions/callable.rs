@@ -334,7 +334,10 @@ impl Cx<'_> {
             } else if let Some(regions) = self.sigs.regions.fns.get(function) {
                 // An early-bound owner or a type argument carrying regions
                 // needs item-value provenance, not erased type equality.
-                if regions.owner == 0
+                // A fixed pointer signature can infer owner lifetimes through
+                // the same checked owner obligations as a direct call. A
+                // universal pointer binder still needs independent provenance.
+                if (regions.owner == 0 || r.bound == 0)
                     && (written.is_some()
                         || !args
                             .iter()

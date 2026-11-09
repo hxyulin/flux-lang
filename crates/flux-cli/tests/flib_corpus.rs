@@ -198,3 +198,10 @@ fixture!(
 fixture!(async_functions, "async_functions.rs");
 
 fixture!(tokio_prerequisites, "tokio_prerequisites.rs");
+
+fixture!(object_callbacks, "object_callbacks.rs");
+
+fixture!(
+    futures_collection_prerequisites,
+    "futures_collection_prerequisites.rs"
+);

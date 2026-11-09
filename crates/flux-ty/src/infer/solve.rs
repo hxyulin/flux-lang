@@ -720,6 +720,7 @@ impl Ctx<'_> {
             && bounds
                 .into_iter()
                 .any(|p| self.probe(|cx| cx.unify_predicates(p, pred)))
+            && flux_solve::traits::select_definite_impl(self.items, self.sigs, pred).is_none()
         {
             return None;
         }

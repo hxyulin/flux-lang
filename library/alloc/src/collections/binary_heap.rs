@@ -52,6 +52,13 @@ impl<T> BinaryHeap<T> {
     }
 }
 impl<T: Ord> BinaryHeap<T> {
+    pub fn peek_mut(&mut self) -> Option<PeekMut<'_, T>> {
+        if self.is_empty() {
+            None
+        } else {
+            Some(PeekMut { heap: self, original_len: None })
+        }
+    }
     fn sift_down(&mut self, mut root: usize, end: usize) {
         while root < end / 2 {
             let left = root * 2 + 1;
@@ -107,6 +114,52 @@ impl<T: Ord> BinaryHeap<T> {
             self.sift_down(0, end);
         }
         self.data
+    }
+}
+
+/// A mutable reference to the maximum element, restoring heap order on drop.
+pub struct PeekMut<'a, T: Ord> {
+    heap: &'a mut BinaryHeap<T>,
+    original_len: Option<usize>,
+}
+impl<T: Ord> core::ops::Deref for PeekMut<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.heap.data[0]
+    }
+}
+impl<T: Ord> core::ops::DerefMut for PeekMut<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        if self.original_len.is_none() && self.heap.len() > 1 {
+            self.original_len = Some(self.heap.len());
+            // SAFETY: all elements remain initialized. Hiding the tail keeps
+            // the heap valid if a mutated guard is forgotten instead of dropped.
+            unsafe { self.heap.data.set_len(1); }
+        }
+        &mut self.heap.data[0]
+    }
+}
+impl<T: Ord> PeekMut<'_, T> {
+    pub fn pop(mut this: Self) -> T {
+        if let Some(len) = this.original_len.take() {
+            // SAFETY: the guard only hid these initialized elements.
+            unsafe { this.heap.data.set_len(len); }
+        }
+        this.heap.pop().unwrap()
+    }
+}
+impl<T: Ord> Drop for PeekMut<'_, T> {
+    fn drop(&mut self) {
+        if let Some(len) = self.original_len {
+            // SAFETY: no operation could access or drop the hidden tail.
+            unsafe { self.heap.data.set_len(len); }
+            self.heap.sift_down(0, len);
+        }
+    }
+}
+impl<T: Ord + core::fmt::Debug> core::fmt::Debug for PeekMut<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("PeekMut").field(&**self).finish()
     }
 }
 impl<T> Default for BinaryHeap<T> {

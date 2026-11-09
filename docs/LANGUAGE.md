@@ -877,10 +877,15 @@ or result types. Function pointers also implement
 `PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Hash` by address, without bounds on
 argument or result types or on signature lifetimes. Function items require an
 explicit pointer coercion before comparison or hashing.
-Reification rejects fixed, owner-bound, bounded or repeated
-input lifetimes rather than discarding their constraints; this also rejects
-some valid Rust signatures. Named pointer lifetimes remain unsupported, and elided reference outputs
-retain conservative checks. Borrowed function pointers autodereference at calls.
+Reification preserves represented input/output lifetime constraints. Methods with
+owner lifetimes can coerce to a fixed pointer signature after checking the owner
+obligations. Higher-ranked owner conversions still reject. Borrowed function
+pointers autodereference at calls.
+Non-callable trait objects inside pointer signatures retain their independent
+object bound, explicit type arguments and associated equalities, including
+generic and borrowed arguments. These arguments remain invariant. Inherited
+equalities with unwritten region rows, trait lifetime arguments and region-bearing
+callable objects remain unsupported in pointer signatures.
 A pointer's parameters and result may name type aliases with lifetimes, as
 in `fn(ParseStream<'a>) -> Result<T>` with `type ParseStream<'a> =
 &'a ParseBuffer<'a>`: each stands for its declared type, with the lifetimes
@@ -1205,6 +1210,13 @@ reuse its source allocation as rustc sometimes does, so capacities can differ in
 cases; a panic inside `alloc` that rustc reports at its own
 source (`swap_remove`, `drain` out of range) is reported at flux's.
 
+`BinaryHeap::peek_mut` returns a guard that restores heap order after mutation.
+`PeekMut::pop` removes its current element. Forgetting an unmodified guard keeps
+the heap intact; forgetting a modified guard leaks the hidden tail, as in rustc.
+`PeekMut` is available through both alloc's and std's `collections::binary_heap`.
+Integer `Wrapping` values support owned bitwise operations, wrapping shifts by
+`usize`, and arithmetic, bitwise and shift assignment operators.
+
 `core::ops` has the `Fn`, `FnMut` and `FnOnce` traits (in the
 prelude), which bounds name as `Fn(A, B) -> C` (the angle-bracket
 form, and parentheses on other traits, are errors, as in rustc), and
@@ -1380,6 +1392,9 @@ anonymous argument parameters, Fn-family callback bounds, ordinary associated
 outputs, and method bounds such as `D: Reader<'de>` or
 `V: Visitor<'de, Value = &'de str>`. It reconstructs the full signature,
 owner/local region namespace, bound occurrence rows and projection equalities.
+This profile also admits unsafe traits and `Self: 'a` requirements when all
+method contracts can be reconstructed. Implementation and caller checks still
+prove those requirements.
 Type-parameter owner outlives bounds such as `K: 'a` retain the owner's stored
 requirements in every method contract.
 Ordinary associated outputs may carry lifetime-bearing trait bounds and
@@ -1411,6 +1426,12 @@ unrepresented higher-ranked opaque bounds retain explicit gates. Nominal lifetim
 inside function-pointer signatures, and declaration equalities needing unrepresented
 owner/family projection input rows, also reject explicitly. Other existing use-site
 restrictions still apply.
+Storing a type parameter also uses parameters determined by its associated
+equalities, such as `struct Always<T, F: Fn() -> T>(F)`. Ordinary trait arguments
+and circular equalities without a stored input do not satisfy this use rule.
+An unconditional impl can determine an associated output even when the caller
+also names its trait bound. A merely possible conditional impl keeps that output
+abstract.
 Projection occurrences such as `A::Error` retain the trait-owner lifetimes from
 their written bounds in impl headers, associated definitions, predicate subjects
 and trait arguments. Associated-value selection proves those same lifetime

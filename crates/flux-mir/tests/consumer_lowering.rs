@@ -9,6 +9,41 @@ fn consumer_lowering_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "const_output_use",
+            "trait Tr<const N:usize>{type Out;}struct S<const N:usize,T,F:Tr<N,Out=T>>(F);fn main(){}",
+            true,
+        ),
+        (
+            "conditional_output_remains_abstract",
+            "trait Bound{}trait Tr{type Out;fn get()->Self::Out;}struct S<T>(T);impl<T:Bound>Tr for S<T>{type Out=u32;fn get()->u32{7}}fn f<T>() -> u32 where S<T>:Tr{S::<T>::get()}fn main(){}",
+            false,
+        ),
+        (
+            "stored_callback_output",
+            "struct S<T,F:Fn()->T>(F);fn main(){}",
+            true,
+        ),
+        (
+            "unused_ordinary_bound",
+            "trait Tr<T>{}struct S<T,F:Tr<T>>(F);fn main(){}",
+            false,
+        ),
+        (
+            "constant_output_use",
+            "trait Tr{type A;}impl Tr for (){type A=u32;}struct S<T>where ():Tr<A=T>{}fn main(){}",
+            true,
+        ),
+        (
+            "unused_projection_cycle",
+            "trait Tr{type A;}struct S<T,F:Tr<A=T>> where T:Tr<A=F>{}fn main(){}",
+            false,
+        ),
+        (
+            "own_impl_where_projection",
+            "use core::marker::PhantomData;trait Once<A>{type Out;fn once(self,a:A)->Self::Out;}struct OkFn<E>(PhantomData<fn(E)>);impl<E>Copy for OkFn<E>{}impl<E>Clone for OkFn<E>{fn clone(&self)->Self{*self}}impl<A,E>Once<A>for OkFn<E>{type Out=Result<A,E>;fn once(self,a:A)->Self::Out{Ok(a)}}trait Mut<A>:Once<A>{fn call(&mut self,a:A)->Self::Out;}impl<E,A>Mut<A>for OkFn<E>where Self:Once<A>{fn call(&mut self,a:A)->Self::Out{self.once(a)}}fn main(){}",
+            true,
+        ),
+        (
             "side_effecting_waker_constructor",
             "use core::task::{RawWaker,RawWakerVTable};unsafe fn c(_: *const())->RawWaker{loop{}} unsafe fn n(_: *const()){}fn t(counter:&core::cell::Cell<u32>)->&'static RawWakerVTable{&{counter.set(1);RawWakerVTable::new}(c,n,n,n)}fn main(){}",
             false,

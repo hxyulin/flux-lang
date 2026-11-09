@@ -8,6 +8,66 @@ fn function_pointer_regions_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "unsafe_owner_outlives_impl",
+            "unsafe trait Tr<'a>:'a{unsafe fn callback();}struct S<'b>(&'b u32);unsafe impl<'a,'b>Tr<'a> for S<'b>{unsafe fn callback(){}}fn main(){}",
+            false,
+        ),
+        (
+            "unsafe_owner_outlives_use",
+            "unsafe trait Tr<'a>:'a{unsafe fn callback();}fn take<'a,F:Tr<'a>>(_:F){}fn escape<'a,F:Tr<'a>>(x:F){take::<'static,F>(x);}fn main(){}",
+            false,
+        ),
+        (
+            "object_argument_elision_ambiguous",
+            "trait Tr<T>{}fn takes(_:fn(&dyn Tr<&u32>)->&u32){}fn main(){}",
+            false,
+        ),
+        (
+            "fixed_owner_callback",
+            "trait Tr<'a>{fn get()->&'a u32;}fn table<'a,F:Tr<'a>>()->fn()->&'a u32{F::get}fn main(){}",
+            true,
+        ),
+        (
+            "fixed_owner_callback_escape",
+            "trait Tr<'a>{fn get()->&'a u32;}fn table<'a,F:Tr<'a>>()->fn()->&'static u32{F::get}fn main(){}",
+            false,
+        ),
+        (
+            "fixed_owner_object_callback",
+            "trait Tr<'a,T>{unsafe fn drop(_: *mut(dyn core::future::Future<Output=T>+'a));}fn table<'a,T,F:Tr<'a,T>>()->unsafe fn(*mut(dyn core::future::Future<Output=T>+'a)){F::drop}fn main(){}",
+            true,
+        ),
+        (
+            "fixed_owner_object_callback_escape",
+            "trait Tr<'a,T>{unsafe fn drop(_: *mut(dyn core::future::Future<Output=T>+'a));}fn table<'a,T,F:Tr<'a,T>>()->unsafe fn(*mut(dyn core::future::Future<Output=T>+'static)){F::drop}fn main(){}",
+            false,
+        ),
+        (
+            "object_generic_argument",
+            "trait Tr<T>{}fn dropper<T>(_:*mut(dyn Tr<T>+'static)){}fn table<T>()->fn(*mut(dyn Tr<T>+'static)){dropper::<T>}fn main(){}",
+            true,
+        ),
+        (
+            "object_generic_equality",
+            "trait Tr{type Out;}fn dropper<T>(_:*mut(dyn Tr<Out=T>+'static)){}fn table<T>()->fn(*mut(dyn Tr<Out=T>+'static)){dropper::<T>}fn main(){}",
+            true,
+        ),
+        (
+            "object_equality_lifetime_escape",
+            "trait Tr{type Out;}fn change<'a>(p:fn(Box<dyn Tr<Out=&'a u32>>))->fn(Box<dyn Tr<Out=&'static u32>>){p}fn main(){}",
+            false,
+        ),
+        (
+            "object_argument_lifetime_escape",
+            "trait Tr<T>{}fn change<'a>(p:fn(Box<dyn Tr<&'a u32>>))->fn(Box<dyn Tr<&'static u32>>){p}fn main(){}",
+            false,
+        ),
+        (
+            "object_bound_callback",
+            "trait Tr{type Out;}fn consume<'a>(_:&'a(dyn Tr<Out=&'a u32>+'a)){}fn main(){let _:for<'a>fn(&'a(dyn Tr<Out=&'a u32>+'a))=consume;}",
+            true,
+        ),
+        (
             "boxed_object_default",
             "trait Tr{}fn read(_: &Box<dyn Tr>){}fn main(){let _:fn(&Box<dyn Tr>)=read;}",
             true,
