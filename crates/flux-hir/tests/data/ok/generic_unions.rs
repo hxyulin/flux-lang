@@ -1,4 +1,4 @@
-// Generic unions remain outside the executable scalar subset.
+// Generic unions preserve their parameters and cfg-filtered fields.
 #[derive(Copy, Clone)]
 #[repr(C)]
 union Bits<T: Copy> {

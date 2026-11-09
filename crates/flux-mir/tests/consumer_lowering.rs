@@ -9,6 +9,91 @@ fn consumer_lowering_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "nested_trait_static_contract",
+            r#"trait Make { fn make<'a>(&'a self)->Option<impl Copy+'static>; } struct S(u32); impl Make for S { fn make<'a>(&'a self)->Option<impl Copy+'a>{Some(&self.0)} } fn main(){}"#,
+            false,
+        ),
+        (
+            "generic_union_write_escape",
+            r#"union U<T:Copy>{value:T} fn leak()->U<&'static u32>{let n=42;let mut u=U{value:&0};u.value=&n;u} fn main(){}"#,
+            false,
+        ),
+        (
+            "nested_trait_named_borrow",
+            r#"trait Make { fn make<'a>(&'a self)->Option<impl Copy+'a>; } struct S(u32); impl Make for S { fn make<'a>(&'a self)->Option<impl Copy+'a>{Some(&self.0)} } fn main(){}"#,
+            true,
+        ),
+        (
+            "nested_trait_equalities",
+            r#"trait Make { fn make()->Option<impl Iterator<Item=u32>>; } struct S; impl Make for S { fn make()->Option<std::iter::Once<u32>>{Some(std::iter::once(42))} } fn main(){}"#,
+            true,
+        ),
+        (
+            "nested_trait_wrong_equalities",
+            r#"trait Make { fn make()->Option<impl Iterator<Item=u32>>; } struct S; impl Make for S { fn make()->Option<std::iter::Once<u8>>{Some(std::iter::once(42))} } fn main(){}"#,
+            false,
+        ),
+        (
+            "nested_trait_borrowed",
+            r#"trait Make { fn make(&self)->Option<impl Copy+'_>; } struct S(u32); impl Make for S { fn make(&self)->Option<impl Copy+'_>{Some(&self.0)} } fn main(){}"#,
+            true,
+        ),
+        (
+            "generic_union_read_escape",
+            r#"union U<T:Copy>{value:T} fn leak()->&'static u32{let n=42;let u=U{value:&n};unsafe{u.value}} fn main(){}"#,
+            false,
+        ),
+        (
+            "generic_union_manuallydrop",
+            r#"union U<T>{value:core::mem::ManuallyDrop<T>} fn main(){let u=U{value:core::mem::ManuallyDrop::new(String::from("hello"))};let s=core::mem::ManuallyDrop::into_inner(unsafe{u.value});assert_eq!(s.len(),5);}"#,
+            true,
+        ),
+        (
+            "nested_trait_option",
+            r#"trait Make { fn make() -> Option<impl Copy>; } struct S; impl Make for S { fn make()->Option<u32>{Some(42)} } fn main(){let _=S::make();}"#,
+            true,
+        ),
+        (
+            "nested_trait_pair",
+            r#"trait Make { fn make() -> (impl Copy, Option<impl Clone>); } struct S; impl Make for S { fn make()->(u32,Option<String>){(42,Some(String::new()))} } fn main(){let _=S::make();}"#,
+            true,
+        ),
+        (
+            "nested_trait_bad_bound",
+            r#"trait Make { fn make() -> Option<impl Copy>; } struct S; impl Make for S { fn make()->Option<String>{None} } fn main(){}"#,
+            false,
+        ),
+        (
+            "nested_trait_bad_shape",
+            r#"trait Make { fn make() -> Option<impl Copy>; } struct S; impl Make for S { fn make()->Result<u32,()>{Ok(42)} } fn main(){}"#,
+            false,
+        ),
+        (
+            "generic_union_copy",
+            r#"union U<T:Copy>{value:T} fn main(){let u=U{value:42u32};assert_eq!(unsafe{u.value},42);}"#,
+            true,
+        ),
+        (
+            "generic_union_noncopy",
+            r#"union U<T>{value:T} fn main(){}"#,
+            false,
+        ),
+        (
+            "generic_union_const",
+            r#"union U<const N:usize>{bytes:[u8;N]} fn main(){let u=U{bytes:[1u8;4]};assert_eq!(unsafe{u.bytes}[0],1);}"#,
+            true,
+        ),
+        (
+            "generic_union_reference_escape",
+            r#"union U<T:Copy>{value:T} fn leak()->U<&'static u32>{let n=42;U{value:&n}} fn main(){}"#,
+            false,
+        ),
+        (
+            "generic_union_reference",
+            r#"union U<T:Copy>{value:T} fn main(){let n=42;let u=U{value:&n};assert_eq!(*unsafe{u.value},42);}"#,
+            true,
+        ),
+        (
             "forwarded_index_output",
             r#"use std::ops::{Index,IndexMut};
 struct Array<T>(Vec<T>);

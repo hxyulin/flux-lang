@@ -1382,7 +1382,27 @@ fn check_method(
             .collect(),
         ret: normalize(items, sigs, projections, sig.ret),
     };
-    let (sig, expected) = (&norm(&sigs[f]), norm(&sigs[required].subst(&args)));
+    let declared_return = sigs[required].ret.subst(&args);
+    let mut opaque_outputs = Vec::new();
+    declared_return.map_opaques(&mut |opaque| {
+        if let Some(output) =
+            flux_solve::traits::opaque_return_type(declared_return, sigs[f].ret, opaque.index)
+        {
+            opaque_outputs.push((opaque, output));
+        }
+        Ty::opaque(opaque)
+    });
+    let replace_output = |ty: Ty| {
+        ty.map_opaques(&mut |opaque| {
+            opaque_outputs
+                .iter()
+                .find(|(found, _)| *found == opaque)
+                .map_or(Ty::opaque(opaque), |(_, output)| *output)
+        })
+    };
+    let mut expected = norm(&sigs[required].subst(&args));
+    expected.ret = normalize(items, sigs, projections, replace_output(declared_return));
+    let (sig, expected) = (&norm(&sigs[f]), expected);
     let types = sig.params.iter().zip(&expected.params);
     let ranges = function.params.iter().map(|p| p.range);
     let ret_range =
@@ -1435,13 +1455,13 @@ fn check_method(
     // A trait's opaque result is an output family. Its implementation may
     // refine the concrete type, but must retain every promised bound and
     // associated output equality.
-    if let TyKind::Opaque(opaque) = sigs[required].ret.subst(&args).kind() {
+    for &(opaque, output) in &opaque_outputs {
         let replace = |ty: Ty| {
             ty.map_opaques(&mut |found| {
                 if found == opaque {
-                    sig.ret
+                    output
                 } else {
-                    Ty::opaque(found)
+                    replace_output(Ty::opaque(found))
                 }
             })
         };

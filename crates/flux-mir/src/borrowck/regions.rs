@@ -253,6 +253,58 @@ pub(crate) fn infer(
     }
 }
 
+/// Split nested opaque outputs at matching return constructors. Region rows
+/// include each constructor's own slots before its type argument slots.
+type ReturnComponent = (Ty, Vec<Var>, Ty, Vec<Var>);
+
+fn return_components(
+    items: &ItemTree,
+    required: Ty,
+    theirs: &[Var],
+    actual: Ty,
+    mine: &[Var],
+) -> Option<Vec<ReturnComponent>> {
+    if matches!(required.kind(), TyKind::Opaque(_)) || !required.has_opaques() {
+        return Some(vec![(required, theirs.to_vec(), actual, mine.to_vec())]);
+    }
+    if !flux_solve::fn_regions::same_shape(
+        required.map_children(|_| Ty::ERROR),
+        actual.map_children(|_| Ty::ERROR),
+    ) {
+        return None;
+    }
+    let own = match required.kind() {
+        TyKind::Adt(adt, _) => items.structs[adt.strukt].generics.lifetimes.len(),
+        TyKind::Ref(..) => 1,
+        TyKind::Tuple(_) | TyKind::Array(..) | TyKind::RawPtr(..) | TyKind::Slice(_) => 0,
+        _ => return None,
+    };
+    let (mut a, mut b) = (own, own);
+    let mut out = Vec::new();
+    if own != 0 {
+        out.push((
+            required.map_children(|_| Ty::UNIT),
+            theirs.get(..own)?.to_vec(),
+            actual.map_children(|_| Ty::UNIT),
+            mine.get(..own)?.to_vec(),
+        ));
+    }
+    for (required, actual) in required.children().zip(actual.children()) {
+        let n = flux_ty::regions::slots(items, required);
+        let m = flux_ty::regions::slots(items, actual);
+        out.extend(return_components(
+            items,
+            required,
+            theirs.get(a..a + n)?,
+            actual,
+            mine.get(b..b + m)?,
+        )?);
+        a += n;
+        b += m;
+    }
+    (a == theirs.len() && b == mine.len()).then_some(out)
+}
+
 /// Whether method `method` of `impl` block `imp`, which implements
 /// `trait_fn`, asks no more of its lifetimes than the trait's method
 /// does, as rustc's `compare_impl_method` checks: calls through the
@@ -445,88 +497,97 @@ pub(crate) fn impl_method_matches(
             _ => return false,
         }
     }
-    let ty = cx.normalize(selected.ret.ty);
     let mine = cx.instantiate_sig(selected.ret.ty, &selected.ret.regions, &mut map_i, &[], &[]);
     let theirs = cx.instantiate_sig(trait_sig.ret, &tr.ret, &mut map_t, &args, &arg_vars);
-    let required_ret = cx.normalize(trait_sig.ret.subst(&args));
     match (mine, theirs) {
         (Some(mine), Some(theirs)) => {
-            if let TyKind::Opaque(required) = trait_sig.ret.subst(&args).kind() {
-                // Compare the promised output rows rather than treating the
-                // trait and implementation's independent capture lists as
-                // the same opaque identity.
-                let Some(mut goals) = cx.opaque_bound_goals(required, &theirs) else {
-                    return false;
-                };
-                let mut available = header_goals.clone();
-                if let TyKind::Opaque(actual) = selected.ret.ty.kind() {
-                    let Some(bounds) = cx.opaque_bound_goals(actual, &mine) else {
+            let Some(outputs) = return_components(
+                items,
+                trait_sig.ret.subst(&args),
+                &theirs,
+                selected.ret.ty,
+                &mine,
+            ) else {
+                return false;
+            };
+            for (required_ty, theirs, actual_ty, mine) in outputs {
+                if let TyKind::Opaque(required) = required_ty.kind() {
+                    // Compare the promised output rows rather than treating the
+                    // trait and implementation's independent capture lists as
+                    // the same opaque identity.
+                    let Some(mut goals) = cx.opaque_bound_goals(required, &theirs) else {
                         return false;
                     };
-                    available.extend(bounds);
-                }
-                for goal in &mut goals {
-                    goal.predicate.self_ty = selected.ret.ty;
-                    goal.vars[0] = mine.clone();
-                    if !cx.impl_prove_super(goal, &available, 0) {
-                        return false;
+                    let mut available = header_goals.clone();
+                    if let TyKind::Opaque(actual) = actual_ty.kind() {
+                        let Some(bounds) = cx.opaque_bound_goals(actual, &mine) else {
+                            return false;
+                        };
+                        available.extend(bounds);
                     }
-                }
-                for projection in flux_solve::traits::opaque_projections(sigs, required) {
-                    let Some(expected) =
-                        cx.opaque_projection(required, projection.alias, &theirs, &[])
-                    else {
-                        return false;
-                    };
-                    let alias = projection.alias.map_args(|arg| {
-                        if arg == Ty::opaque(required) {
-                            selected.ret.ty
-                        } else {
-                            arg
-                        }
-                    });
-                    // The bound's non-self type arguments retain their exact
-                    // substituted rows. Inputs beyond self need represented
-                    // rows; do not invent them for a lifetime-bearing type.
-                    let mut rows = vec![mine.clone()];
-                    for &argument in alias.args.iter().skip(1) {
-                        if cx.slots(argument) != 0 {
+                    for goal in &mut goals {
+                        goal.predicate.self_ty = actual_ty;
+                        goal.vars[0] = mine.clone();
+                        if !cx.impl_prove_super(goal, &available, 0) {
                             return false;
                         }
-                        rows.push(Vec::new());
                     }
-                    let Some(actual) = cx.normalize_regions(alias, &rows, 0) else {
+                    for projection in flux_solve::traits::opaque_projections(sigs, required) {
+                        let Some(expected) =
+                            cx.opaque_projection(required, projection.alias, &theirs, &[])
+                        else {
+                            return false;
+                        };
+                        let alias = projection.alias.map_args(|arg| {
+                            if arg == Ty::opaque(required) {
+                                actual_ty
+                            } else {
+                                arg
+                            }
+                        });
+                        // The bound's non-self type arguments retain their exact
+                        // substituted rows. Inputs beyond self need represented
+                        // rows; do not invent them for a lifetime-bearing type.
+                        let mut rows = vec![mine.clone()];
+                        for &argument in alias.args.iter().skip(1) {
+                            if cx.slots(argument) != 0 {
+                                return false;
+                            }
+                            rows.push(Vec::new());
+                        }
+                        let Some(actual) = cx.normalize_regions(alias, &rows, 0) else {
+                            return false;
+                        };
+                        if actual.len() != expected.len() {
+                            return false;
+                        }
+                        for (actual, expected) in actual.into_iter().zip(expected) {
+                            cx.outlives(actual, expected, Category::Boring, range);
+                            cx.outlives(expected, actual, Category::Boring, range);
+                        }
+                    }
+                    let Some(decl) = tr.opaques.get(required.index as usize) else {
                         return false;
                     };
-                    if actual.len() != expected.len() {
-                        return false;
+                    for &bound in &decl.outlives {
+                        let Some(bound) = map_trait(bound) else {
+                            return false;
+                        };
+                        for &capture in &mine {
+                            cx.outlives(capture, bound, Category::Boring, range);
+                        }
                     }
-                    for (actual, expected) in actual.into_iter().zip(expected) {
-                        cx.outlives(actual, expected, Category::Boring, range);
-                        cx.outlives(expected, actual, Category::Boring, range);
-                    }
+                } else {
+                    cx.relate_types(
+                        cx.normalize(actual_ty),
+                        &mine,
+                        cx.normalize(required_ty),
+                        &theirs,
+                        Variance::Covariant,
+                        Category::Boring,
+                        range,
+                    );
                 }
-                let Some(decl) = tr.opaques.get(required.index as usize) else {
-                    return false;
-                };
-                for &bound in &decl.outlives {
-                    let Some(bound) = map_trait(bound) else {
-                        return false;
-                    };
-                    for &capture in &mine {
-                        cx.outlives(capture, bound, Category::Boring, range);
-                    }
-                }
-            } else {
-                cx.relate_types(
-                    ty,
-                    &mine,
-                    required_ret,
-                    &theirs,
-                    Variance::Covariant,
-                    Category::Boring,
-                    range,
-                );
             }
         }
         _ => return false,
@@ -5377,10 +5438,21 @@ impl<'a> Cx<'a> {
     ) {
         self.adt_obligations(dest_ty, dest_vars, range);
         match kind {
-            // Union validation admits only fields without stored regions,
-            // recursively through aggregates. Function pointer parameters have
-            // their own late-bound regions and carry no borrowed value here.
-            AggregateKind::Union(..) => {}
+            AggregateKind::Union(_, index) => {
+                if let Some(op) = ops.first() {
+                    let (field_ty, field) = self.field_regions(dest_ty, dest_vars, None, index);
+                    let (source, vars) = self.operand_regions(op);
+                    self.relate_types(
+                        source,
+                        &vars,
+                        field_ty,
+                        &field,
+                        Variance::Covariant,
+                        category,
+                        range,
+                    );
+                }
+            }
             AggregateKind::Tuple => {
                 let TyKind::Tuple(list) = dest_ty.kind() else {
                     return;

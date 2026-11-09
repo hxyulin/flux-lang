@@ -23,7 +23,7 @@ traits, type aliases (including generic associated types), `const` and
 `static` items, inline and out-of-line modules, `use` trees, `extern crate`,
 `extern` blocks (including C-variadic declarations), `macro_rules!`
 definitions, macro calls in item position and among the items of traits
-and `impl` blocks, and nongeneric unions with concrete
+and `impl` blocks, and generic unions with
 Copy fields (bounded as described below). `union` remains a contextual
 keyword, so identifiers and macros named `union` still work. Visibilities: `pub`,
 `pub(crate)`, `pub(self)`, `pub(super)`, `pub(in path)`.
@@ -1333,13 +1333,12 @@ only them (E0700, E0597, E0373, as in rustc), and only for as long as
 its `+ 'a` bounds and what its bounds say associated types are
 (`Item = &'a T`, elided lifetimes as in the return type) say. Auto
 trait leakage through the hidden type remains unsupported.
-Trait methods support top-level opaque returns, including generic methods,
+Trait methods support opaque returns inside tuples and generic return types, including generic methods,
 default bodies and concrete return-type refinement. Implementations retain the
 promised trait bounds, associated-type equalities and represented lifetime
 contracts. Generic callers keep the output opaque; concrete instances select the
-implementation before revealing its hidden type. Opaque returns nested inside
-another return type in trait methods, and output-equality inputs that carry their
-own region slots, remain unsupported. Explicit outlives promises are checked
+implementation before revealing its hidden type. Output-equality inputs that carry their
+own region slots remain unsupported. Explicit outlives promises are checked
 conservatively against the implementation's captured slots.
 `impl Trait` nested in an opaque type's bounds or in bounds' generic arguments
 (`T: Iterator<Item = impl Copy>`) is not supported yet; elsewhere it is rustc's E0562 ("`impl
@@ -1694,11 +1693,14 @@ zero; size is the largest field size rounded to maximum alignment, and no
 field niche is reused. Field reads/references require unsafe code, writes
 require an initialized mutable union, and borrows of different fields overlap.
 Copy/Clone copy storage without reading inactive fields or calling field Clone
-implementations; fields have no implicit destructors. Struct type/const
-arguments must be fully resolved, and Copy is checked through the trait solver.
+implementations; fields have no implicit destructors. Union type and const
+parameters are supported. Copy is checked under the declaration's bounds.
+`ManuallyDrop<T>` fields may hold non-Copy values without running destructors.
+Construction relates the active field's lifetimes to the union's generic
+arguments, including borrowed values passed as type parameters.
 Thin raw pointers are storage boundaries; their pointees need not be Copy.
 Pointers whose types retain lifetime slots, including pointers to references,
-and wide pointers remain unsupported. Generic union declarations, stored references,
+and wide pointers remain unsupported. Direct stored-reference field declarations,
 patterns, constant union storage, other derives/representation hints and field reinitialization after
 a move remain explicitly unsupported. Whole-value assignment can initialize
 or reinitialize a union; type-only size/alignment queries are supported.

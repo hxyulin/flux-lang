@@ -2218,11 +2218,6 @@ impl Collector<'_> {
             Some(Owner::Impl(imp)) => self.items.impls[imp].generics.params.len(),
             None => 0,
         };
-        let in_trait_or_trait_impl = match owner {
-            Some(Owner::Trait(_)) => true,
-            Some(Owner::Impl(imp)) => self.items.impls[imp].trait_ref.is_some(),
-            None => false,
-        };
         let diagnostics = &mut self.items.diagnostics;
         let mut generics = collect_generics(
             f.generic_param_list(),
@@ -2398,12 +2393,6 @@ impl Collector<'_> {
             reject_impl_trait(&mut ret, site, diagnostics);
         } else {
             collect_opaques(&mut ret, &mut opaques, diagnostics);
-            if in_trait_or_trait_impl && !opaques.is_empty() && !matches!(ret, TypeRef::Opaque(_)) {
-                diagnostics.push(Diagnostic::new(
-                    ret_range,
-                    "nested return-position `impl Trait` in trait methods is not supported yet",
-                ));
-            }
         }
         let has_body = f.body().is_some();
         if matches!(owner, Some(Owner::Impl(_))) && !has_body {
@@ -3625,13 +3614,6 @@ impl Collector<'_> {
         let Some(name) = s.name() else {
             return;
         };
-        if s.generic_param_list().is_some() || s.where_clause().is_some() {
-            unsupported(
-                &mut self.items.diagnostics,
-                s.syntax().text_range(),
-                "generic unions",
-            );
-        }
         for (derive, range) in &derives {
             if !matches!(derive, Derive::Copy | Derive::Clone) {
                 unsupported(&mut self.items.diagnostics, *range, "this union derive");

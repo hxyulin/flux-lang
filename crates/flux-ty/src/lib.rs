@@ -1281,9 +1281,11 @@ fn function_name(items: &ItemTree, f: FunctionId) -> Symbol {
     items.functions[f].name
 }
 
-/// A deliberately region-free, sized subset. Check every substituted field,
+/// A sized subset with generic parameters. Check every substituted field,
 /// including enum variants and nested unions, rather than treating an ADT's
-/// Copy impl as proof that its representation is supported. Reject recursive
+/// Copy impl as proof that its representation is supported. Generic arguments
+/// retain their region slots; direct stored-reference declarations remain gated.
+/// Reject recursive
 /// generic arguments conservatively, even when they occur only in phantom data.
 fn supported_union_field(
     items: &ItemTree,
@@ -1293,7 +1295,7 @@ fn supported_union_field(
     depth: u32,
 ) -> bool {
     let ty = flux_solve::traits::normalize(items, sigs, &[], ty);
-    if ty.has_params() || ty.has_infer() || depth >= 128 {
+    if ty.has_infer() || depth >= 128 {
         return false;
     }
     if let Some(&supported) = checked.get(&ty) {
@@ -1304,6 +1306,7 @@ fn supported_union_field(
     // The depth bound also stops expanding generic cycles such as S<S<T>>.
     checked.insert(ty, false);
     let supported = match ty.kind() {
+        TyKind::Param(_) => true,
         TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Char => true,
         TyKind::Tuple(fields) => fields
             .iter()
@@ -1318,11 +1321,10 @@ fn supported_union_field(
         // Do not recurse into the signature as though its inputs were storage.
         TyKind::FnPtr(_) => true,
         TyKind::Array(elem, len) => {
-            len.as_usize().is_some() && supported_union_field(items, sigs, elem, checked, depth + 1)
+            (len.as_usize().is_some() || len.has_params())
+                && supported_union_field(items, sigs, elem, checked, depth + 1)
         }
-        TyKind::Adt(adt, args)
-            if !flux_solve::is_lang_struct(items, adt.strukt, "manually_drop") =>
-        {
+        TyKind::Adt(adt, args) => {
             // Region slots also occur in type arguments, even when they are
             // phantom. Check these with the same memoized traversal rather
             // than expanding a shared generic type's region slots repeatedly.

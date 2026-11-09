@@ -1167,6 +1167,25 @@ struct Normalizer<'a> {
     active: Vec<Ty>,
 }
 
+/// Find the implementation type at one opaque position in a trait return.
+/// Matching the surrounding constructors prevents confusing distinct tuple or
+/// generic argument positions when a method has several opaque outputs.
+pub fn opaque_return_type(declared: Ty, actual: Ty, index: u32) -> Option<Ty> {
+    if let TyKind::Opaque(opaque) = declared.kind() {
+        return (opaque.index == index).then_some(actual);
+    }
+    if !crate::fn_regions::same_shape(
+        declared.map_children(|_| Ty::ERROR),
+        actual.map_children(|_| Ty::ERROR),
+    ) {
+        return None;
+    }
+    declared
+        .children()
+        .zip(actual.children())
+        .find_map(|(declared, actual)| opaque_return_type(declared, actual, index))
+}
+
 impl Normalizer<'_> {
     fn go(&mut self, ty: Ty, depth: u32) -> Ty {
         if (!ty.has_aliases() && !ty.has_opaques()) || depth > 64 {
@@ -1207,10 +1226,13 @@ impl Normalizer<'_> {
                     );
                     if target.function != opaque.function
                         && let Some(signature) = sigs.fns.get(target.function)
-                        && opaque.index == 0
-                        && matches!(sigs.fns[opaque.function].ret.kind(), TyKind::Opaque(_))
+                        && let Some(output) = opaque_return_type(
+                            sigs.fns[opaque.function].ret.subst(args),
+                            signature.ret.subst(target.args),
+                            opaque.index,
+                        )
                     {
-                        return self.go(signature.ret.subst(target.args), depth + 1);
+                        return self.go(output, depth + 1);
                     }
                 }
                 Ty::opaque(opaque)

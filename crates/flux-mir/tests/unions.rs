@@ -87,10 +87,6 @@ fn union_rejections() {
             "union fields must implement Copy",
         ),
         (
-            "union U<T: Copy> { a: T } fn main() {}",
-            "generic unions are not supported yet",
-        ),
-        (
             "#[repr(align(16))] union U { a: u32 } fn main() {}",
             "union alignment hints are not supported yet",
         ),
@@ -188,10 +184,6 @@ fn aggregate_union_rejections() {
             "this union field type is not supported yet",
         ),
         (
-            "union U { a: core::mem::ManuallyDrop<u32> } fn main() {}",
-            "this union field type is not supported yet",
-        ),
-        (
             "#[derive(Copy, Clone)] struct S(u32); union U { a: S } fn main() { let u = U { a: S(1) }; let _ = u.a.0; }",
             "access to union field is unsafe",
         ),
@@ -274,11 +266,7 @@ fn concrete_copy_union_fields_match_rustc_boundary() {
             false,
             Some("union fields must implement Copy"),
         ),
-        (
-            "union U<T: Copy> { field: T } fn main() {}",
-            true,
-            Some("generic unions are not supported yet"),
-        ),
+        ("union U<T: Copy> { field: T } fn main() {}", true, None),
         (
             "union U { r: &'static u8 } fn main() {}",
             true,

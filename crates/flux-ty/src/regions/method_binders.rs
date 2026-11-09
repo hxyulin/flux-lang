@@ -31,15 +31,19 @@ pub fn method_early_lifetimes(
         constrained_inputs(items, ty, row, &mut inputs)?;
     }
     let mut output = Vec::new();
-    if let flux_hir::TypeRef::Opaque(index) = data.ret {
-        let opaque = data.opaques.get(index as usize)?;
+    // Opaque declarations live beside the return type. Gather their lifetime
+    // uses before erasing the opaque placeholders for the ordinary walk.
+    for opaque in &data.opaques {
         output.extend(opaque.lifetimes.iter().copied());
         for bound in &opaque.bounds {
             if !resolve::callback_path_lifetimes(&bound.path, &mut output) {
                 return None;
             }
         }
-    } else if !resolve::callback_type_lifetimes(&data.ret, &mut output) {
+    }
+    let mut ret = data.ret.clone();
+    erase_opaque_outputs(&mut ret);
+    if !resolve::callback_type_lifetimes(&ret, &mut output) {
         return None;
     }
     let mut written = Vec::new();
@@ -121,4 +125,39 @@ fn constrained_inputs(
         at += count;
     }
     (at == row.len()).then_some(())
+}
+
+/// Keep the written return's lifetime occurrences while removing placeholders
+/// whose declarations were visited separately.
+fn erase_opaque_outputs(ty: &mut TypeRef) {
+    fn path_erase(path: &mut flux_hir::Path) {
+        if let Some(q) = &mut path.qself {
+            erase_opaque_outputs(&mut q.ty);
+            if let Some(t) = &mut q.trait_ {
+                path_erase(t);
+            }
+        }
+        for args in path.args.iter_mut().flatten() {
+            for ty in &mut args.types {
+                erase_opaque_outputs(ty);
+            }
+            for binding in &mut args.bindings {
+                erase_opaque_outputs(&mut binding.ty);
+            }
+        }
+    }
+    match ty {
+        TypeRef::Opaque(_) => *ty = TypeRef::unit(),
+        TypeRef::Path(p) => path_erase(p),
+        TypeRef::Tuple(ts) => ts.iter_mut().for_each(erase_opaque_outputs),
+        TypeRef::Ref { pointee, .. } | TypeRef::Ptr { pointee, .. } | TypeRef::Slice(pointee) => {
+            erase_opaque_outputs(pointee)
+        }
+        TypeRef::Array { elem, .. } => erase_opaque_outputs(elem),
+        TypeRef::FnPtr { params, ret, .. } => {
+            params.iter_mut().for_each(erase_opaque_outputs);
+            erase_opaque_outputs(ret);
+        }
+        _ => {}
+    }
 }

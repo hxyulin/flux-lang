@@ -10,4 +10,3 @@ fn <Bits<T> as $crate0::clone::Clone>::clone(self@0: &Self) -> Self {
     Bits { byte: Clone::clone((&self@0.byte)), word: Clone::clone((&self@0.word)), enabled: Clone::clone((&self@0.enabled)) }
 }
 
-error 0..231: generic unions are not supported yet
