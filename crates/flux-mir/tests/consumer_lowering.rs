@@ -9,6 +9,26 @@ fn consumer_lowering_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "side_effecting_waker_constructor",
+            "use core::task::{RawWaker,RawWakerVTable};unsafe fn c(_: *const())->RawWaker{loop{}} unsafe fn n(_: *const()){}fn t(counter:&core::cell::Cell<u32>)->&'static RawWakerVTable{&{counter.set(1);RawWakerVTable::new}(c,n,n,n)}fn main(){}",
+            false,
+        ),
+        (
+            "wrong_forwarded_iterator_item",
+            "trait P{type A:Iterator<Item=u32>+Send+'static;} trait Q{type A:Iterator<Item=u64>+Send+'static;} impl<T:P+?Sized>Q for &T{type A=T::A;}fn main(){}",
+            false,
+        ),
+        (
+            "unsized_debug_lock_wrapper",
+            "#[derive(Debug)]struct M<T:?Sized>(std::sync::Mutex<T>);#[derive(Debug)]struct R<T:?Sized>(std::sync::RwLock<T>);fn main(){}",
+            true,
+        ),
+        (
+            "runtime_waker_table_input",
+            "use core::task::{RawWaker,RawWakerVTable};unsafe fn c(_: *const())->RawWaker{loop{}} unsafe fn n(_: *const()){}fn t(callback:unsafe fn(*const())->RawWaker)->&'static RawWakerVTable{&RawWakerVTable::new(callback,n,n,n)}fn main(){}",
+            false,
+        ),
+        (
             "pointer_marker_is_private",
             "struct S; impl core::marker::FnPtr for S {fn addr(self)->usize{0}} fn main(){}",
             false,

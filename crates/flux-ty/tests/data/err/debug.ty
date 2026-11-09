@@ -19,6 +19,6 @@ fn fmt(&E, &mut Formatter) -> Result<(), Error>
 fn fmt(&W<T>, &mut Formatter) -> Result<(), Error>
     self@0: &W<T>
     f@1: &mut Formatter
-error 222..232: `NoDebug` doesn't implement `Debug`
+error 222..232: `&NoDebug` doesn't implement `Debug`
 error 269..276: `NoDebug` doesn't implement `Debug`
 error 644..652: `NoDebug` doesn't implement `Debug`

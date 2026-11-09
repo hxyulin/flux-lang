@@ -3147,6 +3147,23 @@ impl Builder<'_> {
                 let (strukt, index) = match body.exprs[*callee] {
                     Expr::Path(Res::Struct(id)) => (id, 0),
                     Expr::Path(Res::Variant(id, index)) => (id, index),
+                    Expr::Path(Res::Function(_) | Res::Assoc { .. }) => {
+                        let function = types.calls.get(*callee)?.function;
+                        if self
+                            .items
+                            .lang_fns
+                            .get(&Symbol::intern("raw_waker_vtable_new"))
+                            != Some(&function)
+                        {
+                            return None;
+                        }
+                        // This core constructor only stores four function pointers.
+                        // General const calls retain their existing promotion boundary.
+                        let TyKind::Adt(adt, _) = ty.kind() else {
+                            return None;
+                        };
+                        (adt.strukt, 0)
+                    }
                     _ => return None,
                 };
                 let fields = body.lists[*args]

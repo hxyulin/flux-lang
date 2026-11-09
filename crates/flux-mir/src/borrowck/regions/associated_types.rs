@@ -70,6 +70,10 @@ impl Cx<'_> {
                 && !self.env.iter().any(|known| known.alias == projection.alias)
             {
                 self.env.push(projection);
+                // These header consequences have no region slots on either
+                // side. Keep the empty output row as well as the type equality,
+                // so declaration checks need not select an abstract receiver.
+                self.env_regions.push((projection.alias, Vec::new()));
             }
         }
     }

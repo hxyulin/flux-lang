@@ -5,6 +5,21 @@ use std::process::Command;
 fn send_sync_match_rustc() {
     let cases = [
         (
+            "vec_into_iter",
+            "fn main(){send::<std::vec::IntoIter<u32>>();sync::<std::vec::IntoIter<u32>>();}",
+            true,
+        ),
+        (
+            "vec_into_iter_non_send",
+            "fn main(){send::<std::vec::IntoIter<std::rc::Rc<u32>>>();}",
+            false,
+        ),
+        (
+            "vec_into_iter_non_sync",
+            "fn main(){sync::<std::vec::IntoIter<core::cell::Cell<u32>>>();}",
+            false,
+        ),
+        (
             "scalars",
             "fn main() { send::<(u8, bool, char, [usize; 2])>(); sync::<str>(); let _ = take(1); } fn take<T: Send>(x: T) -> T { x }",
             true,

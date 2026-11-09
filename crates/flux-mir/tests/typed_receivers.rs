@@ -8,6 +8,21 @@ fn typed_receivers_and_anonymous_imports_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "pinned_receiver_elision",
+            "use core::pin::Pin;trait T{fn get(self:Pin<&mut Self>,other:&u32)->&u32;}struct S(u32);impl T for S{fn get(self:Pin<&mut Self>,_:&u32)->&u32{&self.get_mut().0}}fn main(){}",
+            true,
+        ),
+        (
+            "pinned_receiver_wrong_input",
+            "use core::pin::Pin;trait T{fn get(self:Pin<&mut Self>,other:&u32)->&u32;}struct S(u32);impl T for S{fn get(self:Pin<&mut Self>,other:&u32)->&u32{other}}fn main(){}",
+            false,
+        ),
+        (
+            "pinned_receiver_escape",
+            "use core::pin::Pin;struct S(u32);impl S{fn get(self:Pin<&mut Self>,_:&u32)->&u32{&self.get_mut().0}}fn main(){let other=7;let out;{let mut s=S(1);out=Pin::new(&mut s).get(&other);}assert_eq!(*out,1);}",
+            false,
+        ),
+        (
             "shared",
             "struct S(u32);impl S{fn get(self:&Self)->u32{self.0}}fn main(){assert_eq!(S(3).get(),3);}",
             true,

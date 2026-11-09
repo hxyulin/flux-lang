@@ -171,3 +171,8 @@ fn repeated_impl_parameters() {
 fn deep_iterator_chain() {
     support::oracle::compare_fixture("pending/deep_iterator_chain");
 }
+
+#[test]
+fn tokio_prerequisites() {
+    support::oracle::compare_fixture("tokio_prerequisites");
+}

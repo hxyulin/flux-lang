@@ -962,6 +962,11 @@ pub struct IntoIter<T> {
     end: usize,
 }
 
+// SAFETY: the iterator exclusively owns its allocation and remaining elements.
+unsafe impl<T: Send> Send for IntoIter<T> {}
+// SAFETY: shared access exposes only shared references to remaining elements.
+unsafe impl<T: Sync> Sync for IntoIter<T> {}
+
 impl<T> IntoIter<T> {
     /// The elements not taken yet.
     pub fn as_slice(&self) -> &[T] {

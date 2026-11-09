@@ -10,6 +10,8 @@ fn associated_value_selection_matches_rustc() {
     let single = "trait R{type A;} trait Q{type A;} struct S<'a>(&'a i32);";
     let pair = "trait R{type A;} trait Q{type A;} struct S<'a,'b>(&'a i32,&'b i32);";
     let cases = [
+        ("forwarded_iterator_equality", "trait P{type A:Iterator<Item=u32>+Send+'static;} impl<T:P+?Sized>P for &T{type A=T::A;}".into(), true),
+
         ("self_static_bad", format!("{single} impl R for S<'static>{{type A=i32;}} impl<'a>Q for S<'a>{{type A=<Self as R>::A;}}"), false),
         ("explicit_static_bad", format!("{single} impl R for S<'static>{{type A=i32;}} impl<'a>Q for S<'a>{{type A=<S<'a> as R>::A;}}"), false),
         ("nested_actual_bad", format!("{single} impl R for S<'static>{{type A=i32;}} impl<'a>Q for S<'a>{{type A=<Self as R>::A;}} trait P{{}} trait C:P{{}} struct W<I>(I); impl<I:Q<A=i32>>P for W<I>{{}} impl<'a>C for W<S<'a>>{{}}"), false),

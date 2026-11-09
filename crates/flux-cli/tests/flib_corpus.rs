@@ -196,3 +196,5 @@ fixture!(
 );
 
 fixture!(async_functions, "async_functions.rs");
+
+fixture!(tokio_prerequisites, "tokio_prerequisites.rs");

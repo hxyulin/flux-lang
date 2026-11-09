@@ -1144,7 +1144,8 @@ it; `Deref`, `DerefMut`, `Clone`, comparisons, `Debug`, `Display`,
 slices' methods work on it; `Index` and `IndexMut` by `usize` and
 ranges, panicking at the brackets with rustc's messages, as `insert`,
 `remove` and `split_off` do at their calls; `IntoIterator` by value,
-by reference and mutably; `FromIterator` and `Extend`, so `collect`
+by reference and mutably; the owning iterator is Send when T is Send and Sync
+when T is Sync; `FromIterator` and `Extend`, so `collect`
 makes one, with the capacities rustc's specializations give (exactly
 the length of an iterator whose length is known, rustc's
 `TrustedLen`, which flux's iterators say through a hidden method in
@@ -1470,6 +1471,8 @@ function item values, and named ones in constant-owned closures are not supporte
 Raw-pointer casts retain written nested reference lifetimes. A raw-to-raw cast
 may change them, while a reference-to-raw conversion still owes its pointee's
 outlives constraints, including when both erased pointer types are equal.
+Elided output lifetimes on supported wrapped receivers, such as
+`self: Pin<&mut Self>`, follow the receiver borrow.
 Concrete qualified associated types in struct fields can normalize through a
 selected impl while retaining their written input lifetimes. This covers owned
 and borrowed `IntoIterator::IntoIter` fields, including nested fields. Selection
@@ -1980,7 +1983,8 @@ selects and drops values normally without an optimizer hint.
 
 The embedded `future`, `pin` and `task` modules support manually polled futures,
 Pin receivers, pinned references and Option projections, Poll, Context and raw
-waker callbacks. `Pin::as_deref_mut` reborrows a nested pinned pointer without
+waker callbacks. References to `RawWakerVTable::new(...)` with constant function
+callbacks can be promoted to static storage, including generic callback instances. `Pin::as_deref_mut` reborrows a nested pinned pointer without
 requiring its target to be Unpin. `pin!` moves a value into temporary storage and extends that
 storage through its enclosing initializer where Rust does. Safe mutable access
 requires Unpin. Replacing a pinned value drops the old value in place.

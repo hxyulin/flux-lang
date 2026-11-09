@@ -27,6 +27,8 @@ pub struct RawWakerVTable {
     drop:unsafe fn(*const ()),
 }
 impl RawWakerVTable {
+    // The compiler may promote these pure arguments in declaration field order.
+    #[lang = "raw_waker_vtable_new"]
     pub const fn new(clone:unsafe fn(*const ())->RawWaker,wake:unsafe fn(*const ()),wake_by_ref:unsafe fn(*const ()),drop:unsafe fn(*const ()))->Self {
         Self{clone,wake,wake_by_ref,drop}
     }

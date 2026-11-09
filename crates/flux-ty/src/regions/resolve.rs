@@ -2,6 +2,24 @@
 
 use super::*;
 
+// Known receiver wrappers have no lifetime slots before their pointer argument.
+// Stop at Self so an impl for a reference does not treat by-value self as &self.
+fn borrowed_receiver(items: &ItemTree, mut receiver: Ty, self_ty: Option<Ty>) -> bool {
+    let Some(self_ty) = self_ty else {
+        return false;
+    };
+    while receiver != self_ty {
+        let Some((wrap, inner)) = flux_solve::receiver_wrap(items, receiver) else {
+            return false;
+        };
+        if matches!(wrap, flux_solve::ReceiverWrap::Ref(_)) {
+            return true;
+        }
+        receiver = inner;
+    }
+    false
+}
+
 type Errors = Vec<(flux_hir::FileId, TextRange, String)>;
 
 /// A bound on a trait's abstract Self is inherited through its supertraits.
@@ -1437,10 +1455,11 @@ pub(super) fn safe_method_contract(
         distinct.extend(own);
     }
     walker.elided = if function.has_self
-        && matches!(
-            function.params.first().map(|parameter| &parameter.ty),
-            Some(TypeRef::Ref { .. })
-        ) {
+        && signature
+            .params
+            .first()
+            .is_some_and(|&receiver| borrowed_receiver(items, receiver, scope.self_ty))
+    {
         Elided::Is(*params.first()?.first()?)
     } else if distinct.len() == 1 {
         Elided::Is(distinct[0])
@@ -1681,10 +1700,9 @@ fn functions(
         // Elision in the return type.
         let first_fresh = walker.names.len() as u32;
         let self_ref = function.has_self
-            && matches!(
-                function.params.first().map(|p| &p.ty),
-                Some(TypeRef::Ref { .. })
-            );
+            && sig_params
+                .first()
+                .is_some_and(|&receiver| borrowed_receiver(items, receiver, self_ty));
         let inputs: Vec<Region> = elision_params
             .iter()
             .flat_map(|p| p.iter().copied())

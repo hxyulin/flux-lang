@@ -661,22 +661,6 @@ fn derived_default_body(items: &ItemTree, function: FunctionId, strukt: StructId
 /// &self.a).finish()` for one with named fields, each field's part at
 /// the field, where rustc reports one that does not implement `Debug`;
 /// for an enum, a `match` on the variant `self` holds.
-/// Whether field type `ty` of `s` may be unsized as written: a `?Sized`
-/// parameter, `str`, a slice or a trait object.
-fn maybe_unsized_field(s: &crate::item_tree::Struct, ty: &TypeRef) -> bool {
-    match ty {
-        TypeRef::Slice(_) | TypeRef::Dyn(_) => true,
-        TypeRef::Path(path) => path.as_name().is_some_and(|name| {
-            name.as_str() == "str"
-                || s.generics
-                    .params
-                    .iter()
-                    .any(|p| p.name == name && p.maybe_unsized)
-        }),
-        _ => false,
-    }
-}
-
 fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) -> LoweredBody {
     let data = &items.functions[function];
     let s = &items.structs[strukt];
@@ -766,7 +750,7 @@ fn derived_debug_body(items: &ItemTree, function: FunctionId, strukt: StructId) 
                     },
                     at,
                 );
-                if i + 1 < s.fields.len() || !maybe_unsized_field(s, &field.ty) {
+                if i + 1 < s.fields.len() {
                     return reference;
                 }
                 // An unsized last field is passed as `&&self.x`, as rustc
