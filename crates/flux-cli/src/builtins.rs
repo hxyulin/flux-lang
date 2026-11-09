@@ -14,7 +14,7 @@ use crate::flib::executable::{CheckMethod, CheckedIdentity, ExecutableIdentity};
 use crate::flib::{Archive, write_atomic};
 
 const MAGIC: &[u8; 8] = b"FLUXSUIT";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const NAME: &str = "flux-builtins.flib";
 static ACTIVE: OnceLock<Option<Arc<BuiltinSuite>>> = OnceLock::new();
 

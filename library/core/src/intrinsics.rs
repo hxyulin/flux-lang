@@ -24,13 +24,13 @@ pub(crate) const unsafe fn ptr_offset<T>(pointer: *const T, count: isize) -> *co
 /// A bitwise copy of `*src`, which need not be `Copy`: the caller makes
 /// sure that only one of the two is used and dropped.
 #[rustc_intrinsic]
-pub(crate) unsafe fn read<T>(src: *const T) -> T {
+pub(crate) const unsafe fn read<T>(src: *const T) -> T {
     loop {}
 }
 
 /// Stores `value` in `*dst` without dropping what was there.
 #[rustc_intrinsic]
-pub(crate) unsafe fn write<T>(dst: *mut T, value: T) {
+pub(crate) const unsafe fn write<T>(dst: *mut T, value: T) {
     loop {}
 }
 

@@ -236,6 +236,7 @@ fn operand(
             | Value::InteriorRef(_)
             | Value::PointerOffset { .. }
             | Value::PointerView { .. }
+            | Value::FramePointer { .. }
             | Value::LocalRef { .. }
             | Value::RawAddr(_) => None,
         },
@@ -333,6 +334,7 @@ fn evaluate(
                 | Value::InteriorRef(_)
                 | Value::PointerOffset { .. }
                 | Value::PointerView { .. }
+                | Value::FramePointer { .. }
                 | Value::LocalRef { .. }
                 | Value::RawAddr(_) => {
                     return None;

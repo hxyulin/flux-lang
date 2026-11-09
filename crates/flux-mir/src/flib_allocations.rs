@@ -47,7 +47,9 @@ pub(super) fn value_height(value: &Value, e: &mut Encoder, level: u32) -> Result
             }
         }
         Value::Function(_) => 1,
-        Value::LocalRef { .. } => return Err(Error::new("frame-local value cannot be serialized")),
+        Value::FramePointer { .. } | Value::LocalRef { .. } => {
+            return Err(Error::new("frame-local value cannot be serialized"));
+        }
         _ => 0,
     };
     height(level, 1 + extra)
@@ -128,7 +130,9 @@ pub(super) fn decoded_height(value: &Value, d: &Decoder<'_>) -> Result<u32, Erro
             }
         }
         Value::Function(_) => 1,
-        Value::LocalRef { .. } => return Err(Error::new("frame-local allocation metadata")),
+        Value::FramePointer { .. } | Value::LocalRef { .. } => {
+            return Err(Error::new("frame-local allocation metadata"));
+        }
         _ => 0,
     };
     height(0, 1 + extra)

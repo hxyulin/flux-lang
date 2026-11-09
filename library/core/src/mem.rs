@@ -227,7 +227,7 @@ impl<T> MaybeUninit<T> {
 
     /// Puts `val` in, without dropping what was there, and gives a
     /// reference to it.
-    pub fn write(&mut self, val: T) -> &mut T {
+    pub const fn write(&mut self, val: T) -> &mut T {
         unsafe {
             crate::intrinsics::write(&raw mut self.value.value, val);
         }
@@ -240,7 +240,7 @@ impl<T> MaybeUninit<T> {
     }
 
     /// A mutable pointer to the value.
-    pub fn as_mut_ptr(&mut self) -> *mut T {
+    pub const fn as_mut_ptr(&mut self) -> *mut T {
         &raw mut self.value.value
     }
 

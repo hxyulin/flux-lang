@@ -30,11 +30,21 @@ use crate::{
     StatementKind, TerminatorKind, UnOp,
 };
 
+mod frame_memory;
+use frame_memory::FrameAllocation;
+
 /// A value computed at compile time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
-    /// Storage without an initialized payload. Only `MaybeUninit<T>` may carry it.
+    /// Unwritten typed storage. Ordinary payload markers stay inside live
+    /// frame storage or an enclosing `MaybeUninit<T>` value.
     Uninit(Ty),
+    /// An address in live evaluator-owned frame storage; never serialized.
+    FramePointer {
+        origin: LocalOrigin,
+        ty: Ty,
+        writable: bool,
+    },
     Float {
         bits: u64,
         ty: flux_ty::FloatTy,
@@ -260,6 +270,8 @@ pub struct Evaluator<'a> {
     local_borrows: Vec<Vec<Option<LocalOrigin>>>,
     borrow_frames: Vec<Vec<Option<LocalOrigin>>>,
     live_borrows: FxHashSet<u64>,
+    frame_memory: FxHashMap<u64, FrameAllocation>,
+    frame_slots: Vec<Vec<(usize, u64)>>,
     next_borrow: u64,
     view_nodes: u64,
     view_layouts: FxHashMap<Ty, Rc<crate::layout::Layout>>,
@@ -308,6 +320,8 @@ impl<'a> Evaluator<'a> {
             local_borrows: Vec::new(),
             borrow_frames: Vec::new(),
             live_borrows: FxHashSet::default(),
+            frame_memory: FxHashMap::default(),
+            frame_slots: Vec::new(),
             next_borrow: 1,
             view_nodes: 0,
             view_layouts: FxHashMap::default(),
@@ -452,7 +466,7 @@ impl<'a> Evaluator<'a> {
     ) -> Result<(), EvalError> {
         let ty = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
         match value {
-            Value::LocalRef { .. } => return Err(error(range,
+            Value::LocalRef { .. } | Value::FramePointer { .. } => return Err(error(range,
                 "reference to local storage cannot escape constant evaluation".into())),
 
             Value::PointerOffset { pointer, source, target, .. } => {
@@ -581,6 +595,10 @@ impl<'a> Evaluator<'a> {
         range: TextRange,
     ) -> Result<Ty, EvalError> {
         let ty = pointer_pointee(source).ok_or_else(|| unsupported_view(range))?;
+        if let Value::FramePointer { origin, ty, .. } = value {
+            self.frame_allocation(*origin, range)?;
+            return Ok(*ty);
+        }
         let inner = match value {
             Value::Ref(value) | Value::InteriorRef(value) => Some(value),
             Value::LocalRef { value, origin, .. } => {
@@ -670,8 +688,13 @@ impl<'a> Evaluator<'a> {
         range: TextRange,
     ) -> Result<Value, EvalError> {
         let mut ty = pointer_pointee(source_ty).ok_or_else(|| unsupported_view(range))?;
-        let mut sequence_len = ty.array_len().or_else(|| match &value {
+        let mut view = &value;
+        while let Value::PointerView { pointer, .. } = view {
+            view = pointer;
+        }
+        let mut sequence_len = ty.array_len().or_else(|| match view {
             Value::PointerOffset { len, .. } => *len,
+            Value::FramePointer { ty, .. } => ty.array_len(),
             Value::Ref(inner)
             | Value::InteriorRef(inner)
             | Value::LocalRef { value: inner, .. } => match &**inner {
@@ -760,6 +783,13 @@ impl<'a> Evaluator<'a> {
                 range,
                 "constant pointer offset is out of bounds".into(),
             ));
+        }
+        if matches!(
+            pointer_pointee(target).map(Ty::kind),
+            Some(TyKind::Slice(_) | TyKind::Str)
+        ) && metadata.is_none()
+        {
+            metadata = sequence_len;
         }
         if pointer_pointee(target).is_some_and(|ty| self.sigs.is_unsized(ty)) && metadata.is_none()
         {
@@ -906,6 +936,9 @@ impl<'a> Evaluator<'a> {
             return Ok(result);
         }
         let value = match pointer {
+            Value::FramePointer { origin, .. } => {
+                self.frame_allocation(*origin, range)?.value.clone()
+            }
             Value::Ref(value) | Value::InteriorRef(value) => (**value).clone(),
             Value::LocalRef { value, origin, raw } => {
                 if !self.live_borrows.contains(&origin.token) {
@@ -1009,7 +1042,14 @@ impl<'a> Evaluator<'a> {
             .filter(|&end| end <= stored.size)
             .ok_or_else(|| error(range, "constant pointer read is out of bounds".into()))?;
         if offset == 0 && from == to {
-            return Ok(value.clone());
+            let mut value = self.read_marker(value.clone(), range)?;
+            self.materialize_zero_sized(&mut value, to, range)?;
+            self.initialized(&value, to, range)?;
+            return Ok(value);
+        }
+        if let Value::Uninit(ty) = value {
+            let expanded = self.expand_storage(*ty, range)?;
+            return self.memory_value(&expanded, from, offset, to, range, depth + 1);
         }
         if offset == 0 && from.is_pointer() && to.is_pointer() {
             if matches!(to.kind(), TyKind::Ref(..)) {
@@ -1470,16 +1510,21 @@ impl<'a> Evaluator<'a> {
         range: TextRange,
     ) -> Result<Value, EvalError> {
         let mut reader = |pointer: &Value, source, target, range| {
-            self.pointer_value(pointer, source, target, range)
+            if let Value::Uninit(ty) = pointer {
+                self.expand_storage(*ty, range)
+            } else {
+                self.pointer_value(pointer, source, target, range)
+            }
         };
-        project_with_reader(
+        let value = project_with_reader(
             locals,
             value,
             projection,
             range,
             &mut BorrowOrigin::default(),
             &mut reader,
-        )
+        )?;
+        self.read_marker(value, range)
     }
 
     /// Slice an existing constant reference while retaining static allocation
@@ -1767,6 +1812,7 @@ impl<'a> Evaluator<'a> {
     fn type_intrinsic(
         &mut self,
         (func, generic_args, generics): (FunctionId, GenericArgs, GenericArgs),
+        body: &Body,
         locals: &mut [Option<Value>],
         dest: &Place,
         target: Option<crate::BasicBlock>,
@@ -1822,7 +1868,7 @@ impl<'a> Evaluator<'a> {
                 ty: IntTy::Usize,
             }
         };
-        write(locals, dest, value, range)?;
+        self.frame_assign(body, locals, generics, dest, value, range)?;
         target.ok_or_else(|| error(range, "entering unreachable code".to_owned()))
     }
 
@@ -1943,11 +1989,14 @@ impl<'a> Evaluator<'a> {
         self.arguments.push(args);
         self.local_borrows
             .push(self.borrow_frames.pop().unwrap_or_default());
+        self.frame_slots.push(Vec::new());
         let result = self.run_body(body, &mut locals, generics, depth, checked);
+        self.frame_slots.pop();
         self.promoted.pop();
         let mut borrows = self.local_borrows.pop().unwrap();
         for origin in borrows.drain(..).flatten() {
             self.live_borrows.remove(&origin.token);
+            self.frame_memory.remove(&origin.token);
         }
         self.borrow_frames.push(borrows);
         // No evaluated values survive in scratch storage: in particular, a
@@ -1995,6 +2044,7 @@ impl<'a> Evaluator<'a> {
         loop {
             let data = &body.blocks[block];
             for statement in &data.statements {
+                self.sync_frame(locals);
                 self.steps += 1;
                 if self.steps > STEP_LIMIT {
                     return Err(error(
@@ -2010,6 +2060,11 @@ impl<'a> Evaluator<'a> {
                         .and_then(Option::take)
                 {
                     self.live_borrows.remove(&origin.token);
+                    self.frame_memory.remove(&origin.token);
+                    self.frame_slots
+                        .last_mut()
+                        .unwrap()
+                        .retain(|&(_, token)| token != origin.token);
                 }
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
                     if let Some(Some(Value::Static(_))) = locals.get(dest.local.index())
@@ -2019,9 +2074,10 @@ impl<'a> Evaluator<'a> {
                     }
                     let value =
                         self.rvalue(body, locals, generics, rvalue, statement.range, !checked)?;
-                    write(locals, dest, value, statement.range)?;
+                    self.frame_assign(body, locals, generics, dest, value, statement.range)?;
                 }
             }
+            self.sync_frame(locals);
             let range = data.terminator.range;
             block = match &data.terminator.kind {
                 // What a constant drops runs no code: anything else is
@@ -2051,6 +2107,7 @@ impl<'a> Evaluator<'a> {
                         | Value::InteriorRef(_)
                         | Value::PointerOffset { .. }
                         | Value::PointerView { .. }
+                        | Value::FramePointer { .. }
                         | Value::LocalRef { .. } => {
                             unreachable!("switches on scalars")
                         }
@@ -2110,7 +2167,14 @@ impl<'a> Evaluator<'a> {
                                 .mul_add(f64::from_bits(*y), f64::from_bits(*z))
                                 .to_bits(),
                         };
-                        write(locals, dest, Value::Float { bits, ty: *ty }, range)?;
+                        self.frame_assign(
+                            body,
+                            locals,
+                            generics,
+                            dest,
+                            Value::Float { bits, ty: *ty },
+                            range,
+                        )?;
                         match target {
                             Some(next) => {
                                 block = *next;
@@ -2128,7 +2192,14 @@ impl<'a> Evaluator<'a> {
                         else {
                             unreachable!("typed integer argument");
                         };
-                        write(locals, dest, bit_count(intrinsic, bits, ty), range)?;
+                        self.frame_assign(
+                            body,
+                            locals,
+                            generics,
+                            dest,
+                            bit_count(intrinsic, bits, ty),
+                            range,
+                        )?;
                         match target {
                             Some(next) => {
                                 block = *next;
@@ -2139,7 +2210,7 @@ impl<'a> Evaluator<'a> {
                     }
                     if self.is_type_intrinsic(*func) {
                         let call = (*func, *generic_args, generics);
-                        block = self.type_intrinsic(call, locals, dest, *target, range)?;
+                        block = self.type_intrinsic(call, body, locals, dest, *target, range)?;
                         continue;
                     }
                     if self.items.functions[*func].intrinsic
@@ -2226,7 +2297,7 @@ impl<'a> Evaluator<'a> {
                             body.operand_ty(pointer, self.sigs).subst(generics),
                         );
                         let value = self.pointer_offset(value, pointer_ty, count, range)?;
-                        write(locals, dest, value, range)?;
+                        self.frame_assign(body, locals, generics, dest, value, range)?;
                         block = target
                             .ok_or_else(|| error(range, "entering unreachable code".into()))?;
                         continue;
@@ -2265,7 +2336,7 @@ impl<'a> Evaluator<'a> {
                             ),
                             range,
                         )?;
-                        write(locals, dest, value, range)?;
+                        self.frame_assign(body, locals, generics, dest, value, range)?;
                         block = target
                             .ok_or_else(|| error(range, "entering unreachable code".into()))?;
                         continue;
@@ -2285,7 +2356,7 @@ impl<'a> Evaluator<'a> {
                             range,
                             false,
                         )?;
-                        write(locals, dest, value, range)?;
+                        self.frame_assign(body, locals, generics, dest, value, range)?;
                         match target {
                             Some(target) => {
                                 block = *target;
@@ -2324,7 +2395,7 @@ impl<'a> Evaluator<'a> {
                                 == Some(flux_hir::Intrinsic::SubsliceMut),
                             range,
                         )?;
-                        write(locals, dest, value, range)?;
+                        self.frame_assign(body, locals, generics, dest, value, range)?;
                         match target {
                             Some(next) => {
                                 block = *next;
@@ -2362,10 +2433,44 @@ impl<'a> Evaluator<'a> {
                         } else {
                             self.memory_value(&value, from, 0, to, range, 0)?
                         };
-                        write(locals, dest, value, range)?;
+                        self.frame_assign(body, locals, generics, dest, value, range)?;
                         match target {
                             Some(target) => {
                                 block = *target;
+                                continue;
+                            }
+                            None => return Err(error(range, "entering unreachable code".into())),
+                        }
+                    }
+                    if matches!(
+                        self.items.functions[*func].intrinsic,
+                        Some(flux_hir::Intrinsic::Write | flux_hir::Intrinsic::Read)
+                    ) {
+                        let intrinsic = self.items.functions[*func].intrinsic.unwrap();
+                        let pointer = self.operand(locals, generics, &args[0], range)?;
+                        let ty = subst_list(generic_args, generics)[0];
+                        let value = if intrinsic == flux_hir::Intrinsic::Write {
+                            let value = self.operand(locals, generics, &args[1], range)?;
+                            self.release_frame(locals);
+                            self.frame_store(
+                                &pointer,
+                                Ty::raw_ptr(flux_ty::Mutability::Mut, ty),
+                                value,
+                                range,
+                            )?;
+                            Value::unit()
+                        } else {
+                            self.pointer_value(
+                                &pointer,
+                                Ty::raw_ptr(flux_ty::Mutability::Not, ty),
+                                Ty::raw_ptr(flux_ty::Mutability::Not, ty),
+                                range,
+                            )?
+                        };
+                        self.frame_assign(body, locals, generics, dest, value, range)?;
+                        match target {
+                            Some(next) => {
+                                block = *next;
                                 continue;
                             }
                             None => return Err(error(range, "entering unreachable code".into())),
@@ -2380,7 +2485,7 @@ impl<'a> Evaluator<'a> {
                                 "uninitialized constant storage requires `MaybeUninit`".into(),
                             ));
                         }
-                        write(locals, dest, Value::Uninit(ty), range)?;
+                        self.frame_assign(body, locals, generics, dest, Value::Uninit(ty), range)?;
                         match target {
                             Some(next) => {
                                 block = *next;
@@ -2411,8 +2516,9 @@ impl<'a> Evaluator<'a> {
                         function: *func,
                         args: Ty::list(&subst_list(generic_args, generics)),
                     };
+                    self.release_frame(locals);
                     let value = self.call(callee, values, depth, range, checked)?;
-                    write(locals, dest, value, range)?;
+                    self.frame_assign(body, locals, generics, dest, value, range)?;
                     match target {
                         Some(target) => *target,
                         None => return Err(error(range, "entering unreachable code".to_owned())),
@@ -2441,9 +2547,13 @@ impl<'a> Evaluator<'a> {
                     *target
                 }
                 TerminatorKind::Return => {
-                    return locals[Body::RETURN.index()]
+                    let mut value = locals[Body::RETURN.index()]
                         .take()
-                        .ok_or_else(|| error(range, "constant has no value".to_owned()));
+                        .ok_or_else(|| error(range, "constant has no value".into()))?;
+                    let ty = body.locals[Body::RETURN].ty.subst(generics);
+                    self.materialize_zero_sized(&mut value, ty, range)?;
+                    self.initialized(&value, ty, range)?;
+                    return Ok(value);
                 }
                 TerminatorKind::Unreachable => {
                     return Err(error(range, "entering unreachable code".to_owned()));
@@ -2805,6 +2915,7 @@ impl<'a> Evaluator<'a> {
             | Value::Static(_)
             | Value::StaticPart { .. }
             | Value::RawAddr(_)
+            | Value::FramePointer { .. }
             | Value::Function(_) => {}
         }
         Ok(())
@@ -2930,7 +3041,7 @@ impl<'a> Evaluator<'a> {
                         });
                     }
                     match pointer {
-                        Some(pointer @ Value::LocalRef { .. }) => {
+                        Some(pointer @ (Value::LocalRef { .. } | Value::FramePointer { .. })) => {
                             // A slice's length belongs to its pointer metadata,
                             // not to the mutable elements. The allocation shape
                             // is fixed for this borrow; checking its frame token
@@ -2989,6 +3100,35 @@ impl<'a> Evaluator<'a> {
                 mutability,
                 place,
                 ..
+            } if (*mutability == flux_ty::Mutability::Mut
+                || *raw
+                    && matches!(
+                        body.locals[place.local].kind,
+                        crate::LocalKind::User { .. } | crate::LocalKind::Param
+                    )
+                || locals
+                    .get(place.local.index())
+                    .and_then(Option::as_ref)
+                    .is_some_and(Self::is_frame_pointer)
+                || self
+                    .local_borrows
+                    .last()
+                    .and_then(|f| f.get(place.local.index()))
+                    .copied()
+                    .flatten()
+                    .is_some_and(|o| self.frame_memory.contains_key(&o.token)))
+                && !matches!(
+                    locals.get(place.local.index()),
+                    Some(Some(Value::Static(_) | Value::StaticPart { .. }))
+                ) =>
+            {
+                self.frame_address(body, locals, generics, place, *raw, *mutability, range)
+            }
+            Rvalue::Ref {
+                raw,
+                mutability,
+                place,
+                ..
             } if *raw || *mutability == flux_ty::Mutability::Not => {
                 if place.projection.first() == Some(&ProjectionElem::Deref) {
                     if place.projection.len() > 1
@@ -2996,6 +3136,7 @@ impl<'a> Evaluator<'a> {
                         && let Some(Some(
                             value @ (Value::Ref(_)
                             | Value::InteriorRef(_)
+                            | Value::FramePointer { .. }
                             | Value::LocalRef { .. }
                             | Value::PointerView { .. }
                             | Value::PointerOffset { .. }),
@@ -3302,6 +3443,9 @@ impl<'a> Evaluator<'a> {
                         "boxed trait object constant evaluation is not supported yet".into(),
                     ));
                 }
+                if let Some(view) = self.frame_slice_view(&value, from, to, range)? {
+                    return Ok(view);
+                }
                 if let Some(object) = pointer_pointee(to).filter(|ty| ty.is_dyn()) {
                     let mutable = match to.kind() {
                         TyKind::Ref(m, _) | TyKind::RawPtr(m, _) => m,
@@ -3319,6 +3463,7 @@ impl<'a> Evaluator<'a> {
                         Value::Ref(_)
                         | Value::Static(_)
                         | Value::StaticPart { .. }
+                        | Value::FramePointer { .. }
                         | Value::LocalRef { .. }
                         | Value::InteriorRef(_)
                         | Value::PointerView { .. }
@@ -3423,6 +3568,12 @@ impl<'a> Evaluator<'a> {
             )),
             Rvalue::Cast(op, to) => {
                 let value = self.operand(locals, generics, op, range)?;
+                let from = body.operand_ty(op, self.sigs).subst(generics);
+                if let Some(view) =
+                    self.frame_slice_view(&value, from, to.subst(generics), range)?
+                {
+                    return Ok(view);
+                }
                 // A pointer as another points to the same value.
                 if to.is_pointer() {
                     if matches!(to.kind(), TyKind::RawPtr(_, inner) if self.sigs.is_unsized(inner))
@@ -3448,6 +3599,7 @@ impl<'a> Evaluator<'a> {
                         | Value::StaticPart { .. }
                         | Value::PointerOffset { .. }
                         | Value::PointerView { .. }
+                        | Value::FramePointer { .. }
                         | Value::LocalRef { .. } => Ok(pointer_view(
                             value,
                             flux_solve::traits::normalize(
@@ -3479,6 +3631,7 @@ impl<'a> Evaluator<'a> {
                 | Value::RawAddr(_)
                 | Value::PointerOffset { .. }
                 | Value::PointerView { .. }
+                | Value::FramePointer { .. }
                 | Value::LocalRef { .. } = value
                 {
                     return Err(error(
@@ -3507,6 +3660,7 @@ impl<'a> Evaluator<'a> {
                     | Value::InteriorRef(_)
                     | Value::PointerOffset { .. }
                     | Value::PointerView { .. }
+                    | Value::FramePointer { .. }
                     | Value::LocalRef { .. } => {
                         unreachable!("casts are of scalars")
                     }
@@ -3778,10 +3932,30 @@ fn project_with_reader(
                     reader,
                 );
             }
-            (_, Value::Uninit(_)) => {
-                return Err(error(range, "use of an uninitialized value".into()));
+            (_, Value::Uninit(ty)) => {
+                let expanded = reader(value, *ty, *ty, range)?;
+                return project_with_reader(
+                    locals,
+                    &expanded,
+                    &projection[k..],
+                    range,
+                    origin,
+                    reader,
+                );
             }
             (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
+            (ProjectionElem::Deref, pointer @ Value::FramePointer { ty, .. }) => {
+                let source = Ty::raw_ptr(flux_ty::Mutability::Mut, *ty);
+                let viewed = reader(pointer, source, source, range)?;
+                return project_with_reader(
+                    locals,
+                    &viewed,
+                    &projection[k + 1..],
+                    range,
+                    origin,
+                    reader,
+                );
+            }
             (ProjectionElem::Deref, Value::InteriorRef(pointee)) => {
                 *origin = BorrowOrigin {
                     interior: true,
@@ -4083,6 +4257,7 @@ pub fn wrapping_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, String>
 pub fn show(value: &Value) -> String {
     match *value {
         Value::Uninit(_) => "<uninit>".to_owned(),
+        Value::FramePointer { .. } => "<frame pointer>".to_owned(),
         Value::Float { bits, ty } => match ty {
             flux_ty::FloatTy::F32 => format!("{:?}_f32", f32::from_bits(bits as u32)),
             flux_ty::FloatTy::F64 => format!("{:?}_f64", f64::from_bits(bits)),

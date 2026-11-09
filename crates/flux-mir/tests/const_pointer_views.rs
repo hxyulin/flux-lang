@@ -84,7 +84,7 @@ fn const_pointer_reads_match_rustc() {
         (
             "mutable_parameter_storage",
             true,
-            false,
+            true,
             r###"const fn p(mut n:u8)->u8{let q=std::ptr::addr_of!(n);n=9;unsafe{*q}}const X:u8=p(7);fn main(){let _=X;}"###,
         ),
         (
@@ -282,7 +282,7 @@ fn const_pointer_reads_match_rustc() {
         (
             "mutable_local",
             true,
-            false,
+            true,
             r###"const X:u8={let mut n=7u8;let p=std::ptr::addr_of!(n);n=9;unsafe{*p}};fn main(){let _=X;}"###,
         ),
         (

@@ -10,6 +10,12 @@ fn local_metadata_matches_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, rustc_accepted, flux_accepted, text) in [
         (
+            "projected_raw_slice_metadata",
+            true,
+            true,
+            "struct S{a:[u8;3],b:u64}const X:usize={let mut s=S{a:[1;3],b:7};let p=&raw const s.a;let q=p as *const [u8];q.len()};fn main(){assert_eq!(X,3);}",
+        ),
+        (
             "indexed_loop",
             true,
             true,
@@ -46,9 +52,9 @@ fn local_metadata_matches_rustc() {
             "const X:usize={let mut a=[2u8;3];a[0]=3;let p=(&raw const a) as *const [u8] as *const [bool];p.len()};fn main(){assert_eq!(X,3);}",
         ),
         (
-            "stale_data_read_stays_unsupported",
+            "read_observes_direct_mutation",
             true,
-            false,
+            true,
             "const X:u8={let mut a=[1u8;4];let p=(&raw const a) as *const u8;a=[9;4];unsafe{*p}};fn main(){assert_eq!(X,9);}",
         ),
         (

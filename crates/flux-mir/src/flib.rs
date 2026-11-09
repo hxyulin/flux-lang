@@ -957,7 +957,9 @@ impl Encode for Value {
                 14u8.encode(e)?;
                 ty.encode(e)
             }
-            Self::LocalRef { .. } => Err(Error::new("frame-local value cannot be serialized")),
+            Self::FramePointer { .. } | Self::LocalRef { .. } => {
+                Err(Error::new("frame-local value cannot be serialized"))
+            }
         })
     }
 }

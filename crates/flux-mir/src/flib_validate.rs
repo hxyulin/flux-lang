@@ -621,7 +621,7 @@ pub(super) fn body_for_owner(
 #[derive(Default)]
 struct ValueChecks {
     values: rustc_hash::FxHashSet<(usize, u32)>,
-    typed: rustc_hash::FxHashSet<(usize, Ty, u32)>,
+    typed: rustc_hash::FxHashSet<(usize, Ty, u32, bool)>,
     types: rustc_hash::FxHashSet<(Ty, u32)>,
 }
 
@@ -631,6 +631,10 @@ pub(super) fn value(
     sigs: &Signatures,
     depth: u32,
 ) -> Result<(), Error> {
+    if matches!(v, Value::Uninit(t) if !matches!(t.kind(), TyKind::Adt(adt, _) if flux_solve::is_lang_struct(items, adt.strukt, "maybe_uninit")))
+    {
+        return Err(invalid());
+    }
     value_at(v, items, sigs, depth, &mut ValueChecks::default())
 }
 
@@ -651,10 +655,6 @@ fn value_at(
     match v {
         Value::Uninit(stored) => {
             ty(*stored, items, sigs, depth + 1)?;
-            if !matches!(stored.kind(), TyKind::Adt(adt, args) if flux_solve::is_lang_struct(items, adt.strukt, "maybe_uninit") && args.len() == 1)
-            {
-                return Err(invalid());
-            }
         }
         Value::Variant {
             strukt,
@@ -754,7 +754,7 @@ fn value_at(
             ty_at(*target, items, sigs, 0, &mut memo.types)?;
             value_at(pointer, items, sigs, depth + 1, memo)?;
         }
-        Value::LocalRef { .. } => return Err(invalid()),
+        Value::FramePointer { .. } | Value::LocalRef { .. } => return Err(invalid()),
         _ => {}
     }
     memo.values.insert(key);
@@ -779,16 +779,30 @@ fn value_for_at(
     depth: u32,
     memo: &mut ValueChecks,
 ) -> Result<(), Error> {
+    value_for_storage(v, expected, items, sigs, depth, memo, false)
+}
+
+fn value_for_storage(
+    v: &Value,
+    expected: Ty,
+    items: &ItemTree,
+    sigs: &Signatures,
+    depth: u32,
+    memo: &mut ValueChecks,
+    storage: bool,
+) -> Result<(), Error> {
     if depth > 128 {
         return Err(invalid());
     }
-    let key = (v as *const Value as usize, expected, depth);
+    let key = (v as *const Value as usize, expected, depth, storage);
+    let storage = storage
+        || matches!(expected.kind(), TyKind::Adt(adt, _) if flux_solve::is_lang_struct(items, adt.strukt, "maybe_uninit"));
     if memo.typed.contains(&key) {
         return Ok(());
     }
     value_at(v, items, sigs, depth, memo)?;
     match (v, expected.kind()) {
-        (Value::Uninit(ty), _) if *ty == expected => {}
+        (Value::Uninit(ty), _) if *ty == expected && storage => {}
         (Value::Int { bits, ty }, TyKind::Int(int))
             if *ty == int && (int.bits() == 128 || *bits >> int.bits() == 0) => {}
         (Value::Int { bits, .. }, TyKind::Char)
@@ -800,17 +814,25 @@ fn value_for_at(
                 return Err(invalid());
             }
             for v in values.iter() {
-                value_for_at(v, element, items, sigs, depth + 1, memo)?;
+                value_for_storage(v, element, items, sigs, depth + 1, memo, storage)?;
             }
         }
         (Value::Aggregate(values), TyKind::Slice(element)) => {
             for v in values.iter() {
-                value_for_at(v, element, items, sigs, depth + 1, memo)?;
+                value_for_storage(v, element, items, sigs, depth + 1, memo, storage)?;
             }
         }
         (Value::Aggregate(values), TyKind::Str | TyKind::CStr) => {
             for v in values.iter() {
-                value_for_at(v, Ty::int(flux_ty::IntTy::U8), items, sigs, depth + 1, memo)?;
+                value_for_storage(
+                    v,
+                    Ty::int(flux_ty::IntTy::U8),
+                    items,
+                    sigs,
+                    depth + 1,
+                    memo,
+                    storage,
+                )?;
             }
         }
         (Value::Aggregate(values), TyKind::Tuple(_) | TyKind::Adt(..) | TyKind::Closure(..)) => {
@@ -819,7 +841,7 @@ fn value_for_at(
                 return Err(invalid());
             }
             for (v, t) in values.iter().zip(fields) {
-                value_for_at(v, t, items, sigs, depth + 1, memo)?;
+                value_for_storage(v, t, items, sigs, depth + 1, memo, storage)?;
             }
         }
         (
@@ -835,7 +857,7 @@ fn value_for_at(
                 return Err(invalid());
             }
             for (v, t) in values.iter().zip(fields) {
-                value_for_at(v, t, items, sigs, depth + 1, memo)?;
+                value_for_storage(v, t, items, sigs, depth + 1, memo, storage)?;
             }
         }
         (Value::Ref(p) | Value::InteriorRef(p), TyKind::Ref(_, t) | TyKind::RawPtr(_, t)) => {

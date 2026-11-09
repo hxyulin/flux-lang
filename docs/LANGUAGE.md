@@ -1771,9 +1771,18 @@ its `_read`, `_ref`, `_mut` and `_drop` forms). Const `MaybeUninit::uninit`
 creates storage without an initialized payload, including in arrays and nested
 static cells. Metadata preserves this state; emitted storage may use zero bytes
 without treating them as an initialized `T`. Extracting or reinterpreting an
-uninitialized payload during constant evaluation is rejected. Const `new` and
-`assume_init` support initialized payloads. Partial initialization and mutation
-of uninitialized constant storage remain unsupported. Raw pointer `add`, `sub` and
+uninitialized payload during constant evaluation is rejected, except inhabited
+zero-sized payloads, which require no initialized bytes. Const `write` and
+`as_mut_ptr`, plus raw-pointer `read` and `write`, operate on live local storage.
+Const callees and pointer aliases observe the same allocation. Typed writes may
+initialize whole values, array elements or struct fields in any order; unwritten
+fields remain uninitialized when a `MaybeUninit` value is exported in metadata.
+`assume_init` requires every nonzero-sized payload field to be initialized.
+Writes check allocation lifetime, bounds, alignment and mutable provenance.
+Shared reborrows conservatively freeze that allocation against further writes,
+even after the shared borrow's last use. Bytewise partial scalar writes, writes
+spanning multiple represented fields, and escaping local pointers remain
+unsupported. Raw pointer `add`, `sub` and
 `offset`, plus `NonNull::add`, support constant evaluation for represented
 allocations. Offsets preserve the original allocation and static relocation,
 including through promoted subslices. Nonzero byte displacements must fit
@@ -1791,7 +1800,7 @@ Pointer casts retain the original allocation layout and address, including
 slice metadata when represented. Read-only local storage is tracked for its
 frame lifetime; a reference into expired storage cannot escape. Copying a
 reference stored in a temporary Cell preserves the original referent. Padding
-reads, symbolic address bits, mutable local raw-memory reads, unrepresented
+reads, symbolic address bits, unrepresented
 projected reborrows, general unsizing views and nonempty Box ownership remain
 unsupported. Owned UnsafeCell borrowing and general const allocation are not
 provided. Evaluation limits also bound aggregate view construction.

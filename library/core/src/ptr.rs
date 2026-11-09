@@ -69,7 +69,7 @@ pub fn hash<T, H: crate::hash::Hasher>(hashee: *const T, state: &mut H) {
 
 /// Reads the value at `src` without moving it out: a bitwise copy,
 /// which the caller makes sure is used and dropped only once.
-pub unsafe fn read<T>(src: *const T) -> T {
+pub const unsafe fn read<T>(src: *const T) -> T {
     unsafe { crate::intrinsics::read(src) }
 }
 
@@ -82,7 +82,7 @@ pub unsafe fn read_unaligned<T>(src: *const T) -> T {
 }
 
 /// Writes `value` at `dst`, without dropping what was there.
-pub unsafe fn write<T>(dst: *mut T, value: T) {
+pub const unsafe fn write<T>(dst: *mut T, value: T) {
     unsafe { crate::intrinsics::write(dst, value) }
 }
 
@@ -308,7 +308,7 @@ impl<T> *const T {
     }
 
     /// Reads the value the pointer points to.
-    pub unsafe fn read(self) -> T {
+    pub const unsafe fn read(self) -> T {
         unsafe { read(self) }
     }
 
@@ -486,13 +486,13 @@ impl<T> *mut T {
     }
 
     /// Reads the value the pointer points to.
-    pub unsafe fn read(self) -> T {
+    pub const unsafe fn read(self) -> T {
         unsafe { read(self) }
     }
 
     /// Writes `value` where the pointer points, without dropping what
     /// was there.
-    pub unsafe fn write(self, value: T) {
+    pub const unsafe fn write(self, value: T) {
         unsafe { write(self, value) }
     }
 
@@ -736,12 +736,12 @@ impl<T> NonNull<T> {
     }
 
     /// Reads the value it points to.
-    pub unsafe fn read(self) -> T {
+    pub const unsafe fn read(self) -> T {
         unsafe { read(self.pointer) }
     }
 
     /// Writes `value` where it points, without dropping what was there.
-    pub unsafe fn write(self, value: T) {
+    pub const unsafe fn write(self, value: T) {
         unsafe { write(self.pointer as *mut T, value) }
     }
 }

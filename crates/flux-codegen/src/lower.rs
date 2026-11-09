@@ -1879,7 +1879,7 @@ impl Ctx<'_> {
                     put(bytes, at + 8, u128::from(len), 8);
                 }
             }
-            V::InteriorRef(_) | V::LocalRef { .. } => {
+            V::FramePointer { .. } | V::InteriorRef(_) | V::LocalRef { .. } => {
                 unreachable!("escaping transient borrows are rejected")
             }
             V::PointerOffset {
@@ -3532,7 +3532,7 @@ impl Lower<'_, '_, '_> {
                     out.push(self.int_const(u128::from(len), IntTy::Usize));
                 }
             }
-            V::InteriorRef(_) | V::LocalRef { .. } => {
+            V::FramePointer { .. } | V::InteriorRef(_) | V::LocalRef { .. } => {
                 unreachable!("escaping transient borrows are rejected")
             }
             V::PointerOffset {
