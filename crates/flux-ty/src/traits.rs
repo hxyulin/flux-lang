@@ -428,6 +428,95 @@ fn check_caller_supertraits(
     }
 }
 
+/// A pure associated selection can expose lifetime rows that the old
+/// zero-slot alias model hid. Its inputs and output must add no formation
+/// requirements before uniformly quantified auto-trait selection can erase them.
+fn selected_auto_bound_is_uniform(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: ImplId,
+    index: usize,
+    predicate: &Predicate,
+    row: &[Region],
+    regions: &ImplRegions,
+) -> bool {
+    if !is_auto_trait(items, predicate.trait_ref.trait_) {
+        return false;
+    }
+    let imp = &items.impls[id];
+    let Some(written) = imp.generics.predicates.get(index) else {
+        return false;
+    };
+    let generics = crate::generic_names(items, None, &imp.generics);
+    let consts = crate::generic_consts(items, None, &imp.generics);
+    let mut errors = Vec::new();
+    let raw = resolve_type(
+        items,
+        imp.module,
+        &written.ty,
+        TypeScope {
+            self_ty: Some(sigs.impls[id]),
+            generics: &generics,
+            consts: &consts,
+            bounds: sigs.impl_predicates.get(id).map_or(&[], |p| &p[..]),
+            defaults: Some(&sigs.trait_defaults),
+            struct_fields: Some(&sigs.structs),
+            ..TypeScope::default()
+        },
+        written.ty_range,
+        &mut errors,
+    );
+    let TyKind::Alias(alias) = raw.kind() else {
+        return false;
+    };
+    if !errors.is_empty() {
+        return false;
+    }
+    let mapped = crate::regions::selected_projection_regions(items, sigs, alias, row);
+    let Some(output) = mapped else {
+        return false;
+    };
+    let value = normalize(items, sigs, &[], raw);
+    if value.has_aliases()
+        || value.has_opaques()
+        || output.iter().any(|region| match *region {
+            Region::Param(i) => (i as usize) >= regions.names.len(),
+            Region::Static => false,
+            Region::Erased | Region::Late(_) => true,
+        })
+    {
+        return false;
+    }
+    let mut required = Vec::new();
+    let mut next = 0;
+    for &input in alias.args {
+        let count = crate::regions::slots(items, input);
+        let Some(part) = row.get(next..next + count) else {
+            return false;
+        };
+        crate::regions::implied_outlives_with_static(
+            items,
+            sigs,
+            input,
+            part,
+            Some(Region::Static),
+            &mut required,
+        );
+        next += count;
+    }
+    crate::regions::implied_outlives_with_static(
+        items,
+        sigs,
+        value,
+        &output,
+        Some(Region::Static),
+        &mut required,
+    );
+    // The existing policy still guards conditional applicability. A mapping
+    // alone must never certify new lifetime relations or type-outlives bounds.
+    required.is_empty()
+}
+
 /// Rust's ordered orphan check: a local trait, or a local input type with
 /// no uncovered type parameters before it. References and Box are fundamental
 /// wrappers; other foreign constructors cover parameters but do not confer locality.
@@ -570,9 +659,9 @@ pub fn check_impls(
             continue;
         }
         if is_auto_trait(items, t) && !items.is_core(imp.module) {
-            // Selection erases lifetimes outside bodies. Restrict these
-            // impls to uniformly quantified lifetimes until both solvers
-            // can enforce their region-dependent applicability.
+            // Header lifetimes remain uniformly quantified. Static bounds
+            // on type parameters are checked at each selected occurrence,
+            // including declaration and method compatibility proofs.
             match sigs.impls.get(id).map(|ty| ty.kind()) {
                 Some(TyKind::Adt(..)) => {
                     let lifetimes = crate::regions::slots(items, sigs.impls[id]);
@@ -590,12 +679,13 @@ pub fn check_impls(
                             matches!(region, Region::Param(p) if (*p as usize) < r.names.len())
                                 && !r.self_ty.contains(region)
                         };
-                        let bound_self = |(row, predicate): (&[Region], &Predicate)| {
+                        let bound_self = |(index, (row, predicate)): (usize, (&[Region], &Predicate))| {
                             row.is_empty()
                                 || (row.iter().all(free)
                                     && is_auto_trait(items, predicate.trait_ref.trait_)
                                     && !predicate.self_ty.has_aliases()
                                     && !predicate.self_ty.has_opaques())
+                                || selected_auto_bound_is_uniform(items, sigs, id, index, predicate, row, r)
                         };
                         // `T: 'a` in `impl<'a, T: Sync + 'a> Sync for Guard<'a,
                         // T>` where `Guard`'s fields already require it: every
@@ -628,15 +718,15 @@ pub fn check_impls(
                                 matches!(region, Region::Param(p) if (*p as usize) < r.names.len())
                                     && !r.self_ty[..i].contains(region)
                             })
-                            // The signature solver erases regions. It cannot
-                            // decide applicability of a region-bearing bound
-                            // that the self type does not imply.
-                            && r.bounds.iter().all(implied_bound)
+                            // Other region-dependent conditions retain their
+                            // admission gate until occurrence proofs cover them.
+                            && r.bounds.iter().all(|bound| implied_bound(bound)
+                                || matches!(*bound, Outlives::Type(ty, Region::Static) if matches!(ty.kind(), TyKind::Param(_))))
                             && r.bound_selfs.len() == sigs.impl_predicates.get(id).map_or(0, |p| p.len())
                             && r.bound_traits.len() == r.bound_selfs.len()
                             && r.projections.len() == sigs.impl_projections.get(id).map_or(0, |p| p.len())
                             && r.bound_selfs.len() == predicates.len()
-                            && r.bound_selfs.iter().map(|r| &r[..]).zip(predicates).all(bound_self)
+                            && r.bound_selfs.iter().map(|r| &r[..]).zip(predicates).enumerate().all(bound_self)
                             && r.bound_traits.iter().all(|r| {
                                 r.lifetimes.is_empty() && r.args.iter().all(|a| a.is_empty())
                             })

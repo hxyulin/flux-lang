@@ -178,43 +178,29 @@ fn higher_ranked_trait_bounds_match_rustc() {
 }
 
 #[test]
-fn unrepresented_higher_ranked_shapes_fail_explicitly() {
+fn higher_ranked_scalar_equality_is_supported() {
     let root = std::env::temp_dir().join(format!("flux-ranked-boundary-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    for (name, source, message) in [
-        (
-            "subject",
-            "trait D<'a>{}impl<'a,T>D<'a>for &'a T{}fn need<T>()where for<'a> &'a T:D<'a>{}fn main(){need::<u32>();}",
-            "higher-ranked lifetimes in predicate subjects are not supported yet",
-        ),
-        (
-            "equality",
-            "trait D<'a>{type Out;}fn need<T:for<'a>D<'a,Out=u32>>(){}fn main(){}",
-            "higher-ranked associated type equalities are not supported yet",
-        ),
-    ] {
-        let path = root.join(format!("{name}.rs"));
-        std::fs::write(&path, source).unwrap();
-        let oracle = std::process::Command::new("rustc")
-            .args(["--edition=2024", "--emit=metadata"])
-            .arg(&path)
-            .arg("-o")
-            .arg(root.join("oracle.rmeta"))
-            .output()
-            .unwrap();
-        assert!(
-            oracle.status.success(),
-            "{name}: {}",
-            String::from_utf8_lossy(&oracle.stderr)
-        );
-        let (_, _, hir) = flux_hir::lower_text(&path, source);
-        let mut errors = hir.diagnostics.clone();
-        if errors.is_empty() {
-            errors.extend(flux_mir::check_file(&hir).diagnostics);
-        }
-        assert!(
-            errors.iter().any(|d| d.message == message),
-            "{name}: {errors:?}"
-        );
+    let source = "trait D<'a>{type Out;}fn need<T:for<'a>D<'a,Out=u32>>(){}fn main(){}";
+    let path = root.join("equality.rs");
+    std::fs::write(&path, source).unwrap();
+    let oracle = std::process::Command::new("rustc")
+        .args(["--edition=2024", "--emit=metadata"])
+        .arg(&path)
+        .arg("-o")
+        .arg(root.join("oracle.rmeta"))
+        .output()
+        .unwrap();
+    assert!(
+        oracle.status.success(),
+        "{}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+    let (_, _, hir) = flux_hir::lower_text(&path, source);
+    let mut errors = hir.diagnostics.clone();
+    if errors.is_empty() {
+        errors.extend(flux_mir::check_file(&hir).diagnostics);
     }
+    assert!(errors.is_empty(), "{errors:?}");
+    std::fs::remove_dir_all(root).unwrap();
 }

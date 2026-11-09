@@ -372,6 +372,7 @@ impl Cx<'_> {
                         input_types,
                         inputs,
                         FunctionUse::CallableEquality,
+                        None,
                     ),
                     TyKind::FnPtr(signature) => {
                         let mut at = 0;

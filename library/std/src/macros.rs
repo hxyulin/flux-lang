@@ -47,6 +47,12 @@ macro_rules! thread_local {
             $crate::thread::LocalKey::__new(|| $init);
         $crate::thread_local! { $($rest)* }
     };
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $ty:ty = const { $($init:tt)* }) => {
+        $crate::thread_local! { $(#[$attr])* $vis static $name: $ty = const { $($init)* }; }
+    };
+    ($(#[$attr:meta])* $vis:vis static $name:ident: $ty:ty = $init:expr) => {
+        $crate::thread_local! { $(#[$attr])* $vis static $name: $ty = $init; }
+    };
 }
 
 /// Detects a supported x86 SIMD feature, including OS support for AVX state.

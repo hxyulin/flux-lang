@@ -131,6 +131,57 @@ pub fn static_path_type(sigs: &Signatures, mut ty: Ty, path: &[StaticProjection]
 }
 
 impl Value {
+    /// Substitute function instances stored in qualified promotion trees.
+    /// The builder admits functions only inside immutable aggregates/references.
+    pub(crate) fn map_functions(
+        &self,
+        mapper: &impl Fn(flux_ty::Instance) -> flux_ty::Instance,
+    ) -> Self {
+        fn fields(
+            values: &Arc<[Value]>,
+            mapper: &impl Fn(flux_ty::Instance) -> flux_ty::Instance,
+        ) -> Option<Arc<[Value]>> {
+            let (index, first) = values
+                .iter()
+                .enumerate()
+                .find_map(|(i, value)| changed(value, mapper).map(|value| (i, value)))?;
+            let mut out = values[..index].to_vec();
+            out.push(first);
+            out.extend(
+                values[index + 1..]
+                    .iter()
+                    .map(|value| changed(value, mapper).unwrap_or_else(|| value.clone())),
+            );
+            Some(out.into())
+        }
+        fn changed(
+            value: &Value,
+            mapper: &impl Fn(flux_ty::Instance) -> flux_ty::Instance,
+        ) -> Option<Value> {
+            match value {
+                Value::Function(instance) => {
+                    let mapped = mapper(*instance);
+                    (mapped != *instance).then_some(Value::Function(mapped))
+                }
+                Value::Aggregate(values) => fields(values, mapper).map(Value::Aggregate),
+                Value::Variant {
+                    strukt,
+                    index,
+                    fields: values,
+                } => fields(values, mapper).map(|fields| Value::Variant {
+                    strukt: *strukt,
+                    index: *index,
+                    fields,
+                }),
+                Value::Ref(value) => {
+                    changed(value, mapper).map(|value| Value::Ref(Arc::new(value)))
+                }
+                _ => None,
+            }
+        }
+        changed(self, mapper).unwrap_or_else(|| self.clone())
+    }
+
     /// Unit and fieldless aggregates share one empty allocation.
     pub fn unit() -> Self {
         Self::Aggregate(Self::empty_fields())
@@ -2627,6 +2678,14 @@ impl<'a> Evaluator<'a> {
             }
             Operand::Const(constant) => match *constant {
                 Constant::Static { id, .. } => Ok(Value::Static(id)),
+                Constant::ItemRef { id, args, .. } => {
+                    let instance = flux_ty::ConstInstance {
+                        konst: id,
+                        args: Ty::list(&subst_list(args, generics)),
+                    };
+                    self.eval_instance(instance)
+                        .map(|value| Value::Ref(Arc::new(value)))
+                }
                 Constant::Promoted { index, .. } => {
                     let value = self
                         .promoted
@@ -2634,6 +2693,20 @@ impl<'a> Evaluator<'a> {
                         .and_then(|p| p.get(index as usize))
                         .cloned()
                         .ok_or_else(|| error(range, "a promoted constant is missing".to_owned()))?;
+                    let value = if generics.is_empty() {
+                        value
+                    } else {
+                        value.map_functions(&|instance| {
+                            flux_solve::traits::resolve_instance(
+                                self.items,
+                                self.sigs,
+                                flux_ty::Instance {
+                                    function: instance.function,
+                                    args: Ty::list(&subst_list(instance.args, generics)),
+                                },
+                            )
+                        })
+                    };
                     self.promoted_layouts(&value, range)?;
                     Ok(Value::Ref(Arc::new(value)))
                 }
@@ -3193,6 +3266,12 @@ impl<'a> Evaluator<'a> {
                     &[],
                     body.operand_ty(op, self.sigs).subst(generics),
                 );
+                if flux_ty::nonnull_pointee(self.items, to).is_some() {
+                    return Err(error(
+                        range,
+                        "NonNull unsizing in constants is not supported yet".into(),
+                    ));
+                }
                 if flux_solve::box_pointee(to).is_some_and(|ty| ty.is_dyn()) {
                     return Err(error(
                         range,

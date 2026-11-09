@@ -119,11 +119,31 @@ impl Cx<'_> {
                 ) else {
                     continue;
                 };
+                // Quantified inputs are instantiated at this occurrence. They
+                // are not the arbitrary universal variables of the declaration.
+                let quantified = if flux_ty::fn_trait_kind(self.items, alias.trait_).is_none() {
+                    let mut row = vec![None; candidate.bound.len()];
+                    for (&source, &actual) in candidate.lifetimes.iter().zip(owner).chain(
+                        candidate
+                            .vars
+                            .iter()
+                            .zip(inputs)
+                            .flat_map(|(a, b)| a.iter().zip(b)),
+                    ) {
+                        if let Some(slot) = candidate.bound.iter().position(|&v| v == source) {
+                            row[slot].get_or_insert(actual);
+                        }
+                    }
+                    Some(row)
+                } else {
+                    None
+                };
                 let row = self.opaque_projection_at(
                     opaque,
                     index,
                     own,
                     inputs.get(1).map_or(&[], Vec::as_slice),
+                    quantified.as_deref(),
                 );
                 // Instantiating a declared output may select nested ranked
                 // metadata. Close its relation on failure as well as success.

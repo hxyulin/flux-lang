@@ -150,7 +150,7 @@ fn family_contract(
             predicate.ty_range,
             errors,
         );
-        if has_projection_outlives_inputs(ty) {
+        if has_projection_outlives_inputs(items, ty) {
             errors.push((
                 predicate.ty_range,
                 "associated family projection outlives subjects are not supported yet".into(),
@@ -537,7 +537,7 @@ fn check_required_family_bounds(
         out: &mut Vec<(crate::AliasTy, Vec<Region>)>,
     ) {
         if let TyKind::Alias(alias) = ty.kind()
-            && has_projection_inputs(alias)
+            && has_projection_inputs(items, alias)
         {
             let start = *next;
             let count = slots(items, ty);
@@ -2119,11 +2119,41 @@ fn trait_default_self(items: &ItemTree, trait_: flux_hir::TraitId, index: usize)
 
 /// Original trait header predicates and equalities in its owner namespace.
 /// No selected implementation requirements are included in these assumptions.
+/// Complete source occurrences for a trait header, before selecting only its
+/// non-Self predicates for inherited method obligations.
+pub struct TraitBoundRegions {
+    pub schema: Generics,
+    pub predicates: Vec<crate::Predicate>,
+    pub subjects: Tables,
+    pub traits: Box<[TraitRefRegions]>,
+    pub projections: Tables,
+    own_indices: Vec<usize>,
+}
+
 pub fn trait_bound_regions(
     items: &ItemTree,
     sigs: &Signatures,
     id: flux_hir::TraitId,
 ) -> Option<(Tables, Box<[TraitRefRegions]>, Tables)> {
+    let full = trait_bound_schemes(items, sigs, id)?;
+    Some((
+        full.own_indices
+            .iter()
+            .map(|&i| full.subjects[i].clone())
+            .collect(),
+        full.own_indices
+            .iter()
+            .map(|&i| full.traits[i].clone())
+            .collect(),
+        full.projections,
+    ))
+}
+
+pub fn trait_bound_schemes(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::TraitId,
+) -> Option<TraitBoundRegions> {
     let data = &items.traits[id];
     let names: Vec<_> = sigs
         .regions
@@ -2220,11 +2250,14 @@ pub fn trait_bound_regions(
     {
         return None;
     }
-    Some((
-        own_indices.iter().map(|&i| rows.0[i].clone()).collect(),
-        own_indices.iter().map(|&i| rows.1[i].clone()).collect(),
-        rows.2,
-    ))
+    Some(TraitBoundRegions {
+        schema,
+        predicates,
+        subjects: rows.0,
+        traits: rows.1,
+        projections: rows.2,
+        own_indices,
+    })
 }
 
 /// The slots of the types `generics`' bounds are on, as `predicates`
@@ -2281,15 +2314,6 @@ fn bound_regions_with_walker(
             .map(|(w, p)| {
                 let saved = enter_bound_binder(walker, &w.bound);
                 let row = walker.regions(&w.ty, p.self_ty);
-                if !w.bound.bound_lifetimes.is_empty()
-                    && row.iter().any(|region| matches!(region, Region::Late(_)))
-                {
-                    walker.errors.push((
-                        w.ty_range,
-                        "higher-ranked lifetimes in predicate subjects are not supported yet"
-                            .into(),
-                    ));
-                }
                 walker.late_names = saved;
                 row
             })
@@ -2364,26 +2388,31 @@ fn bound_regions_with_walker(
     } else {
         Box::default()
     };
-    // These erased goals cannot select between different written argument
-    // lifetimes. Rust also reports ambiguous where clauses, even when the
-    // two lifetimes have mutual outlives bounds. Identical rows are harmless.
-    for (index, table) in traits.iter().enumerate() {
-        let args = written[index]
-            .bound
-            .path
-            .args
-            .last()
-            .and_then(Option::as_ref);
-        if table.bound != 0
-            || args.is_some_and(|args| args.parenthesized)
-            || (table.lifetimes.is_empty() && table.args.iter().all(|row| row.is_empty()))
-        {
+    // Distinct written input domains cannot select a unique erased goal.
+    // Compare binders by first occurrence, so alpha-equivalent bounds agree.
+    let canonical_inputs = |index: usize| {
+        let table = &traits[index];
+        let mut bound = rustc_hash::FxHashMap::default();
+        selfs[index]
+            .iter()
+            .chain(table.lifetimes.iter())
+            .chain(table.args.iter().flatten())
+            .map(|&region| match region {
+                Region::Late(i) => {
+                    let next = bound.len() as u32;
+                    Region::Late(*bound.entry(i).or_insert(next))
+                }
+                other => other,
+            })
+            .collect::<Vec<_>>()
+    };
+    for (index, predicate) in predicates.iter().enumerate().take(traits.len()) {
+        if crate::fn_trait_kind(items, predicate.trait_ref.trait_).is_some() {
             continue;
         }
         if (0..index).any(|previous| {
-            predicates[previous] == predicates[index]
-                && selfs[previous] == selfs[index]
-                && traits[previous] != *table
+            predicates[previous] == *predicate
+                && canonical_inputs(previous) != canonical_inputs(index)
         }) {
             errors.push((
                 written[index].bound.range,
@@ -2392,20 +2421,68 @@ fn bound_regions_with_walker(
         }
     }
     errors.append(&mut walker.errors);
-    let bindings = written.iter().flat_map(|w| {
+    let bindings = written.iter().enumerate().flat_map(|(index, w)| {
         let last = w.bound.path.segments.len().saturating_sub(1);
         let args = w.bound.path.args(last);
         args.map_or(&[][..], |a| &a.bindings)
             .iter()
-            .map(move |b| (b, args))
+            .map(move |b| (b, args, &w.bound, index))
     });
-    let mut tables = Vec::with_capacity(projections.len());
-    for ((b, args), p) in bindings.zip(projections) {
+    let mut tables: Vec<Box<[Region]>> = Vec::with_capacity(projections.len());
+    let mut table_owners = Vec::with_capacity(projections.len());
+    for ((b, args, bound, index), p) in bindings.zip(projections) {
         if b.name != p.alias.name {
             errors.append(&mut walker.errors);
             return (selfs, traits, Box::default());
         }
-        tables.push(projection_regions(walker, b, args, p));
+        let table = bound_projection_regions(walker, bound, b, args, p);
+        if let Some(input) = traits.get(index)
+            && input.bound != 0
+            && table.iter().any(|region| {
+                matches!(region, Region::Late(_))
+                    && !selfs[index]
+                        .iter()
+                        .chain(input.lifetimes.iter())
+                        .chain(input.args.iter().flat_map(|row| row.iter()))
+                        .any(|r| r == region)
+            })
+        {
+            errors.push((
+                b.ty_range,
+                "associated type binding references a lifetime absent from trait inputs".into(),
+            ));
+        }
+        let normalize_occurrence = |input: usize, output: &[Region]| {
+            let mut binders = rustc_hash::FxHashMap::default();
+            selfs[input]
+                .iter()
+                .chain(traits[input].lifetimes.iter())
+                .chain(traits[input].args.iter().flatten())
+                .chain(output)
+                .map(|&r| match r {
+                    Region::Late(i) => {
+                        let next = binders.len() as u32;
+                        Region::Late(*binders.entry(i).or_insert(next))
+                    }
+                    r => r,
+                })
+                .collect::<Vec<_>>()
+        };
+        // Preserve the source predicate index for every binding, including
+        // several bindings on one predicate.
+        for ((known, row), &owner) in projections.iter().zip(&tables).zip(&table_owners) {
+            if known.alias == p.alias
+                && known.ty == p.ty
+                && normalize_occurrence(owner, row) != normalize_occurrence(index, &table)
+            {
+                errors.push((
+                    b.ty_range,
+                    "ambiguous associated type lifetime arguments".into(),
+                ));
+            }
+        }
+        table_owners.push(index);
+        tables.push(table);
     }
     if tables.len() != projections.len() {
         errors.append(&mut walker.errors);
@@ -2519,13 +2596,36 @@ fn check_bound_wf(
         {
             continue;
         }
+        // The quantified subject and trait arguments are well formed inside
+        // their binder, just as callback inputs are. Keep assumptions scoped to this
+        // occurrence: `for<'a> &'a T: Trait` does not make T globally static.
+        let scoped;
+        let bound_assumptions = if regions.bound != 0 {
+            let mut local = assumptions.clone();
+            for (&ty, row) in std::iter::once((&predicate.self_ty, self_regions))
+                .chain(predicate.trait_ref.args.iter().zip(regions.args.iter()))
+            {
+                implied_outlives_with_static(
+                    items,
+                    sigs,
+                    ty,
+                    row,
+                    Some(Region::Static),
+                    &mut local,
+                );
+            }
+            scoped = local;
+            &scoped
+        } else {
+            &*assumptions
+        };
         check_trait_wf(
             items,
             sigs,
             predicate,
             self_regions,
             regions,
-            assumptions,
+            bound_assumptions,
             written.bound.range,
             errors,
         );
@@ -2564,6 +2664,20 @@ fn outlives_known(requirement: Outlives<Region>, assumptions: &[Outlives<Region>
                     .any(|p| matches!(*p, Outlives::Type(t, a) if t == ty && reaches(a, b)))
         }
     }
+}
+
+/// A non-callable higher-ranked equality shares its predicate's binder.
+fn bound_projection_regions(
+    walker: &mut Walker<'_>,
+    bound: &flux_hir::Bound,
+    binding: &flux_hir::AssocBinding,
+    args: Option<&flux_hir::GenericArgs>,
+    projection: &crate::traits::Projection,
+) -> Box<[Region]> {
+    let old = enter_bound_binder(walker, bound);
+    let table = projection_regions(walker, binding, args, projection);
+    walker.late_names = old;
+    table
 }
 
 /// A parenthesized `Fn` bound has its own elision scope, including when
@@ -2742,18 +2856,37 @@ fn opaque_regions(
         walker.errors.append(&mut list);
         let mut projections: Vec<Box<[Region]>> = Vec::new();
         if let Some(sig) = sigs.get(i) {
-            let bindings = decl.bounds.iter().flat_map(|b| {
+            let bindings = decl.bounds.iter().enumerate().flat_map(|(origin, b)| {
                 let last = b.path.segments.len().saturating_sub(1);
                 let args = b.path.args(last);
                 args.map_or(&[][..], |a| &a.bindings)
                     .iter()
-                    .map(move |b| (b, args))
+                    .map(move |binding| (binding, args, b, origin))
             });
-            for ((b, args), p) in bindings.zip(sig.projections.iter()) {
+            for ((b, args, bound, origin), p) in bindings.zip(sig.projections.iter()) {
                 if b.name != p.alias.name {
                     break;
                 }
-                projections.push(projection_regions(walker, b, args, p));
+                let table = bound_projection_regions(walker, bound, b, args, p);
+                if let Some(input) = bounds.iter().find(|b| b.origin as usize == origin)
+                    && input.regions.bound != 0
+                    && table.iter().any(|region| {
+                        matches!(region, Region::Late(_))
+                            && !input
+                                .regions
+                                .lifetimes
+                                .iter()
+                                .chain(input.regions.args.iter().flatten())
+                                .any(|r| r == region)
+                    })
+                {
+                    walker.errors.push((
+                        b.ty_range,
+                        "associated type binding references a lifetime absent from trait inputs"
+                            .into(),
+                    ));
+                }
+                projections.push(table);
             }
             if projections.len() != sig.projections.len() {
                 projections.clear();
@@ -2900,7 +3033,7 @@ fn bounds_outlives(
         let r = walker.named(p.lifetime);
         let mut scratch = Vec::new();
         let ty = crate::resolve_type(items, module, &p.ty, scope, p.ty_range, &mut scratch);
-        if has_projection_outlives_inputs(ty) {
+        if has_projection_outlives_inputs(items, ty) {
             errors.push((
                 p.ty_range,
                 "type-outlives bounds on lifetime-bearing projections are not supported yet".into(),
@@ -3034,6 +3167,75 @@ fn check_bounds<'b>(
             }
         }
     }
+}
+
+/// A reference to a selected output must not infer the prerequisites of
+/// that selection from the output itself. Check its stored rows against the
+/// declaration's existing bounds, independently of captured input rows.
+fn selected_pointees_wf(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    row: &[Region],
+    bounds: &[Outlives<Region>],
+) -> bool {
+    if !ty.has_aliases() {
+        return true;
+    }
+    let mut pending = vec![(ty, row)];
+    while let Some((ty, row)) = pending.pop() {
+        if let TyKind::Ref(_, inner) = ty.kind() {
+            let Some((&lifetime, inner_row)) = row.split_first() else {
+                return false;
+            };
+            if let TyKind::Alias(alias) = inner.kind()
+                && has_projection_inputs(items, alias)
+                && !has_declared_projection_inputs(alias)
+            {
+                let Some(output) = super::selected::projection(items, sigs, alias, inner_row)
+                else {
+                    return false;
+                };
+                let output_ty = flux_solve::traits::normalize(items, sigs, &[], inner);
+                if stored_regions(items, output_ty, &output)
+                    .into_iter()
+                    .any(|r| !outlives_known(Outlives::Region(r, lifetime), bounds))
+                    || outlives_type_components(sigs, output_ty)
+                        .into_iter()
+                        .any(|t| !outlives_known(Outlives::Type(t, lifetime), bounds))
+                {
+                    return false;
+                }
+            }
+            pending.push((inner, inner_row));
+            continue;
+        }
+        let (children, mut next): (Vec<Ty>, usize) = match ty.kind() {
+            TyKind::RawPtr(_, inner) | TyKind::Array(inner, _) | TyKind::Slice(inner) => {
+                (vec![inner], 0)
+            }
+            TyKind::Tuple(list) => (list.to_vec(), 0),
+            TyKind::Adt(adt, args) => (
+                args.to_vec(),
+                items.structs[adt.strukt].generics.lifetimes.len(),
+            ),
+            TyKind::Dynamic(d) => (
+                object_region_types(items, d).collect(),
+                object_own_slots(items, d),
+            ),
+            TyKind::Opaque(o) => (o.args.to_vec(), o.lifetimes as usize),
+            _ => continue,
+        };
+        for child in children {
+            let count = slots(items, child);
+            let Some(part) = row.get(next..next + count) else {
+                return false;
+            };
+            pending.push((child, part));
+            next += count;
+        }
+    }
+    true
 }
 
 /// The variances of the parameters of the structs from `from` on, given
@@ -3287,6 +3489,13 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
             .zip(sigs.structs[id].iter())
             .zip(metadata.fields.iter())
         {
+            if !selected_pointees_wf(items, sigs, ty, row, &metadata.outlives) {
+                errors.push((
+                    data.loc.file,
+                    field.range,
+                    "selected projection output lifetime bound is not satisfied".into(),
+                ));
+            }
             let mut required = Vec::new();
             implied_outlives_with_static(items, sigs, ty, row, Some(Region::Static), &mut required);
             if required.into_iter().any(|bound| {

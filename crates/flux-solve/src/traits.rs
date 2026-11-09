@@ -1036,6 +1036,79 @@ pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty
     }
     crate::query_cache::normalize(items, sigs, env, ty)
 }
+/// Normalize a body type without replacing a caller-owned abstract output
+/// through a merely possible blanket impl. Explicit output equalities win.
+pub fn normalize_with_memberships(
+    items: &ItemTree,
+    sigs: &Signatures,
+    projections: &[Projection],
+    memberships: &[Predicate],
+    ty: Ty,
+) -> Ty {
+    fn protect(
+        items: &ItemTree,
+        sigs: &Signatures,
+        memberships: &[Predicate],
+        ty: Ty,
+        env: &mut Vec<Projection>,
+        seen: &mut rustc_hash::FxHashSet<Ty>,
+        depth: u32,
+    ) {
+        if depth > 32 || !seen.insert(ty) {
+            return;
+        }
+        if let TyKind::Alias(alias) = ty.kind() {
+            let goal = alias_predicate(alias);
+            if let Some(projection) = env.iter().find(|p| p.alias == alias).copied() {
+                protect(
+                    items,
+                    sigs,
+                    memberships,
+                    projection.ty,
+                    env,
+                    seen,
+                    depth + 1,
+                );
+            } else if memberships.contains(&goal)
+                && select_definite_impl(items, sigs, goal).is_none()
+            {
+                env.push(Projection { alias, ty });
+            } else if let Some((imp, args)) = select_impl(items, sigs, goal)
+                && let Some(value) = instantiate_impl_type(sigs, imp, alias, &args)
+            {
+                // A wrapper's output can forward to a caller-owned output.
+                // Discover it before the ordinary cached normalizer visits
+                // the selected RHS without this membership environment.
+                protect(items, sigs, memberships, value, env, seen, depth + 1);
+            }
+        }
+        for child in ty.children() {
+            protect(items, sigs, memberships, child, env, seen, depth + 1);
+        }
+    }
+    if !ty.has_aliases() || memberships.is_empty() {
+        return normalize(items, sigs, projections, ty);
+    }
+    let mut env = projections.to_vec();
+    let mut seen = rustc_hash::FxHashSet::default();
+    protect(items, sigs, memberships, ty, &mut env, &mut seen, 0);
+    // Normalization also visits explicit equality RHSs. Preserve the same
+    // caller-owned outputs reached through those substitutions, rather than
+    // selecting a stronger blanket impl only on the indirect path.
+    for projection in projections {
+        protect(
+            items,
+            sigs,
+            memberships,
+            projection.ty,
+            &mut env,
+            &mut seen,
+            0,
+        );
+    }
+    normalize(items, sigs, &env, ty)
+}
+
 pub(crate) fn normalize_uncached(
     items: &ItemTree,
     sigs: &Signatures,
@@ -1278,6 +1351,29 @@ pub fn select_impl(
     sigs: &Signatures,
     goal: Predicate,
 ) -> Option<(ImplId, Vec<Ty>)> {
+    selection(items, sigs, goal).map(|s| (s.implementation, s.args))
+}
+
+/// Only an impl whose conditions are proved can define an associated output.
+/// The ordinary selector also returns unique possible impls for inference.
+pub fn select_definite_impl(
+    items: &ItemTree,
+    sigs: &Signatures,
+    goal: Predicate,
+) -> Option<(ImplId, Vec<Ty>)> {
+    selection(items, sigs, goal)
+        .filter(|s| s.definite)
+        .map(|s| (s.implementation, s.args))
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectedImpl {
+    implementation: ImplId,
+    args: Vec<Ty>,
+    definite: bool,
+}
+
+fn selection(items: &ItemTree, sigs: &Signatures, goal: Predicate) -> Option<SelectedImpl> {
     // Cached answers must not skip recursive cycle/depth checks or their cuts.
     if SELECTION.with_borrow(|s| !s.active.is_empty()) {
         return select_impl_uncached(items, sigs, goal);
@@ -1288,7 +1384,7 @@ pub(crate) fn select_impl_uncached(
     items: &ItemTree,
     sigs: &Signatures,
     goal: Predicate,
-) -> Option<(ImplId, Vec<Ty>)> {
+) -> Option<SelectedImpl> {
     // Judging bounds normalizes their associated types, which selects
     // blocks again. A repeated goal cannot establish an inductive proof;
     // growing goals retain the depth limit.
@@ -1343,7 +1439,7 @@ struct Selection {
     /// The lowest index in `active` that a cycle or the depth limit cut
     /// at since the innermost selection started.
     cut: usize,
-    memo: rustc_hash::FxHashMap<Predicate, Option<(ImplId, Vec<Ty>)>>,
+    memo: rustc_hash::FxHashMap<Predicate, Option<SelectedImpl>>,
     /// The `Signatures` the outermost selection is in, by address; a
     /// nested one in others (none so far) neither reads nor writes `memo`.
     sigs: usize,
@@ -1372,11 +1468,7 @@ impl Drop for Selecting {
     }
 }
 
-fn select_uncached(
-    items: &ItemTree,
-    sigs: &Signatures,
-    goal: Predicate,
-) -> Option<(ImplId, Vec<Ty>)> {
+fn select_uncached(items: &ItemTree, sigs: &Signatures, goal: Predicate) -> Option<SelectedImpl> {
     let impls = sigs
         .impl_index
         .matching(items, goal.trait_ref.trait_, goal.self_ty);
@@ -1407,7 +1499,12 @@ fn select_uncached(
     } else {
         return None;
     };
-    Some(found.swap_remove(chosen))
+    let (implementation, args) = found.swap_remove(chosen);
+    Some(SelectedImpl {
+        implementation,
+        args,
+        definite: definite_count == 1,
+    })
 }
 
 /// A type that only the bounds in scope say anything about: a generic

@@ -11,6 +11,36 @@ fn value_qualified_promotion_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "generic_function_table",
+            "struct Table{size:fn()->usize}fn size<T>()->usize{core::mem::size_of::<T>()}fn f<T>()->&'static Table{&Table{size:size::<T>}}fn main(){}",
+            true,
+        ),
+        (
+            "ranked_function_table",
+            "struct Table{call:for<'a>fn(&'a u32)->&'a u32}fn id(x:&u32)->&u32{x}fn f()->&'static Table{&Table{call:id}}fn main(){}",
+            true,
+        ),
+        (
+            "static_function_not_generalized_by_promotion",
+            "struct Table{call:for<'a>fn(&'a u32)->&'a u32}fn id(x:&'static u32)->&'static u32{x}fn f()->&'static Table{&Table{call:id}}fn main(){}",
+            false,
+        ),
+        (
+            "generic_constant",
+            "struct S<T>(core::marker::PhantomData<T>);impl<T>S<T>{const V:[u32;2]=[7,11];}fn f<T>()->&'static[u32;2]{&S::<T>::V}fn main(){}",
+            true,
+        ),
+        (
+            "generic_interior_constant",
+            "struct S<T>(core::marker::PhantomData<T>);impl<T>S<T>{const V:core::cell::Cell<u32>=core::cell::Cell::new(7);}fn f<T>()->&'static core::cell::Cell<u32>{&S::<T>::V}fn main(){}",
+            false,
+        ),
+        (
+            "generic_drop_constant",
+            "struct D;impl Drop for D{fn drop(&mut self){}}struct S<T>(core::marker::PhantomData<T>);impl<T>S<T>{const V:D=D;}fn f<T>()->&'static D{&S::<T>::V}fn main(){}",
+            false,
+        ),
+        (
             "named_empty_variant",
             "enum E{None,Drop(D)}struct D;impl Drop for D{fn drop(&mut self){}}fn f()->&'static E{const X:E=E::None;&X}fn main(){}",
             true,

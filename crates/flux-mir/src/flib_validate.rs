@@ -135,6 +135,15 @@ fn place(p: &Place, body: &Body, items: &ItemTree, sigs: &Signatures) -> Result<
     let mut ty = body.locals.get(p.local).ok_or_else(invalid)?.ty;
     let mut selected = None;
     for elem in &p.projection {
+        if ty.has_aliases() {
+            // Source MIR may index a selected associated array without
+            // rewriting the containing field's declaration. Decode it using
+            // the same owner equalities the source checker used.
+            let env = body.owner.map_or_else(Vec::new, |f| {
+                flux_solve::traits::projections_of(items, sigs, f)
+            });
+            ty = flux_solve::traits::normalize(items, sigs, &env, ty);
+        }
         match *elem {
             ProjectionElem::Downcast(index) => {
                 let TyKind::Adt(adt, _) = ty.kind() else {
@@ -213,6 +222,34 @@ fn constant(c: &Constant, body: &Body, items: &ItemTree, sigs: &Signatures) -> R
             sigs.consts.get(*id).ok_or_else(invalid)?;
             self::ty(*ty, items, sigs, 0)?;
         }
+        Constant::ItemRef { id, args, ty } => {
+            let declaration = items.consts.get(*id).ok_or_else(invalid)?;
+            let value_ty = *sigs.consts.get(*id).ok_or_else(invalid)?;
+            self::ty(*ty, items, sigs, 0)?;
+            for &arg in *args {
+                self::ty(arg, items, sigs, 0)?;
+            }
+            let TyKind::Ref(Mutability::Not, pointee) = ty.kind() else {
+                return Err(invalid());
+            };
+            let env = body.owner.map_or_else(Vec::new, |f| {
+                flux_solve::traits::projections_of(items, sigs, f)
+            });
+            let bounds = body.owner.map_or_else(Vec::new, |f| {
+                flux_solve::traits::predicates_of(items, sigs, f)
+            });
+            let value_ty = flux_solve::traits::normalize(items, sigs, &env, value_ty.subst(args));
+            if declaration.is_static.is_some() || value_ty != pointee {
+                return Err(Error::new("invalid imported constant reference type"));
+            }
+            if flux_solve::traits::needs_drop(items, sigs, &bounds, pointee)
+                || flux_solve::traits::has_interior_mutability(items, sigs, pointee)
+            {
+                return Err(Error::new(
+                    "invalid imported constant reference qualification",
+                ));
+            }
+        }
         Constant::FnItem(ty) => {
             self::ty(*ty, items, sigs, 0)?;
             if !matches!(ty.kind(), TyKind::FnDef(_)) {
@@ -245,6 +282,55 @@ fn operand(o: &Operand, body: &Body, items: &ItemTree, sigs: &Signatures) -> Res
         }
         Operand::Const(c) => constant(c, body, items, sigs)?,
     };
+    Ok(())
+}
+
+fn reification_regions(body: &Body, items: &ItemTree, names: usize) -> Result<(), Error> {
+    if body.reification_regions.iter().next().is_none() {
+        return Ok(());
+    }
+    let mut definitions = flux_arena::ArenaMap::<LocalDecl, flux_ty::GenericArgs>::new();
+    for block in body.blocks.values() {
+        for statement in &block.statements {
+            if let StatementKind::Assign(dest, value) = &statement.kind
+                && body.reification_regions.get(dest.local).is_some()
+            {
+                let Rvalue::Use(Operand::Const(Constant::Fn { args, .. })) = value else {
+                    return Err(Error::new("invalid MIR reification assignment"));
+                };
+                if !dest.projection.is_empty() || definitions.insert(dest.local, *args).is_some() {
+                    return Err(Error::new("duplicate MIR reification assignment"));
+                }
+            }
+        }
+        if matches!(&block.terminator.kind,
+            TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. }
+                if body.reification_regions.get(dest.local).is_some())
+        {
+            return Err(Error::new("invalid MIR reification assignment"));
+        }
+    }
+    for (local, rows) in body.reification_regions.iter() {
+        let data = body.locals.get(local).ok_or_else(invalid)?;
+        if data.kind != LocalKind::Temp || !matches!(data.ty.kind(), TyKind::FnPtr(_)) {
+            return Err(Error::new("invalid MIR reification temporary"));
+        }
+        let args = definitions.get(local).ok_or_else(invalid)?;
+        let mut seen = rustc_hash::FxHashSet::default();
+        for (index, row) in rows {
+            let &arg = args.get(*index as usize).ok_or_else(invalid)?;
+            if !seen.insert(*index) || row.len() != flux_ty::regions::slots(items, arg) {
+                return Err(Error::new("invalid MIR reification argument rows"));
+            }
+            if row.iter().any(|r| match *r {
+                flux_ty::regions::Region::Param(i) => i as usize >= names,
+                flux_ty::regions::Region::Late(_) => true,
+                flux_ty::regions::Region::Static | flux_ty::regions::Region::Erased => false,
+            }) {
+                return Err(Error::new("invalid MIR reification lifetime"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -506,6 +592,15 @@ pub(super) fn body_for_owner(
             _ => {}
         }
     }
+    let names = match owner {
+        flux_ty::ClosureOwner::Function(f) => sigs.regions.fns.get(f).map_or(0, |r| r.names.len()),
+        flux_ty::ClosureOwner::Const(c) => items.consts[c]
+            .owner
+            .and_then(flux_hir::Owner::as_impl)
+            .and_then(|imp| sigs.regions.impls.get(imp))
+            .map_or(0, |r| r.names.len()),
+    };
+    reification_regions(body, items, names)?;
     if !check_types {
         return Ok(());
     }

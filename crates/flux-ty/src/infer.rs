@@ -1136,6 +1136,19 @@ impl Ctx<'_> {
         if self.shallow(ty) == Ty::NEVER {
             return;
         }
+        // The arguments determine an associated output such as Index::Output.
+        // Equating its borrowed inference variable with the expected pointee
+        // now would prevent a later deref coercion, for example &Vec<T> to &[T].
+        if let TyKind::Ref(_, pointee) = self.shallow(ty).kind() {
+            let pointee = self.shallow(pointee);
+            if matches!(pointee.kind(), TyKind::Infer(_)) {
+                for i in 0..self.projections.len() {
+                    if self.shallow(self.projections[i].var) == pointee {
+                        return;
+                    }
+                }
+            }
+        }
         // A Box, Arc or Rc of an unsized type is wanted: its constructor still
         // makes a sized owner, coerced after, as rustc only hints
         // its arguments with what is wanted.
@@ -3658,7 +3671,8 @@ impl Ctx<'_> {
                 *is_move,
             ),
             Expr::Cast { expr, ty } => {
-                let to = self.resolve_type_ref(*ty);
+                let raw = matches!(body.types[*ty], flux_hir::TypeRef::Ptr { .. });
+                let to = self.resolve_body_type(*ty, raw, false);
                 let from = self.infer_expr(*expr);
                 // As in rustc, an unsuffixed literal cast to an integer type
                 // has that type: `300 as u8` is out of range, not 44.
@@ -7061,9 +7075,9 @@ impl Ctx<'_> {
                 }
             }
             if !tables.is_empty() {
-                // Function-item types erase regions too. Until those values carry
-                // their instantiation, permit written lifetimes only at direct calls.
-                if !direct.contains(&expr) {
+                // Immediate reification keeps these rows on its pointer temporary.
+                // Standalone item values still erase their instantiation.
+                if !direct.contains(&expr) && self.reified.get(expr).is_none() {
                     self.error(
                         self.range(expr),
                         "lifetimes in function item values are not supported yet",
@@ -7073,7 +7087,17 @@ impl Ctx<'_> {
                 }
             }
         }
-        let expr_regions = self.constructor_regions(&calls);
+        let mut expr_regions = self.constructor_regions(&calls);
+        for (expr, data) in self.body.exprs.iter() {
+            if let Expr::Cast { ty: written, .. } = data
+                && matches!(self.body.types[*written], flux_hir::TypeRef::Ptr { .. })
+                && let Some(&ty) = self.expr_types.get(expr)
+                && let Some(regions) = self.written_type_regions(*written, ty)
+                && regions.iter().any(|r| *r != crate::regions::Region::Erased)
+            {
+                expr_regions.insert(expr, regions);
+            }
+        }
         self.calls = instances;
         let overloaded = std::mem::take(&mut self.overloads);
         let mut overloads = ArenaMap::new();

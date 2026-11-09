@@ -119,7 +119,7 @@ fn select_occurrence(
 ) -> Option<SelectedSignatureType> {
     let inputs: Vec<_> = inputs
         .iter()
-        .filter(|input| input.qualified && !has_projection_inputs(input.alias))
+        .filter(|input| input.qualified && !has_declared_projection_inputs(input.alias))
         .cloned()
         .collect();
     let mut next = 0;
@@ -150,7 +150,7 @@ fn select(
         });
     }
     if let (TypeRef::Path(path), TyKind::Alias(alias)) = (written, ty.kind()) {
-        if path.qself.is_some() && !has_projection_inputs(alias) {
+        if path.qself.is_some() && !has_declared_projection_inputs(alias) {
             let input = inputs.get(*next)?;
             if input.alias != alias
                 || !input.lifetimes.is_empty()

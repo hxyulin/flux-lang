@@ -3034,20 +3034,15 @@ fn lower_impl_trait(it: ast::ImplTraitType<'_>, diagnostics: &mut Vec<Diagnostic
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
             };
-            if let Some(mut path) = lower_trait_path(path, diagnostics) {
-                if bind_fn_lifetimes(&mut path, &bound_names, diagnostics) {
-                    bounds.push(Bound {
-                        bound_lifetimes: Box::default(),
-                        path,
-                        range: bound_range,
-                    });
+            if let Some(path) = lower_trait_path(path, diagnostics) {
+                let mut lowered = Bound {
+                    bound_lifetimes: Box::default(),
+                    path,
+                    range: bound_range,
+                };
+                if apply_bound_binder(&mut lowered, &bound_names, diagnostics) {
+                    bounds.push(lowered);
                     names.push(collapse(bound.syntax().text()));
-                } else {
-                    unsupported(
-                        diagnostics,
-                        bound_range,
-                        "non-callable higher-ranked impl Trait bounds",
-                    );
                 }
             }
             continue;
@@ -3781,20 +3776,6 @@ fn apply_bound_binder(
 ) -> bool {
     if bind_fn_lifetimes(&mut bound.path, names, diagnostics) {
         return true;
-    }
-    if bound
-        .path
-        .args
-        .iter()
-        .flatten()
-        .any(|a| !a.bindings.is_empty())
-    {
-        unsupported(
-            diagnostics,
-            bound.range,
-            "higher-ranked associated type equalities",
-        );
-        return false;
     }
     let mut combined = names.to_vec();
     combined.extend_from_slice(&bound.bound_lifetimes);

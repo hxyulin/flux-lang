@@ -3355,7 +3355,9 @@ impl Lower<'_, '_, '_> {
     fn operand(&mut self, operand: &Operand) -> Values {
         match operand {
             Operand::Copy(place) | Operand::Move(place) => self.read(place),
-            Operand::Const(Constant::Item { id, args, ty }) => {
+            Operand::Const(
+                Constant::Item { id, args, ty } | Constant::ItemRef { id, args, ty },
+            ) => {
                 let c = flux_solve::traits::resolve_const(
                     &self.ctx.hir.items,
                     self.sigs,
@@ -3372,6 +3374,11 @@ impl Lower<'_, '_, '_> {
                         // Reported once code generation is done.
                         Err(_) => return self.zeroes(*ty),
                     },
+                };
+                let value = if matches!(operand, Operand::Const(Constant::ItemRef { .. })) {
+                    flux_mir::eval::Value::Ref(Arc::new(value))
+                } else {
+                    value
                 };
                 if is_memory(self.sigs, *ty) {
                     let address = self.new_slot(*ty);
@@ -3611,7 +3618,9 @@ impl Lower<'_, '_, '_> {
                 let data = self.b.import_data(&name);
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
             }
-            Constant::Item { .. } => unreachable!("handled by `operand`"),
+            Constant::Item { .. } | Constant::ItemRef { .. } => {
+                unreachable!("handled by `operand`")
+            }
             Constant::TyConst { .. } => unreachable!("monomorphized constants are known"),
             Constant::Static { id, .. } => Some(self.static_addr(id)),
             Constant::Promoted { index, ty } => {
@@ -3839,7 +3848,10 @@ impl Lower<'_, '_, '_> {
             }
             Rvalue::Unsize(operand, _) => {
                 let from = self.body.operand_ty(operand, self.sigs);
-                let len = match pointee_of(from).map(|ty| self.sigs.structural_tail(ty).kind()) {
+                let len = match pointee_of(from)
+                    .or_else(|| flux_ty::nonnull_pointee(&self.ctx.hir.items, from))
+                    .map(|ty| self.sigs.structural_tail(ty).kind())
+                {
                     Some(TyKind::Array(_, len)) => array_len(len),
                     _ => 0,
                 };
@@ -4515,6 +4527,21 @@ impl Lower<'_, '_, '_> {
             } => {
                 let items = &self.ctx.hir.items;
                 let offset = self.body.fn_spans.get(&block).copied().unwrap_or(offset);
+                if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::BoxCallOnce) {
+                    let trait_ = flux_ty::fn_trait(items, flux_ty::ClosureKind::FnOnce)
+                        .expect("embedded FnOnce trait");
+                    let method = items.traits[trait_]
+                        .function(items, flux_intern::Symbol::intern("call_once"))
+                        .expect("embedded FnOnce method");
+                    self.virtual_call(
+                        method,
+                        Ty::list(&[generic_args[1], generic_args[0]]),
+                        args,
+                        dest,
+                        *target,
+                    );
+                    return;
+                }
                 if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::CallerLocation) {
                     let location = self.location_here(offset);
                     self.write(dest, &[location]);

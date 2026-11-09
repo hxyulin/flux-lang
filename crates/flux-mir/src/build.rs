@@ -972,7 +972,16 @@ pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
     let (body, source_map) = hir.body(function).expect("functions built have bodies");
     // Its associated types as its bounds and `impl` blocks say.
     let env = flux_solve::traits::projections_of(&hir.items, &typed.sigs, function);
-    let norm = |ty| flux_solve::traits::normalize(&hir.items, &typed.sigs, &env, ty);
+    let memberships = flux_solve::traits::predicates_of(&hir.items, &typed.sigs, function);
+    let norm = |ty| {
+        flux_solve::traits::normalize_with_memberships(
+            &hir.items,
+            &typed.sigs,
+            &env,
+            &memberships,
+            ty,
+        )
+    };
     let sig = &typed.sigs[function];
     let sig = &flux_ty::FnSig {
         params: sig.params.iter().map(|&p| norm(p)).collect(),
@@ -1199,6 +1208,7 @@ pub fn closure_shims(
             Body {
                 locals,
                 call_regions: ArenaMap::new(),
+                reification_regions: ArenaMap::new(),
                 region_annotations: Vec::new(),
                 region_relations: Vec::new(),
                 blocks,
@@ -1272,9 +1282,10 @@ fn build_body(
         body,
         source_map,
         types,
-        in_closure: matches!(item, Item::Closure(..)),
+        in_const_closure: matches!(item, Item::Closure(ClosureOwner::Const(_), _)),
         locals: Arena::new(),
         call_regions: ArenaMap::new(),
+        reification_regions: ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         blocks: Vec::new(),
@@ -1497,6 +1508,7 @@ fn build_body(
     let mut built = Body {
         locals: b.locals,
         call_regions: b.call_regions,
+        reification_regions: b.reification_regions,
         region_annotations: b.region_annotations,
         region_relations: b.region_relations,
         blocks: arena,
@@ -1651,9 +1663,12 @@ struct Builder<'a> {
     body: &'a flux_hir::Body,
     source_map: &'a flux_hir::BodySourceMap,
     types: &'a InferenceResult,
-    in_closure: bool,
+    // Function closures have parent region rows. Constant-owned closures
+    // still lack an enclosing function namespace for written lifetime args.
+    in_const_closure: bool,
     locals: Arena<LocalDecl>,
     call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
+    reification_regions: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
     region_annotations: Vec<(Local, Box<[flux_ty::regions::Region]>, TextRange)>,
     region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
     /// Blocks under construction; a block is finished once it has a
@@ -1941,12 +1956,7 @@ impl Builder<'_> {
         let ty = place.projection.iter().fold(local_ty, |ty, &elem| {
             let ty = ty.project(elem, &self.typed.sigs);
             if ty.ty.has_aliases() {
-                let normalized = flux_solve::traits::normalize(
-                    self.items,
-                    &self.typed.sigs,
-                    &self.projections,
-                    ty.ty,
-                );
+                let normalized = self.normalize(ty.ty);
                 PlaceTy {
                     ty: normalized,
                     ..ty
@@ -2621,7 +2631,13 @@ impl Builder<'_> {
 
     /// `ty` with its associated types normalized by the bounds in scope.
     fn normalize(&self, ty: Ty) -> Ty {
-        flux_solve::traits::normalize(self.items, &self.typed.sigs, &self.projections, ty)
+        flux_solve::traits::normalize_with_memberships(
+            self.items,
+            &self.typed.sigs,
+            &self.projections,
+            &self.env,
+            ty,
+        )
     }
 
     fn field_index(&self, expr: ExprId) -> u32 {
@@ -2682,16 +2698,29 @@ impl Builder<'_> {
             Expr::Path(res) => {
                 let constant = self.const_of(expr, res)?;
                 let ty = self.own_ty(expr);
-                if !constant.args.is_empty()
-                    || ((self.needs_drop(ty)
-                        || flux_solve::traits::has_interior_mutability(
-                            self.items,
-                            &self.typed.sigs,
-                            ty,
-                        ))
-                        && self.promotable(expr).is_none())
+                if (self.needs_drop(ty)
+                    || flux_solve::traits::has_interior_mutability(
+                        self.items,
+                        &self.typed.sigs,
+                        ty,
+                    ))
+                    && self.promotable(expr).is_none()
                 {
                     return None;
+                }
+                if !constant.args.is_empty() {
+                    let reference = Ty::new(TyKind::Ref(Mutability::Not, ty));
+                    let pointer = self.temp(reference);
+                    self.assign(
+                        &pointer.into(),
+                        Rvalue::Use(Operand::Const(Constant::ItemRef {
+                            id: constant.konst,
+                            args: constant.args,
+                            ty: reference,
+                        })),
+                        self.range(expr),
+                    );
+                    return Some(Place::from(pointer).deref());
                 }
                 Some(self.static_place(constant.konst, self.range(expr)))
             }
@@ -2729,6 +2758,7 @@ impl Builder<'_> {
         } else {
             self.promotable(expr)?
         };
+        self.check_promoted_functions(expr);
         let index = self.promoted.len() as u32;
         self.promoted.push(value);
         let ty = Ty::new(TyKind::Ref(mutability, self.own_ty(expr)));
@@ -2775,12 +2805,8 @@ impl Builder<'_> {
             let item = self.temp(self.own_ty(expr));
             self.lower_value(expr, &item.into());
             let ty = self.place_ty(dest);
-            let pointer = Constant::Fn {
-                function: def.function,
-                args: def.args,
-                ty,
-            };
-            self.assign(dest, Rvalue::Use(Operand::Const(pointer)), self.range(expr));
+            let pointer = self.reify_item(expr, def, ty);
+            self.assign(dest, Rvalue::Use(pointer), self.range(expr));
             return;
         }
         // A closure that captures nothing coerced to a pointer: to its
@@ -2898,6 +2924,89 @@ impl Builder<'_> {
         self.promotable_in(self.body, self.types, expr, &mut Vec::new())
     }
 
+    /// Retain an immediate item's instantiation separately from its erased
+    /// address. A distinct temporary prevents a later assignment from borrowing
+    /// the proof attached to another reification of the same local.
+    fn reify_item(&mut self, expr: ExprId, def: flux_ty::FnDefTy, ty: Ty) -> Operand {
+        let pointer = Operand::Const(Constant::Fn {
+            function: def.function,
+            args: def.args,
+            ty,
+        });
+        if !matches!(
+            self.body.exprs[expr],
+            Expr::Path(Res::Function(_) | Res::Assoc { .. })
+        ) || !def
+            .args
+            .iter()
+            .any(|&ty| flux_ty::regions::slots(self.items, ty) != 0)
+        {
+            return pointer;
+        }
+        let local = self.temp(ty);
+        let tables = self
+            .types
+            .call_regions
+            .get(expr)
+            .cloned()
+            .unwrap_or_default();
+        if self.in_const_closure
+            && tables.iter().any(|(_, row)| {
+                row.iter()
+                    .any(|r| matches!(r, flux_ty::regions::Region::Param(_)))
+            })
+        {
+            self.errors.push(flux_hir::Diagnostic::new(
+                self.range(expr),
+                "named type argument lifetimes in constant closures are not supported yet",
+            ));
+        } else {
+            self.reification_regions.insert(local, tables);
+        }
+        self.assign(&local.into(), Rvalue::Use(pointer), self.range(expr));
+        self.read(local.into())
+    }
+
+    /// Promotion removes ordinary value evaluation, but must retain each
+    /// function item's region proof against its exact destination signature.
+    fn check_promoted_functions(&mut self, expr: ExprId) {
+        let mut pending = vec![expr];
+        while let Some(expr) = pending.pop() {
+            if let Some(&ty) = self.types.reified.get(expr)
+                && let TyKind::FnDef(def) = self.own_ty(expr).kind()
+            {
+                let pointer = self.reify_item(expr, def, ty);
+                // A reification without generic region arguments still needs
+                // its signature proof when the aggregate itself is promoted.
+                if matches!(pointer, Operand::Const(_)) {
+                    let local = self.temp(ty);
+                    self.assign(&local.into(), Rvalue::Use(pointer), self.range(expr));
+                }
+            } else {
+                // Only the pure expression forms admitted by promotable_in
+                // can reach this walk. Named constants check their own bodies.
+                match &self.body.exprs[expr] {
+                    Expr::Tuple(fields) | Expr::Array(fields) => {
+                        pending.extend(self.body.lists[*fields].iter().copied());
+                    }
+                    Expr::Repeat { value, .. } => pending.push(*value),
+                    Expr::Block { tail, .. } => pending.extend(*tail),
+                    Expr::Record { fields, spread, .. } => {
+                        pending.extend(self.body.lists[*fields].iter().map(|(_, value)| *value));
+                        pending.extend(*spread);
+                    }
+                    Expr::Call { args, .. } => {
+                        pending.extend(self.body.lists[*args].iter().copied())
+                    }
+                    Expr::Ref { expr, .. } | Expr::Field { expr, .. } => pending.push(*expr),
+                    Expr::Index { base, index } => pending.extend([*base, *index]),
+                    Expr::Unary { operand, .. } => pending.push(*operand),
+                    _ => {}
+                }
+            }
+        }
+    }
+
     /// Qualifies referenced constants using the same rules as their uses.
     /// The active path prevents cycles from recursing during qualification;
     /// normal constant evaluation remains responsible for cycle diagnostics.
@@ -2910,10 +3019,28 @@ impl Builder<'_> {
     ) -> Option<crate::eval::Value> {
         use crate::eval::Value;
         // A written annotation relates the value's own regions.
-        if types.reified.get(expr).is_some() || types.expr_regions.get(expr).is_some() {
+        if types.expr_regions.get(expr).is_some() {
             return None;
         }
         let ty = types.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
+        if types.reified.get(expr).is_some() {
+            if matches!(body.exprs[expr], Expr::Path(_))
+                && let TyKind::FnDef(def) = ty.kind()
+                && self
+                    .typed
+                    .sigs
+                    .regions
+                    .fns
+                    .get(def.function)
+                    .is_some_and(|r| r.owner == 0)
+            {
+                return Some(Value::Function(flux_ty::Instance {
+                    function: def.function,
+                    args: def.args,
+                }));
+            }
+            return None;
+        }
         // Array-to-slice coercion retains the same promoted allocation.
         // Other coercions may change the value's representation or call code.
         if let Some(&target) = types.unsizes.get(expr) {
@@ -3323,14 +3450,14 @@ impl Builder<'_> {
         dest: &Place,
     ) {
         let range = self.range(expr);
-        if self.in_closure
+        if self.in_const_closure
             && regions
                 .iter()
                 .any(|r| matches!(r, flux_ty::regions::Region::Param(_)))
         {
             self.errors.push(flux_hir::Diagnostic::new(
                 range,
-                "named lifetime arguments in closures are not supported yet",
+                "named lifetime arguments in constant closures are not supported yet",
             ));
             return self.lower_value_as_is(expr, dest);
         }
@@ -3569,6 +3696,7 @@ impl Builder<'_> {
                 };
                 // A promoted value lives forever, as rustc's does.
                 if let Some(value) = promoted {
+                    self.check_promoted_functions(*inner);
                     let index = self.promoted.len() as u32;
                     self.promoted.push(value);
                     let ty = self.own_ty(expr);
@@ -3858,7 +3986,7 @@ impl Builder<'_> {
                     range,
                 );
                 let operands = vec![receiver, Operand::Move(tuple.into())];
-                self.record_call_regions(expr, range);
+                self.record_call_regions(expr);
                 self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::Call { callee, args } => match body.exprs[*callee] {
@@ -3883,7 +4011,7 @@ impl Builder<'_> {
                         .iter()
                         .map(|&arg| self.lower_operand(arg))
                         .collect();
-                    self.record_call_regions(*callee, range);
+                    self.record_call_regions(*callee);
                     self.call(instance.function, instance.args, args, dest, range);
                 }
                 Expr::Path(Res::Struct(strukt)) => {
@@ -3970,7 +4098,7 @@ impl Builder<'_> {
                 {
                     self.fn_spans.insert(block, name.start());
                 }
-                self.record_call_regions(expr, range);
+                self.record_call_regions(expr);
                 self.call(instance.function, instance.args, operands, dest, range);
             }
             Expr::MethodCall { receiver, args, .. } => {
@@ -4032,9 +4160,10 @@ impl Builder<'_> {
             Expr::Try { expr: operand } => self.lower_try(expr, *operand, dest, range),
             Expr::Cast { expr: inner, .. } => {
                 let ty = self.expr_ty(expr);
-                // A cast to the operand's own type, or to the type it is
-                // coerced to, is the operand.
-                if self.value_ty(*inner) == ty {
+                // Raw pointer casts can change nested reference lifetimes
+                // even when their erased types agree. Preserve the cast so
+                // region checking does not turn it into a reference coercion.
+                if self.value_ty(*inner) == ty && !matches!(ty.kind(), TyKind::RawPtr(..)) {
                     self.lower_into(*inner, dest);
                     return;
                 }
@@ -4371,11 +4500,11 @@ impl Builder<'_> {
         self.read(temp.into())
     }
 
-    fn record_call_regions(&mut self, expr: ExprId, range: TextRange) {
+    fn record_call_regions(&mut self, expr: ExprId) {
         let Some(tables) = self.types.call_regions.get(expr) else {
             return;
         };
-        if self.in_closure
+        if self.in_const_closure
             && tables.iter().any(|(_, table)| {
                 table
                     .iter()
@@ -4383,8 +4512,8 @@ impl Builder<'_> {
             })
         {
             self.errors.push(flux_hir::Diagnostic::new(
-                range,
-                "named type argument lifetimes in closures are not supported yet",
+                self.range(expr),
+                "named type argument lifetimes in constant closures are not supported yet",
             ));
             return;
         }
@@ -4426,7 +4555,7 @@ impl Builder<'_> {
             ty: self.place_ty(dest),
             kind: LocalKind::Temp,
         });
-        self.record_call_regions(callee, range);
+        self.record_call_regions(callee);
         self.call(
             instance.function,
             instance.args,

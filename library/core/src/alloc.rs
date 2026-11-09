@@ -6,6 +6,61 @@ use crate::marker::Copy;
 use crate::mem::{align_of, size_of};
 use crate::result::Result::{self, Err, Ok};
 
+/// An allocator for nonzero memory blocks described by a `Layout`.
+///
+/// # Safety
+/// Implementations must return null or a fresh block matching the requested
+/// layout, honor the allocation ownership contracts, and never unwind.
+pub unsafe trait GlobalAlloc {
+    /// Allocates a block, or returns null on failure.
+    ///
+    /// # Safety
+    /// `layout.size()` must be nonzero.
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8;
+
+    /// Releases a block previously returned by this allocator.
+    ///
+    /// # Safety
+    /// `pointer` must denote a currently allocated block with this layout.
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout);
+
+    /// Allocates a block whose bytes are all zero, or returns null.
+    ///
+    /// # Safety
+    /// `layout.size()` must be nonzero.
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller supplies a nonzero valid allocation layout.
+        let pointer = unsafe { self.alloc(layout) };
+        if !pointer.is_null() {
+            // SAFETY: successful allocation provides layout.size() writable bytes.
+            unsafe { crate::ptr::write_bytes(pointer, 0, layout.size()); }
+        }
+        pointer
+    }
+
+    /// Resizes a block, preserving its prefix. Failure keeps the old block live.
+    ///
+    /// # Safety
+    /// `pointer` must denote this allocator's live block with `layout`.
+    /// `new_size` must be nonzero and form a valid layout with the same alignment.
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller guarantees the new size and alignment form a layout.
+        let new_layout = unsafe { Layout::from_size_align_unchecked(new_size, layout.align()) };
+        // SAFETY: new_layout has the caller's nonzero requested size.
+        let replacement = unsafe { self.alloc(new_layout) };
+        if !replacement.is_null() {
+            let count = if layout.size() < new_size { layout.size() } else { new_size };
+            // SAFETY: both blocks are live, disjoint and at least count bytes long.
+            // Ownership of the old block ends only after successful copying.
+            unsafe {
+                crate::ptr::copy_nonoverlapping(pointer, replacement, count);
+                self.dealloc(pointer, layout);
+            }
+        }
+        replacement
+    }
+}
+
 /// A power of two, as rustc's `ptr::Alignment` is: every other value is
 /// invalid, so enums around it may use them.
 #[lang = "alignment"]

@@ -235,7 +235,7 @@ fn body_lifetime_boundaries_remain_closed() {
         ),
         (
             "trait Ref { type Out; } impl<'a> Ref for &'a i32 { type Out = &'a i32; } type Alias = <&'static i32 as Ref>::Out; fn f(x: &i32) { id::<Alias>(x); }",
-            "lifetimes in associated type annotations",
+            "escapes",
         ),
     ] {
         let source = format!("fn id<T>(x: T) -> T {{ x }} {body} fn main() {{}}");
@@ -248,18 +248,13 @@ fn body_lifetime_boundaries_remain_closed() {
 }
 
 #[test]
-fn closure_named_arguments_remain_closed() {
+fn closure_named_arguments_are_admitted() {
     for source in [
         "fn id<T>(x: T) -> T { x } fn f<'a>(x: &'a i32) { let c = || id::<&'a i32>(x); c(); } fn main() {}",
         "fn id<T>(x: T) -> T { x } fn f<'a>(_: &'a i32) { let c = || id::<&'a i32>(&1); c(); } fn main() {}",
     ] {
         let (ty, mir) = check(source);
-        assert!(
-            ty.iter()
-                .chain(&mir)
-                .any(|d| d.contains("named type argument lifetimes in closures")),
-            "{ty:?} {mir:?}"
-        );
+        assert!(ty.is_empty() && mir.is_empty(), "{ty:?} {mir:?}");
     }
 }
 

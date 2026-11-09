@@ -489,6 +489,108 @@ pub mod aarch64 {
         unsafe { *(&a as *const uint8x16_t as *const uint32x4_t) }
     }
 
+    macro_rules! reinterpret128 {
+        ($name:ident, $from:ty, $to:ty) => {
+            /// Preserves the vector's sixteen bytes with a different lane width.
+            #[target_feature(enable = "neon")]
+            pub fn $name(value: $from) -> $to {
+                // SAFETY: both vectors have the same size and alignment, and
+                // every integer lane bit pattern is valid.
+                unsafe { crate::mem::transmute(value) }
+            }
+        };
+    }
+    reinterpret128!(vreinterpretq_u32_u64, uint64x2_t, uint32x4_t);
+    reinterpret128!(vreinterpretq_u64_u32, uint32x4_t, uint64x2_t);
+    reinterpret128!(vreinterpretq_u8_u32, uint32x4_t, uint8x16_t);
+    reinterpret128!(vreinterpretq_u32_u16, uint16x8_t, uint32x4_t);
+    reinterpret128!(vreinterpretq_u16_u32, uint32x4_t, uint16x8_t);
+
+    /// Reverses halfword lanes within each word.
+    #[target_feature(enable = "neon")]
+    pub fn vrev32q_u16(a: uint16x8_t) -> uint16x8_t {
+        let mut lanes = a.0;
+        let mut i = 0;
+        while i < 8 { lanes[i] = a.0[i ^ 1]; i += 1; }
+        uint16x8_t(lanes)
+    }
+
+    /// Takes the bitwise OR of corresponding words.
+    #[target_feature(enable = "neon")]
+    pub fn vorrq_u32(a: uint32x4_t, b: uint32x4_t) -> uint32x4_t {
+        let mut lanes = a.0;
+        let mut i = 0;
+        while i < 4 { lanes[i] |= b.0[i]; i += 1; }
+        uint32x4_t(lanes)
+    }
+
+    /// Takes the bitwise XOR of corresponding words.
+    #[target_feature(enable = "neon")]
+    pub fn veorq_u32(a: uint32x4_t, b: uint32x4_t) -> uint32x4_t {
+        let mut lanes = a.0;
+        let mut i = 0;
+        while i < 4 { lanes[i] ^= b.0[i]; i += 1; }
+        uint32x4_t(lanes)
+    }
+
+    /// Shifts word lanes left; N must be in 0..=31.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshlq_n_u32<const N: i32>(a: uint32x4_t) -> uint32x4_t {
+        let mut lanes = a.0;
+        let mut i = 0;
+        while i < 4 { lanes[i] <<= N; i += 1; }
+        uint32x4_t(lanes)
+    }
+
+    /// Shifts word lanes right; N must be in 1..=32.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshrq_n_u32<const N: i32>(a: uint32x4_t) -> uint32x4_t {
+        let mut lanes = [0; 4];
+        let mut i = 0;
+        if N != 32 { while i < 4 { lanes[i] = a.0[i] >> N; i += 1; } }
+        uint32x4_t(lanes)
+    }
+
+    /// Shifts byte lanes right; N must be in 1..=8.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshrq_n_u8<const N: i32>(a: uint8x16_t) -> uint8x16_t {
+        let mut lanes = [0; 16];
+        let mut i = 0;
+        if N != 8 { while i < 16 { lanes[i] = a.0[i] >> N; i += 1; } }
+        uint8x16_t(lanes)
+    }
+
+    /// Extracts sixteen bytes starting at N in the concatenated vectors.
+    #[rustc_legacy_const_generics(2)]
+    #[target_feature(enable = "neon")]
+    pub fn vextq_u8<const N: i32>(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
+        let mut lanes = [0; 16];
+        let mut i = 0;
+        while i < 16 {
+            let index = i + N as usize;
+            lanes[i] = if index < 16 { a.0[index] } else { b.0[index - 16] };
+            i += 1;
+        }
+        uint8x16_t(lanes)
+    }
+
+    /// Extracts four words starting at N in the concatenated vectors.
+    #[rustc_legacy_const_generics(2)]
+    #[target_feature(enable = "neon")]
+    pub fn vextq_u32<const N: i32>(a: uint32x4_t, b: uint32x4_t) -> uint32x4_t {
+        let mut lanes = [0; 4];
+        let mut i = 0;
+        while i < 4 {
+            let index = i + N as usize;
+            lanes[i] = if index < 4 { a.0[index] } else { b.0[index - 4] };
+            i += 1;
+        }
+        uint32x4_t(lanes)
+    }
+
     /// Extracts two lanes from the concatenation of `a` and `b`.
     #[rustc_legacy_const_generics(2)]
     #[target_feature(enable = "neon")]

@@ -66,12 +66,6 @@ fn associated_value_selection_matches_rustc() {
         );
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
-        if name == "alias_hidden_bad" {
-            // Lifetime arguments on a type alias that resolves directly to a
-            // projection already hit the guarded annotation boundary.
-            assert!(!typed.diagnostics.is_empty(), "{name}: expected rejection");
-            continue;
-        }
         assert!(
             typed.diagnostics.is_empty(),
             "{name}: {:?}",

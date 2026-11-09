@@ -170,7 +170,7 @@ impl Cx<'_> {
                     next += n;
                 }
             }
-            TyKind::Alias(alias) if flux_ty::regions::has_projection_inputs(alias) => {
+            TyKind::Alias(alias) if flux_ty::regions::has_projection_inputs(self.items, alias) => {
                 let mut next = alias.owner_lifetimes as usize;
                 for &arg in alias.args {
                     let n = self.slots(arg) as usize;
@@ -383,7 +383,7 @@ impl Cx<'_> {
                 .zip(metadata.projections.iter())
                 .enumerate()
             {
-                if flux_ty::regions::has_projection_inputs(projection.alias) {
+                if flux_ty::regions::has_projection_inputs(self.items, projection.alias) {
                     return None;
                 }
                 let input = self.declared_projection_input(

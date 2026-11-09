@@ -320,10 +320,17 @@ impl RegionSigs {
     }
 }
 
-/// Only aliases with represented lifetime/family inputs have occurrence rows.
-/// Legacy lifetimeless associated values keep their existing zero-slot model.
-pub fn has_projection_inputs(alias: crate::AliasTy) -> bool {
+/// Lifetime and family arguments explicitly declared on a projection.
+pub fn has_declared_projection_inputs(alias: crate::AliasTy) -> bool {
     alias.owner_lifetimes != 0 || alias.family_lifetimes != 0 || !alias.family_args.is_empty()
+}
+
+/// Ordinary associated values retain lifetime rows from their input types.
+/// Callable outputs use their separate call-bound input protocol.
+pub fn has_projection_inputs(items: &ItemTree, alias: crate::AliasTy) -> bool {
+    has_declared_projection_inputs(alias)
+        || (crate::fn_trait_kind(items, alias.trait_).is_none()
+            && alias.args.iter().any(|&ty| slots(items, ty) != 0))
 }
 
 /// Occurrence rows of a non-callable object's type and equality arguments.
@@ -383,7 +390,7 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
             items.structs[adt.strukt].generics.lifetimes.len()
                 + args.iter().map(|&t| slots(items, t)).sum::<usize>()
         }
-        TyKind::Alias(alias) if has_projection_inputs(alias) => {
+        TyKind::Alias(alias) if has_projection_inputs(items, alias) => {
             alias.owner_lifetimes as usize
                 + alias.family_lifetimes as usize
                 + alias
@@ -473,7 +480,10 @@ fn instantiate_at<R: Copy>(
                 instantiate_at(items, t, own, next, region, args, out);
             }
         }
-        TyKind::Alias(alias) if has_projection_inputs(alias) => {
+        TyKind::Alias(alias)
+            if has_projection_inputs(items, alias)
+                || crate::fn_trait_kind(items, alias.trait_).is_none() =>
+        {
             for _ in 0..alias.owner_lifetimes {
                 own_slot(next, out);
             }

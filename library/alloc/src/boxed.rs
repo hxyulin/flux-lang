@@ -100,6 +100,37 @@ impl<T: ?Sized> DerefMut for Box<T> {
     }
 }
 
+#[rustc_intrinsic]
+fn __box_call_once<A, F: FnOnce<A> + ?Sized>(f: Box<F>, args: A) -> F::Output { loop {} }
+
+// Vtables for FnOnce use this owning entry instead of a by-value unsized call.
+#[lang = "box_call_once"]
+fn __boxed_call_once<A, F: FnOnce<A>>(f: Box<F>, args: A) -> F::Output {
+    let raw = Box::into_raw(f);
+    // SAFETY: the box uniquely owns an initialized F. Reading moves it out;
+    // the allocation is then freed without dropping the moved value twice.
+    let value = unsafe { ptr::read(raw) };
+    let layout = Layout::new::<F>();
+    if layout.size() != 0 {
+        // SAFETY: raw came from Box and uses the original allocation layout.
+        unsafe { dealloc(raw as *mut u8, layout) };
+    }
+    F::call_once(value, args)
+}
+
+impl<A, F: FnOnce<A> + ?Sized> FnOnce<A> for Box<F> {
+    type Output = F::Output;
+    fn call_once(self, args: A) -> F::Output { __box_call_once(self, args) }
+}
+
+impl<A, F: FnMut<A> + ?Sized> FnMut<A> for Box<F> {
+    fn call_mut(&mut self, args: A) -> F::Output { F::call_mut(&mut **self, args) }
+}
+
+impl<A, F: Fn<A> + ?Sized> Fn<A> for Box<F> {
+    fn call(&self, args: A) -> F::Output { F::call(&**self, args) }
+}
+
 impl<T: ?Sized> core::borrow::Borrow<T> for Box<T> {
     fn borrow(&self) -> &T { &**self }
 }

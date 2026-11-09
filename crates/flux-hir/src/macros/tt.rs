@@ -308,6 +308,10 @@ pub(crate) fn same_token(a: &[Tok], ga: Glued, b: &[Tok], gb: Glued) -> bool {
     if ga.kind != gb.kind {
         return false;
     }
+    // Fragment wrappers are not literal parentheses in the forwarded input.
+    if matches!(gb.kind, T!['('] | T![')']) && b[gb.raw as usize].origin.range.is_empty() {
+        return false;
+    }
     match ga.kind {
         T![crate] => {
             super::definition_crate(a[ga.raw as usize].origin.ctxt)

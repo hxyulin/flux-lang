@@ -125,10 +125,9 @@ fn structural_auto_supertraits_match_rustc() {
     }
 }
 
-/// Bounded-lifetime auto impl admission remains explicit. The lower-level
-/// proof unit test separately checks that its metadata is never discarded.
+/// A static prerequisite is admitted and retained through a structural wrapper.
 #[test]
-fn lifetime_auto_impl_boundary_is_preserved() {
+fn static_auto_impl_prerequisite_is_supported() {
     let source = "struct Guard<T>(core::marker::PhantomData<T>);unsafe impl<T:'static>Send for Guard<T>{}struct W<T>(Guard<T>);trait Typed:Send{}impl<T:'static>Typed for W<T>{}fn main(){}";
     let root = std::env::temp_dir().join(format!(
         "flux-auto-lifetime-boundary-{}",
@@ -151,12 +150,9 @@ fn lifetime_auto_impl_boundary_is_preserved() {
     );
     let (_, _, hir) = flux_hir::lower_text(&path, source);
     let typed = flux_mir::check_file(&hir);
-    assert!(
-        typed.diagnostics.iter().any(|d| d.message
-            == "lifetime specialization and bounds in auto trait impls are not supported yet"),
-        "{:?}",
-        typed.diagnostics
-    );
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
 }
 
 #[test]

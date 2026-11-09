@@ -113,7 +113,7 @@ fn dyn_pointer_boundaries_match_supported_contracts() {
         (
             "dyn_method_pointer",
             "fn main(){let _:fn(Box<dyn Iterator<Item=u32>>)->Option<u32>=<Box<dyn Iterator<Item=u32>> as Iterator>::last;}",
-            Some("function item pointer region provenance is not supported yet"),
+            None::<&str>,
         ),
         (
             "dyn_borrowed_item",

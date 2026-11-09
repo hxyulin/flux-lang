@@ -2,7 +2,7 @@
 //! Rust's `System` allocator does on macOS: `posix_memalign` for an
 //! alignment past `malloc`'s 16 bytes or past the size.
 
-pub use core::alloc::{Layout, LayoutErr, LayoutError};
+pub use core::alloc::{GlobalAlloc, Layout, LayoutErr, LayoutError};
 
 mod libc {
     unsafe extern "C" {

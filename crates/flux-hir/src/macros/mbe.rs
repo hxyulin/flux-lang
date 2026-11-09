@@ -1463,9 +1463,11 @@ impl Transcriber<'_, '_> {
                             continue;
                         }
                         // An expression stays one when put among other
-                        // tokens: `$e * 2` multiplies all of `$e`.
-                        let wrap =
-                            matches!(kind, FragKind::Expr | FragKind::Expr2021) && end - start > 1;
+                        // tokens: `$e * 2` multiplies all of `$e`. A type is
+                        // atomic too, including in `value as $t << count`.
+                        let wrap = kind == FragKind::Ty
+                            || (matches!(kind, FragKind::Expr | FragKind::Expr2021)
+                                && end - start > 1);
                         if wrap {
                             let first = raw[0].origin;
                             out.push(Tok {

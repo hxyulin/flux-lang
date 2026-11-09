@@ -121,6 +121,9 @@ pub struct Body {
     pub region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
     /// Written type-argument regions at direct calls, in the caller's environment.
     pub call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
+    /// Written generic argument regions at immediate function-item reifications.
+    /// Each key names a dedicated temporary assigned the function pointer once.
+    pub reification_regions: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
     pub blocks: Arena<BasicBlockData>,
     pub param_count: usize,
     /// The bytes of each C string constant, without the terminating NUL;
@@ -231,6 +234,7 @@ impl Body {
         Body {
             locals: Arena::new(),
             call_regions: ArenaMap::new(),
+            reification_regions: ArenaMap::new(),
             region_annotations: Vec::new(),
             region_relations: Vec::new(),
             blocks: Arena::new(),
@@ -676,6 +680,13 @@ pub enum Constant {
         args: GenericArgs,
         ty: Ty,
     },
+    /// A shared reference to a drop-free, immutable constant instance. Its
+    /// allocation is materialized after generic arguments have been substituted.
+    ItemRef {
+        id: flux_hir::ConstId,
+        args: GenericArgs,
+        ty: Ty,
+    },
     /// A pointer to a function, `function` with generic arguments
     /// `args`, of function pointer type `ty`: a function item coerced to
     /// one.
@@ -718,6 +729,7 @@ impl Constant {
             Constant::FnItem(ty) => ty,
             Constant::CStr(_) => flux_ty::c_str_ref(),
             Constant::Item { ty, .. }
+            | Constant::ItemRef { ty, .. }
             | Constant::Static { ty, .. }
             | Constant::Fn { ty, .. }
             | Constant::Promoted { ty, .. }
@@ -1077,7 +1089,10 @@ impl Body {
     pub fn const_items(&self) -> Vec<flux_ty::ConstInstance> {
         let mut found = Vec::new();
         let mut operand = |op: &Operand| {
-            if let Operand::Const(Constant::Item { id, args, .. }) = op {
+            if let Operand::Const(
+                Constant::Item { id, args, .. } | Constant::ItemRef { id, args, .. },
+            ) = op
+            {
                 found.push(flux_ty::ConstInstance { konst: *id, args });
             } else if let Operand::Const(Constant::Static { id, .. }) = op {
                 found.push(flux_ty::ConstInstance {

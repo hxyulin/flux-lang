@@ -37,8 +37,8 @@ pub use flux_ty_ir::regions::{
     AliasRegions, CallbackBinder, FamilyRegions, FnRegions, IMPL_SELF_ARG, ImplRegions,
     LifetimeName, OpaqueBoundRegions, OpaqueRegions, Outlives, ProjectionSelection, Region,
     RegionSigs, StructRegions, TRAIT_LIFETIMES_ARG, TraitRefRegions, TraitRegions, TypeArgRegions,
-    Variance, has_projection_inputs, instantiate, object_associated_range, object_own_slots,
-    object_region_types, slots,
+    Variance, has_declared_projection_inputs, has_projection_inputs, instantiate,
+    object_associated_range, object_own_slots, object_region_types, slots,
 };
 
 pub use crate::fn_regions::variances as fn_pointer_variances;
@@ -52,6 +52,7 @@ mod resolve;
 mod selected;
 mod selected_signatures;
 pub use method_binders::method_early_lifetimes;
+pub(crate) use selected::projection as selected_projection_regions;
 pub use selected_signatures::{SelectedMethodSignature, selected_method_signature};
 mod trait_profile;
 
@@ -60,11 +61,13 @@ pub use trait_profile::{
 };
 
 pub(crate) use resolve::resolve_regions;
-pub use resolve::trait_bound_regions;
+pub use resolve::{TraitBoundRegions, trait_bound_regions, trait_bound_schemes};
 
-fn has_projection_outlives_inputs(ty: Ty) -> bool {
-    matches!(ty.kind(), TyKind::Alias(alias) if has_projection_inputs(alias))
-        || ty.children().any(has_projection_outlives_inputs)
+fn has_projection_outlives_inputs(items: &ItemTree, ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::Alias(alias) if has_projection_inputs(items, alias))
+        || ty
+            .children()
+            .any(|ty| has_projection_outlives_inputs(items, ty))
 }
 
 /// What an elided lifetime (`&T`, `'_`, or a struct's lifetime
@@ -481,6 +484,26 @@ impl<'a> Walker<'a> {
     }
 
     fn path(&mut self, path: &Path, ty: Ty, out: &mut Vec<Region>) {
+        // A named alias can resolve to a projection whose input row grows
+        // after substitution. Walk the alias arguments in its own declaration
+        // scope, rather than interpret its spelling as a qualified projection.
+        if path.qself.is_none()
+            && matches!(ty.kind(), TyKind::Alias(_))
+            && !(path.segments.len() == 1 && self.scope.generics.contains(&path.segments[0]))
+        {
+            let alias = match self.items.resolve(self.module, path, Ns::Types) {
+                Ok(Resolved::Def(Def::TypeAlias(id))) => Some(id),
+                Err(flux_hir::def_map::ResolveError::Private {
+                    resolved: Resolved::Def(Def::TypeAlias(id)),
+                    ..
+                }) => Some(id),
+                _ => None,
+            };
+            if let Some(id) = alias {
+                self.alias(path, id, ty, out);
+                return;
+            }
+        }
         if path.qself.is_some()
             && let Some(sigs) = self.signatures
         {
@@ -493,7 +516,7 @@ impl<'a> Walker<'a> {
                 &mut Vec::new(),
             );
             if let TyKind::Alias(alias) = raw.kind()
-                && !has_projection_inputs(alias)
+                && !has_declared_projection_inputs(alias)
                 && flux_solve::traits::normalize(self.items, sigs, &[], raw) == ty
                 && raw != ty
             {
@@ -519,11 +542,11 @@ impl<'a> Walker<'a> {
             }
         }
         if let TyKind::Alias(alias) = ty.kind()
-            && has_projection_inputs(alias)
+            && has_projection_inputs(self.items, alias)
         {
             let start = out.len();
             self.projection_inputs(path, alias, out);
-            if !self.qualified_legacy_selections
+            if (!self.qualified_legacy_selections || !has_declared_projection_inputs(alias))
                 && let Some(selections) = self.selections.as_mut()
             {
                 let row = &out[start..];
@@ -1496,7 +1519,7 @@ fn implied_at<R: Copy + PartialEq>(
                 implied_at(items, sigs, t, regions, next, static_region, out);
             }
         }
-        TyKind::Alias(alias) if has_projection_inputs(alias) => {
+        TyKind::Alias(alias) if has_projection_inputs(items, alias) => {
             let owner = *next;
             *next += alias.owner_lifetimes as usize;
             let mut arg_ranges = Vec::new();

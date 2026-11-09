@@ -14,23 +14,33 @@ pub(crate) fn check_signature_projection_requirements(
         let signature = &sigs.fns[function];
         let selected_method = matches!(data.owner, Some(flux_hir::Owner::Impl(imp))
             if sigs.impl_traits.get(imp).is_some());
-        if regions.selected_inputs.iter().all(|row| row.is_empty())
+        let memberships = flux_solve::traits::predicates_of(items, sigs, function);
+        let parameter_contract = memberships.iter().any(|p| {
+            sigs.trait_predicates
+                .get(p.trait_ref.trait_)
+                .is_some_and(|p| !p.is_empty())
+        });
+        let selection_contract = !(regions.selected_inputs.iter().all(|row| row.is_empty())
             && (selected_method
                 || signature
                     .params
                     .iter()
                     .chain([&signature.ret])
-                    .all(|ty| !ty.has_aliases()))
-        {
+                    .all(|ty| !ty.has_aliases())));
+        if !parameter_contract && !selection_contract {
             continue;
         }
         let body = Body::empty(Some(function));
         let requirements = Requirements::default();
         let mut cx = Cx::new(&body, items, sigs, &requirements);
-        cx.header_predicates = flux_solve::traits::elaborate(
-            sigs,
-            &flux_solve::traits::predicates_of(items, sigs, function),
-        );
+        if !selection_contract
+            && !memberships
+                .iter()
+                .any(|&p| !cx.lifetime_trait_parameters(p, 0).is_empty())
+        {
+            continue;
+        }
+        cx.header_predicates = flux_solve::traits::elaborate(sigs, &memberships);
         cx.header_type_equalities();
         cx.new_universal("'static".into());
         let lifetimes: Vec<_> = (0..regions.names.len())
@@ -59,7 +69,13 @@ pub(crate) fn check_signature_projection_requirements(
         }
         cx.close_known();
         let mut env = cx.caller_region_goals(false);
-        let mut complete = regions.selected_inputs.len() == signature.params.len() + 1;
+        let mut complete = regions.selected_inputs.len() == signature.params.len() + 1
+            || (regions.selected_inputs.is_empty()
+                && signature
+                    .params
+                    .iter()
+                    .chain([&signature.ret])
+                    .all(|ty| !ty.has_aliases()));
         let mut projections = Vec::new();
         let mut bounds = Vec::new();
         if let Some(flux_hir::Owner::Impl(imp)) = data.owner
@@ -183,8 +199,21 @@ pub(crate) fn check_signature_projection_requirements(
                 None => complete = false,
             }
         }
+        cx.close_known();
+        for goal in &env {
+            complete &= cx.trait_parameters_hold(goal, &env, 0) == Some(true);
+        }
         cx.family_goals = env.clone();
         for (projection, table) in projections {
+            // A quantified equality is instantiated by its original input
+            // occurrence. No concrete row exists at declaration scope.
+            if cx
+                .env_ranked
+                .iter()
+                .any(|scheme| scheme.alias == projection.alias)
+            {
+                continue;
+            }
             if let Some(row) = cx.instantiate_sig(projection.ty, &table, &mut { map }, &[], &[]) {
                 cx.env_regions.push((projection.alias, row));
             } else {

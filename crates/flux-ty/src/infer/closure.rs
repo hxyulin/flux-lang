@@ -565,6 +565,11 @@ impl Ctx<'_> {
         // Whether a step past references reached `base`.
         let mut through_pointer = false;
         let found = loop {
+            if let Some(inner) = flux_solve::box_pointee(base)
+                && let Some(found) = self.fn_bound(inner)
+            {
+                break Some(found);
+            }
             match base.kind() {
                 TyKind::Closure(..) => break None,
                 TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_) => {
@@ -923,7 +928,12 @@ impl Ctx<'_> {
             };
             let (place, mode) = self.truncate_capture(place, mode, closure.is_move);
             let assigned = use_kind == UseKind::Assign;
-            captures.insert((place, mode, range, assigned));
+            captures.insert((place, mode, range, assigned), |(binding, projection)| {
+                matches!(
+                    self.capture_place_ty(*binding, projection).kind(),
+                    TyKind::Ref(Mutability::Mut, _)
+                )
+            });
         }
         let captures = captures.ordered();
         let captures = captures
@@ -1784,14 +1794,14 @@ struct PendingCaptures {
 }
 
 impl PendingCaptures {
-    fn insert(&mut self, capture: PendingCapture) {
+    fn insert(&mut self, capture: PendingCapture, is_mut_ref: impl FnMut(&Place) -> bool) {
         let next = self.groups.len();
         let index = *self.bindings.entry(capture.0.0).or_insert(next);
         if index == next {
             self.groups.push(Vec::new());
         }
         let group = &mut self.groups[index];
-        insert_capture(group, capture);
+        insert_capture(group, capture, is_mut_ref);
     }
 
     /// Grouped by binding in first-use order, then by field within each
@@ -1814,16 +1824,31 @@ impl PendingCaptures {
     }
 }
 
-fn insert_capture(captures: &mut Vec<PendingCapture>, new: PendingCapture) {
+fn insert_capture(
+    captures: &mut Vec<PendingCapture>,
+    new: PendingCapture,
+    mut is_mut_ref: impl FnMut(&Place) -> bool,
+) {
     let is_prefix = |a: &Place, b: &Place| {
         #[cfg(test)]
         tests::PREFIX_COMPARISONS.with(|count| count.set(count.get() + 1));
         a.0 == b.0 && b.1.starts_with(&a.1)
     };
     // The stronger of two uses decides, and where it is reported.
-    let merge = |into: &mut PendingCapture, other: &PendingCapture| {
-        if other.1.rank() > into.1.rank() {
-            into.1 = other.1;
+    let mut merge = |into: &mut PendingCapture, other: &PendingCapture| {
+        // Borrowing through an owned `&mut` needs exclusive access to the
+        // reference, not permission to replace its binding. A shared use of
+        // that reference can shorten the captured place to this ancestor.
+        let mode = if other.1 == CaptureMode::ByRef(Mutability::Mut)
+            && other.0.1.get(into.0.1.len()) == Some(&CaptureProj::Deref)
+            && is_mut_ref(&into.0)
+        {
+            CaptureMode::Unique
+        } else {
+            other.1
+        };
+        if mode.rank() > into.1.rank() {
+            into.1 = mode;
             into.2 = other.2;
             into.3 = other.3;
         }
@@ -2023,16 +2048,19 @@ mod tests {
         let mut captures = PendingCaptures::default();
         for pass in 0..4 {
             for i in (0..n).rev() {
-                captures.insert((
-                    (BindingId::from_raw(i), Vec::new()),
-                    if pass == 3 {
-                        CaptureMode::ByRef(Mutability::Mut)
-                    } else {
-                        CaptureMode::ByRef(Mutability::Not)
-                    },
-                    TextRange::default(),
-                    pass == 3,
-                ));
+                captures.insert(
+                    (
+                        (BindingId::from_raw(i), Vec::new()),
+                        if pass == 3 {
+                            CaptureMode::ByRef(Mutability::Mut)
+                        } else {
+                            CaptureMode::ByRef(Mutability::Not)
+                        },
+                        TextRange::default(),
+                        pass == 3,
+                    ),
+                    |_| false,
+                );
             }
         }
         // Each repeated use searches only its binding's single capture;
@@ -2055,10 +2083,19 @@ mod tests {
         let shared = CaptureMode::ByRef(Mutability::Not);
         let mutable = CaptureMode::ByRef(Mutability::Mut);
         let range = TextRange::default();
-        captures.insert(((a, vec![CaptureProj::Field(2)]), shared, range, false));
-        captures.insert(((b, vec![CaptureProj::Field(1)]), mutable, range, true));
-        captures.insert(((a, vec![CaptureProj::Field(0)]), shared, range, false));
-        captures.insert(((b, vec![]), shared, range, false));
+        captures.insert(
+            ((a, vec![CaptureProj::Field(2)]), shared, range, false),
+            |_| false,
+        );
+        captures.insert(
+            ((b, vec![CaptureProj::Field(1)]), mutable, range, true),
+            |_| false,
+        );
+        captures.insert(
+            ((a, vec![CaptureProj::Field(0)]), shared, range, false),
+            |_| false,
+        );
+        captures.insert(((b, vec![]), shared, range, false), |_| false);
         let ordered = captures.ordered();
         assert_eq!(
             ordered,

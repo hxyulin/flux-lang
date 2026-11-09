@@ -27,9 +27,9 @@ pub use signature::{signatures, signatures_checked, signatures_from};
 mod resolve;
 pub use resolve::{
     ArrayLens, LenEvaluator, TypeScope, alias_type, array_len, check_const_params, const_param_ty,
-    const_value, generic_consts, generic_names, impl_target, nonzero_integer, param_const_ty,
-    primitive, resolve_generic_arg, resolve_generic_args, resolve_type, self_ty, shared_pointee,
-    shared_pointees, struct_type, unsized_error, wrong_arg_count,
+    const_value, generic_consts, generic_names, impl_target, nonnull_pointee, nonzero_integer,
+    param_const_ty, primitive, resolve_generic_arg, resolve_generic_args, resolve_type, self_ty,
+    shared_pointee, shared_pointees, struct_type, unsized_error, wrong_arg_count,
 };
 use resolve::{
     alias_cycle, check_type_defaults, reaches_alias, resolve_or_report, resolve_predicates,
@@ -800,6 +800,13 @@ pub fn call_targets(items: &ItemTree, function: FunctionId) -> Vec<FunctionId> {
         out.extend([dispatch.sized, dispatch.fallback]);
     }
     if let Some(Owner::Trait(t)) = items.functions[function].owner {
+        if Some(t) == fn_trait(items, ClosureKind::FnOnce)
+            && let Some(&helper) = items.lang_fns.get(&Symbol::intern("box_call_once"))
+        {
+            // The owning vtable slot is a helper, rather than the unsized
+            // by-value trait method. Check its body before instance collection.
+            out.push(helper);
+        }
         let name = items.functions[function].name;
         let impls = items.trait_impls.get(&t).into_iter().flatten();
         out.extend(impls.flat_map(|&imp| {

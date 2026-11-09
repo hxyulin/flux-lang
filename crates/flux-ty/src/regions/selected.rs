@@ -6,7 +6,7 @@ use super::*;
 pub(super) fn field_type(items: &ItemTree, sigs: &Signatures, written: &TypeRef, ty: Ty) -> Ty {
     match (written, ty.kind()) {
         (TypeRef::Path(path), TyKind::Alias(alias))
-            if path.qself.is_some() && !has_projection_inputs(alias) =>
+            if path.qself.is_some() && !has_declared_projection_inputs(alias) =>
         {
             let output = flux_solve::traits::normalize(items, sigs, &[], ty);
             if output.has_aliases() { ty } else { output }
@@ -42,7 +42,7 @@ pub(super) fn field_type(items: &ItemTree, sigs: &Signatures, written: &TypeRef,
     }
 }
 
-pub(super) fn projection(
+pub(crate) fn projection(
     items: &ItemTree,
     sigs: &Signatures,
     alias: crate::AliasTy,
@@ -60,7 +60,7 @@ pub(super) fn projection(
     let metadata = sigs.regions.impls.get(imp)?;
     if !metadata.trait_lifetimes.is_empty()
         || !metadata.bounds.is_empty()
-        || has_projection_inputs(alias)
+        || has_declared_projection_inputs(alias)
         // A nested projection's zero-slot legacy type is not its input row.
         // It needs an independent occurrence mapping before header binding.
         || alias.args.iter().any(|ty| ty.has_aliases())

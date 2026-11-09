@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::marker::PhantomData;
 
-use flux_hir::{ImplId, ItemTree};
+use flux_hir::ItemTree;
 use flux_ty_ir::traits::{Predicate, Projection};
 use rustc_hash::FxHashMap;
 
@@ -12,7 +12,7 @@ use crate::{Signatures, Ty, traits};
 // Bound retained answers independently of the number of instantiated goals.
 const MAX_QUERIES: usize = 65_536;
 
-type Selected = Option<(ImplId, Vec<Ty>)>;
+type Selected = Option<traits::SelectedImpl>;
 type Normalized = FxHashMap<Box<[Projection]>, FxHashMap<Ty, Ty>>;
 
 struct Cache {

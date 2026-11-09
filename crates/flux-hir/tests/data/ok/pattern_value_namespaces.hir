@@ -1,0 +1,30 @@
+enum Class { Bytes(u32) = 0, Unicode(u32) = 1 }
+
+enum Kind { Class(Class) = 0, Empty = 1 }
+
+fn inspect(kind@0: Kind) -> u32 {
+    match kind@0 {
+        Kind::Class(Class::Bytes(value@1)) => value@1,
+        Kind::Class(Class::Unicode(value@2)) => (value@2 + 1),
+        Kind::Empty => 0,
+    }
+}
+
+fn main() -> () {
+    {
+        match ((&inspect(Kind::Class(Class::Bytes(41)))), (&41)) {
+            (left_val@0, right_val@1) => {
+                if (!((*left_val@0) == (*right_val@1))) {
+                    let kind@2 = AssertKind::Eq;
+                    assert_failed(kind@2, (&(*left_val@0)), (&(*right_val@1)), Option::None);
+                }
+            },
+        }
+    };
+    {
+        _print(Arguments::new_v1((&["", "\n"]), (&match ((&inspect(Kind::Class(Class::Unicode(41)))),) {
+            args@3 => [Argument::new_display(args@3.0)],
+        })));
+    };
+}
+

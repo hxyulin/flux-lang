@@ -31,6 +31,29 @@ use crate::{
 /// found in the one before, may be.
 const RECURSION_LIMIT: u32 = 128;
 
+/// The owning call uses an ordinary sized helper, or the object's owning slot.
+fn box_call_once(items: &ItemTree, args: GenericArgs) -> Instance {
+    let [tuple, payload] = *args else {
+        unreachable!("boxed call arguments")
+    };
+    if payload.is_dyn() {
+        let trait_ =
+            flux_ty::fn_trait(items, flux_ty::ClosureKind::FnOnce).expect("embedded FnOnce trait");
+        let function = items.traits[trait_]
+            .function(items, Symbol::intern("call_once"))
+            .expect("embedded FnOnce method");
+        Instance {
+            function,
+            args: Ty::list(&[payload, tuple]),
+        }
+    } else {
+        Instance {
+            function: items.lang_fns[&Symbol::intern("box_call_once")],
+            args,
+        }
+    }
+}
+
 /// Public immediate wrappers remain ordinary functions, including when reified.
 /// Check each collected specialization rather than relying on a direct call edge.
 fn neon_immediate_error(items: &ItemTree, instance: Instance) -> Option<&'static str> {
@@ -47,6 +70,11 @@ fn neon_immediate_error(items: &ItemTree, instance: Instance) -> Option<&'static
         "vsetq_lane_u64" => (0, 2, "lane index out of range"),
         "vshll_n_u16" => (0, 17, "shift amount out of range: expected 0..=16"),
         "vshr_n_u32" => (1, 33, "shift amount out of range: expected 1..=32"),
+        "vshrq_n_u32" => (1, 33, "shift amount out of range: expected 1..=32"),
+        "vshlq_n_u32" => (0, 32, "shift amount out of range: expected 0..=31"),
+        "vshrq_n_u8" => (1, 9, "shift amount out of range: expected 1..=8"),
+        "vextq_u8" => (0, 16, "lane index out of range"),
+        "vextq_u32" => (0, 4, "lane index out of range"),
         _ => return None,
     };
     (!matches!(instance.args.first().map(|ty|ty.kind()),Some(TyKind::Value(v)) if (lower..upper).contains(&v.bits())))
@@ -371,7 +399,9 @@ fn collect_roots(
                             static_functions.insert(*id, found.clone());
                         }
                     }
-                    Operand::Const(Constant::Item { id, args, ty }) => {
+                    Operand::Const(
+                        Constant::Item { id, args, ty } | Constant::ItemRef { id, args, ty },
+                    ) => {
                         let ty = flux_solve::traits::instance_ty(items, sigs, *ty, caller_args);
                         if !may_contain_function_address(items, sigs, ty) {
                             continue;
@@ -399,13 +429,27 @@ fn collect_roots(
                         value_functions(value, &mir.const_values, items, sigs, &mut found);
                     }
                     Operand::Const(Constant::Promoted { index, .. }) => {
-                        value_functions(
-                            &body.promoted[*index as usize],
-                            &mir.const_values,
-                            items,
-                            sigs,
-                            &mut found,
-                        );
+                        let original = &body.promoted[*index as usize];
+                        let value = if caller_args.is_empty() {
+                            Cow::Borrowed(original)
+                        } else {
+                            Cow::Owned(original.map_functions(&|instance| {
+                                flux_solve::traits::resolve_instance(
+                                    items,
+                                    sigs,
+                                    Instance {
+                                        function: instance.function,
+                                        args: instance_args(
+                                            items,
+                                            sigs,
+                                            instance.args,
+                                            caller_args,
+                                        ),
+                                    },
+                                )
+                            }))
+                        };
+                        value_functions(&value, &mir.const_values, items, sigs, &mut found);
                     }
                     _ => {}
                 }
@@ -432,6 +476,13 @@ fn collect_roots(
             }
             let single;
             let callees: Cow<'_, [Instance]> = match &data.terminator.kind {
+                TerminatorKind::Call {
+                    func, generic_args, ..
+                } if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::BoxCallOnce) => {
+                    single =
+                        box_call_once(items, instance_args(items, sigs, generic_args, caller_args));
+                    Cow::Borrowed(std::slice::from_ref(&single))
+                }
                 TerminatorKind::Call {
                     func, generic_args, ..
                 } if items.functions[*func].intrinsic
@@ -1038,6 +1089,7 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
     Some(Body {
         locals,
         call_regions: flux_arena::ArenaMap::new(),
+        reification_regions: flux_arena::ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         blocks,
@@ -1134,6 +1186,7 @@ fn pointer_debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -
         blocks,
         param_count: 2,
         call_regions: Default::default(),
+        reification_regions: Default::default(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         c_strings: Vec::new(),
@@ -1233,6 +1286,7 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     Body {
         locals,
         call_regions: flux_arena::ArenaMap::new(),
+        reification_regions: flux_arena::ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         blocks,
@@ -1322,6 +1376,22 @@ pub fn expand_intrinsics(
             continue;
         };
         if intrinsic.is_coroutine() {
+            continue;
+        }
+        if intrinsic == flux_hir::Intrinsic::BoxCallOnce {
+            if generic_args[1].is_dyn() {
+                // The intrinsic retains its Box receiver type in MIR. Codegen
+                // calls the object's owning slot with the thin box pointer.
+                continue;
+            }
+            let instance = box_call_once(items, generic_args);
+            body.blocks[block].terminator.kind = TerminatorKind::Call {
+                func: instance.function,
+                generic_args: instance.args,
+                args,
+                dest,
+                target,
+            };
             continue;
         }
         if intrinsic == flux_hir::Intrinsic::SizedDispatch {
@@ -2230,7 +2300,7 @@ fn truncated(ty: Ty, depth: u32) -> String {
 /// `body`, of a generic function, with generic arguments `args`
 /// substituted for its parameters.
 pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Body {
-    map_body_types(body, |ty| {
+    map_body_types(body, args, |ty| {
         flux_solve::traits::instance_ty(&hir.items, sigs, ty, args)
     })
 }
@@ -2239,11 +2309,25 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
 /// Symbolic reachability has no concrete instance with which to select impls.
 /// Concrete monomorphization must continue to use [`subst_body`].
 pub fn subst_template(body: &Body, args: &[Ty]) -> Body {
-    map_body_types(body, |ty| ty.subst(args))
+    map_body_types(body, args, |ty| ty.subst(args))
 }
 
-fn map_body_types(body: &Body, subst: impl Fn(Ty) -> Ty) -> Body {
+fn map_body_types(body: &Body, args: &[Ty], subst: impl Fn(Ty) -> Ty) -> Body {
     let mut body = body.clone();
+    if !args.is_empty() {
+        for value in &mut body.promoted {
+            *value = value.map_functions(&|instance| Instance {
+                function: instance.function,
+                args: Ty::list(
+                    &instance
+                        .args
+                        .iter()
+                        .map(|&ty| subst(ty))
+                        .collect::<Vec<_>>(),
+                ),
+            });
+        }
+    }
     for local in body.locals.values_mut() {
         local.ty = subst(local.ty);
     }
@@ -2256,6 +2340,11 @@ fn map_body_types(body: &Body, subst: impl Fn(Ty) -> Ty) -> Body {
         }
         if let Operand::Const(
             Constant::Item {
+                ty,
+                args: item_args,
+                ..
+            }
+            | Constant::ItemRef {
                 ty,
                 args: item_args,
                 ..

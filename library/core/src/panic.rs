@@ -31,6 +31,19 @@ impl<R, F: crate::ops::FnOnce() -> R> crate::ops::FnOnce<()> for AssertUnwindSaf
     fn call_once(self, _: ()) -> R { (self.0)() }
 }
 
+impl<F: crate::future::Future> crate::future::Future for AssertUnwindSafe<F> {
+    type Output = F::Output;
+
+    fn poll(
+        self: crate::pin::Pin<&mut Self>,
+        context: &mut crate::task::Context<'_>,
+    ) -> crate::task::Poll<F::Output> {
+        // SAFETY: the wrapper's pinned field stays in place for polling and
+        // destruction; this projection never moves the future.
+        unsafe { self.map_unchecked_mut(|wrapper| &mut wrapper.0) }.poll(context)
+    }
+}
+
 /// A place in the source: a file, a line and a column, each counted
 /// from one, as `#[track_caller]` functions get their caller's.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]

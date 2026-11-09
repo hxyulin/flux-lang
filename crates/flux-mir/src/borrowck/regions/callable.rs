@@ -248,9 +248,23 @@ impl Cx<'_> {
         args: &[Ty],
         target: flux_ty::FnSigTy,
         own: &[Var],
+        written: Option<&flux_ty::regions::TypeArgRegions>,
         range: TextRange,
     ) {
         let Some(r) = target.regions else {
+            if (written.is_none()
+                && args
+                    .iter()
+                    .any(|&ty| flux_ty::regions::slots(self.items, ty) != 0))
+                || self
+                    .item_instantiation(function, args, written, FunctionUse::Reification, range)
+                    .is_none()
+            {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "function item pointer region provenance is not supported yet",
+                ));
+            }
             return;
         };
         let before = self.vars;
@@ -321,9 +335,10 @@ impl Cx<'_> {
                 // An early-bound owner or a type argument carrying regions
                 // needs item-value provenance, not erased type equality.
                 if regions.owner == 0
-                    && !args
-                        .iter()
-                        .any(|&t| flux_ty::regions::slots(self.items, t) != 0)
+                    && (written.is_some()
+                        || !args
+                            .iter()
+                            .any(|&t| flux_ty::regions::slots(self.items, t) != 0))
                     && !(r.bound != 0
                         && regions.callback_binder != flux_ty::regions::CallbackBinder::Independent)
                 {
@@ -345,6 +360,7 @@ impl Cx<'_> {
                         target.params(),
                         &inputs,
                         FunctionUse::Reification,
+                        written,
                     ) {
                         self.relate_types(
                             signature.ret,

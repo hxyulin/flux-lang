@@ -17,6 +17,131 @@ fn immediate_boundaries_match_rustc() {
     std::fs::create_dir_all(&directory).unwrap();
     for (name, body, expected) in [
         (
+            "vshlq_n_u32_min",
+            "let _=vshlq_n_u32::<0>(core::mem::transmute([1u32;4]));",
+            true,
+        ),
+        (
+            "vshlq_n_u32_max",
+            "let _=vshlq_n_u32::<31>(core::mem::transmute([1u32;4]));",
+            true,
+        ),
+        (
+            "vshlq_n_u32_below",
+            "let _=vshlq_n_u32::<-1>(core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vshlq_n_u32_above",
+            "let _=vshlq_n_u32::<32>(core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vshlq_n_u32_reified_invalid",
+            "let f:unsafe fn(uint32x4_t)->uint32x4_t=vshlq_n_u32::<32>;let _=f(core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vshrq_n_u32_min",
+            "let _=vshrq_n_u32::<1>(core::mem::transmute([1u32;4]));",
+            true,
+        ),
+        (
+            "vshrq_n_u32_max",
+            "let _=vshrq_n_u32::<32>(core::mem::transmute([1u32;4]));",
+            true,
+        ),
+        (
+            "vshrq_n_u32_below",
+            "let _=vshrq_n_u32::<0>(core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vshrq_n_u32_above",
+            "let _=vshrq_n_u32::<33>(core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vshrq_n_u32_reified_invalid",
+            "let f:unsafe fn(uint32x4_t)->uint32x4_t=vshrq_n_u32::<33>;let _=f(core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vshrq_n_u8_min",
+            "let _=vshrq_n_u8::<1>(core::mem::transmute([1u8;16]));",
+            true,
+        ),
+        (
+            "vshrq_n_u8_max",
+            "let _=vshrq_n_u8::<8>(core::mem::transmute([1u8;16]));",
+            true,
+        ),
+        (
+            "vshrq_n_u8_below",
+            "let _=vshrq_n_u8::<0>(core::mem::transmute([1u8;16]));",
+            false,
+        ),
+        (
+            "vshrq_n_u8_above",
+            "let _=vshrq_n_u8::<9>(core::mem::transmute([1u8;16]));",
+            false,
+        ),
+        (
+            "vshrq_n_u8_reified_invalid",
+            "let f:unsafe fn(uint8x16_t)->uint8x16_t=vshrq_n_u8::<9>;let _=f(core::mem::transmute([1u8;16]));",
+            false,
+        ),
+        (
+            "vextq_u8_min",
+            "let _=vextq_u8::<0>(core::mem::transmute([1u8;16]), core::mem::transmute([1u8;16]));",
+            true,
+        ),
+        (
+            "vextq_u8_max",
+            "let _=vextq_u8::<15>(core::mem::transmute([1u8;16]), core::mem::transmute([1u8;16]));",
+            true,
+        ),
+        (
+            "vextq_u8_below",
+            "let _=vextq_u8::<-1>(core::mem::transmute([1u8;16]), core::mem::transmute([1u8;16]));",
+            false,
+        ),
+        (
+            "vextq_u8_above",
+            "let _=vextq_u8::<16>(core::mem::transmute([1u8;16]), core::mem::transmute([1u8;16]));",
+            false,
+        ),
+        (
+            "vextq_u8_reified_invalid",
+            "let f:unsafe fn(uint8x16_t,uint8x16_t)->uint8x16_t=vextq_u8::<16>;let _=f(core::mem::transmute([1u8;16]), core::mem::transmute([1u8;16]));",
+            false,
+        ),
+        (
+            "vextq_u32_min",
+            "let _=vextq_u32::<0>(core::mem::transmute([1u32;4]), core::mem::transmute([1u32;4]));",
+            true,
+        ),
+        (
+            "vextq_u32_max",
+            "let _=vextq_u32::<3>(core::mem::transmute([1u32;4]), core::mem::transmute([1u32;4]));",
+            true,
+        ),
+        (
+            "vextq_u32_below",
+            "let _=vextq_u32::<-1>(core::mem::transmute([1u32;4]), core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vextq_u32_above",
+            "let _=vextq_u32::<4>(core::mem::transmute([1u32;4]), core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
+            "vextq_u32_reified_invalid",
+            "let f:unsafe fn(uint32x4_t,uint32x4_t)->uint32x4_t=vextq_u32::<4>;let _=f(core::mem::transmute([1u32;4]), core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
             "legacy_left",
             "let _=vshll_n_u16(core::mem::transmute([1u16;4]),16);",
             true,

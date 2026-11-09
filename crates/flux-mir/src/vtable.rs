@@ -98,6 +98,17 @@ pub fn entries(items: &ItemTree, sigs: &Signatures, object: Ty, concrete: Ty) ->
         .map(|slot| match slot {
             Slot::Super(p) => Entry::Super(super_object(items, sigs, object, d, p)),
             Slot::Method(p, f) => {
+                if Some(p.trait_ref.trait_)
+                    == flux_ty::fn_trait(items, flux_ty::ClosureKind::FnOnce)
+                    && let Some(&function) = items
+                        .lang_fns
+                        .get(&flux_intern::Symbol::intern("box_call_once"))
+                {
+                    return Entry::Method(Instance {
+                        function,
+                        args: Ty::list(&[p.trait_ref.args[0], concrete]),
+                    });
+                }
                 if !flux_solve::objects::is_dispatchable(items, f)
                     || flux_solve::traits::self_by_value(items, f)
                 {

@@ -1213,7 +1213,7 @@ fn assoc_type(
     let TyKind::Alias(alias) = base.kind() else {
         return base;
     };
-    if scope.in_fn_pointer && regions::has_projection_inputs(alias) {
+    if scope.in_fn_pointer && regions::has_projection_inputs(items, alias) {
         errors.push((
             range,
             "associated family regions in function pointers are not supported yet".into(),
@@ -2062,6 +2062,15 @@ pub fn shared_pointees(items: &ItemTree, from: Ty, to: Ty) -> Option<(Ty, Ty)> {
         }
         _ => None,
     }
+}
+
+/// The payload of core's trusted `NonNull`, whose pointer gains slice metadata
+/// during an array coercion. Names in user crates confer no coercion capability.
+pub fn nonnull_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return None;
+    };
+    (args.len() == 1 && flux_solve::is_lang_struct(items, adt.strukt, "non_null")).then(|| args[0])
 }
 
 /// Integer representation of a trusted core nonzero wrapper.

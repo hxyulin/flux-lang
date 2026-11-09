@@ -163,6 +163,25 @@ fixture!(generic_structs, "generic_structs.rs");
 fixture!(closures, "closures.rs");
 fixture!(closure_captures, "closure_captures.rs");
 fixture!(constants, "consts.rs");
+fixture!(generic_constant_references, "generic_constant_reference.rs");
+fixture!(associated_array_index, "associated_array_index.rs");
+fixture!(boxed_fn_once, "boxed_fn_once.rs");
+fixture!(projected_output_coercions, "projected_output_coercions.rs");
+fixture!(reification_regions, "reification_regions.rs");
+fixture!(higher_ranked_equalities, "higher_ranked_equalities.rs");
+fixture!(auto_trait_static_bounds, "auto_trait_static_bounds.rs");
+fixture!(compound_method_outlives, "compound_method_outlives.rs");
+fixture!(opaque_into_iterator, "opaque_into_iterator.rs");
+fixture!(forwarded_index_output, "forwarded_index_output.rs");
+fixture!(
+    substituted_associated_outputs,
+    "substituted_associated_outputs.rs"
+);
+fixture!(pattern_value_namespaces, "pattern_value_namespaces.rs");
+fixture!(macro_empty_tail, "macro_empty_tail.rs");
+fixture!(macro_type_fragments, "macro_type_fragments.rs");
+fixture!(thread_local_no_semicolon, "thread_local_no_semicolon.rs");
+fixture!(boxed_factory, "boxed_factory.rs");
 fixture!(const_generics, "const_generics.rs");
 fixture!(enums, "enums.rs");
 fixture!(trait_objects, "trait_objects.rs");

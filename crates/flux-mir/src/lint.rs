@@ -244,6 +244,7 @@ fn operand(
             | Constant::FnItem(_)
             | Constant::CStr(_)
             | Constant::Static { .. }
+            | Constant::ItemRef { .. }
             | Constant::Fn { .. }
             | Constant::Promoted { .. },
         ) => None,

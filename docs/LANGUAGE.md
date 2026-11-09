@@ -350,6 +350,10 @@ then each field for `Hash`. `Debug` writes what rustc's expansion writes
 lines), and a field that does not implement it is "`T` doesn't implement
 `Debug`", at the field.
 
+A tuple pattern resolves its constructor in the value namespace. A record
+pattern uses the type namespace, so a same-named type and tuple variant can
+coexist as Rust permits.
+
 Macro calls are expanded where they are written: in items, statements,
 expressions, patterns and types. `macro_rules!` macros work as in rustc:
 rules tried in order, matched as rustc's macro parser matches them
@@ -359,7 +363,11 @@ repetitions `$(..)*`, `+` and `?` with separators, nested), with rustc's
 errors ("no rules expected `x`", "unexpected end of macro invocation",
 local ambiguity, a fragment followed by what its kind does not allow,
 "recursion limit reached while expanding `m!`" past the crate recursion limit
-(default 128, configurable with `#![recursion_limit = "..."]`)). A macro is in scope after its definition, to the end of
+(default 128, configurable with `#![recursion_limit = "..."]`)). Empty statement
+expansions do not hide the preceding tail expression. Items and semicolons
+still prevent it from becoming the block's value. Forwarded type fragments
+remain grouped in casts such as `value as $t << count`; their synthetic
+grouping does not appear in `stringify!` output. A macro is in scope after its definition, to the end of
 its module or block (and after the module, with `#[macro_use]`), and
 everywhere as `crate::m!` with `#[macro_export]`; `use m;` makes it
 nameable by path (`crate::a::m!`, `self::m!`), as rustc's 2018 idiom
@@ -903,16 +911,19 @@ A marker implementation may have lifetimes that no slot of its self type
 has when only the types of its auto trait bounds name them, as
 pin-project-lite's `impl<'__pin, T> Unpin for S<T> where
 PinnedFieldsOf<__Origin<'__pin, T>>: Unpin` does: such a lifetime is
-existential, and since accepted marker implementations never depend on
-lifetimes, the bound holds for some lifetime exactly when it holds with
-lifetimes erased. A bound that names a lifetime other than `'static` is
+existential. Its region proof may instantiate that lifetime while retaining
+requirements on the implementation's other arguments. A bound that names a lifetime other than `'static` is
 not checked where it is written, as in rustc, so
 `where (PhantomData<&'__pin ()>, PhantomPinned): Unpin` only keeps the
 implementation from applying. Outlives bounds that the self type's fields
 already require, `R: 'a` and `T: 'a` in lock_api's `unsafe impl<'a, R:
 RawMutex + Sync + 'a, T: ?Sized + Sync + 'a> Sync for MutexGuard<'a, R,
-T>`, are met by every instance and are accepted too. Other lifetime
-specialization/bounds in marker implementations and custom auto traits
+T>`, are met by every instance and are accepted too. Explicit static bounds on
+type parameters, as in `impl<T: ?Sized, A: Allocator + 'static> Unpin for Box<T, A>`,
+are also supported. The allocator must satisfy that bound; the pointee need not
+be static or Unpin. Body uses, trait arguments, associated outputs and method
+compatibility checks retain the selected implementation's prerequisite. Other
+lifetime specialization/bounds in marker implementations and custom auto traits
 remain unsupported. Recursive structural proofs are conservatively
 depth-limited; no threading APIs are implied by these markers.
 `Unpin` also propagates structurally. `PhantomPinned` prevents that propagation;
@@ -924,7 +935,8 @@ The marker support does not provide `Pin` APIs.
 shared references. Mutable references are not `UnwindSafe`; `Cell` and
 `UnsafeCell` are not `RefUnwindSafe`. Owning containers, atomics and poisoned
 locks retain their standard marker contracts. `AssertUnwindSafe` supplies the
-explicit assertion wrapper and its consuming callable implementation. These
+explicit assertion wrapper, its consuming callable implementation and pinned
+`Future` forwarding without an `Unpin` requirement. These
 markers do not provide `catch_unwind` or a panic-unwinding runtime.
 
 Every program can use flux's own `core` library, which has the parts of
@@ -1263,6 +1275,11 @@ the shared reference to a local before constructing the closure avoids that
 overlap. This capture-precision case remains unsupported.
 A closure implements other traits through blanket `impl` blocks, as
 any type does (`impl<F: FnMut(char) -> bool> Pattern for F`).
+`Box<F>` forwards the `Fn` traits of `F`, including owning calls to
+`Box<dyn FnOnce(...) -> T>`. An owning call moves the captured value out,
+frees its allocation, and invokes it once. Borrowed `Fn` and `FnMut` calls
+keep the box available for subsequent calls. A bare `dyn FnOnce` value
+cannot be moved out of a reference or called by value.
 Safe function items and pointers implement the `Fn`-family traits too,
 so they may be passed where closures are, and a closure that captures
 nothing coerces to a function pointer of its signature (one that
@@ -1424,8 +1441,9 @@ lifetime annotations on uncaptured places in closures.
 Direct function and method calls accept named, impl-owned and static lifetimes
 inside written type arguments, such as `nth_child::<Expr<'t>>(node)`.
 The borrow checker enforces these written regions and their well-formedness
-constraints, including when the return value is unused. Named arguments in
-closures and function-item values remain unsupported; general named local
+constraints, including when the return value is unused. Function-owned closures
+retain these written type argument rows, including in nested closures.
+Function-item values remain unsupported; general named local
 annotations are outside this extension.
 Direct trait calls on a qualified reference type, such as
 `<&'a Self>::try_from(value)`, preserve the written Self lifetime row too.
@@ -1443,7 +1461,10 @@ call through a trait path may write the trait's lifetimes,
 they fix the trait's lifetimes in the callee for that call. A wrong count
 of lifetime arguments is E0107. Lifetime arguments on functions and methods
 themselves (`f::<'a>()`), on associated constants' types, in patterns, in
-function item values, and named ones in closures are not supported yet.
+function item values, and named ones in constant-owned closures are not supported yet.
+Raw-pointer casts retain written nested reference lifetimes. A raw-to-raw cast
+may change them, while a reference-to-raw conversion still owes its pointee's
+outlives constraints, including when both erased pointer types are equal.
 Concrete qualified associated types in struct fields can normalize through a
 selected impl while retaining their written input lifetimes. This covers owned
 and borrowed `IntoIterator::IntoIter` fields, including nested fields. Selection
@@ -1494,6 +1515,12 @@ Unbounded named and elided free-function lifetimes remain supported.
 Function-item-to-pointer coercions use the same provenance classification and
 reject missing metadata. Predicate-bound lifetimes cannot be generalized by
 first converting the item to a pointer, including through casts or `Clone`.
+Immediate reification preserves named lifetimes in generic type arguments,
+including arguments absent from the pointer's inputs and output. The original
+function's bounds are checked against those rows. Inferred object bounds in
+arguments such as `Box<dyn Error>` are checked too. Qualified promotions keep
+these reification proofs before storing the function address. Standalone item
+values and early-bound owner lifetimes remain guarded.
 
 Callable bounds check their associated `Output` against the original input
 lifetime rows. A fixed input lifetime or a lifetime captured by an instantiated
@@ -1513,8 +1540,18 @@ subject to the represented-region restrictions above.
 Non-callable higher-ranked trait predicates are also supported in bounds,
 supertraits and blanket implementations. Required predicates are proved for
 fresh universal lifetimes; caller predicates retain correlations between repeated
-and free lifetimes. Quantified lifetimes in the predicate's subject and
-higher-ranked associated equalities remain explicitly unsupported.
+and free lifetimes. Quantified subjects such as `for<'a> &'a T: Trait` keep
+the same binder as the trait's arguments. Reference subjects and arguments,
+including `for<'a> AddAssign<&'a X>`, are well formed inside that binder.
+Those assumptions remain scoped to the bound and do not make T or X globally static. Associated equalities
+in function, impl-header and trait-header bounds retain the original input
+binder. For example, `for<'a> &'a R: IntoIterator<Item = <&'a L as IntoIterator>::Item>`
+correlates both iterator items at the same borrow lifetime. Returned opaque
+bounds such as `impl for<'a> View<'a, Item = &'a u32>` also retain that
+relationship. An output lifetime must occur in the trait's inputs. Conflicting
+input domains or output lifetime rows are rejected rather than selecting the
+first erased-equal bound. Higher-ranked associated-family declaration bounds
+remain subject to the represented-region restrictions above.
 
 The borrow checker infers lifetimes as rustc's (non-lexical lifetimes,
 with two-phase borrows for method receivers and borrows of distinct
@@ -1533,6 +1570,11 @@ for a parameter's). So must what a callee's bounds say its associated
 types are, and a type that is `Copy` for some lifetimes only where a
 value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
+Shared borrows of immutable, drop-free generic associated constants keep their
+instance arguments until monomorphization. Qualified aggregates can also hold
+generic function addresses with region-free arguments and no owner lifetimes.
+Those addresses retain their function-pointer region checks before promotion.
+Function type arguments carrying region slots remain outside this promotion path.
 
 Shared borrows of temporary interior-mutable values cannot escape constant
 evaluation, including through raw-pointer casts. Owned interior-mutable
@@ -1689,7 +1731,9 @@ has `null`, `null_mut`, `eq`, `read`, `write`, `copy`,
 `as_ptr`, `as_ref`, `as_mut`, `cast`, `add`, `read`, `write`), including
 metadata-preserving conversions from shared and mutable references to sized
 or supported unsized targets. `NonNull<[T]>::len` reads only slice metadata;
-constant pointer-value evaluation remains limited. Raw
+`NonNull<[T; N]>` coerces to `NonNull<[T]>`, retaining the address and adding
+length metadata. User wrappers with the same name gain no coercion support.
+NonNull unsizing in constants remains unsupported. Raw
 pointers have `is_null`, `cast`, `cast_mut`/`cast_const`, `addr`,
 `add`, `sub`, `offset`, `wrapping_add`, `wrapping_sub`, `offset_from`, `align_offset`,
 `read`, `write`, `replace`, `swap`, `drop_in_place`, `write_bytes`,
@@ -1764,7 +1808,8 @@ The embedded `std` facade allows paths such as `std::fmt`,
 `std::mem`, `std::ops::Index` and `std::vec::Vec` to name the original
 `core`/`alloc` definitions. `thread::panicking()` returns false because Flux
 aborts without unwinding. Native `thread_local!` storage supports `LocalKey`
-access and thread-exit destruction through POSIX TLS. RefCell keys provide
+access and thread-exit destruction through POSIX TLS. A final declaration may
+omit its semicolon. RefCell keys provide
 `with_borrow` and `with_borrow_mut`; their callback borrows cannot escape. Qualified and imported
 macro calls work, including explicit std imports in no_std crates. Callback
 borrows cannot escape, and destroyed keys reject access. Scoped native threads
@@ -1983,3 +2028,14 @@ seeded without reading the output place. Function-pointer late outputs, separate
 input/output expressions and general const expressions remain unsupported.
 AArch64 DIT register access, immediate enable/disable and the SB instruction are
 encoded after register allocation for the pinned assembler.
+
+`core::alloc::GlobalAlloc`, reexported through `alloc::alloc` and `std::alloc`,
+provides allocation/deallocation contracts and default zeroing/reallocation.
+A failed default reallocation preserves the old block. This does not add
+custom global allocator registration.
+
+The bounded AArch64 NEON API includes word/byte shifts and extraction, word
+OR/XOR, halfword reversal within words, and integer reinterpretations used by
+aho-corasick and chacha20. Immediate ranges are checked on collected instances,
+including reified function pointers. Scalar implementations preserve lane
+results and do not establish hardware acceleration.

@@ -8,5 +8,4 @@ fn projection(&i32) -> ()
 fn projected_alias(&i32) -> ()
     x@0: &i32
 type StaticProjection = <&i32 as Ref>::Out
-error 240..247: lifetimes in associated type annotations are not supported yet
 error 304..311: lifetimes in associated type annotations are not supported yet

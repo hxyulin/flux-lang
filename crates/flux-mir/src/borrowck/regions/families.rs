@@ -27,7 +27,7 @@ impl Cx<'_> {
         env: &[ImplRegionGoal],
         depth: u32,
     ) -> Option<(Vec<Var>, Vec<ImplRegionGoal>)> {
-        if !flux_ty::regions::has_projection_inputs(alias) {
+        if !flux_ty::regions::has_projection_inputs(self.items, alias) {
             return None;
         }
         let owner = row.get(..alias.owner_lifetimes as usize)?;
@@ -350,7 +350,22 @@ impl Cx<'_> {
         {
             return self.opaque_equality_output(opaque, alias, owner, inputs);
         }
-        if owner.is_empty() {
+        let normalized = alias.map_args(|ty| self.normalize(ty));
+        if normalized != alias {
+            if normalized.args.len() != inputs.len()
+                || normalized
+                    .args
+                    .iter()
+                    .zip(inputs)
+                    .any(|(&ty, row)| self.slots(ty) as usize != row.len())
+            {
+                return None;
+            }
+            // Input occurrences were instantiated before selection. Their
+            // types must reflect any associated outputs proved along the way.
+            return self.ordinary_projection_output(normalized, owner, inputs);
+        }
+        if owner.is_empty() && !flux_ty::regions::has_projection_inputs(self.items, alias) {
             self.normalize_regions(alias, inputs, 0)
         } else {
             self.family_prerequisites(alias, owner, inputs, &[], &[])?;
@@ -370,6 +385,19 @@ impl Cx<'_> {
         family_inputs: &[Vec<Var>],
         depth: u32,
     ) -> Option<Vec<Var>> {
+        if let Some(scheme) = self.env_ranked.iter().find(|s| s.alias == alias).cloned() {
+            return self.ranked_projection_output(&scheme, owner, inputs);
+        }
+        if owner.is_empty()
+            && family.is_empty()
+            && family_inputs.is_empty()
+            && matches!(
+                alias.args.first().map(|t| t.kind()),
+                Some(TyKind::Dynamic(_))
+            )
+        {
+            return self.normalize_regions(alias, inputs, depth);
+        }
         if depth > 32 {
             return None;
         }
@@ -392,7 +420,41 @@ impl Cx<'_> {
         {
             return Some(row.clone());
         }
-        let Some((imp, header_args)) = self.matching_impl(goal) else {
+        let selected = flux_solve::traits::select_definite_impl(self.items, self.sigs, goal);
+        let mut assumptions = if self.body.owner.is_some() {
+            self.caller_region_goals(false)
+        } else {
+            self.family_goals.clone()
+        };
+        if let TyKind::Opaque(opaque) = goal.self_ty.kind() {
+            assumptions.extend(self.opaque_bound_goals(opaque, inputs.first()?)?);
+        }
+        // A caller's abstract owner does not establish the conditions of a
+        // blanket impl. For example, `&T: IntoIterator` does not imply that
+        // `&T: Iterator`, although the latter would select IntoIterator's
+        // blanket impl. Keep the original abstract occurrence in that case.
+        let abstract_owner =
+            selected.is_none() && assumptions.iter().any(|known| known.predicate == goal);
+        if abstract_owner
+            && !self.impl_prove_super(
+                &ImplRegionGoal {
+                    predicate: goal,
+                    lifetimes: owner.to_vec(),
+                    vars: inputs.to_vec(),
+                    bound: Vec::new(),
+                },
+                &assumptions,
+                depth + 1,
+            )
+        {
+            return None;
+        }
+        let chosen = if abstract_owner {
+            None
+        } else {
+            selected.or_else(|| self.matching_impl(goal))
+        };
+        let Some((imp, header_args)) = chosen else {
             // An abstract projection keeps its occurrence inputs. Its declared
             // output lifetime bounds are applied separately, not invented from
             // a chosen impl or another occurrence of the same erased Ty.
@@ -810,7 +872,7 @@ impl Cx<'_> {
         let TyKind::Alias(alias) = goal.self_ty.kind() else {
             return false;
         };
-        if !flux_ty::regions::has_projection_inputs(alias) || self.family_depth > 32 {
+        if !flux_ty::regions::has_projection_inputs(self.items, alias) || self.family_depth > 32 {
             return false;
         }
         self.family_depth += 1;
@@ -851,7 +913,11 @@ impl Cx<'_> {
                     args: &alias.args[1..],
                 },
             };
-            if !self.caller_bound(owner_goal, &inputs, &owner, range) {
+            if matches!(owner_goal.self_ty.kind(), TyKind::Opaque(_)) {
+                // Opaque owners carry their contract at the occurrence, not
+                // in the enclosing function's written where clauses.
+                self.prove(owner_goal, &inputs, &owner, range, 0);
+            } else if !self.caller_bound(owner_goal, &inputs, &owner, range) {
                 return Some(false);
             }
             self.family_prerequisites(alias, &owner, &inputs, &family, &family_inputs)?;
@@ -878,7 +944,9 @@ impl Cx<'_> {
         let TyKind::Alias(owner_alias) = alias.args.first()?.kind() else {
             return None;
         };
-        if !flux_ty::regions::has_projection_inputs(owner_alias) || self.family_depth > 32 {
+        if !flux_ty::regions::has_projection_inputs(self.items, owner_alias)
+            || self.family_depth > 32
+        {
             return None;
         }
         let row = arg_vars.first()?;
@@ -958,7 +1026,7 @@ impl Cx<'_> {
         let TyKind::Alias(alias) = goal.self_ty.kind() else {
             return None;
         };
-        if !flux_ty::regions::has_projection_inputs(alias) {
+        if !flux_ty::regions::has_projection_inputs(self.items, alias) {
             return None;
         }
         let mut candidates = self

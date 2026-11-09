@@ -645,11 +645,31 @@ impl Ctx<'_> {
             if p.ty == Ty::alias(p.alias) {
                 continue;
             }
-            let key = p.alias.map_args(|ty| {
-                let ty = self.known(ty);
-                flux_solve::traits::normalize(self.items, self.sigs, &self.env_projections, ty)
-            });
-            if self.probe(|cx| cx.unify(Ty::alias(key), target)) {
+            let key = p.alias.map_args(|ty| self.known(ty));
+            let key = if key
+                .args
+                .iter()
+                .chain(key.family_args)
+                .any(|ty| ty.has_aliases() || ty.has_opaques())
+            {
+                // Canonicalize in the same caller environment as the target.
+                // A possible blanket impl must not replace an abstract owner
+                // established by a where clause (notably &mut T: IntoIterator).
+                let proof = flux_solve::traits::SignatureImplProof {
+                    items: self.items,
+                    sigs: self.sigs,
+                    env: self.param_env.clone(),
+                    memberships: &self.param_env,
+                    projections: self.env_projections.clone(),
+                    unsized_params: &self.unsized_params,
+                    depth: std::cell::Cell::new(0),
+                };
+                key.map_args(|ty| proof.normalize_ty(ty, None))
+            } else {
+                key
+            };
+            let matched = self.probe(|cx| cx.unify(Ty::alias(key), target));
+            if matched {
                 self.unify(Ty::alias(key), target);
                 return Some(p.ty);
             }

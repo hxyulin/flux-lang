@@ -443,6 +443,19 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
                 format!("&{name}")
             }
         }
+        Constant::ItemRef { id, args, .. } => {
+            format!(
+                "&{}",
+                constant_text(
+                    hir,
+                    Constant::Item {
+                        id,
+                        args,
+                        ty: Ty::UNIT
+                    }
+                )
+            )
+        }
         Constant::Item { id, args, .. } => {
             let name = hir.items.const_name(id);
             let items = &hir.items;

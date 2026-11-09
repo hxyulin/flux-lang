@@ -1982,6 +1982,23 @@ struct Place<'a> {
     item_start: u32,
 }
 
+/// Expansion can leave no tokens, statements without a value, or a tail
+/// expression. Items and semicolons remain barriers even without HIR statements.
+enum StmtExpansion {
+    Empty,
+    Unit,
+    Expr(ExprId),
+}
+
+impl StmtExpansion {
+    fn tail(self) -> Option<ExprId> {
+        match self {
+            Self::Expr(expr) => Some(expr),
+            Self::Empty | Self::Unit => None,
+        }
+    }
+}
+
 struct Ctx<'a> {
     /// Where the body is; `None` for one made rather than lowered.
     place: Option<Place<'a>>,
@@ -2545,10 +2562,10 @@ impl<'a> Ctx<'a> {
         m: ast::MacroExpr<'_>,
         semicolon: bool,
         is_tail: bool,
-    ) -> Option<ExprId> {
+    ) -> StmtExpansion {
         if macros::is_macro_rules(m.syntax()) {
             self.define_local_macro(m.syntax());
-            return None;
+            return StmtExpansion::Unit;
         }
         let range = m.syntax().text_range();
         if self.is_builtin_macro(m, crate::Builtin::Asm)
@@ -2556,27 +2573,29 @@ impl<'a> Ctx<'a> {
             || self.is_builtin_macro(m, crate::Builtin::Pin)
         {
             let id = self.lower_macro_expr(m, range);
-            if is_tail && !semicolon {
-                return Some(id);
+            if !semicolon {
+                return StmtExpansion::Expr(id);
             }
             self.stmt_scratch.push(Stmt::Expr {
                 expr: id,
                 has_semicolon: true,
             });
-            return None;
+            return StmtExpansion::Unit;
         }
         let Some((parse, file)) = self.expand(m.syntax(), Fragment::Stmts) else {
             let id = self.alloc_expr(Expr::Missing, range);
-            if is_tail && !semicolon {
-                return Some(id);
+            if !semicolon {
+                return StmtExpansion::Expr(id);
             }
             self.stmt_scratch.push(Stmt::Expr {
                 expr: id,
                 has_semicolon: true,
             });
-            return None;
+            return StmtExpansion::Unit;
         };
-        let root = ast::MacroStmts::cast(parse.tree().root())?;
+        let Some(root) = ast::MacroStmts::cast(parse.tree().root()) else {
+            return StmtExpansion::Unit;
+        };
         let expansion = self.enter_expansion(m.syntax(), file);
         let outer_tail = self.macro_tail_is_expr;
         self.macro_tail_is_expr |= is_tail
@@ -2587,15 +2606,16 @@ impl<'a> Ctx<'a> {
         self.macro_tail_is_expr = outer_tail;
         self.leave_expansion(expansion);
         match tail {
-            Some(tail) if is_tail && !semicolon => Some(tail),
-            Some(tail) => {
+            StmtExpansion::Expr(tail) if !semicolon => StmtExpansion::Expr(tail),
+            StmtExpansion::Expr(tail) => {
                 self.stmt_scratch.push(Stmt::Expr {
                     expr: tail,
                     has_semicolon: true,
                 });
-                None
+                StmtExpansion::Unit
             }
-            None => None,
+            StmtExpansion::Empty if semicolon => StmtExpansion::Unit,
+            other => other,
         }
     }
 
@@ -3590,11 +3610,30 @@ impl<'a> Ctx<'a> {
             }
             return self.self_struct().map(|s| found(self.items, s));
         }
-        match self.reported(
-            self.items.resolve(self.module, path, Ns::Types),
+        let mut resolved = self.items.resolve(
+            self.module,
             path,
-            range,
-        ) {
+            if record { Ns::Types } else { Ns::Values },
+        );
+        // Keep diagnostics for type-only names, without bypassing a private
+        // tuple constructor or replacing a value binding with a type binding.
+        if !record && matches!(resolved, Err(ResolveError::NotFound { .. })) {
+            match self.items.resolve(self.module, path, Ns::Types) {
+                Ok(ty @ Resolved::Def(Def::TypeAlias(_))) => resolved = Ok(ty),
+                Ok(ty @ Resolved::Def(Def::Struct(id)))
+                    if self.items.structs[id].kind == StructKind::Record =>
+                {
+                    resolved = Ok(ty)
+                }
+                Ok(ty @ Resolved::Def(Def::Variant(id, variant)))
+                    if self.items.structs[id].variant(variant).kind == StructKind::Record =>
+                {
+                    resolved = Ok(ty)
+                }
+                _ => {}
+            }
+        }
+        match self.reported(resolved, path, range) {
             Ok(Resolved::Def(Def::Struct(strukt))) => Some(found(self.items, strukt)),
             Ok(Resolved::Def(Def::Variant(e, v))) => Some(Ok((e, v))),
             // A struct with braces may be named through an alias, a tuple
@@ -3798,7 +3837,7 @@ impl<'a> Ctx<'a> {
         let macros = self.local_macros.len();
         let stmts_start = self.stmt_scratch.len();
         let outer_tail = std::mem::replace(&mut self.macro_tail_is_expr, false);
-        let tail = self.lower_stmts(syntax, block.tail_expr());
+        let tail = self.lower_stmts(syntax, block.tail_expr()).tail();
         self.macro_tail_is_expr = outer_tail;
         self.local_macros.truncate(macros);
         self.item_scopes.truncate(item_scopes);
@@ -3840,7 +3879,7 @@ impl<'a> Ctx<'a> {
         &mut self,
         syntax: SyntaxNode<'t>,
         tail: Option<ast::Expr<'t>>,
-    ) -> Option<ExprId> {
+    ) -> StmtExpansion {
         // Cfg removal precedes tail selection. Keep items and bare `;`
         // tokens as barriers, even though neither produces a HIR statement.
         let mut enabled = Vec::new();
@@ -3879,9 +3918,23 @@ impl<'a> Ctx<'a> {
             tail = Some(expr);
             enabled.pop();
         }
-        for stmt in enabled.into_iter().flatten() {
+        let mut result = StmtExpansion::Empty;
+        for stmt in enabled {
+            let Some(stmt) = stmt else {
+                self.merge_stmt_expansion(
+                    &mut result,
+                    StmtExpansion::Unit,
+                    self.stmt_scratch.len(),
+                );
+                continue;
+            };
             match stmt {
                 ast::Stmt::LetStmt(let_stmt) => {
+                    self.merge_stmt_expansion(
+                        &mut result,
+                        StmtExpansion::Unit,
+                        self.stmt_scratch.len(),
+                    );
                     check_attrs(let_stmt.attrs(), &mut self.diagnostics);
                     // The initializer is lowered before the pattern, whose
                     // bindings it cannot see: `let x = x + 1;`, and so is
@@ -3919,19 +3972,31 @@ impl<'a> Ctx<'a> {
                 ast::Stmt::ExprStmt(expr_stmt) => {
                     check_attrs(expr_stmt.attrs(), &mut self.diagnostics);
                     let semicolon = expr_stmt.semicolon_token().is_some();
+                    let at = self.stmt_scratch.len();
                     if let Some(ast::Expr::MacroExpr(m)) = expr_stmt.expr() {
-                        self.lower_macro_stmts(m, semicolon, false);
+                        let expansion = self.lower_macro_stmts(m, semicolon, false);
+                        self.merge_stmt_expansion(&mut result, expansion, at);
                         continue;
                     }
                     let expr = self.lower_opt(expr_stmt.expr(), expr_stmt.syntax());
-                    self.stmt_scratch.push(Stmt::Expr {
-                        expr,
-                        has_semicolon: semicolon,
-                    });
+                    if semicolon {
+                        self.merge_stmt_expansion(&mut result, StmtExpansion::Unit, at);
+                        self.stmt_scratch.push(Stmt::Expr {
+                            expr,
+                            has_semicolon: true,
+                        });
+                    } else {
+                        self.merge_stmt_expansion(&mut result, StmtExpansion::Expr(expr), at);
+                    }
                 }
                 // Collected with the item tree, lowered on their own;
                 // retained expansions also have their block items collected.
                 ast::Stmt::Item(item) => {
+                    self.merge_stmt_expansion(
+                        &mut result,
+                        StmtExpansion::Unit,
+                        self.stmt_scratch.len(),
+                    );
                     if self.expansion_depth > 0 && self.macro_tail_is_expr {
                         self.error(item.syntax().text_range(), "expected an expression");
                     } else if self.expansion_depth > 0
@@ -3947,12 +4012,38 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        match tail {
-            Some(ast::Expr::MacroExpr(m)) if m.attrs().next().is_none() => {
-                self.lower_macro_stmts(m, false, true)
-            }
-            Some(e) => Some(self.lower_expr(e)),
-            None => None,
+        if let Some(tail) = tail {
+            let at = self.stmt_scratch.len();
+            let expansion = match tail {
+                ast::Expr::MacroExpr(m) if m.attrs().next().is_none() => {
+                    self.lower_macro_stmts(m, false, true)
+                }
+                expr => StmtExpansion::Expr(self.lower_expr(expr)),
+            };
+            self.merge_stmt_expansion(&mut result, expansion, at);
+        }
+        result
+    }
+
+    /// A nonempty expansion displaces the previous possible tail. Insert it
+    /// before the new expansion's statements to preserve evaluation order.
+    fn merge_stmt_expansion(
+        &mut self,
+        previous: &mut StmtExpansion,
+        next: StmtExpansion,
+        at: usize,
+    ) {
+        if matches!(next, StmtExpansion::Empty) {
+            return;
+        }
+        if let StmtExpansion::Expr(expr) = std::mem::replace(previous, next) {
+            self.stmt_scratch.insert(
+                at,
+                Stmt::Expr {
+                    expr,
+                    has_semicolon: false,
+                },
+            );
         }
     }
 

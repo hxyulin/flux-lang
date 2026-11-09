@@ -112,6 +112,7 @@ intrinsics! {
     CoroutinePoll => "__coroutine_poll",
     CoroutineDrop => "__coroutine_drop",
     SizedDispatch => "__sized_dispatch",
+    BoxCallOnce => "__box_call_once",
     NeonVld1U8 => "__neon_vld1_u8",
     NeonVst1U8 => "__neon_vst1_u8",
     NeonVdupNU8 => "__neon_vdup_n_u8",

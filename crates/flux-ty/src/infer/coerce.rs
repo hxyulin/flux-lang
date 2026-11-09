@@ -116,6 +116,21 @@ impl Ctx<'_> {
                 return;
             }
         }
+        // NonNull carries a covariant raw pointer; only the trusted wrapper
+        // receives this builtin array-to-slice coercion.
+        if let (Some(from), Some(to)) = (
+            crate::nonnull_pointee(self.items, self.shallow(actual)),
+            crate::nonnull_pointee(self.items, self.shallow(expected)),
+        ) && let Some(equalities) = self.array_unsize(from, to)
+        {
+            if equalities.into_iter().all(|(a, b)| self.unify(a, b)) {
+                self.unsizes.insert(expr, expected);
+            } else {
+                let range = self.range(blamed);
+                self.mismatch(expected, actual, range);
+            }
+            return;
+        }
         // A `Box<[T; N]>` or `Box<T>` where a `Box<[T]>` or `Box<dyn
         // Tr>` is wanted: rustc's `CoerceUnsized` of boxes.
         if let (Some(p), Some(q)) = (
@@ -615,6 +630,13 @@ impl Ctx<'_> {
                 (self.shallow(array).kind(), self.shallow(slice).kind())
         {
             return self.can_unify(elem, wanted);
+        }
+        if let (Some(from), Some(to)) = (
+            crate::nonnull_pointee(self.items, actual),
+            crate::nonnull_pointee(self.items, expected),
+        ) && let Some(equalities) = self.array_unsize(from, to)
+        {
+            return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
         }
         if let (Some(p), Some(q)) = (
             flux_solve::box_pointee(actual),
