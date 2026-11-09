@@ -9,6 +9,41 @@ fn consumer_lowering_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "generic_borrow_with_region_bound",
+            r#"trait Borrow<T>{fn borrow(&self)->&T;} trait TryR{type Error:core::error::Error;}trait R:TryR<Error=core::convert::Infallible>{}trait Sample{type X;fn sample<G:R+?Sized,B:Borrow<Self::X>>(b:B,g:&mut G)->Self::X;}struct S;impl Sample for S{type X=u32;fn sample<G:R+?Sized,B:Borrow<Self::X>>(b:B,_:&mut G)->Self::X{*b.borrow()}}fn main(){}"#,
+            true,
+        ),
+        (
+            "pointer_cast_expected_pointee",
+            r#"fn cast(p:*mut u32)->*const u8{p as *const _}fn main(){}"#,
+            true,
+        ),
+        (
+            "const_cell_accessor",
+            r#"const fn ptr<T>(c:&core::cell::UnsafeCell<T>)->*mut T{c.get()}fn main(){}"#,
+            true,
+        ),
+        (
+            "generic_borrow_method",
+            r#"trait Borrow<T>{fn borrow(&self)->&T;} trait Sample{type X;fn sample<B:Borrow<Self::X>>(b:B)->Self::X;}struct S;impl Sample for S{type X=u32;fn sample<B:Borrow<Self::X>>(b:B)->Self::X{*b.borrow()}}fn main(){}"#,
+            true,
+        ),
+        (
+            "generic_unsized_method",
+            r#"trait R{}trait Sample{fn sample<T:R+?Sized>(r:&mut T);}struct S;impl Sample for S{fn sample<T:R+?Sized>(_:&mut T){}}fn main(){}"#,
+            true,
+        ),
+        (
+            "generic_split_method",
+            r#"trait Sample<T>{fn split(&mut self)->(&mut[T],&mut[T]);}impl<T> Sample<T> for [T]{fn split(&mut self)->(&mut[T],&mut[T]){self.split_at_mut(0)}}fn main(){}"#,
+            true,
+        ),
+        (
+            "double_pointer_cast",
+            r#"fn load(p:*mut u32)->u32{unsafe{let a:&core::sync::atomic::AtomicU32=&*(p as *const _ as *const _);a.load(core::sync::atomic::Ordering::Relaxed)}}fn main(){}"#,
+            true,
+        ),
+        (
             "nested_trait_static_contract",
             r#"trait Make { fn make<'a>(&'a self)->Option<impl Copy+'static>; } struct S(u32); impl Make for S { fn make<'a>(&'a self)->Option<impl Copy+'a>{Some(&self.0)} } fn main(){}"#,
             false,

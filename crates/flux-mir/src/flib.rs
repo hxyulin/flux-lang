@@ -953,6 +953,10 @@ impl Encode for Value {
                 len.encode(e)?;
                 Ok(())
             }
+            Self::Uninit(ty) => {
+                14u8.encode(e)?;
+                ty.encode(e)
+            }
             Self::LocalRef { .. } => Err(Error::new("frame-local value cannot be serialized")),
         })
     }
@@ -1003,6 +1007,7 @@ impl Decode for Value {
                     target: Decode::decode(d)?,
                     len: Decode::decode(d)?,
                 }),
+                14 => Ok(Self::Uninit(Decode::decode(d)?)),
                 _ => Err(Error::new("invalid MIR metadata tag")),
             }?;
             allocations::decoded_height(&value, d)?;

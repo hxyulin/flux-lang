@@ -22,8 +22,7 @@ use crate::result::Result::{self, Err, Ok};
 /// A sized value that may be mutated through a shared reference.
 /// The caller must uphold aliasing and data-race rules when using `get`.
 /// This has `T`'s size and alignment, but hides its niches from enclosing enums.
-/// Only construction is supported in constants; borrowing this storage and
-/// calling its accessors in constants are not supported yet.
+/// Borrowed cell storage is not supported by constant evaluation yet.
 #[lang = "unsafe_cell"]
 pub struct UnsafeCell<T: ?Sized> {
     value: T,
@@ -44,9 +43,8 @@ impl<T> UnsafeCell<T> {
 
 impl<T: ?Sized> UnsafeCell<T> {
     /// A raw pointer to the value. Dereferencing it requires `unsafe`.
-    /// Calling this in constants is not supported yet.
     #[inline(always)]
-    pub fn get(&self) -> *mut T {
+    pub const fn get(&self) -> *mut T {
         self as *const UnsafeCell<T> as *mut T
     }
 

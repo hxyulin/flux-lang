@@ -984,8 +984,8 @@ inner initializer's value. Flux runtime panics abort.
 including slice/str payloads. Const `new` and runtime `into_inner` require sized
 payloads. It preserves payload size/alignment,
 suppresses niches, is invariant in `T`, and is Send when `T: Send`. Owned
-UnsafeCell borrowing during const evaluation and const accessors remain
-unsupported; represented genuine static addresses retain the earlier static
+`get` may be called in const functions. Owned UnsafeCell borrowing during
+constant evaluation and the other const accessors remain unsupported; represented genuine static addresses retain the earlier static
 borrow support. Structural unsizing preserves slice metadata.
 `core::sync::atomic`, reexported through `std::sync::atomic`, provides signed and
 unsigned integer atomics from 8 through 64 bits, machine words, booleans and thin
@@ -1432,11 +1432,13 @@ A known formation-check gap remains for discarded static-bounded aggregates:
 though rustc rejects it. Signature and caller checks do not cover this case yet.
 Local `let` annotations can require `'static`, including nested reference
 and ADT types, aliases and defaults. The borrow checker enforces this on
-initialization, destructuring, later assignments and branches. Other named
-body lifetime annotations (`let x: &'a i32`) and unrepresented lifetime-qualified
-associated projections are not supported yet. Function pointers have the bounded
-canonical lifetime support described above; family-region recipes remain unsupported. Nor are
-lifetime annotations on uncaptured places in closures.
+initialization, destructuring, later assignments and branches. Named body
+lifetime annotations (`let x: &'a i32`) retain their enclosing function's binder,
+including inside nested closures. Passing closure requirements to another
+function still needs a represented lifetime substitution. Unrepresented
+lifetime-qualified associated projections remain unsupported. Function pointers
+have the bounded canonical lifetime support described above; family-region
+recipes remain unsupported.
 Direct function and method calls accept named, impl-owned and static lifetimes
 inside written type arguments, such as `nth_child::<Expr<'t>>(node)`.
 The borrow checker enforces these written regions and their well-formedness
@@ -1765,7 +1767,13 @@ requires the copied value to be valid and ownership to be respected.
 `core::mem` has
 `forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
-its `_read`, `_ref`, `_mut` and `_drop` forms). Raw pointer `add`, `sub` and
+its `_read`, `_ref`, `_mut` and `_drop` forms). Const `MaybeUninit::uninit`
+creates storage without an initialized payload, including in arrays and nested
+static cells. Metadata preserves this state; emitted storage may use zero bytes
+without treating them as an initialized `T`. Extracting or reinterpreting an
+uninitialized payload during constant evaluation is rejected. Const `new` and
+`assume_init` support initialized payloads. Partial initialization and mutation
+of uninitialized constant storage remain unsupported. Raw pointer `add`, `sub` and
 `offset`, plus `NonNull::add`, support constant evaluation for represented
 allocations. Offsets preserve the original allocation and static relocation,
 including through promoted subslices. Nonzero byte displacements must fit

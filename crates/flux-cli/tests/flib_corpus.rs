@@ -189,3 +189,4 @@ fixture!(opaque_regions, "opaque_bound_regions.rs");
 fixture!(function_pointer_regions, "fn_pointer_regions.rs");
 fixture!(runtime_type_identity, "any_type_id.rs");
 fixture!(constant_trait_objects, "const_trait_objects.rs");
+fixture!(constant_uninitialized_storage, "const_maybe_uninit.rs");

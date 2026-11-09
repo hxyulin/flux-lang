@@ -1830,6 +1830,7 @@ impl Ctx<'_> {
         };
         let layout = self.layouts.of(ty);
         match value {
+            V::Uninit(_) => {}
             V::Float { bits, .. } => put(bytes, at, u128::from(*bits), layout.size as usize),
             V::Int { bits, .. } => put(bytes, at, *bits, layout.size as usize),
             V::RawAddr(address) => put(bytes, at, u128::from(*address), 8),
@@ -3414,6 +3415,9 @@ impl Lower<'_, '_, '_> {
     /// Stores `value`, a constant of type `ty`, at `address`.
     fn store_value(&mut self, address: Value, value: &flux_mir::eval::Value, ty: Ty) {
         use flux_mir::eval::Value as V;
+        if matches!(value, V::Uninit(_)) {
+            return;
+        }
         let sigs = self.sigs;
         if !is_memory(sigs, ty) {
             let mut leaves = Values::new();
@@ -3487,6 +3491,7 @@ impl Lower<'_, '_, '_> {
     fn value_leaves(&mut self, value: &flux_mir::eval::Value, ty: Ty, out: &mut Values) {
         use flux_mir::eval::Value as V;
         match value {
+            V::Uninit(_) => out.extend(self.zeroes(ty)),
             V::Float { bits, ty } => out.push(self.float_const(*bits, *ty)),
             V::Int { bits, ty } => out.push(self.int_const(*bits, *ty)),
             V::RawAddr(address) => {

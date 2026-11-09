@@ -171,3 +171,39 @@ fn boxed_receiver_still_requires_mutable_binding() {
         false,
     );
 }
+
+#[test]
+fn local_annotation_uses_enclosing_lifetime() {
+    compare(
+        "local_annotation",
+        "fn f<'a>(x:&'a u32)->&'a u32{(||{let y:&'a u32=x;y})()}",
+        true,
+    );
+}
+
+#[test]
+fn local_annotation_rejects_wrong_lifetime() {
+    compare(
+        "local_annotation_wrong",
+        "fn f<'a,'b>(x:&'b u32)->&'b u32{(||{let y:&'a u32=x;y})()}",
+        false,
+    );
+}
+
+#[test]
+fn local_annotation_rejects_local_escape() {
+    compare(
+        "local_annotation_escape",
+        "fn f<'a>()->&'a u32{(||{let x=7;let y:&'a u32=&x;y})()}",
+        false,
+    );
+}
+
+#[test]
+fn nested_local_annotation_uses_enclosing_lifetime() {
+    compare(
+        "nested_local_annotation",
+        "fn f<'a>(x:&'a u32)->&'a u32{(||(||{let y:&'a u32=x;y})())()}",
+        true,
+    );
+}

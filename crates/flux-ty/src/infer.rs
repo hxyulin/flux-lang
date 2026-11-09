@@ -1507,10 +1507,9 @@ impl Ctx<'_> {
         let regions = walker.regions(written, ty);
         let errors = std::mem::take(&mut walker.errors);
         // Local named rows already flow through let_regions into MIR's
-        // annotation constraints. Admit them only in their actual enclosing
-        // function binder; closure-local/captured binder cases stay guarded.
+        // annotation constraints, including closures whose annotations retain
+        // the enclosing function's binder identity in MIR.
         let represented_local = local
-            && self.closure_locals.is_empty()
             && represented_owner
             && metadata.is_some_and(|metadata| {
                 regions.len() == crate::regions::slots(self.items, ty)
@@ -6920,6 +6919,18 @@ impl Ctx<'_> {
             }
         }
         self.finish_obligations(&mut reported);
+        // Expected types and trait selection get first choice of a cast's
+        // target. An otherwise unconstrained raw pointee keeps the source
+        // pointee, including through intermediate casts in a cast chain.
+        for check in self.deferred.clone() {
+            if let Deferred::Cast { from, to, .. } = check
+                && let (TyKind::RawPtr(_, source), TyKind::RawPtr(_, target)) =
+                    (self.shallow(from).kind(), self.shallow(to).kind())
+                && matches!(self.shallow(target).kind(), TyKind::Infer(_))
+            {
+                self.unify(source, target);
+            }
+        }
         // An inferred `as _` target can become an object pointer only after
         // its surrounding call is solved. Retry existing object coercions
         // before snapshotting the adjustment maps: an upcast needs its real

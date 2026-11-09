@@ -33,6 +33,8 @@ use crate::{
 /// A value computed at compile time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
+    /// Storage without an initialized payload. Only `MaybeUninit<T>` may carry it.
+    Uninit(Ty),
     Float {
         bits: u64,
         ty: flux_ty::FloatTy,
@@ -2034,6 +2036,9 @@ impl<'a> Evaluator<'a> {
                     let value = match self.operand(locals, generics, discr, range)? {
                         Value::Int { bits, .. } => bits,
                         Value::Bool(b) => u128::from(b),
+                        Value::Uninit(_) => {
+                            return Err(error(range, "use of an uninitialized value".into()));
+                        }
                         Value::Float { .. }
                         | Value::Function(_)
                         | Value::DynPointer { .. }
@@ -2361,6 +2366,24 @@ impl<'a> Evaluator<'a> {
                         match target {
                             Some(target) => {
                                 block = *target;
+                                continue;
+                            }
+                            None => return Err(error(range, "entering unreachable code".into())),
+                        }
+                    }
+                    if self.items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::Uninit) {
+                        let ty = body.place_ty(dest, self.sigs).subst(generics);
+                        if !matches!(ty.kind(), TyKind::Adt(adt, _) if flux_solve::is_lang_struct(self.items, adt.strukt, "maybe_uninit"))
+                        {
+                            return Err(error(
+                                range,
+                                "uninitialized constant storage requires `MaybeUninit`".into(),
+                            ));
+                        }
+                        write(locals, dest, Value::Uninit(ty), range)?;
+                        match target {
+                            Some(next) => {
+                                block = *next;
                                 continue;
                             }
                             None => return Err(error(range, "entering unreachable code".into())),
@@ -2775,7 +2798,8 @@ impl<'a> Evaluator<'a> {
             Value::PointerView { pointer, .. }
             | Value::PointerOffset { pointer, .. }
             | Value::DynPointer { pointer, .. } => self.promoted_layouts(pointer, range)?,
-            Value::Float { .. }
+            Value::Uninit(_)
+            | Value::Float { .. }
             | Value::Int { .. }
             | Value::Bool(_)
             | Value::Static(_)
@@ -3466,6 +3490,9 @@ impl<'a> Evaluator<'a> {
                     return Ok(result);
                 }
                 let bits = match value {
+                    Value::Uninit(_) => {
+                        return Err(error(range, "use of an uninitialized value".into()));
+                    }
                     Value::Float { .. } => unreachable!("typed numeric cast"),
                     Value::Int { bits, ty } => sign_extend(bits, ty) as u128,
                     Value::Bool(b) => u128::from(b),
@@ -3750,6 +3777,9 @@ fn project_with_reader(
                     origin,
                     reader,
                 );
+            }
+            (_, Value::Uninit(_)) => {
+                return Err(error(range, "use of an uninitialized value".into()));
             }
             (ProjectionElem::Downcast(_), Value::Variant { .. }) => value,
             (ProjectionElem::Deref, Value::InteriorRef(pointee)) => {
@@ -4052,6 +4082,7 @@ pub fn wrapping_binary(op: BinOp, l: &Value, r: &Value) -> Result<Value, String>
 /// `u8::MAX`.
 pub fn show(value: &Value) -> String {
     match *value {
+        Value::Uninit(_) => "<uninit>".to_owned(),
         Value::Float { bits, ty } => match ty {
             flux_ty::FloatTy::F32 => format!("{:?}_f32", f32::from_bits(bits as u32)),
             flux_ty::FloatTy::F64 => format!("{:?}_f64", f64::from_bits(bits)),

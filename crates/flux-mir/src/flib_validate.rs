@@ -649,6 +649,13 @@ fn value_at(
         return Ok(());
     }
     match v {
+        Value::Uninit(stored) => {
+            ty(*stored, items, sigs, depth + 1)?;
+            if !matches!(stored.kind(), TyKind::Adt(adt, args) if flux_solve::is_lang_struct(items, adt.strukt, "maybe_uninit") && args.len() == 1)
+            {
+                return Err(invalid());
+            }
+        }
         Value::Variant {
             strukt,
             index,
@@ -781,6 +788,7 @@ fn value_for_at(
     }
     value_at(v, items, sigs, depth, memo)?;
     match (v, expected.kind()) {
+        (Value::Uninit(ty), _) if *ty == expected => {}
         (Value::Int { bits, ty }, TyKind::Int(int))
             if *ty == int && (int.bits() == 128 || *bits >> int.bits() == 0) => {}
         (Value::Int { bits, .. }, TyKind::Char)
@@ -913,6 +921,27 @@ mod dag_tests {
 mod value_dag_tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn uninitialized_metadata_requires_the_matching_wrapper() {
+        let (_, _, hir) = flux_hir::lower_text(
+            "uninit.rs",
+            "const X:core::mem::MaybeUninit<u32>=core::mem::MaybeUninit::uninit();",
+        );
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let (id, _) = hir
+            .items
+            .consts
+            .iter()
+            .find(|(_, c)| c.name == Some(flux_intern::Symbol::intern("X")))
+            .unwrap();
+        let expected = typed.sigs.consts[id];
+        let value = Value::Uninit(expected);
+        assert!(value_for(&value, expected, &hir.items, &typed.sigs, 0).is_ok());
+        assert!(value_for(&value, Ty::BOOL, &hir.items, &typed.sigs, 0).is_err());
+        assert!(super::value(&Value::Uninit(Ty::BOOL), &hir.items, &typed.sigs, 0).is_err());
+    }
 
     #[test]
     fn forty_level_shared_reference_dag_validates_each_stored_node_once() {

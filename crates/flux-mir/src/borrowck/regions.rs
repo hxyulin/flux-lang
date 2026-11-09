@@ -697,9 +697,16 @@ pub(crate) fn impl_method_matches(
         ] {
             for ((&predicate, row), bound) in predicates.iter().zip(rows.iter()).zip(bounds.iter())
             {
-                let Some(goal) =
-                    cx.impl_region_goal(predicate, row, bound, life, substitution, type_vars)
-                else {
+                let Some(goal) = cx.impl_region_goal_with_proof(
+                    predicate,
+                    row,
+                    bound,
+                    life,
+                    substitution,
+                    type_vars,
+                    Some((&header_goals, 0)),
+                    false,
+                ) else {
                     return false;
                 };
                 if !cx.impl_super_goals(goal, &mut env, 0) {
@@ -715,8 +722,16 @@ pub(crate) fn impl_method_matches(
             .zip(ir.bound_selfs.iter())
             .zip(ir.bound_traits.iter())
         {
-            let Some(goal) = cx.impl_region_goal(predicate, row, bound, &impl_lifetimes, &[], &[])
-            else {
+            let Some(goal) = cx.impl_region_goal_with_proof(
+                predicate,
+                row,
+                bound,
+                &impl_lifetimes,
+                &[],
+                &[],
+                Some((&env, 0)),
+                false,
+            ) else {
                 return false;
             };
             if !cx.impl_prove_super(&goal, &env, 0) {
