@@ -561,6 +561,12 @@ chains of output equalities in signature checking and MIR candidate discovery.
 A shared rigid solver context retains original caller memberships separately
 from normalized output keys. Finding a candidate does not prove its bounds;
 MIR still checks the selected impl's lifetime and associated-output requirements.
+An output-only impl parameter may bind to an abstract caller projection when
+its owner membership is independently available. Header matching binds earlier
+structural inputs before checking dependent arguments such as `Flat<F, F::Output>`.
+Inherited `Self::Output` stays abstract when only a conditional impl supplies it;
+unconditional definitions and explicit trait-object equalities remain usable.
+
 
 Const parameters (`struct Stack<T, const N: usize>`, `impl<T, const N:
 usize> Stack<T, N>`, `fn sum<const N: usize>(a: [i32; N])`, `trait

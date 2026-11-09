@@ -7,6 +7,36 @@ fn contextual_candidates_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "object_output_signature",
+            "trait Child:Iterator{fn get(&mut self)->Option<Self::Item>;}impl Child for dyn Iterator<Item=u32>{fn get(&mut self)->Option<u32>{self.next()}}",
+            true,
+        ),
+        (
+            "recursive_header_projection",
+            "trait Tr{type Out;}struct W<T,U>(T,U);impl<T>Tr for W<T,<W<T,u32>as Tr>::Out>{type Out=u32;}",
+            false,
+        ),
+        (
+            "projection_in_self_header",
+            "trait Source{type Out;}struct Pair<T,U>(T,U);trait Base{}impl<T:Source>Base for Pair<T,T::Out>{}fn need<T:Base>(_:T){}fn f<T:Source<Out=u32>>(t:T){need(Pair(t,7u32));}",
+            true,
+        ),
+        (
+            "wrong_projection_in_self_header",
+            "trait Source{type Out;}struct Pair<T,U>(T,U);trait Base{}impl<T:Source>Base for Pair<T,T::Out>{}fn need<T:Base>(_:T){}fn f<T:Source<Out=u32>>(t:T){need(Pair(t,7u64));}",
+            false,
+        ),
+        (
+            "abstract_output_parameter",
+            "trait Source{type Out;}trait Base{}struct W<T>(T);impl<R,T:Source<Out=R>>Base for W<T>{}trait Child:Base{}impl<T:Source>Child for W<T>{}",
+            true,
+        ),
+        (
+            "abstract_output_missing_owner",
+            "trait Source{type Out;}trait Base{}struct W<T>(T);impl<R,T:Source<Out=R>>Base for W<T>{}trait Child:Base{}impl<T>Child for W<T>{}",
+            false,
+        ),
+        (
             "unsized_source",
             "trait Source{type Out;}trait Base{type Out;}impl<R,T:Source<Out=R>+?Sized>Base for T{type Out=R;}trait Child:Base{}impl<T:Source<Out=u32>+?Sized>Child for T{}",
             true,

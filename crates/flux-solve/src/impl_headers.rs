@@ -85,6 +85,7 @@ pub(crate) fn match_impl(
     }
     let computed = traits::match_impl_sized_uncached(items, sigs, imp, goal, sized);
     if known.is_some()
+        && sigs.impls.get(imp).is_none_or(|ty| !ty.has_aliases())
         && sigs
             .impl_traits
             .get(imp)

@@ -281,14 +281,36 @@ impl<'a> RigidSolver<'a> {
             .impl_projections
             .get(imp)
             .is_none_or(|p| p.is_empty())
+            && self.sigs.impls.get(imp).is_none_or(|ty| !ty.has_aliases())
+            && self
+                .sigs
+                .impl_traits
+                .get(imp)
+                .is_none_or(|tr| !tr.args.iter().any(|ty| ty.has_aliases()))
         {
             match_impl(self.items, self.sigs, imp, goal)
         } else {
-            match_impl_with_bindings(self.items, self.sigs, imp, goal, true, |binds| {
-                bind_by_projections_with(self.sigs, imp, binds, |alias, _| {
-                    self.normalize_ty(alias, None)
-                })
-            })
+            match_impl_with_bindings(
+                self.items,
+                self.sigs,
+                imp,
+                goal,
+                true,
+                |binds| {
+                    bind_by_projections_with(self.sigs, imp, binds, |alias, _| {
+                        let ty = self.normalize_ty(alias, None);
+                        // An abstract output is still a rigid type when its owner
+                        // membership is independently known by the caller.
+                        if let TyKind::Alias(output) = ty.kind()
+                            && !in_env(self.sigs, self.memberships, alias_predicate(output))
+                        {
+                            return None;
+                        }
+                        Some(ty)
+                    })
+                },
+                |ty| self.normalize_ty(ty, None),
+            )
         }
     }
 
@@ -296,15 +318,18 @@ impl<'a> RigidSolver<'a> {
     /// caller must still prove its conditions, including lifetime obligations.
     /// Unknown output parameters are represented by `Ty::ERROR`.
     pub fn candidate(&self, goal: Predicate) -> Option<(ImplId, Vec<Ty>)> {
-        select_impl(self.items, self.sigs, goal).or_else(|| {
-            let mut candidates = self
-                .sigs
-                .impl_index
-                .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
-                .filter_map(|imp| self.match_impl(imp, goal).map(|args| (imp, args)));
-            let first = candidates.next()?;
-            candidates.next().is_none().then_some(first)
-        })
+        if let Some((imp, _)) = select_impl(self.items, self.sigs, goal) {
+            // Retain selection priority, but rebind output-only parameters in
+            // this caller context rather than keeping erased placeholder args.
+            return self.match_impl(imp, goal).map(|args| (imp, args));
+        }
+        let mut candidates = self
+            .sigs
+            .impl_index
+            .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+            .filter_map(|imp| self.match_impl(imp, goal).map(|args| (imp, args)));
+        let first = candidates.next()?;
+        candidates.next().is_none().then_some(first)
     }
 
     /// Select an impl only after proving all substituted type requirements.
@@ -645,7 +670,9 @@ pub fn associated_self_types(
 ) -> Vec<(TraitRef, Symbol, Ty)> {
     let mut out = Vec::new();
     for &goal in candidates.iter().skip(1) {
-        let Some((imp, args)) = select_impl(items, sigs, goal) else {
+        // A possible conditional impl cannot turn a caller-owned inherited
+        // output into its concrete RHS during namespace lookup.
+        let Some((imp, args)) = select_definite_impl(items, sigs, goal) else {
             continue;
         };
         for associated in &items.traits[goal.trait_ref.trait_].types {
@@ -1308,11 +1335,21 @@ impl Normalizer<'_> {
                 if let Some(ret) = closure_output(items, alias) {
                     return self.go(ret, depth + 1);
                 }
+                // Object equalities are part of the type itself, not an
+                // implementation selected using speculative conditions.
+                if let TyKind::Dynamic(d) = args[0].kind()
+                    && let Some(p) = dyn_projections(self.items, sigs, args[0], d)
+                        .into_iter()
+                        .find(|p| p.alias == alias)
+                {
+                    return self.go(p.ty, depth + 1);
+                }
                 if self.caller_only {
                     if let Some(proof) = self.impl_proof
-                        // A caller membership without an RHS remains abstract,
-                        // even when a matching impl has proven requirements.
-                        && !in_env(sigs, &proof.env, alias_predicate(alias))
+                        // Conditional impls cannot specialize a caller-owned
+                        // output. Globally definite impls retain their RHS.
+                        && (!in_env(sigs, &proof.env, alias_predicate(alias))
+                            || select_definite_impl(items, sigs, alias_predicate(alias)).is_some())
                         && let Some((imp, args)) =
                             proof.select(alias_predicate(alias), &mut Vec::new())
                         && let Some(ty) = instantiate_impl_type(sigs, imp, alias, &args)
@@ -1330,13 +1367,6 @@ impl Normalizer<'_> {
                 }
                 if let TyKind::Opaque(opaque) = args[0].kind()
                     && let Some(p) = opaque_projections(sigs, opaque)
-                        .into_iter()
-                        .find(|p| p.alias == alias)
-                {
-                    return self.go(p.ty, depth + 1);
-                }
-                if let TyKind::Dynamic(d) = args[0].kind()
-                    && let Some(p) = dyn_projections(self.items, sigs, args[0], d)
                         .into_iter()
                         .find(|p| p.alias == alias)
                 {
@@ -1540,6 +1570,9 @@ impl Drop for Selecting {
 }
 
 fn select_uncached(items: &ItemTree, sigs: &Signatures, goal: Predicate) -> Option<SelectedImpl> {
+    // Header projections can re-enter selection before any bounds are
+    // checked, so protect matching with the same cycle/depth guard.
+    SELECTION.with_borrow_mut(|s| s.active.push(goal));
     let impls = sigs
         .impl_index
         .matching(items, goal.trait_ref.trait_, goal.self_ty);
@@ -1547,7 +1580,6 @@ fn select_uncached(items: &ItemTree, sigs: &Signatures, goal: Predicate) -> Opti
         .filter_map(|imp| Some((imp, match_impl(items, sigs, imp, goal)?)))
         .collect();
     let rigid_self = is_rigid(goal.self_ty);
-    SELECTION.with_borrow_mut(|s| s.active.push(goal));
     // Selection needs only the number and index of eligible candidates.
     // Keep the header-matching and bounds-checking passes in their original
     // order: checking a bound can recursively select another impl.
@@ -1688,9 +1720,17 @@ pub(crate) fn match_impl_sized_uncached(
     goal: Predicate,
     sized: bool,
 ) -> Option<Vec<Ty>> {
-    match_impl_with_bindings(items, sigs, imp, goal, sized, |binds| {
-        bind_by_projections(items, sigs, imp, binds);
-    })
+    match_impl_with_bindings(
+        items,
+        sigs,
+        imp,
+        goal,
+        sized,
+        |binds| {
+            bind_by_projections(items, sigs, imp, binds);
+        },
+        |ty| normalize(items, sigs, &[], ty),
+    )
 }
 
 /// Match rigid inputs before inferring output-only parameters. Contextual
@@ -1702,6 +1742,7 @@ fn match_impl_with_bindings(
     goal: Predicate,
     sized: bool,
     bind: impl FnOnce(&mut [Option<Ty>]),
+    normalize: impl Fn(Ty) -> Ty,
 ) -> Option<Vec<Ty>> {
     let trait_ref = sigs.impl_traits.get(imp)?;
     if trait_ref.trait_ != goal.trait_ref.trait_ {
@@ -1719,14 +1760,14 @@ fn match_impl_with_bindings(
         long.resize(count, None);
         &mut long[..]
     };
-    if !match_ty(self_ty, goal.self_ty, binds) {
+    if !match_impl_argument(self_ty, goal.self_ty, binds, &normalize, 0) {
         return None;
     }
     for (&x, &y) in trait_ref.args.iter().zip(goal.trait_ref.args) {
         // Matching Self may already fix the input of a projection in a
         // trait argument (`A::Item` for `SmallVec<A>`). Normalize it using
         // those bindings before matching the remaining header.
-        if !match_impl_argument(items, sigs, x, y, binds, 0) {
+        if !match_impl_argument(x, y, binds, &normalize, 0) {
             return None;
         }
     }
@@ -1757,11 +1798,10 @@ fn match_impl_with_bindings(
 /// Match a trait argument without confusing the impl's parameters with the
 /// caller's rigid parameters after normalizing a bound projection.
 fn match_impl_argument(
-    items: &ItemTree,
-    sigs: &Signatures,
     pattern: Ty,
     actual: Ty,
     binds: &mut [Option<Ty>],
+    normalize: &impl Fn(Ty) -> Ty,
     depth: u32,
 ) -> bool {
     if depth > 64 {
@@ -1780,13 +1820,17 @@ fn match_impl_argument(
     }
     if matches!(pattern.kind(), TyKind::Alias(_)) && bound(pattern, binds) {
         let args: Vec<_> = binds.iter().map(|ty| ty.unwrap_or(Ty::ERROR)).collect();
-        let normalized = normalize(items, sigs, &[], pattern.subst(&args));
+        let bound = pattern.subst(&args);
+        if bound == actual {
+            return true;
+        }
+        let normalized = normalize(bound);
         return normalized == actual;
     }
     let mut all = |left: &[Ty], right: &[Ty]| {
         left.len() == right.len()
             && left.iter().zip(right).all(|(&left, &right)| {
-                match_impl_argument(items, sigs, left, right, binds, depth + 1)
+                match_impl_argument(left, right, binds, normalize, depth + 1)
             })
     };
     match (pattern.kind(), actual.kind()) {
@@ -1794,13 +1838,13 @@ fn match_impl_argument(
         (TyKind::Tuple(xs), TyKind::Tuple(ys)) => all(xs, ys),
         (TyKind::Ref(left, x), TyKind::Ref(right, y))
         | (TyKind::RawPtr(left, x), TyKind::RawPtr(right, y)) => {
-            left == right && match_impl_argument(items, sigs, x, y, binds, depth + 1)
+            left == right && match_impl_argument(x, y, binds, normalize, depth + 1)
         }
         (TyKind::Slice(x), TyKind::Slice(y)) => {
-            match_impl_argument(items, sigs, x, y, binds, depth + 1)
+            match_impl_argument(x, y, binds, normalize, depth + 1)
         }
         (TyKind::Array(x, n), TyKind::Array(y, m)) => {
-            match_ty(n, m, binds) && match_impl_argument(items, sigs, x, y, binds, depth + 1)
+            match_ty(n, m, binds) && match_impl_argument(x, y, binds, normalize, depth + 1)
         }
         _ => match_ty(pattern, actual, binds),
     }
@@ -1815,13 +1859,10 @@ pub(crate) fn bind_by_projections(
     imp: ImplId,
     binds: &mut [Option<Ty>],
 ) {
-    bind_by_projections_with(sigs, imp, binds, |alias, projection| {
-        // The block for its own parameters: the parameters themselves.
-        if alias == Ty::alias(projection.alias) {
-            projection.ty
-        } else {
-            normalize(items, sigs, &[], alias)
-        }
+    bind_by_projections_with(sigs, imp, binds, |alias, _| {
+        // This only constructs a candidate. An unresolved projection is a
+        // valid argument, not an impl parameter in the caller's namespace.
+        Some(normalize(items, sigs, &[], alias))
     });
 }
 
@@ -1829,7 +1870,7 @@ fn bind_by_projections_with(
     sigs: &Signatures,
     imp: ImplId,
     binds: &mut [Option<Ty>],
-    mut normalize: impl FnMut(Ty, Projection) -> Ty,
+    mut normalize: impl FnMut(Ty, Projection) -> Option<Ty>,
 ) {
     let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
     if binds.iter().all(Option::is_some) || projections.is_empty() {
@@ -1850,8 +1891,10 @@ fn bind_by_projections_with(
             }
             // Caller parameters are rigid values of this substitution, never
             // the impl's still-unbound variables, even at the same index.
-            let ty = normalize(alias, p);
-            if matches!(ty.kind(), TyKind::Alias(_)) || has_error(ty) {
+            let Some(ty) = normalize(alias, p) else {
+                continue;
+            };
+            if has_error(ty) {
                 continue;
             }
             let mut found = binds.to_vec();
@@ -2617,6 +2660,42 @@ mod rigid_solver_tests {
             Some((imp, vec![Ty::BOOL, Ty::ERROR]))
         );
         assert!(solver.select_impl(goal).is_none());
+        let memberships = [source_ref.with_self(Ty::BOOL)];
+        let solver = RigidSolver::new(&items, &sigs, &memberships, &[], &[]);
+        assert_eq!(
+            solver.select_impl(goal),
+            Some((
+                imp,
+                vec![
+                    Ty::BOOL,
+                    Ty::alias(alias_of(
+                        &items,
+                        source_ref,
+                        Ty::BOOL,
+                        Symbol::intern("Out")
+                    ))
+                ]
+            ))
+        );
+        let mut nominal = sigs.clone();
+        nominal.impls.insert(imp, Ty::tuple(&[t]));
+        nominal.impl_index = flux_ty_ir::impl_index::ImplIndex::new(&items, &nominal);
+        let solver = RigidSolver::new(&items, &nominal, &memberships, &[], &[]);
+        assert_eq!(
+            solver.candidate(goal_ref.with_self(Ty::tuple(&[Ty::BOOL]))),
+            Some((
+                imp,
+                vec![
+                    Ty::BOOL,
+                    Ty::alias(alias_of(
+                        &items,
+                        source_ref,
+                        Ty::BOOL,
+                        Symbol::intern("Out")
+                    ))
+                ]
+            ))
+        );
         let equalities = [Projection {
             alias: alias_of(&items, source_ref, Ty::BOOL, Symbol::intern("Out")),
             ty: Ty::CHAR,

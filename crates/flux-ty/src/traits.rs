@@ -1371,10 +1371,9 @@ fn check_method(
     let signature_env = elaborate(sigs, &signature_env);
     let parameters = flux_solve::unsized_params(items, Some(Owner::Impl(imp)), &decl.generics);
     let proof = RigidSolver::new(items, sigs, &signature_env, projections, &parameters);
-    // Preserve ordinary structural/object normalization, then resolve the
-    // projections it leaves open using independently proven caller evidence.
-    let normalize_signature =
-        |ty| proof.normalize_ty(normalize(items, sigs, projections, ty), None);
+    // Keep caller-owned outputs abstract while resolving impl outputs with
+    // independent evidence, using the same context on both sides.
+    let normalize_signature = |ty| proof.normalize_ty(ty, None);
     let norm = |sig: &crate::FnSig| crate::FnSig {
         params: sig
             .params
@@ -1441,10 +1440,9 @@ fn check_method(
     // signatures are: the trait's `F: FnMut(B, Self::Item)` is the
     // block's `F: FnMut(B, I::Item)`.
     let norm_predicate = |p: Predicate| {
-        let args =
-            crate::ty::map_list(p.trait_ref.args, |a| normalize(items, sigs, projections, a));
+        let args = crate::ty::map_list(p.trait_ref.args, normalize_signature);
         Predicate {
-            self_ty: normalize(items, sigs, projections, p.self_ty),
+            self_ty: normalize_signature(p.self_ty),
             trait_ref: TraitRef {
                 args,
                 ..p.trait_ref
@@ -2524,6 +2522,16 @@ impl<'a, 'd> WfCheck<'a, 'd> {
         }
     }
 
+    fn solver(&self) -> RigidSolver<'a> {
+        RigidSolver::new(
+            self.items,
+            self.sigs,
+            self.scope.env,
+            self.scope.projections,
+            &self.scope.unsized_params,
+        )
+    }
+
     fn report(&mut self, range: TextRange, message: String) {
         let d = Diagnostic {
             file: self.file,
@@ -2741,9 +2749,12 @@ impl<'a, 'd> WfCheck<'a, 'd> {
             }
             collect_aliases(q.ty, &mut aliases);
         }
+        let proof = self.solver();
         for alias in aliases {
             let goal = normalize_predicate(self.items, self.sigs, alias_predicate(alias));
-            if holds(self.items, self.sigs, self.scope.env, goal) {
+            if holds(self.items, self.sigs, self.scope.env, goal)
+                || proof.holds(goal, &mut Vec::new())
+            {
                 continue;
             }
             let leaf = unmet_leaf(self.items, self.sigs, self.scope.env, goal, 0);
@@ -2764,6 +2775,7 @@ impl<'a, 'd> WfCheck<'a, 'd> {
             return;
         }
         let mut seen = Vec::new();
+        let proof = self.solver();
         for (range, &ty) in types {
             let mut aliases = Vec::new();
             collect_aliases(ty, &mut aliases);
@@ -2773,7 +2785,9 @@ impl<'a, 'd> WfCheck<'a, 'd> {
                 }
                 seen.push(alias);
                 let goal = normalize_predicate(self.items, self.sigs, alias_predicate(alias));
-                if !holds(self.items, self.sigs, self.scope.env, goal) {
+                if !holds(self.items, self.sigs, self.scope.env, goal)
+                    && !proof.holds(goal, &mut Vec::new())
+                {
                     let leaf = unmet_leaf(self.items, self.sigs, self.scope.env, goal, 0);
                     let message = unmet(self.items, leaf);
                     self.report(range, message);
@@ -3061,7 +3075,14 @@ fn unmet_struct_bounds(
                     ));
                 }
             }
-            if !holds(items, sigs, scope.env, goal) {
+            let proof = RigidSolver::new(
+                items,
+                sigs,
+                scope.env,
+                scope.projections,
+                &scope.unsized_params,
+            );
+            if !holds(items, sigs, scope.env, goal) && !proof.holds(goal, &mut Vec::new()) {
                 let leaf = unmet_leaf(items, sigs, scope.env, goal, 0);
                 if !reported.contains(&leaf) {
                     reported.push(leaf);

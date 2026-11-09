@@ -1401,6 +1401,48 @@ impl Ctx<'_> {
         ok
     }
 
+    /// Bind structural inputs in order before normalizing dependent outputs,
+    /// such as the second argument of `Flat<F, F::Output>`.
+    fn unify_impl_type(&mut self, pattern: Ty, actual: Ty, depth: u32) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        let pattern = self.shallow(pattern);
+        let actual = self.shallow(actual);
+        if !pattern.has_aliases() {
+            return self.unify(pattern, actual);
+        }
+        if matches!(pattern.kind(), TyKind::Alias(_)) {
+            let pattern = self.known(pattern);
+            let actual = self.known(actual);
+            if pattern == actual {
+                return true;
+            }
+            let pattern = self.normalize(pattern, TextRange::default());
+            return self.unify(pattern, actual);
+        }
+        let mut all = |xs: &[Ty], ys: &[Ty]| {
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .zip(ys)
+                    .all(|(&x, &y)| self.unify_impl_type(x, y, depth + 1))
+        };
+        match (pattern.kind(), actual.kind()) {
+            (TyKind::Adt(a, xs), TyKind::Adt(b, ys)) => a == b && all(xs, ys),
+            (TyKind::Tuple(xs), TyKind::Tuple(ys)) => all(xs, ys),
+            (TyKind::Ref(m, x), TyKind::Ref(n, y))
+            | (TyKind::RawPtr(m, x), TyKind::RawPtr(n, y)) => {
+                m == n && self.unify_impl_type(x, y, depth + 1)
+            }
+            (TyKind::Slice(x), TyKind::Slice(y)) => self.unify_impl_type(x, y, depth + 1),
+            (TyKind::Array(x, n), TyKind::Array(y, m)) => {
+                self.unify(n, m) && self.unify_impl_type(x, y, depth + 1)
+            }
+            _ => self.unify(pattern, actual),
+        }
+    }
+
     /// Unifies `impl` block `imp`'s header, with new variables for its
     /// parameters, with `pred`: those variables, if it unifies.
     fn unify_impl(&mut self, imp: ImplId, pred: Predicate) -> Option<Vec<Ty>> {
@@ -1414,7 +1456,7 @@ impl Ctx<'_> {
             .map(|_| self.new_var(false, TextRange::default()))
             .collect();
         let header = trait_ref.subst(&vars).with_self(self_ty.subst(&vars));
-        if !self.unify(header.self_ty, pred.self_ty) {
+        if !self.unify_impl_type(header.self_ty, pred.self_ty, 0) {
             return None;
         }
         for (&argument, &expected) in header.trait_ref.args.iter().zip(pred.trait_ref.args) {
@@ -1671,11 +1713,13 @@ impl Ctx<'_> {
                 let vars: Vec<Ty> = (0..count)
                     .map(|_| cx.new_var(false, TextRange::default()))
                     .collect();
-                if !cx.unify(self_ty.subst(&vars), ty) || !cx.impl_args_sized(imp, &vars) {
+                if !cx.unify_impl_type(self_ty.subst(&vars), ty, 0)
+                    || !cx.impl_args_sized(imp, &vars)
+                {
                     return false;
                 }
                 if let Some(args) = args {
-                    let header = trait_ref.subst(&vars).with_self(self_ty.subst(&vars));
+                    let header = trait_ref.subst(&vars).with_self(ty);
                     let expected = Predicate {
                         self_ty: ty,
                         trait_ref: TraitRef {
