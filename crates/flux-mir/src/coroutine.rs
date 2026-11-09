@@ -571,3 +571,185 @@ fn resume(
     }
     body
 }
+
+/// Heap-backed execution must still reject source futures whose Rust layout
+/// would be recursive. Only storage retained at a suspension creates an edge;
+/// owning pointers and references break inline layout dependencies.
+pub(crate) fn check_recursive_layouts(
+    hir: &Hir,
+    sigs: &Signatures,
+    closures: &rustc_hash::FxHashMap<(flux_ty::ClosureId, ClosureKind), Body>,
+) -> Vec<flux_hir::Diagnostic> {
+    use flux_ty::{ClosureId, ClosureOwner};
+    use rustc_hash::{FxHashMap, FxHashSet};
+    let source_body = |id: ClosureId| match id.owner {
+        ClosureOwner::Function(f) => hir.body(f),
+        ClosureOwner::Const(c) => hir.const_body(c),
+    };
+    let mut ids: Vec<_> = closures
+        .keys()
+        .filter_map(|&(id, kind)| {
+            (kind == ClosureKind::FnOnce
+                && source_body(id).is_some_and(|(body, _)| {
+                    matches!(
+                        body.exprs[id.expr],
+                        flux_hir::Expr::Closure { is_async: true, .. }
+                    )
+                }))
+            .then_some(id)
+        })
+        .collect();
+    ids.sort_by_key(|id| {
+        (
+            match id.owner {
+                ClosureOwner::Function(f) => (0, f.index()),
+                ClosureOwner::Const(c) => (1, c.index()),
+            },
+            id.expr.index(),
+        )
+    });
+    let indices: FxHashMap<_, _> = ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();
+    let mut graph = vec![Vec::new(); ids.len()];
+    let mut exhausted = vec![false; ids.len()];
+    for (index, id) in ids.iter().enumerate() {
+        let body = &closures[&(*id, ClosureKind::FnOnce)];
+        let awaits: Vec<_> = body
+            .blocks
+            .iter()
+            .filter_map(|(block, data)| {
+                matches!(data.terminator.kind, TerminatorKind::Call { func, .. }
+                if hir.items.functions[func].intrinsic == Some(Intrinsic::CoroutineAwait))
+                .then_some(block)
+            })
+            .collect();
+        let mut types = Vec::new();
+        // The closure's captured arguments exist even before its first poll.
+        if let Some((_, local)) = body.locals.iter().find(|(_, l)| l.kind == LocalKind::Param)
+            && let TyKind::Closure(_, args) = local.ty.kind()
+        {
+            types.extend(ClosureArgs::split(args).upvar_types().iter().copied());
+        }
+        if !awaits.is_empty() {
+            let live = crate::borrowck::liveness_where(body, &vec![true; body.locals.len()], true);
+            for block in awaits {
+                types.extend(
+                    live[block.index()]
+                        .iter()
+                        .map(|&local| body.locals[Local::from_raw(local)].ty),
+                );
+            }
+        }
+        let mut pending: Vec<_> = types.into_iter().map(|ty| (ty, 0)).collect();
+        let mut seen = FxHashSet::default();
+        while let Some((ty, depth)) = pending.pop() {
+            if depth > 64 {
+                exhausted[index] = true;
+                continue;
+            }
+            if !seen.insert(ty) {
+                continue;
+            }
+            let mut push = |ty| pending.push((ty, depth + 1));
+            match ty.kind() {
+                TyKind::Opaque(opaque) => {
+                    let normalized = flux_solve::traits::normalize(&hir.items, sigs, &[], ty);
+                    if normalized != ty {
+                        push(normalized);
+                    } else if let Some(hidden) = sigs.hidden.get(&(opaque.function, opaque.index)) {
+                        push(hidden.subst(opaque.args));
+                    }
+                }
+                TyKind::Alias(_) => {
+                    let normalized = flux_solve::traits::normalize(&hir.items, sigs, &[], ty);
+                    if normalized != ty {
+                        push(normalized);
+                    }
+                }
+                TyKind::Adt(adt, args)
+                    if flux_solve::is_lang_struct(&hir.items, adt.strukt, "coroutine") =>
+                {
+                    if let Some(capture) = args.first() {
+                        if let TyKind::Closure(closure, _) = capture.kind()
+                            && let Some(&target) = indices.get(&closure)
+                        {
+                            graph[index].push(target);
+                        }
+                        push(*capture);
+                    }
+                }
+                TyKind::Adt(adt, args)
+                    if !flux_solve::is_lang_struct(&hir.items, adt.strukt, "owned_box") =>
+                {
+                    for &field in flux_solve::field_types(sigs, adt.strukt, args) {
+                        push(field);
+                    }
+                }
+                TyKind::Closure(_, args) => {
+                    for &capture in ClosureArgs::split(args).upvar_types() {
+                        push(capture);
+                    }
+                }
+                TyKind::Tuple(fields) => {
+                    for &field in fields {
+                        push(field);
+                    }
+                }
+                TyKind::Array(element, _) => push(element),
+                _ => {}
+            }
+        }
+        graph[index].sort_unstable();
+        graph[index].dedup();
+    }
+    let mut color = vec![0; ids.len()];
+    let mut cyclic = vec![false; ids.len()];
+    for root in 0..ids.len() {
+        if color[root] != 0 {
+            continue;
+        }
+        let mut stack = vec![(root, 0)];
+        color[root] = 1;
+        while let Some(&mut (node, ref mut next)) = stack.last_mut() {
+            if *next == graph[node].len() {
+                color[node] = 2;
+                stack.pop();
+                continue;
+            }
+            let target = graph[node][*next];
+            *next += 1;
+            if color[target] == 0 {
+                color[target] = 1;
+                stack.push((target, 0));
+            } else if color[target] == 1
+                && let Some(start) = stack.iter().position(|&(node, _)| node == target)
+            {
+                for &(node, _) in &stack[start..] {
+                    cyclic[node] = true;
+                }
+            }
+        }
+    }
+    ids.iter()
+        .enumerate()
+        .filter_map(|(index, &id)| {
+            if !cyclic[index] && !exhausted[index] {
+                return None;
+            }
+            let (_, map) = source_body(id)?;
+            let file = match id.owner {
+                ClosureOwner::Function(f) => hir.items.functions[f].loc.file,
+                ClosureOwner::Const(c) => hir.items.consts[c].loc.file,
+            };
+            Some(flux_hir::Diagnostic {
+                file,
+                range: map.exprs.get(id.expr).copied().unwrap_or_default(),
+                message: if cyclic[index] {
+                    "recursion in an async function requires boxing"
+                } else {
+                    "async future layout expansion limit reached"
+                }
+                .into(),
+            })
+        })
+        .collect()
+}

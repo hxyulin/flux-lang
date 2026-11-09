@@ -2263,8 +2263,18 @@ impl Collector<'_> {
                 }
             }
         }
-        if let Some(token) = f.async_token() {
-            unsupported(diagnostics, token.text_range(), "`async` functions");
+        let is_async = f.async_token().is_some();
+        if is_async && f.const_token().is_some() {
+            diagnostics.push(Diagnostic::new(
+                f.syntax().text_range(),
+                "functions cannot be both `const` and `async`",
+            ));
+        }
+        if is_async && in_extern_block {
+            diagnostics.push(Diagnostic::new(
+                f.syntax().text_range(),
+                "functions in `extern` blocks cannot be `async`",
+            ));
         }
         if in_extern_block && let Some(abi) = f.abi() {
             diagnostics.push(Diagnostic::new(
@@ -2396,6 +2406,44 @@ impl Collector<'_> {
         } else {
             collect_opaques(&mut ret, &mut opaques, diagnostics);
         }
+        if is_async && !in_extern_block {
+            let mut path = core_path("future", "Future", is_core);
+            let mut args = vec![None; path.segments.len()];
+            *args.last_mut().expect("Future path has a segment") = Some(GenericArgs {
+                lifetimes: Box::default(),
+                types: Box::default(),
+                ranges: Box::default(),
+                bindings: Box::new([super::AssocBinding {
+                    name: Symbol::intern("Output"),
+                    args: None,
+                    ty: ret,
+                    name_range: ret_range,
+                    ty_range: ret_range,
+                }]),
+                range: ret_range,
+                parenthesized: false,
+                bound_lifetimes: Box::default(),
+            });
+            path.args = args.into();
+            ret = TypeRef::Opaque(opaques.len() as u32);
+            opaques.push(super::ImplTraitRef {
+                maybe_unsized: false,
+                edition: f
+                    .async_token()
+                    .expect("async function has its keyword")
+                    .edition(),
+                bounds: Box::new([Bound {
+                    bound_lifetimes: Box::default(),
+                    path,
+                    range: ret_range,
+                }]),
+                lifetimes: Box::default(),
+                captures: None,
+                use_range: ret_range,
+                range: ret_range,
+                name: Symbol::intern("impl Future"),
+            });
+        }
         let has_body = f.body().is_some();
         if matches!(owner, Some(Owner::Impl(_))) && !has_body {
             diagnostics.push(Diagnostic::new(
@@ -2495,6 +2543,7 @@ impl Collector<'_> {
             link_name,
             abi,
             is_const: f.const_token().is_some(),
+            is_async,
             inherits_overflow_checks,
             const_unstable,
             precise_live_drops,
@@ -4238,6 +4287,7 @@ impl Collector<'_> {
                     is_extern: false,
                     abi: Abi::Rust,
                     is_const: true,
+                    is_async: false,
                     inherits_overflow_checks: false,
                     const_unstable: false,
                     precise_live_drops: false,
@@ -4560,6 +4610,7 @@ impl Collector<'_> {
             is_extern: false,
             abi: Abi::Rust,
             is_const: false,
+            is_async: false,
             inherits_overflow_checks: false,
             const_unstable: false,
             precise_live_drops: false,

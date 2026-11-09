@@ -220,7 +220,11 @@ pub fn lower_body<'a>(
     let root = with_macro_types(|| match f.body() {
         Some(block) => {
             ctx.expand_types_in(block.syntax());
-            ctx.lower_block(block)
+            if data.is_async {
+                ctx.lower_async_function(block, &mut params)
+            } else {
+                ctx.lower_block(block)
+            }
         }
         None => ctx.alloc_expr(Expr::Missing, f.syntax().text_range()),
     });
@@ -2910,7 +2914,10 @@ impl<'a> Ctx<'a> {
             }
             ast::Expr::AwaitExpr(await_) => {
                 if !self.in_async {
-                    self.error(range, "`await` is only allowed inside async blocks");
+                    self.error(
+                        range,
+                        "`await` is only allowed inside async functions and blocks",
+                    );
                     return self.alloc_expr(Expr::Missing, range);
                 }
                 let value = self.lower_opt(await_.expr(), syntax);
@@ -3754,6 +3761,88 @@ impl<'a> Ctx<'a> {
         let callee = self.alloc_expr(Expr::Path(Res::Function(function)), range);
         let args = self.lists.alloc([value]);
         self.alloc_expr(Expr::Call { callee, args }, range)
+    }
+
+    fn lower_async_function(&mut self, block: ast::BlockExpr<'_>, params: &mut [PatId]) -> ExprId {
+        let range = block.syntax().text_range();
+        let mut statements = Vec::new();
+        for (index, original) in params.iter_mut().enumerate() {
+            let at = self
+                .source_map
+                .pats
+                .get(*original)
+                .copied()
+                .unwrap_or(range);
+            let name = Symbol::intern(&format!("__async_argument_{index}"));
+            let raw = self.bindings.alloc(Binding {
+                name,
+                mutable: false,
+                by_ref: None,
+            });
+            let value = self.alloc_expr(Expr::Path(Res::Local(raw)), at);
+            let held = self.bindings.alloc(Binding {
+                name,
+                mutable: false,
+                by_ref: None,
+            });
+            let held_pat = self.alloc_pat(
+                Pat::Bind {
+                    binding: held,
+                    sub: None,
+                },
+                at,
+            );
+            // A named whole-value move prevents precise capture from discarding
+            // unused fields before the future is first polled.
+            statements.push(Stmt::Let {
+                pat: held_pat,
+                ty: None,
+                init: Some(value),
+                else_branch: None,
+            });
+            let value = self.alloc_expr(Expr::Path(Res::Local(held)), at);
+            statements.push(Stmt::Let {
+                pat: *original,
+                ty: None,
+                init: Some(value),
+                else_branch: None,
+            });
+            *original = self.alloc_pat(
+                Pat::Bind {
+                    binding: raw,
+                    sub: None,
+                },
+                at,
+            );
+        }
+        let saved_async = std::mem::replace(&mut self.in_async, true);
+        let saved_closure = std::mem::replace(&mut self.in_closure, true);
+        let body = self.lower_block_inner(block);
+        self.in_async = saved_async;
+        self.in_closure = saved_closure;
+        let stmts = self.lists.alloc(statements);
+        let body = self.alloc_expr(
+            Expr::Block {
+                stmts,
+                tail: Some(body),
+                is_unsafe: false,
+            },
+            range,
+        );
+        let params = self.lists.alloc([]);
+        let param_types = self.lists.alloc([]);
+        let closure = self.alloc_expr(
+            Expr::Closure {
+                params,
+                param_types,
+                ret: None,
+                body,
+                is_move: true,
+                is_async: true,
+            },
+            range,
+        );
+        self.coroutine_call("coroutine_new", closure, range)
     }
 
     fn lower_block(&mut self, block: ast::BlockExpr<'_>) -> ExprId {

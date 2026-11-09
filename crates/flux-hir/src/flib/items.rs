@@ -196,6 +196,7 @@ record!(Function {
     link_name,
     abi,
     is_const,
+    is_async,
     inherits_overflow_checks,
     const_unstable,
     precise_live_drops,

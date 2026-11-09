@@ -365,10 +365,11 @@ fn terminator_transfer_with_drops(
 }
 
 /// The locals live at the end of each block, in order, of those
-/// `tracked`: whether one is live depends on its own uses alone, and
-/// only those whose types have lifetimes matter. A block's are few, so
+/// `tracked`: whether one is live depends on its own uses alone. Borrow
+/// checking tracks lifetime-bearing types; coroutine layouts track all types.
+/// A block's are few, so
 /// they are listed rather than a bit each for every local.
-fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool) -> Vec<Vec<u32>> {
+pub(crate) fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool) -> Vec<Vec<u32>> {
     let mut live_in = vec![Vec::new(); body.blocks.len()];
     let mut live_out = vec![Vec::new(); body.blocks.len()];
     // The locals live at a point, and a list of them that may also have

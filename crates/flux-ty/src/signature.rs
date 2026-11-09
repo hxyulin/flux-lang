@@ -828,7 +828,15 @@ pub(super) fn extend_signatures(
         sigs.fns.insert(id, FnSig { params, ret });
         if !function.opaques.is_empty() {
             let mut errors = Vec::new();
-            let opaques = opaque_sigs(items, function, scope, &mut errors);
+            let opaques = opaque_sigs(
+                items,
+                function,
+                TypeScope {
+                    function: Some(id),
+                    ..scope
+                },
+                &mut errors,
+            );
             in_file(errors, function.loc.file, &mut reported);
             sigs.opaques.insert(id, opaques);
         }

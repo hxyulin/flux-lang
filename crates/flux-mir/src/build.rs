@@ -315,6 +315,11 @@ fn build_file_inner(
             );
         }
     }
+    diagnostics.extend(crate::coroutine::check_recursive_layouts(
+        hir,
+        &typed.sigs,
+        &closures,
+    ));
     flux_hir::Diagnostic::sort(&mut diagnostics);
     let mir = FileMir {
         bodies,

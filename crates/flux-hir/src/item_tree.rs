@@ -840,6 +840,9 @@ pub struct Function {
     pub abi: Abi,
     /// `const fn`: callable in constants.
     pub is_const: bool,
+    /// Returns an implicit opaque future; its final opaque declaration owns
+    /// the written output type and captures every input lifetime.
+    pub is_async: bool,
     /// `#[rustc_inherit_overflow_checks]`, which only `core` may write:
     /// arithmetic overflow in it is checked where its caller's would be.
     pub inherits_overflow_checks: bool,

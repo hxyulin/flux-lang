@@ -1990,8 +1990,14 @@ Await accepts Future values, preserves live locals, and resumes at the suspended
 await after Pending. Cancellation follows the saved scope-cleanup path, including
 partially moved values and conditional drop flags. Nested futures and borrowed
 outputs retain their capture and output region constraints. These futures are
-conservatively !Send, !Sync and !Unpin. Async functions, async closures and custom
-IntoFuture conversions remain unsupported. This implementation does not establish
+conservatively !Send, !Sync and !Unpin. Async functions, including generic
+functions, inherent methods and trait methods, return an opaque Future whose
+Output is the written return type. Calls move every argument into the future;
+parameter patterns and the body run when it is polled. Unused arguments remain
+owned until completion or cancellation. Input lifetimes are captured in every
+supported edition, including edition 2018. Inline recursive future storage is
+rejected; boxed recursion is supported. Async closures and custom IntoFuture
+conversions remain unsupported. This implementation does not establish
 allocation-free async frames or automatic Send/Sync inference.
 
 AArch64 assembly accepts input-only `in(reg)` and `in(vreg)` operands alongside

@@ -2893,7 +2893,9 @@ fn opaque_regions(
             }
         }
         let captures: Box<[Region]> = match &decl.captures {
-            None if decl.edition == flux_syntax::Edition::E2024 => {
+            None if decl.edition == flux_syntax::Edition::E2024
+                || (function.is_async && i + 1 == function.opaques.len()) =>
+            {
                 (0..all as u32).map(Region::Param).collect()
             }
             None => {

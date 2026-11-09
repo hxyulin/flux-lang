@@ -105,10 +105,7 @@ fn excluded_declaration_shapes_have_reasons() {
         ),
         ("trait T<'a> {fn f(x:impl Copy);}", Reason::MethodGenerics),
         ("trait T<'a> {fn f()->impl Copy;}", Reason::MethodGenerics),
-        (
-            "trait T<'a> {async fn f();}",
-            Reason::DeclarationDiagnostics,
-        ),
+        ("trait T<'a> {async fn f();}", Reason::MethodGenerics),
         ("trait T<'a> {fn f(x:fn(&i32));}", Reason::SignatureType),
         ("trait T<'a> {fn f(x:&dyn Fn());}", Reason::SignatureType),
         ("trait T<'a> {fn f(x:_);}", Reason::SignatureType),

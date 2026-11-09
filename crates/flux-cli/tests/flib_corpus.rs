@@ -194,3 +194,5 @@ fixture!(
     partial_constant_initialization,
     "partial_const_initialization.rs"
 );
+
+fixture!(async_functions, "async_functions.rs");
