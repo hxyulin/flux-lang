@@ -9,6 +9,36 @@ fn consumer_lowering_matches_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "pointer_marker_is_private",
+            "struct S; impl core::marker::FnPtr for S {fn addr(self)->usize{0}} fn main(){}",
+            false,
+        ),
+        (
+            "function_item_has_no_equality_impl",
+            "fn need<T:Eq>(_:T){} fn f(){} fn main(){need(f);}",
+            false,
+        ),
+        (
+            "function_pointer_different_signature",
+            "fn eq(a:fn(u8),b:fn(u16))->bool{core::cmp::PartialEq::eq(&a,&b)} fn main(){}",
+            false,
+        ),
+        (
+            "manual_drop_requires_clone",
+            "struct NoClone; fn main(){let m=core::mem::ManuallyDrop::new(NoClone);let _:core::mem::ManuallyDrop<NoClone>=core::clone::Clone::clone(&m);}",
+            false,
+        ),
+        (
+            "nested_pin_does_not_unpin",
+            "fn f(mut p:core::pin::Pin<Box<core::marker::PhantomPinned>>){let mut nested=core::pin::Pin::new(&mut p);let _=nested.as_mut().as_deref_mut().get_mut();} fn main(){}",
+            false,
+        ),
+        (
+            "nested_pin_borrow_cannot_escape",
+            "fn f<'a>(p:&'a mut core::pin::Pin<Box<u32>>)->core::pin::Pin<&'static mut u32>{core::pin::Pin::new(p).as_deref_mut()} fn main(){}",
+            false,
+        ),
+        (
             "generic_borrow_with_region_bound",
             r#"trait Borrow<T>{fn borrow(&self)->&T;} trait TryR{type Error:core::error::Error;}trait R:TryR<Error=core::convert::Infallible>{}trait Sample{type X;fn sample<G:R+?Sized,B:Borrow<Self::X>>(b:B,g:&mut G)->Self::X;}struct S;impl Sample for S{type X=u32;fn sample<G:R+?Sized,B:Borrow<Self::X>>(b:B,_:&mut G)->Self::X{*b.borrow()}}fn main(){}"#,
             true,

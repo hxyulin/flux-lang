@@ -14,6 +14,13 @@ pub trait Sized {}
 #[lang = "copy"]
 pub trait Copy: Clone {}
 
+/// Function pointers, whose addresses are independent of their signatures.
+/// Only the compiler supplies implementations; programs cannot name this trait.
+#[lang = "fn_ptr_trait"]
+pub(crate) trait FnPtr: Copy {
+    fn addr(self) -> usize;
+}
+
 /// Types whose ownership may be transferred between threads.
 /// The compiler propagates this auto trait through fields unless an
 /// explicit unsafe implementation supplies its own requirements.

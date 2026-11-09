@@ -1378,9 +1378,11 @@ impl Collector<'_> {
                     Some("duplicate path attributes are not supported yet")
                 } else if m.item_list().is_some() {
                     Some("path attributes on inline modules are not supported yet")
-                } else if self.db.file(ctx.file).expansion_of.is_some() {
-                    Some("path attributes in item macro expansions are not supported yet")
                 } else if self.items.modules[ctx.module].block.is_some()
+                    || self.items.modules[ctx.module].parent.is_some_and(|parent| {
+                        self.real_file(self.items.modules[parent].file)
+                            == self.real_file(self.items.modules[ctx.module].file)
+                    })
                     || m.syntax().parent().is_none_or(|p| {
                         !matches!(p.kind(), SyntaxKind::SOURCE_FILE | SyntaxKind::MACRO_ITEMS)
                     })

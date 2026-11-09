@@ -82,9 +82,9 @@ pub struct ManuallyDrop<T: ?Sized> {
     pub(crate) value: T,
 }
 
-impl<T: crate::marker::Copy> crate::clone::Clone for ManuallyDrop<T> {
+impl<T: crate::clone::Clone> crate::clone::Clone for ManuallyDrop<T> {
     fn clone(&self) -> ManuallyDrop<T> {
-        *self
+        ManuallyDrop::new(self.value.clone())
     }
 }
 

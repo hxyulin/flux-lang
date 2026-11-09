@@ -115,11 +115,11 @@ reported as "not supported yet":
   `pub(in path)`, and flux checks privacy as rustc does. An enum's
   variants are named through it (`E::A`, `Self::A`) or imported
   (`use E::*;`, `use E::{A, B};`).
-  Out-of-line modules declared directly in source files accept literal
+  Out-of-line modules declared in source files or item macro expansions accept literal
   `#[path = "file.rs"]`, including selected `cfg_attr` paths. Paths resolve
   relative to the declaring source file, and the loaded file owns its
-  containing directory for child module lookup. Inline/block overrides,
-  paths in item macro expansions, duplicate path attributes and nonmodule
+  containing directory for child module lookup. Macro paths use the calling
+  file's directory. Inline/block overrides, duplicate path attributes and nonmodule
   placement remain explicitly unsupported. Recursive loading is bounded.
 - **Types:** paths (`i32`, `f32`, `f64`, `bool`, `char`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
@@ -873,7 +873,11 @@ Rust calls retain their own aggregate convention. Calling either type works as c
 function does; through a pointer, in constants and `const fn`s, is an
 error, as in rustc. Function items and safe or unsafe pointers implement
 `Copy` and `Clone` for every supported signature, without bounds on argument
-or result types. Reification rejects fixed, owner-bound, bounded or repeated
+or result types. Function pointers also implement
+`PartialEq`, `Eq`, `PartialOrd`, `Ord` and `Hash` by address, without bounds on
+argument or result types or on signature lifetimes. Function items require an
+explicit pointer coercion before comparison or hashing.
+Reification rejects fixed, owner-bound, bounded or repeated
 input lifetimes rather than discarding their constraints; this also rejects
 some valid Rust signatures. Named pointer lifetimes remain unsupported, and elided reference outputs
 retain conservative checks. Borrowed function pointers autodereference at calls.
@@ -1765,7 +1769,7 @@ represented enum values. `mem::transmute_copy` checks the destination size and
 copies bytes into correctly aligned storage at runtime; its unsafe contract
 requires the copied value to be valid and ownership to be respected.
 `core::mem` has
-`forget`, `ManuallyDrop` (with `Deref`) and `MaybeUninit` (`new`,
+`forget`, `ManuallyDrop` (with `Deref` and `Clone` when its payload is `Clone`) and `MaybeUninit` (`new`,
 `uninit`, `zeroed`, `write`, `as_ptr`, `as_mut_ptr`, `assume_init` and
 its `_read`, `_ref`, `_mut` and `_drop` forms). Const `MaybeUninit::uninit`
 creates storage without an initialized payload, including in arrays and nested
@@ -1976,7 +1980,8 @@ selects and drops values normally without an optimizer hint.
 
 The embedded `future`, `pin` and `task` modules support manually polled futures,
 Pin receivers, pinned references and Option projections, Poll, Context and raw
-waker callbacks. `pin!` moves a value into temporary storage and extends that
+waker callbacks. `Pin::as_deref_mut` reborrows a nested pinned pointer without
+requiring its target to be Unpin. `pin!` moves a value into temporary storage and extends that
 storage through its enclosing initializer where Rust does. Safe mutable access
 requires Unpin. Replacing a pinned value drops the old value in place.
 

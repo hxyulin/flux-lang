@@ -966,7 +966,10 @@ fn lang_method(items: &ItemTree, lang: &str, name: &str) -> Option<FunctionId> {
 /// Whether a callable's copy, call or address-formatting method has a
 /// compiler-supplied body instead of an ordinary library impl.
 fn is_builtin_shim(items: &ItemTree, instance: Instance) -> bool {
-    if is_fn_shim(items, instance) || is_pointer_debug_shim(items, instance) {
+    if is_fn_shim(items, instance)
+        || is_pointer_debug_shim(items, instance)
+        || is_pointer_address_shim(items, instance)
+    {
         return true;
     }
     // Functions and pointers clone by copying, as do `Copy` closures.
@@ -992,6 +995,9 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
     }
     if is_pointer_debug_shim(items, instance) {
         return Some(pointer_debug_shim(items, sigs, instance));
+    }
+    if is_pointer_address_shim(items, instance) {
+        return Some(pointer_address_shim(items, sigs, instance));
     }
     let array = instance.args[0];
     let (elem, len) = match array.kind() {
@@ -1107,6 +1113,63 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
         bugs: Vec::new(),
         fn_spans: Default::default(),
     })
+}
+
+/// The private address method accepts only function pointers, not function items.
+fn is_pointer_address_shim(items: &ItemTree, instance: Instance) -> bool {
+    matches!(
+        instance.args.first().map(|ty| ty.kind()),
+        Some(TyKind::FnPtr(_))
+    ) && Some(instance.function) == lang_method(items, "fn_ptr_trait", "addr")
+}
+
+fn pointer_address_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
+    let signature = flux_solve::traits::instance_sig(items, sigs, instance.function, instance.args);
+    let mut locals = flux_arena::Arena::new();
+    let ret = locals.alloc(LocalDecl {
+        ty: signature.ret,
+        kind: LocalKind::Return,
+    });
+    let pointer = locals.alloc(LocalDecl {
+        ty: signature.params[0],
+        kind: LocalKind::Param,
+    });
+    let range = flux_syntax::TextRange::default();
+    let mut blocks = flux_arena::Arena::new();
+    blocks.alloc(BasicBlockData {
+        statements: vec![Statement {
+            kind: StatementKind::Assign(
+                ret.into(),
+                Rvalue::Cast(Operand::Copy(pointer.into()), signature.ret),
+            ),
+            range,
+        }],
+        terminator: Terminator {
+            kind: TerminatorKind::Return,
+            range,
+        },
+    });
+    Body {
+        locals,
+        blocks,
+        param_count: 1,
+        call_regions: Default::default(),
+        reification_regions: Default::default(),
+        region_annotations: Vec::new(),
+        region_relations: Vec::new(),
+        c_strings: Vec::new(),
+        in_core: true,
+        inherits_overflow_checks: false,
+        live_drops: Vec::new(),
+        init_errors: Vec::new(),
+        upvars: None,
+        capture_uses: Vec::new(),
+        owner: None,
+        constant_owner: None,
+        promoted: Vec::new(),
+        bugs: Vec::new(),
+        fn_spans: Default::default(),
+    }
 }
 
 /// Pointer formatting observes only the address, never its signature values.

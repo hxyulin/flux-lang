@@ -33,6 +33,22 @@ impl<T: ?Sized> Eq for *const T {}
 impl<T: ?Sized> PartialEq for *mut T { fn eq(&self,other:&Self)->bool {*self==*other} }
 impl<T: ?Sized> Eq for *mut T {}
 
+// The compiler recognizes this private bound for function pointers of any
+// signature. Address traits do not inspect argument types or their lifetimes.
+impl<F: crate::marker::FnPtr> PartialEq for F {
+    fn eq(&self, other: &Self) -> bool { (*self).addr() == (*other).addr() }
+}
+impl<F: crate::marker::FnPtr> Eq for F {}
+impl<F: crate::marker::FnPtr> PartialOrd for F {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+}
+impl<F: crate::marker::FnPtr> Ord for F {
+    fn cmp(&self, other: &Self) -> Ordering { (*self).addr().cmp(&(*other).addr()) }
+}
+impl<F: crate::marker::FnPtr> crate::hash::Hash for F {
+    fn hash<H: crate::hash::Hasher>(&self, state: &mut H) { state.write_usize((*self).addr()); }
+}
+
 // Thin pointer ordering compares addresses without reading the pointees.
 impl<T> PartialOrd for *const T {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }

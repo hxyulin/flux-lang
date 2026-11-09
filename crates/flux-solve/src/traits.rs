@@ -2120,7 +2120,7 @@ pub fn is_builtin_trait(items: &ItemTree, t: TraitId, ty: Ty) -> bool {
         || (matches!(ty.kind(), TyKind::FnPtr(_))
             && items.traits[t]
                 .lang
-                .is_some_and(|lang| lang.as_str() == "Debug"))
+                .is_some_and(|lang| matches!(lang.as_str(), "Debug" | "fn_ptr_trait")))
 }
 
 /// Whether values of `ty` are copied rather than moved, given `env`, the

@@ -167,11 +167,6 @@ fn unsupported_and_malformed_forms_have_explicit_diagnostics() {
             false,
             "expected a string literal in `path`",
         ),
-        (
-            "macro_rules! declare { () => { #[path=\"ok.rs\"] mod m; }; } declare!();",
-            true,
-            "path attributes in item macro expansions are not supported yet",
-        ),
         ("#[path=\"missing.rs\"] mod m;", false, "cannot read"),
     ] {
         let case = Case::new();
@@ -179,6 +174,73 @@ fn unsupported_and_malformed_forms_have_explicit_diagnostics() {
         case.write("ok.rs", "");
         case.write("outer/ok.rs", "");
         case.rustc(valid);
+        let (_, hir) = case.lower();
+        assert!(
+            hir.diagnostics.iter().any(|d| d.message.contains(expected)),
+            "{source}: {:?}",
+            hir.diagnostics
+        );
+    }
+}
+
+#[test]
+fn macro_paths_use_the_calling_file_and_preserve_child_directories() {
+    let case = Case::new();
+    case.write(
+        "lib.rs",
+        r#"
+#[macro_use] mod macros;
+macro_rules! choose { ($($item:item)*) => { $($item)* }; }
+choose! { #[cfg(any())] #[path="missing.rs"] mod disabled; }
+choose! { #[path="chosen/outer.rs"] pub mod outer; }
+mod normal;
+pub fn value() -> i32 { outer::value() + normal::value() }
+"#,
+    );
+    case.write(
+        "macros.rs",
+        r#"macro_rules! declare { () => { #[path="sibling.rs"] mod sibling; }; }"#,
+    );
+    case.write(
+        "chosen/outer.rs",
+        "mod child; pub fn value() -> i32 { child::value() }",
+    );
+    case.write("chosen/child.rs", "pub fn value() -> i32 { 7 }");
+    case.write(
+        "normal.rs",
+        "declare!(); pub fn value() -> i32 { sibling::value() }",
+    );
+    case.write("sibling.rs", "pub fn value() -> i32 { 11 }");
+    case.rustc(true);
+    let (db, hir) = case.lower();
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    for (_, file) in db
+        .files()
+        .filter(|(_, f)| f.expansion_of.is_none() && f.path.starts_with(&case.0))
+    {
+        assert_eq!(file.text(), std::fs::read_to_string(&file.path).unwrap());
+    }
+}
+
+#[test]
+fn macro_paths_retain_inline_and_recursion_boundaries() {
+    for (source, expected) in [
+        (
+            r#"macro_rules! m { () => { #[path="lib.rs"] mod again; }; } m!();"#,
+            "recursive module loading",
+        ),
+        (
+            r#"macro_rules! m { () => { #[path="ok.rs"] mod child; }; } mod inline { m!(); }"#,
+            "path attributes inside inline modules or blocks are not supported yet",
+        ),
+        (
+            r#"macro_rules! m { () => { #[path="ok.rs"] mod child; }; } macro_rules! outer { () => { mod inline { m!(); } }; } outer!();"#,
+            "path attributes inside inline modules or blocks are not supported yet",
+        ),
+    ] {
+        let case = Case::new();
+        case.write("lib.rs", source);
+        case.write("inline/ok.rs", "");
         let (_, hir) = case.lower();
         assert!(
             hir.diagnostics.iter().any(|d| d.message.contains(expected)),

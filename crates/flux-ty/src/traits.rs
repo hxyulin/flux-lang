@@ -1745,6 +1745,17 @@ fn coherence_goal_impossible(
         return false;
     }
     let goal = normalize_predicate(items, sigs, goal);
+    // The private function-pointer marker has compiler-only implementations.
+    // A known outer constructor cannot become a function pointer, even when
+    // its arguments are still intersection variables or contain error holes.
+    if items.traits[goal.trait_ref.trait_]
+        .lang
+        .is_some_and(|lang| lang.as_str() == "fn_ptr_trait")
+        && !is_rigid(goal.self_ty)
+        && !matches!(goal.self_ty.kind(), TyKind::FnPtr(_) | TyKind::Error)
+    {
+        return true;
+    }
     if !represented(goal.self_ty)
         || !goal.trait_ref.args.iter().copied().all(represented)
         || active.contains(&goal)

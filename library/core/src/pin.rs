@@ -25,6 +25,11 @@ impl<Ptr: Deref> Pin<Ptr> {
     }
 }
 impl<Ptr: DerefMut> Pin<Ptr> {
+    /// Reborrows the target of a nested pinned pointer.
+    pub fn as_deref_mut(self: Pin<&mut Self>) -> Pin<&mut Ptr::Target> {
+        // SAFETY: the inner Pin already guarantees that its target stays put.
+        unsafe { self.get_unchecked_mut().as_mut() }
+    }
     pub fn as_mut(&mut self) -> Pin<&mut Ptr::Target> {
         // SAFETY: this exclusive reborrow retains the owner's pin guarantee.
         unsafe { Pin::new_unchecked(&mut *self.pointer) }
