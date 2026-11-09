@@ -1149,15 +1149,17 @@ impl Ctx<'_> {
                 }
             }
         }
-        // A Box, Arc or Rc of an unsized type is wanted: its constructor still
+        // A Box, Arc or Rc, possibly pinned, of an unsized type is wanted: its constructor still
         // makes a sized owner, coerced after, as rustc only hints
         // its arguments with what is wanted.
         if let Some(&expected) = self.expected.get(expr)
-            && let Some((e, t)) = flux_solve::box_pointee(self.shallow(expected))
-                .zip(flux_solve::box_pointee(self.shallow(ty)))
-                .or_else(|| {
-                    crate::shared_pointees(self.items, self.shallow(expected), self.shallow(ty))
-                })
+            && let Some((e, t)) = self.pinned_pointees(expected, ty).or_else(|| {
+                flux_solve::box_pointee(self.shallow(expected))
+                    .zip(flux_solve::box_pointee(self.shallow(ty)))
+                    .or_else(|| {
+                        crate::shared_pointees(self.items, self.shallow(expected), self.shallow(ty))
+                    })
+            })
             && self.sigs.is_unsized(self.shallow(e))
             && !self.sigs.is_unsized(self.shallow(t))
         {

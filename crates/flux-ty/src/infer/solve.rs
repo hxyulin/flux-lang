@@ -655,15 +655,13 @@ impl Ctx<'_> {
                 // Canonicalize in the same caller environment as the target.
                 // A possible blanket impl must not replace an abstract owner
                 // established by a where clause (notably &mut T: IntoIterator).
-                let proof = flux_solve::traits::SignatureImplProof {
-                    items: self.items,
-                    sigs: self.sigs,
-                    env: self.param_env.clone(),
-                    memberships: &self.param_env,
-                    projections: self.env_projections.clone(),
-                    unsized_params: &self.unsized_params,
-                    depth: std::cell::Cell::new(0),
-                };
+                let proof = flux_solve::traits::RigidSolver::new(
+                    self.items,
+                    self.sigs,
+                    &self.param_env,
+                    &self.env_projections,
+                    &self.unsized_params,
+                );
                 key.map_args(|ty| proof.normalize_ty(ty, None))
             } else {
                 key

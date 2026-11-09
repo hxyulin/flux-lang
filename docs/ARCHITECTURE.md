@@ -31,6 +31,14 @@ tables) is `flux-ty-ir`'s. Trait solving is `flux-solve`'s: it depends on
 `flux-ty` re-exports the representation at its own paths, but not the
 solver: every crate calls the solver through `flux_solve::`.
 
+`traits::RigidSolver` shares caller memberships, associated equalities and
+implicit `Sized` facts across signatures, rigid inference queries and MIR.
+It borrows the caller evidence and keeps original memberships separate from
+normalized keys. Candidate discovery does not prove an impl's conditions;
+MIR must still prove the lifetime relationships using occurrence tables.
+Body inference keeps ownership of unification variables and delayed obligations.
+Context-dependent header matches stay outside the structural header cache.
+
 `Ty::children` and `Ty::map_children` define structural traversal, including
 callable recipe captures. Inference resolution and substitution share those
 mechanics. Stored fields, drop requirements and variance still use specialized

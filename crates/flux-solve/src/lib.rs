@@ -124,15 +124,20 @@ pub fn box_pointee(ty: Ty) -> Option<Ty> {
         .flatten()
 }
 
-/// The owner of a supported pinned method receiver.
-pub fn pin_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
+/// The pointer stored by the trusted core Pin wrapper.
+pub fn pin_pointer(items: &ItemTree, ty: Ty) -> Option<Ty> {
     let TyKind::Adt(adt, args) = ty.kind() else {
         return None;
     };
     if !is_lang_struct(items, adt.strukt, "pin") {
         return None;
     }
-    let pointer = *args.first()?;
+    args.first().copied()
+}
+
+/// The owner of a supported pinned method receiver.
+pub fn pin_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
+    let pointer = pin_pointer(items, ty)?;
     match pointer.kind() {
         TyKind::Ref(_, target) => Some(target),
         _ => box_pointee(pointer),

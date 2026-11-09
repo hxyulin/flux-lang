@@ -220,19 +220,8 @@ pub fn signature_impl_evidence(
         .copied()
         .filter(|p| normalize_key(p.alias) != alias)
         .collect();
-    let proof = SignatureImplProof {
-        items,
-        sigs,
-        env: env
-            .iter()
-            .map(|p| SignatureImplProof::normalize(items, sigs, &independent, *p))
-            .collect(),
-        memberships: env,
-        projections: independent,
-        unsized_params,
-        depth: std::cell::Cell::new(0),
-    };
-    let Some((imp, args)) = proof.select(goal, &mut Vec::new()) else {
+    let proof = RigidSolver::new(items, sigs, env, &independent, unsized_params);
+    let Some((imp, args)) = proof.select_impl(goal) else {
         return false;
     };
     let Some(ty) = instantiate_impl_type(sigs, imp, alias, &args) else {
@@ -242,27 +231,88 @@ pub fn signature_impl_evidence(
     proof.normalize_rhs(provided) == proof.normalize_rhs(required)
 }
 
-/// Unlike ordinary normalization's possible candidates, signature evidence
-/// needs every substituted membership and associated equality to be proven.
-pub struct SignatureImplProof<'a> {
-    pub items: &'a ItemTree,
-    pub sigs: &'a Signatures,
-    // Normalized memberships keep associated impl RHSs abstract. They cannot
-    // also prove requirements rewritten through caller equalities.
-    pub env: Vec<Predicate>,
-    // Keep caller predicates before equality normalization, including through
-    // supertrait elaboration. A rewritten predicate is not independent evidence.
-    pub memberships: &'a [Predicate],
-    pub projections: Vec<Projection>,
-    pub unsized_params: &'a [bool],
-    pub depth: std::cell::Cell<u32>,
+/// Trait solving for rigid caller parameters, without inference-variable
+/// unification. Keeps original memberships distinct from normalized keys so
+/// rewriting an equality cannot manufacture independent impl evidence.
+pub struct RigidSolver<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    env: Vec<Predicate>,
+    memberships: &'a [Predicate],
+    projections: &'a [Projection],
+    unsized_params: &'a [bool],
+    depth: std::cell::Cell<u32>,
 }
 
 // Structural auto-trait proofs can cross several library containers per field.
 // Keep normalization re-entry and predicate recursion under the same budget.
-const SIGNATURE_RECURSION_LIMIT: usize = 128;
+const RIGID_RECURSION_LIMIT: usize = 128;
 
-impl SignatureImplProof<'_> {
+impl<'a> RigidSolver<'a> {
+    /// Build a context from elaborated caller memberships, their equalities,
+    /// and the parameters without an implicit Sized bound. The inputs must
+    /// remain fixed while this context is used.
+    pub fn new(
+        items: &'a ItemTree,
+        sigs: &'a Signatures,
+        memberships: &'a [Predicate],
+        projections: &'a [Projection],
+        unsized_params: &'a [bool],
+    ) -> Self {
+        Self {
+            items,
+            sigs,
+            env: memberships
+                .iter()
+                .map(|&p| Self::normalize_predicate(items, sigs, projections, p))
+                .collect(),
+            memberships,
+            projections,
+            unsized_params,
+            depth: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Infer a matching header's output-only parameters from caller evidence.
+    /// This is a candidate, not proof that its conditions hold.
+    fn match_impl(&self, imp: ImplId, goal: Predicate) -> Option<Vec<Ty>> {
+        if self
+            .sigs
+            .impl_projections
+            .get(imp)
+            .is_none_or(|p| p.is_empty())
+        {
+            match_impl(self.items, self.sigs, imp, goal)
+        } else {
+            match_impl_with_bindings(self.items, self.sigs, imp, goal, true, |binds| {
+                bind_by_projections_with(self.sigs, imp, binds, |alias, _| {
+                    self.normalize_ty(alias, None)
+                })
+            })
+        }
+    }
+
+    /// Find an erased candidate, retaining ordinary selection priority. A
+    /// caller must still prove its conditions, including lifetime obligations.
+    /// Unknown output parameters are represented by `Ty::ERROR`.
+    pub fn candidate(&self, goal: Predicate) -> Option<(ImplId, Vec<Ty>)> {
+        select_impl(self.items, self.sigs, goal).or_else(|| {
+            let mut candidates = self
+                .sigs
+                .impl_index
+                .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+                .filter_map(|imp| self.match_impl(imp, goal).map(|args| (imp, args)));
+            let first = candidates.next()?;
+            candidates.next().is_none().then_some(first)
+        })
+    }
+
+    /// Select an impl only after proving all substituted type requirements.
+    /// Lifetime relationships still require the region checker's proof.
+    pub fn select_impl(&self, goal: Predicate) -> Option<(ImplId, Vec<Ty>)> {
+        self.select(goal, &mut Vec::new())
+    }
+
     fn caller_normalize(
         items: &ItemTree,
         sigs: &Signatures,
@@ -286,7 +336,7 @@ impl SignatureImplProof<'_> {
         let mut normalizer = Normalizer {
             items: self.items,
             sigs: self.sigs,
-            env: &self.projections,
+            env: self.projections,
             caller_only: true,
             impl_proof: Some(self),
             done: rustc_hash::FxHashMap::default(),
@@ -299,7 +349,7 @@ impl SignatureImplProof<'_> {
         self.normalize_ty(p.ty, Some(p.alias))
     }
 
-    pub fn normalize(
+    fn normalize_predicate(
         items: &ItemTree,
         sigs: &Signatures,
         projections: &[Projection],
@@ -335,7 +385,7 @@ impl SignatureImplProof<'_> {
         if let Some((_, coinductive)) = auto_cycle(self.items, goal, stack) {
             return coinductive;
         }
-        if stack.len() >= SIGNATURE_RECURSION_LIMIT {
+        if stack.len() >= RIGID_RECURSION_LIMIT {
             return false;
         }
         if let Some(owner) = declared_alias_bound(self.sigs, goal) {
@@ -362,7 +412,7 @@ impl SignatureImplProof<'_> {
         // Normalizing an associated requirement can re-enter selection with a
         // fresh goal stack. Bound that path as well as membership recursion.
         let depth = self.depth.get();
-        if depth as usize >= SIGNATURE_RECURSION_LIMIT {
+        if depth as usize >= RIGID_RECURSION_LIMIT {
             return None;
         }
         self.depth.set(depth + 1);
@@ -372,7 +422,7 @@ impl SignatureImplProof<'_> {
     }
 
     fn select_at(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
-        if stack.len() >= SIGNATURE_RECURSION_LIMIT || stack.contains(&goal) {
+        if stack.len() >= RIGID_RECURSION_LIMIT || stack.contains(&goal) {
             return None;
         }
         stack.push(goal);
@@ -382,9 +432,8 @@ impl SignatureImplProof<'_> {
             .impl_index
             .matching(self.items, goal.trait_ref.trait_, goal.self_ty)
         {
-            let Some(args) = match_impl(self.items, self.sigs, imp, goal) else {
-                continue;
-            };
+            let args = self.match_impl(imp, goal);
+            let Some(args) = args else { continue };
             if args.iter().any(|&ty| has_error(ty))
                 || self.items.impls[imp]
                     .generics
@@ -1160,7 +1209,7 @@ struct Normalizer<'a> {
     env: &'a [Projection],
     /// Signature impl evidence must not normalize through possible impls.
     caller_only: bool,
-    impl_proof: Option<&'a SignatureImplProof<'a>>,
+    impl_proof: Option<&'a RigidSolver<'a>>,
     done: rustc_hash::FxHashMap<Ty, Ty>,
     /// The aliases being normalized: one met again within its own
     /// normalization is a cycle, and stays as it is.
@@ -1639,6 +1688,21 @@ pub(crate) fn match_impl_sized_uncached(
     goal: Predicate,
     sized: bool,
 ) -> Option<Vec<Ty>> {
+    match_impl_with_bindings(items, sigs, imp, goal, sized, |binds| {
+        bind_by_projections(items, sigs, imp, binds);
+    })
+}
+
+/// Match rigid inputs before inferring output-only parameters. Contextual
+/// evidence must not enter the structural header cache.
+fn match_impl_with_bindings(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    goal: Predicate,
+    sized: bool,
+    bind: impl FnOnce(&mut [Option<Ty>]),
+) -> Option<Vec<Ty>> {
     let trait_ref = sigs.impl_traits.get(imp)?;
     if trait_ref.trait_ != goal.trait_ref.trait_ {
         return None;
@@ -1666,7 +1730,7 @@ pub(crate) fn match_impl_sized_uncached(
             return None;
         }
     }
-    bind_by_projections(items, sigs, imp, binds);
+    bind(binds);
     // Its parameters are `Sized` unless bounded `?Sized`.
     let params = &items.impls[imp].generics.params;
     if sized
@@ -1751,38 +1815,47 @@ pub(crate) fn bind_by_projections(
     imp: ImplId,
     binds: &mut [Option<Ty>],
 ) {
+    bind_by_projections_with(sigs, imp, binds, |alias, projection| {
+        // The block for its own parameters: the parameters themselves.
+        if alias == Ty::alias(projection.alias) {
+            projection.ty
+        } else {
+            normalize(items, sigs, &[], alias)
+        }
+    });
+}
+
+fn bind_by_projections_with(
+    sigs: &Signatures,
+    imp: ImplId,
+    binds: &mut [Option<Ty>],
+    mut normalize: impl FnMut(Ty, Projection) -> Ty,
+) {
     let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
     if binds.iter().all(Option::is_some) || projections.is_empty() {
         return;
     }
     loop {
         let mut progress = false;
-        for p in projections {
-            let unbound = |binds: &[Option<Ty>]| {
-                (0..binds.len())
-                    .any(|i| binds[i].is_none() && crate::mentions_param(p.ty, i as u32))
-            };
-            if !unbound(binds) {
+        for &p in projections {
+            if !(0..binds.len())
+                .any(|i| binds[i].is_none() && crate::mentions_param(p.ty, i as u32))
+            {
                 continue;
             }
             let known: Vec<Ty> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
             let alias = Ty::alias(p.alias).subst(&known);
-            // The block for its own parameters: the parameters themselves.
-            let ty = if alias == Ty::alias(p.alias) {
-                p.ty
-            } else if has_error(alias) {
+            if has_error(alias) {
                 continue;
-            } else {
-                // Bound inputs may contain the caller's rigid parameters.
-                // They are values of this substitution, not unbound impl
-                // variables; e.g. IntoIter<T>::Item still normalizes to T.
-                normalize(items, sigs, &[], alias)
-            };
-            if matches!(ty.kind(), TyKind::Alias(_)) {
+            }
+            // Caller parameters are rigid values of this substitution, never
+            // the impl's still-unbound variables, even at the same index.
+            let ty = normalize(alias, p);
+            if matches!(ty.kind(), TyKind::Alias(_)) || has_error(ty) {
                 continue;
             }
             let mut found = binds.to_vec();
-            if match_ty(p.ty, ty, &mut found) {
+            if match_ty(p.ty, ty, &mut found) && found != binds {
                 binds.copy_from_slice(&found);
                 progress = true;
             }
@@ -2481,5 +2554,87 @@ mod query_cache_tests {
         }
         assert!(select_impl(&items, &sigs, goal).is_some());
         assert_eq!(normalize(&items, &sigs, &[], alias), Ty::CHAR);
+    }
+}
+
+#[cfg(test)]
+mod rigid_solver_tests {
+    use super::{RigidSolver, alias_of};
+    use flux_hir::{ItemTree, SourceDb};
+    use flux_intern::Symbol;
+    use flux_ty_ir::{Projection, Signatures, TraitRef, Ty};
+
+    #[test]
+    fn candidates_need_output_bindings_and_independent_memberships() {
+        let mut db = SourceDb::new();
+        let file = db.add(
+            "rigid.rs",
+            "trait Source{type Out;}trait Goal{}impl<T:Source<Out=R>,R>Goal for T{}",
+        );
+        let items = ItemTree::new(&mut db, file, Symbol::intern("rigid"), false);
+        let source = items
+            .traits
+            .iter()
+            .find(|(_, t)| t.name == Symbol::intern("Source"))
+            .unwrap()
+            .0;
+        let goal_trait = items
+            .traits
+            .iter()
+            .find(|(_, t)| t.name == Symbol::intern("Goal"))
+            .unwrap()
+            .0;
+        let imp = items.impls.iter().next().unwrap().0;
+        let t = Ty::param(0, Symbol::intern("T"));
+        let r = Ty::param(1, Symbol::intern("R"));
+        let source_ref = TraitRef {
+            trait_: source,
+            name: Symbol::intern("Source"),
+            args: &[],
+        };
+        let goal_ref = TraitRef {
+            trait_: goal_trait,
+            name: Symbol::intern("Goal"),
+            args: &[],
+        };
+        let mut sigs = Signatures::default();
+        sigs.impls.insert(imp, t);
+        sigs.impl_traits.insert(imp, goal_ref);
+        sigs.impl_predicates
+            .insert(imp, Box::new([source_ref.with_self(t)]));
+        sigs.impl_projections.insert(
+            imp,
+            Box::new([Projection {
+                alias: alias_of(&items, source_ref, t, Symbol::intern("Out")),
+                ty: r,
+            }]),
+        );
+        sigs.impl_index = flux_ty_ir::impl_index::ImplIndex::new(&items, &sigs);
+        let goal = goal_ref.with_self(Ty::BOOL);
+        let solver = RigidSolver::new(&items, &sigs, &[], &[], &[]);
+        assert_eq!(
+            solver.candidate(goal),
+            Some((imp, vec![Ty::BOOL, Ty::ERROR]))
+        );
+        assert!(solver.select_impl(goal).is_none());
+        let equalities = [Projection {
+            alias: alias_of(&items, source_ref, Ty::BOOL, Symbol::intern("Out")),
+            ty: Ty::CHAR,
+        }];
+        let solver = RigidSolver::new(&items, &sigs, &[], &equalities, &[]);
+        assert_eq!(
+            solver.candidate(goal),
+            Some((imp, vec![Ty::BOOL, Ty::CHAR]))
+        );
+        assert!(
+            solver.select_impl(goal).is_none(),
+            "an equality cannot manufacture trait membership"
+        );
+        let memberships = [source_ref.with_self(Ty::BOOL)];
+        let solver = RigidSolver::new(&items, &sigs, &memberships, &equalities, &[]);
+        assert_eq!(
+            solver.select_impl(goal),
+            Some((imp, vec![Ty::BOOL, Ty::CHAR]))
+        );
     }
 }

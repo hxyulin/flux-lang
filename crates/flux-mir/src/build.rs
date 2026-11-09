@@ -2838,6 +2838,50 @@ impl Builder<'_> {
         // A reference to an array as one to a slice: the reference, then
         // its unsizing; a reference as a raw pointer, the same.
         if let Some(&ty) = self.types.unsizes.get(expr) {
+            if let Some((from_pointer, pointer)) =
+                flux_solve::pin_pointer(self.items, self.expr_ty(expr))
+                    .zip(flux_solve::pin_pointer(self.items, ty))
+                && let TyKind::Adt(pin, _) = ty.kind()
+            {
+                // Move only the pointer wrapper. The pinned payload stays at
+                // its address, and the ordinary inner unsize checks its regions.
+                let source = self.temp(self.expr_ty(expr));
+                self.lower_value(expr, &source.into());
+                let place = Place::from(source).field(0);
+                let value = if let (
+                    TyKind::Ref(Mutability::Mut, pointee),
+                    TyKind::Ref(Mutability::Not, _),
+                ) = (from_pointer.kind(), pointer.kind())
+                {
+                    let reference = self.temp(Ty::new(TyKind::Ref(Mutability::Not, pointee)));
+                    self.assign(
+                        &reference.into(),
+                        Rvalue::Ref {
+                            raw: false,
+                            mutability: Mutability::Not,
+                            place: place.deref_of(from_pointer),
+                            two_phase: false,
+                        },
+                        self.range(expr),
+                    );
+                    self.read(reference.into())
+                } else {
+                    self.read(place)
+                };
+                let target = self.temp(pointer);
+                self.assign(
+                    &target.into(),
+                    Rvalue::Unsize(value, pointer),
+                    self.range(expr),
+                );
+                let value = self.read(target.into());
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Struct(pin.strukt), vec![value]),
+                    self.range(expr),
+                );
+                return;
+            }
             let reference = match self.types.reborrows.get(expr) {
                 Some(&m) => {
                     let pointee = match self.expr_ty(expr).kind() {
@@ -4926,6 +4970,15 @@ impl Builder<'_> {
             // mentioning the source place would discard that static proof.
             Pat::Wild if self.types.reified.get(init).is_some() => {
                 self.lower_operand(init);
+            }
+            // A coerced place transfers ownership even when its result is
+            // discarded. Retain the written annotation's region requirements.
+            Pat::Wild
+                if self.types.unsizes.get(init).is_some()
+                    && is_place(self.body, self.types, init) =>
+            {
+                let value = self.temp_for(init);
+                self.annotate_let_source(pat, value.into());
             }
             // `let _ = place;` does not read the place, nor does a
             // closure capture it for that.

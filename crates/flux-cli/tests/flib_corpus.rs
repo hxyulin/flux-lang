@@ -205,3 +205,7 @@ fixture!(
     futures_collection_prerequisites,
     "futures_collection_prerequisites.rs"
 );
+
+fixture!(pin_unsizing, "pin_unsizing.rs");
+
+fixture!(contextual_impl_outputs, "contextual_impl_outputs.rs");

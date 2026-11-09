@@ -552,6 +552,16 @@ Blocks for different instances of a struct (`impl Pair<i32>` and
 `impl Pair<u8>`) may define the same name, and the type a method is
 called on picks one.
 
+Trait method signature checking uses the impl header's bounds to infer
+parameters determined by associated outputs, such as `R` in
+`impl<F, A, R> Adapter<A> for F where F: FnMut(A) -> R`.
+Every selected impl's requirements must hold independently. A caller bound
+without an output equality keeps that output abstract. This also handles
+chains of output equalities in signature checking and MIR candidate discovery.
+A shared rigid solver context retains original caller memberships separately
+from normalized output keys. Finding a candidate does not prove its bounds;
+MIR still checks the selected impl's lifetime and associated-output requirements.
+
 Const parameters (`struct Stack<T, const N: usize>`, `impl<T, const N:
 usize> Stack<T, N>`, `fn sum<const N: usize>(a: [i32; N])`, `trait
 Pick<const I: usize>`) are stable Rust's `min_const_generics`: of an
@@ -2001,6 +2011,14 @@ wrapping subtraction and wrapping horizontal sums support u16x8, u32x4 and u64x2
 Halfword loads accept unaligned addresses. These implementations use scalar lane
 operations and do not establish hardware acceleration. `hint::select_unpredictable`
 selects and drops values normally without an optimizer hint.
+
+Core `Pin` supports unsizing its trusted Box, reference, Arc and Rc pointers
+to slices and trait objects, including object upcasts. The coercion preserves
+the payload's address, ownership, and represented lifetime constraints.
+`Box::pin(value)` infers the concrete payload before converting to a pinned
+slice or object. Borrowed associated outputs on generic non-callable objects
+retain their independent equality rows. Safe `Pin::new` still requires Unpin.
+Custom pointer coercions and nested Pin coercions remain unsupported.
 
 The embedded `future`, `pin` and `task` modules support manually polled futures,
 Pin receivers, pinned references and Option projections, Poll, Context and raw

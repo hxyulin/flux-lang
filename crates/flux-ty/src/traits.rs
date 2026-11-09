@@ -15,12 +15,12 @@ use crate::ty::{AliasTy, Ty, TyKind};
 use crate::{Signatures, TypeScope, resolve_type, wrong_arg_count};
 
 use flux_solve::traits::{
-    SignatureImplProof, alias_of, alias_predicate, auto_trait_requirements,
-    caller_owner_projections, caller_projections_of, caller_supertrait_projections, drop_impl,
-    elaborate, family_requirements, has_error, holds, impl_type, implied_projections,
-    instantiate_impl_type, is_auto_trait, is_copy, is_rigid, match_impl, match_impl_sized,
-    normalize, normalize_predicate, normalize_projection_rhs, owner_param_count, owner_predicates,
-    predicates_of, projections_of, select_impl, signature_impl_evidence, trait_self_predicate,
+    RigidSolver, alias_of, alias_predicate, auto_trait_requirements, caller_owner_projections,
+    caller_projections_of, caller_supertrait_projections, drop_impl, elaborate,
+    family_requirements, has_error, holds, impl_type, implied_projections, instantiate_impl_type,
+    is_auto_trait, is_copy, is_rigid, match_impl, match_impl_sized, normalize, normalize_predicate,
+    normalize_projection_rhs, owner_param_count, owner_predicates, predicates_of, projections_of,
+    select_impl, signature_impl_evidence, trait_self_predicate,
 };
 pub use flux_ty_ir::traits::{
     AssociatedTypeSig, Bounds, Predicate, Projection, TraitDefaults, TraitRef, TraitSig,
@@ -906,18 +906,7 @@ pub fn check_impls(
             projections.extend(caller_supertrait_projections(sigs, &env));
             let parameters =
                 flux_solve::unsized_params(items, Some(Owner::Impl(id)), &Generics::default());
-            let proof = SignatureImplProof {
-                items,
-                sigs,
-                env: env
-                    .iter()
-                    .map(|&p| SignatureImplProof::normalize(items, sigs, &projections, p))
-                    .collect(),
-                memberships: &env,
-                projections,
-                unsized_params: &parameters,
-                depth: std::cell::Cell::new(0),
-            };
+            let proof = RigidSolver::new(items, sigs, &env, &projections, &parameters);
             for sup in sigs.traits.get(t).map_or(&[][..], |s| &s.supertraits) {
                 // `trait Try: FromResidual<<Self as Try>::Residual>`
                 // names the block's own types.
@@ -1074,15 +1063,13 @@ fn check_type_bounds(
         }
         let implementation_parameters =
             flux_solve::unsized_params(items, Some(Owner::Impl(imp)), &ty.generics);
-        let proof = SignatureImplProof {
+        let proof = RigidSolver::new(
             items,
             sigs,
-            env: declared_env.clone(),
-            memberships: &declared_env,
-            projections: provided,
-            unsized_params: &implementation_parameters,
-            depth: std::cell::Cell::new(0),
-        };
+            &declared_env,
+            &provided,
+            &implementation_parameters,
+        );
         for required in &family.predicates {
             let required = normalize_predicate(items, sigs, required.subst(&args));
             if !proof.holds(required, &mut Vec::new()) {
@@ -1147,15 +1134,8 @@ fn check_type_bounds(
             declaration_parameters[owner_count + index] = parameter.maybe_unsized;
         }
     }
-    let declaration_proof = SignatureImplProof {
-        items,
-        sigs,
-        env: env.clone(),
-        memberships: &env,
-        projections: projections.to_vec(),
-        unsized_params: &declaration_parameters,
-        depth: std::cell::Cell::new(0),
-    };
+    let declaration_proof =
+        RigidSolver::new(items, sigs, &env, projections, &declaration_parameters);
     if let Some(sized) = sigs.builtins.sized {
         for (index, parameter) in ty.generics.params.iter().enumerate() {
             if crate::param_const_ty(parameter).is_none() && !parameter.maybe_unsized {
@@ -1374,13 +1354,35 @@ fn check_method(
         });
     }
     let projections = &projections[..];
+    // Only the impl's bounds and the trait method's declared bounds are
+    // assumptions here. An impl method cannot justify its signature with
+    // extra requirements of its own.
+    let mut signature_env = sigs
+        .impl_predicates
+        .get(imp)
+        .map_or(Vec::new(), |p| p.to_vec());
+    signature_env.extend(
+        sigs.fn_predicates
+            .get(required)
+            .into_iter()
+            .flatten()
+            .map(|p| p.subst(&args)),
+    );
+    let signature_env = elaborate(sigs, &signature_env);
+    let parameters = flux_solve::unsized_params(items, Some(Owner::Impl(imp)), &decl.generics);
+    let proof = RigidSolver::new(items, sigs, &signature_env, projections, &parameters);
+    // Preserve ordinary structural/object normalization, then resolve the
+    // projections it leaves open using independently proven caller evidence.
+    let normalize_signature =
+        |ty| proof.normalize_ty(normalize(items, sigs, projections, ty), None);
     let norm = |sig: &crate::FnSig| crate::FnSig {
         params: sig
             .params
             .iter()
-            .map(|&p| normalize(items, sigs, projections, p))
+            .copied()
+            .map(normalize_signature)
             .collect(),
-        ret: normalize(items, sigs, projections, sig.ret),
+        ret: normalize_signature(sig.ret),
     };
     let declared_return = sigs[required].ret.subst(&args);
     let mut opaque_outputs = Vec::new();
@@ -1401,7 +1403,7 @@ fn check_method(
         })
     };
     let mut expected = norm(&sigs[required].subst(&args));
-    expected.ret = normalize(items, sigs, projections, replace_output(declared_return));
+    expected.ret = normalize_signature(replace_output(declared_return));
     let (sig, expected) = (&norm(&sigs[f]), expected);
     let types = sig.params.iter().zip(&expected.params);
     let ranges = function.params.iter().map(|p| p.range);
@@ -2590,22 +2592,13 @@ impl<'a, 'd> WfCheck<'a, 'd> {
         {
             return;
         }
-        let proof = SignatureImplProof {
-            items: self.items,
-            sigs: self.sigs,
-            env: self
-                .scope
-                .env
-                .iter()
-                .map(|&p| {
-                    SignatureImplProof::normalize(self.items, self.sigs, self.scope.projections, p)
-                })
-                .collect(),
-            memberships: self.scope.env,
-            projections: self.scope.projections.to_vec(),
-            unsized_params: &self.scope.unsized_params,
-            depth: std::cell::Cell::new(0),
-        };
+        let proof = RigidSolver::new(
+            self.items,
+            self.sigs,
+            self.scope.env,
+            self.scope.projections,
+            &self.scope.unsized_params,
+        );
         let normalized = |predicate: Predicate| Predicate {
             self_ty: proof.normalize_ty(predicate.self_ty, None),
             trait_ref: TraitRef {

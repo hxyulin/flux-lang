@@ -5,6 +5,14 @@ use super::{
 };
 
 impl Ctx<'_> {
+    pub(super) fn pinned_pointees(&mut self, actual: Ty, expected: Ty) -> Option<(Ty, Ty)> {
+        flux_solve::pin_pointer(self.items, self.shallow(actual))?;
+        flux_solve::pin_pointer(self.items, self.shallow(expected))?;
+        let actual = self.known(actual);
+        let expected = self.known(expected);
+        crate::resolve::pinned_pointees(self.items, actual, expected)
+    }
+
     /// Checks that a value of type `actual` (from `expr`) can be used where
     /// `expected` is: `!` coerces to anything, other types must unify.
     pub(super) fn coerce(&mut self, actual: Ty, expected: Ty, expr: ExprId) {
@@ -24,6 +32,31 @@ impl Ctx<'_> {
             return;
         }
         let blamed = self.blame(expr);
+        if let Some((source, target)) = self.pinned_pointees(actual, expected) {
+            if let Some(equalities) = self.array_unsize(source, target) {
+                if equalities.into_iter().all(|(a, b)| self.unify(a, b)) {
+                    self.unsizes.insert(expr, expected);
+                } else {
+                    self.mismatch(expected, actual, self.range(blamed));
+                }
+                return;
+            }
+            if let Some((source, object)) = flux_solve::transparent_object_unsize(
+                self.items,
+                &self.sigs.structs,
+                self.shallow(source),
+                self.shallow(target),
+            ) && let TyKind::Dynamic(dynamic) = object.kind()
+                && !self.can_unify(source, object)
+            {
+                if self.unsize_to_dyn(source, object, dynamic, blamed) {
+                    self.unsizes.insert(expr, expected);
+                } else {
+                    self.mismatch(expected, actual, self.range(blamed));
+                }
+                return;
+            }
+        }
         // A block ending with a reference: its tail is reborrowed or
         // unsized where it is, inside the block (`{ self.value }` of a
         // `&mut T` field where a `&T` is wanted), and the block has the
@@ -472,6 +505,7 @@ impl Ctx<'_> {
             return true;
         }
         if caller_callable
+            && crate::fn_trait_kind(self.items, d.trait_).is_some()
             && d.assoc_tys
                 .iter()
                 .any(|&ty| crate::regions::slots(self.items, ty) != 0)
@@ -612,6 +646,27 @@ impl Ctx<'_> {
         let (actual, expected) = (self.shallow(actual), self.shallow(expected));
         if actual == Ty::NEVER {
             return true;
+        }
+        if let Some((source, target)) = self.pinned_pointees(actual, expected) {
+            if let Some(equalities) = self.array_unsize(source, target) {
+                return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
+            }
+            if let Some((source, object)) = flux_solve::transparent_object_unsize(
+                self.items,
+                &self.sigs.structs,
+                self.shallow(source),
+                self.shallow(target),
+            ) && let TyKind::Dynamic(dynamic) = object.kind()
+            {
+                return match source.kind() {
+                    TyKind::Dynamic(from) => {
+                        flux_solve::objects::supertraits_of(self.items, from.trait_)
+                            .contains(&dynamic.trait_)
+                            && crate::objects::retains_auto_traits(self.sigs, source, object)
+                    }
+                    _ => !self.is_unsized(source) && self.may_implement(source, dynamic.trait_),
+                };
+            }
         }
         if let Some((source, target)) = crate::shared_pointees(self.items, actual, expected)
             && let TyKind::Dynamic(object) = target.kind()

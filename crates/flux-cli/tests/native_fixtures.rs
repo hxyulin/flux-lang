@@ -186,3 +186,13 @@ fn object_callbacks() {
 fn futures_collection_prerequisites() {
     support::oracle::compare_fixture("futures_collection_prerequisites");
 }
+
+#[test]
+fn pin_unsizing() {
+    support::oracle::compare_fixture("pin_unsizing");
+}
+
+#[test]
+fn contextual_impl_outputs() {
+    support::oracle::compare_fixture("contextual_impl_outputs");
+}

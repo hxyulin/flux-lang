@@ -2064,6 +2064,20 @@ pub fn shared_pointees(items: &ItemTree, from: Ty, to: Ty) -> Option<(Ty, Ty)> {
     }
 }
 
+/// Pointees of matching trusted pointers wrapped in core Pin.
+pub(crate) fn pinned_pointees(items: &ItemTree, from: Ty, to: Ty) -> Option<(Ty, Ty)> {
+    let from = flux_solve::pin_pointer(items, from)?;
+    let to = flux_solve::pin_pointer(items, to)?;
+    match (from.kind(), to.kind()) {
+        (TyKind::Ref(a, source), TyKind::Ref(b, target)) if a == b || a == Mutability::Mut => {
+            Some((source, target))
+        }
+        _ => flux_solve::box_pointee(from)
+            .zip(flux_solve::box_pointee(to))
+            .or_else(|| shared_pointees(items, from, to)),
+    }
+}
+
 /// The payload of core's trusted `NonNull`, whose pointer gains slice metadata
 /// during an array coercion. Names in user crates confer no coercion capability.
 pub fn nonnull_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {

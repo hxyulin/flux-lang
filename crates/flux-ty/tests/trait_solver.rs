@@ -228,3 +228,65 @@ fn sync_probe() {
     accepts("shared_type_sync_check", &source);
     println!("sync check at depth {depth}: {:?}", start.elapsed());
 }
+
+#[test]
+fn contextual_impl_output_bindings() {
+    for (name, source) in [
+        (
+            "conditional_nominal_output",
+            "trait Adapter<A>{type Out;fn once(self,a:A)->Self::Out;}struct W<T>(T);impl<A,T>Adapter<A>for W<T>where A:Into<T>{type Out=T;fn once(self,a:A)->T{a.into()}}trait Child<A>:Adapter<A>{fn call(&self,a:A)->Self::Out;}impl<A,T>Child<A>for W<T>where Self:Adapter<A>{fn call(&self,a:A)->Self::Out{loop{}}}",
+        ),
+        (
+            "callable_supertrait",
+            "trait Once<A>{type Out;fn once(self,a:A)->Self::Out;} impl<T,A,R>Once<A>for T where T:FnOnce(A)->R{type Out=R;fn once(self,a:A)->R{self(a)}}trait Mut<A>:Once<A>{fn call(&mut self,a:A)->Self::Out;}impl<T,A,R>Mut<A>for T where T:FnMut(A)->R{fn call(&mut self,a:A)->R{self(a)}}",
+        ),
+        (
+            "rigid_output_indices",
+            "trait Source{type Out;}trait Base{type Out;}impl<R,T:Source<Out=R>>Base for T{type Out=R;}trait Child:Base{fn get()->Self::Out;}impl<T:Source<Out=u32>>Child for T{fn get()->u32{7}}",
+        ),
+        (
+            "separate_environments",
+            "trait Source{type Out;}trait Base{type Out;}impl<R,T:Source<Out=R>>Base for T{type Out=R;}trait C32:Base{fn get()->Self::Out;}trait C64:Base{fn get()->Self::Out;}impl<T:Source<Out=u32>>C32 for T{fn get()->u32{7}}impl<T:Source<Out=u64>>C64 for T{fn get()->u64{9}}",
+        ),
+        (
+            "output_chain",
+            "trait Source{type Out;}trait Base{type Out;}impl<T:Source<Out=U>,U:Source<Out=R>,R>Base for T{type Out=R;}trait Child:Base{fn get()->Self::Out;}impl<T:Source<Out=U>,U:Source<Out=u32>>Child for T{fn get()->u32{7}}",
+        ),
+    ] {
+        accepts(name, source);
+    }
+}
+
+#[test]
+fn contextual_impl_outputs_require_independent_evidence() {
+    for (name, source) in [
+        (
+            "missing_prerequisite",
+            "trait Source{type Out;}trait Marker{}trait Base{type Out;}impl<T:Source<Out=R>+Marker,R>Base for T{type Out=R;}trait Child:Base{fn get()->Self::Out;}impl<T:Source<Out=u32>>Child for T{fn get()->u32{7}}",
+        ),
+        (
+            "conflicting_equalities",
+            "trait Source{type Out;}trait Other{type Out;}trait Base{type Out;}impl<T:Source<Out=R>+Other<Out=R>,R>Base for T{type Out=R;}trait Child:Base{fn get()->Self::Out;}impl<T:Source<Out=u32>+Other<Out=u64>>Child for T{fn get()->u32{7}}",
+        ),
+        (
+            "missing_requirement",
+            "trait Source{type Out;}trait Marker{}trait Base{type Out;}impl<T:Source<Out=R>+Marker,R>Base for T{type Out=R;}trait Child:Base{fn get()->Self::Out;}impl<T:Source<Out=u32>+Base>Child for T{fn get()->u32{7}}",
+        ),
+        (
+            "wrong_output",
+            "trait Source{type Out;}trait Base{type Out;}impl<T:Source<Out=R>,R>Base for T{type Out=R;}trait Child:Base{fn get()->Self::Out;}impl<T:Source<Out=u64>>Child for T{fn get()->u32{7}}",
+        ),
+        (
+            "abstract_membership",
+            "trait Source{type Out;}trait Base{type Out;}impl<T:Source<Out=R>,R>Base for T{type Out=R;}trait Child:Base{fn get()->Self::Out;}impl<T:Source<Out=u32>+Base>Child for T{fn get()->u32{7}}",
+        ),
+    ] {
+        let rustc = rustc(name, source);
+        assert!(
+            !rustc.status.success(),
+            "rustc unexpectedly accepted {name}"
+        );
+        let found = flux(name, source);
+        assert!(!found.is_empty(), "flux unexpectedly accepted {name}");
+    }
+}

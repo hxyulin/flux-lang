@@ -844,6 +844,11 @@ fn impl_header_match(
         .map_or(Vec::new(), |predicates| {
             flux_solve::traits::elaborate(sigs, predicates)
         });
+    cx.unsized_params = flux_solve::unsized_params(
+        items,
+        Some(flux_hir::Owner::Impl(imp)),
+        &flux_hir::Generics::default(),
+    );
     cx.header_type_equalities();
     cx.new_universal("'static".into());
     let lifetimes: Vec<_> = (0..block.names.len())
@@ -1074,6 +1079,7 @@ struct Cx<'a> {
     /// with identical types and occurrence rows. Ordinary edges stay inductive.
     declaration_stack: Vec<(ImplRegionGoal, bool)>,
     header_predicates: Vec<flux_ty::Predicate>,
+    unsized_params: Vec<bool>,
     slot_counts: FxHashMap<Ty, u32>,
     selected_source_signatures: FxHashMap<
         flux_hir::FunctionId,
@@ -1234,6 +1240,10 @@ impl<'a> Cx<'a> {
                     sigs,
                     &flux_solve::traits::predicates_of(items, sigs, f),
                 )
+            }),
+            unsized_params: body.owner.map_or(Vec::new(), |f| {
+                let function = &items.functions[f];
+                flux_solve::unsized_params(items, function.owner, &function.generics)
             }),
             slot_counts: FxHashMap::default(),
             selected_source_signatures: FxHashMap::default(),
@@ -2015,22 +2025,15 @@ impl<'a> Cx<'a> {
 
     /// Select a candidate header; callers still prove every required bound.
     fn matching_impl(&self, goal: flux_ty::Predicate) -> Option<(flux_hir::ImplId, Vec<Ty>)> {
-        flux_solve::traits::select_impl(self.items, self.sigs, goal)
-            .or_else(|| {
-                // A rigid generic input can prevent erased bound selection.
-                // A unique header is usable only after its region-aware proof.
-                let mut matches = self
-                    .sigs
-                    .impl_index
-                    .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
-                    .filter_map(|imp| {
-                        flux_solve::traits::match_impl(self.items, self.sigs, imp, goal)
-                            .map(|args| (imp, args))
-                    });
-                let candidate = matches.next()?;
-                matches.next().is_none().then_some(candidate)
-            })
-            .filter(|(_, args)| args.iter().all(|ty| !ty.has_error()))
+        flux_solve::traits::RigidSolver::new(
+            self.items,
+            self.sigs,
+            &self.header_predicates,
+            &self.env,
+            &self.unsized_params,
+        )
+        .candidate(goal)
+        .filter(|(_, args)| args.iter().all(|ty| !ty.has_error()))
     }
 
     /// Type-only declaration bounds follow from the original header predicates.
@@ -7126,18 +7129,16 @@ impl<'a> Cx<'a> {
         if self.trait_has_ranked_super(goal.trait_ref.trait_, &mut FxHashSet::default()) {
             return true;
         }
-        let selected = flux_solve::traits::select_impl(self.items, self.sigs, goal).or_else(|| {
-            let mut candidates = self
-                .sigs
-                .impl_index
-                .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
-                .filter_map(|imp| {
-                    flux_solve::traits::match_impl(self.items, self.sigs, imp, goal)
-                        .map(|args| (imp, args))
-                });
-            let first = candidates.next()?;
-            candidates.next().is_none().then_some(first)
-        });
+        // An unresolved output must not hide a header's lifetime requirements.
+        // Only consumers that bind rows require complete arguments.
+        let selected = flux_solve::traits::RigidSolver::new(
+            self.items,
+            self.sigs,
+            &self.header_predicates,
+            &self.env,
+            &self.unsized_params,
+        )
+        .candidate(goal);
         let Some((imp, args)) = selected else {
             return false;
         };
