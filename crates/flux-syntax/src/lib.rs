@@ -27,8 +27,8 @@ pub use build::build_tree;
 pub use lexer::LexedStr;
 pub use syntax_kind::SyntaxKind;
 pub use tree::{
-    CfgOptions, Children, ChildrenWithTokens, NodeId, SyntaxElement, SyntaxNode, SyntaxToken,
-    SyntaxTree, TextRange, TokenOrigin,
+    CfgOptions, Children, ChildrenWithTokens, NodeId, PanicStrategy, SyntaxElement, SyntaxNode,
+    SyntaxToken, SyntaxTree, TextRange, TokenOrigin,
 };
 
 /// Rust edition of one source crate. The default standalone-file mode is 2024.

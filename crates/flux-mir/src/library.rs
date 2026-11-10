@@ -21,6 +21,7 @@ use crate::build::Built;
 /// embedded libraries', for the functions and constants
 /// [`LibraryMir::owns`] accepts. See the module documentation.
 pub(crate) struct LibraryMir {
+    strategy: crate::PanicStrategy,
     /// Every library constant's value, built and checked.
     consts: ArenaMap<Const, Built>,
     /// Function bodies by function index, built and checked when first
@@ -34,9 +35,17 @@ pub(crate) struct LibraryMir {
 
 impl LibraryMir {
     /// The libraries' MIR, if `hir`'s item tree starts with them.
-    pub(crate) fn of(hir: &Hir) -> Option<&'static LibraryMir> {
-        static LIBRARY: OnceLock<LibraryMir> = OnceLock::new();
-        LibraryTypes::of(hir).map(|_| LIBRARY.get_or_init(LibraryMir::build))
+    pub(crate) fn of_with_strategy(
+        hir: &Hir,
+        strategy: crate::PanicStrategy,
+    ) -> Option<&'static LibraryMir> {
+        static ABORT: OnceLock<LibraryMir> = OnceLock::new();
+        static UNWIND: OnceLock<LibraryMir> = OnceLock::new();
+        let slot = match strategy {
+            crate::PanicStrategy::Abort => &ABORT,
+            crate::PanicStrategy::Unwind => &UNWIND,
+        };
+        LibraryTypes::of(hir).map(|_| slot.get_or_init(|| LibraryMir::build(strategy)))
     }
 
     /// Whether `owner` is the libraries': the same items whose
@@ -45,7 +54,7 @@ impl LibraryMir {
         LibraryTypes::get().owns(owner)
     }
 
-    fn build() -> LibraryMir {
+    fn build(strategy: crate::PanicStrategy) -> LibraryMir {
         let hir = Core::get().hir();
         let types = LibraryTypes::get();
         let mut typed = TypedFile {
@@ -66,7 +75,7 @@ impl LibraryMir {
         }
         let mut consts = ArenaMap::new();
         for (id, _) in hir.const_bodies() {
-            let mut built = Built::konst(hir, &typed, id);
+            let mut built = Built::konst(hir, &typed, id, strategy);
             built.check(hir, &typed, hir.items.consts[id].loc.file, true);
             built.validate(hir, &typed, ClosureOwner::Const(id));
             consts.insert(id, built);
@@ -75,6 +84,7 @@ impl LibraryMir {
             .map(|_| OnceLock::new())
             .collect();
         LibraryMir {
+            strategy,
             consts,
             functions,
             typed: Mutex::new(typed),
@@ -106,7 +116,7 @@ impl LibraryMir {
                 typed.sigs.hidden.insert((function, i as u32), ty);
             }
             let data = &hir.items.functions[function];
-            let mut built = Built::function(hir, &typed, function);
+            let mut built = Built::function(hir, &typed, function, self.strategy);
             built.check(hir, &typed, data.loc.file, data.is_const);
             built.validate(hir, &typed, ClosureOwner::Function(function));
             typed.bodies.remove(function);

@@ -79,6 +79,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         std::fs::create_dir_all(plan.output.parent().unwrap())
             .map_err(|e| format!("cannot create output directory: {e}"))?;
         let build_options = BuildOptions {
+            panic_strategy: flux_syntax::PanicStrategy::Abort,
             optimize: options.optimize,
             fast_build: options.fast_build,
             timings: options.timings,

@@ -23,12 +23,33 @@ use crate::{
 /// The embedded libraries' bodies are built and checked once per
 /// process ([`crate::library`]); a compilation copies those it reaches.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
-    build_file_inner(hir, typed, None, &[])
+    build_file_inner(hir, typed, None, &[], crate::PanicStrategy::Abort)
+}
+
+/// Builds source and embedded-library MIR consistently for one panic strategy.
+/// Decoded dependency artifacts are not accepted by this entry point: their
+/// panic-strategy compatibility must be checked by the compilation driver.
+pub fn build_file_with_panic_strategy(
+    hir: &Hir,
+    typed: &TypedFile,
+    strategy: crate::PanicStrategy,
+) -> FileMir {
+    build_file_inner(hir, typed, None, &[], strategy)
 }
 
 /// Builds and checks additional function roots, including otherwise unused library code.
 pub fn build_file_with_roots(hir: &Hir, typed: &TypedFile, roots: &[FunctionId]) -> FileMir {
-    build_file_inner(hir, typed, None, roots)
+    build_file_with_roots_and_panic_strategy(hir, typed, roots, crate::PanicStrategy::Abort)
+}
+
+/// Builds additional checked roots with one explicit runtime panic strategy.
+pub fn build_file_with_roots_and_panic_strategy(
+    hir: &Hir,
+    typed: &TypedFile,
+    roots: &[FunctionId],
+    strategy: crate::PanicStrategy,
+) -> FileMir {
+    build_file_inner(hir, typed, None, roots, strategy)
 }
 
 /// Builds source MIR using already checked dependency templates and values.
@@ -38,8 +59,27 @@ pub fn build_file_from(
     imported: &crate::imported::ImportedMir,
     required_functions: &[FunctionId],
 ) -> FileMir {
-    let mut mir = build_file_inner(hir, typed, Some(imported), required_functions);
-    imported.copy_bodies_into(&mut mir);
+    build_file_from_with_panic_strategy(
+        hir,
+        typed,
+        imported,
+        required_functions,
+        crate::PanicStrategy::Abort,
+    )
+}
+
+/// Builds source MIR with already checked dependencies of the selected strategy.
+pub fn build_file_from_with_panic_strategy(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: &crate::imported::ImportedMir,
+    required_functions: &[FunctionId],
+    strategy: crate::PanicStrategy,
+) -> FileMir {
+    let mut mir = build_file_inner(hir, typed, Some(imported), required_functions, strategy);
+    if imported.mir().panic_strategy == strategy {
+        imported.copy_bodies_into(&mut mir);
+    }
     mir
 }
 
@@ -50,8 +90,29 @@ pub fn build_file_from_owned(
     imported: crate::imported::ImportedMir,
     required_functions: &[FunctionId],
 ) -> FileMir {
-    let mir = build_file_inner(hir, typed, Some(&imported), required_functions);
-    imported.finish(mir)
+    build_file_from_owned_with_panic_strategy(
+        hir,
+        typed,
+        imported,
+        required_functions,
+        crate::PanicStrategy::Abort,
+    )
+}
+
+/// Moves strategy-compatible checked dependencies into a source compilation.
+pub fn build_file_from_owned_with_panic_strategy(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: crate::imported::ImportedMir,
+    required_functions: &[FunctionId],
+    strategy: crate::PanicStrategy,
+) -> FileMir {
+    let mir = build_file_inner(hir, typed, Some(&imported), required_functions, strategy);
+    if imported.mir().panic_strategy == strategy {
+        imported.finish(mir)
+    } else {
+        mir
+    }
 }
 
 fn build_file_inner(
@@ -59,7 +120,18 @@ fn build_file_inner(
     typed: &TypedFile,
     imported: Option<&crate::imported::ImportedMir>,
     required_functions: &[FunctionId],
+    strategy: crate::PanicStrategy,
 ) -> FileMir {
+    if imported.is_some_and(|imported| imported.mir().panic_strategy != strategy) {
+        return FileMir {
+            panic_strategy: strategy,
+            diagnostics: vec![flux_hir::Diagnostic::new(
+                Default::default(),
+                "panic strategy mismatch in imported MIR",
+            )],
+            ..FileMir::default()
+        };
+    }
     // Signatures are final once type checking is done.
     let _queries = flux_solve::remember_solver_queries(&hir.items, &typed.sigs);
     let _fields = flux_solve::remember_field_types(&typed.sigs);
@@ -80,7 +152,8 @@ fn build_file_inner(
     };
     // What this compilation does not build: the embedded libraries'
     // bodies, built and checked once per process.
-    let shared = |owner| crate::imported::SharedMir::of(hir, imported, owner);
+    let shared =
+        |owner| crate::imported::SharedMir::of_with_strategy(hir, imported, owner, strategy);
     // Every constant, and every function of the program; `core`'s
     // functions only if something calls them.
     let mut queue: Vec<FunctionId> = Vec::new();
@@ -106,7 +179,7 @@ fn build_file_inner(
                 .built(ClosureOwner::Const(id))
                 .expect("checked constant has MIR"),
             None => {
-                let mut built = Built::konst(hir, typed, id);
+                let mut built = Built::konst(hir, typed, id, strategy);
                 built.check(hir, typed, hir.items.consts[id].loc.file, true);
                 built
             }
@@ -121,6 +194,20 @@ fn build_file_inner(
         consts.insert(id, built.body);
     }
     queue.extend(flux_ty::core_roots(&hir.items));
+    queue.extend(
+        flux_ty::unwind_runtime_roots(&hir.items)
+            .into_iter()
+            .filter(|&id| {
+                matches!(
+                    hir.items.functions[id].name.as_str(),
+                    "__flux_panic_str" | "__flux_panic_fmt"
+                )
+            }),
+    );
+    if strategy == crate::PanicStrategy::Unwind {
+        queue.extend(hir.items.panic_fn);
+        queue.extend(flux_ty::unwind_runtime_roots(&hir.items));
+    }
     queue.extend_from_slice(required_functions);
     queue.extend(flux_ty::entry::main_runner(&hir.items, &typed.sigs));
     queue.extend(
@@ -154,7 +241,7 @@ fn build_file_inner(
                 };
                 built
             }
-            None => Built::function(hir, typed, id),
+            None => Built::function(hir, typed, id, strategy),
         };
         let mut callees = built.body.callees();
         callees.extend(built.body.object_methods(&hir.items));
@@ -322,6 +409,7 @@ fn build_file_inner(
     ));
     flux_hir::Diagnostic::sort(&mut diagnostics);
     let mir = FileMir {
+        panic_strategy: strategy,
         bodies,
         closures,
         consts,
@@ -700,22 +788,39 @@ pub(crate) struct BuiltClosure {
 
 impl Built {
     /// Constant `konst`'s value and its closures, unchecked.
-    pub(crate) fn konst(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Built {
+    pub(crate) fn konst(
+        hir: &Hir,
+        typed: &TypedFile,
+        konst: ConstId,
+        strategy: crate::PanicStrategy,
+    ) -> Built {
         Built::of(
             build_const(hir, typed, konst),
             hir,
             typed,
             ClosureOwner::Const(konst),
+            strategy,
         )
     }
 
     /// Function `function`'s body and its closures, unchecked.
-    pub(crate) fn function(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Built {
-        let body = build(hir, typed, function);
-        Built::of(body, hir, typed, ClosureOwner::Function(function))
+    pub(crate) fn function(
+        hir: &Hir,
+        typed: &TypedFile,
+        function: FunctionId,
+        strategy: crate::PanicStrategy,
+    ) -> Built {
+        let body = build_with_panic_strategy(hir, typed, function, strategy);
+        Built::of(body, hir, typed, ClosureOwner::Function(function), strategy)
     }
 
-    fn of(body: Body, hir: &Hir, typed: &TypedFile, owner: ClosureOwner) -> Built {
+    fn of(
+        body: Body,
+        hir: &Hir,
+        typed: &TypedFile,
+        owner: ClosureOwner,
+        strategy: crate::PanicStrategy,
+    ) -> Built {
         let mut found: Vec<ExprId> = closure_types(typed, owner)
             .closures
             .iter()
@@ -727,8 +832,12 @@ impl Built {
             .map(|expr| BuiltClosure {
                 id: flux_ty::ClosureId { owner, expr },
                 kind: closure_types(typed, owner).closures[expr].kind,
-                body: build_closure(hir, typed, owner, expr),
-                shims: closure_shims(hir, typed, owner, expr),
+                body: build_closure_with_panic_strategy(hir, typed, owner, expr, strategy),
+                shims: if strategy == crate::PanicStrategy::Abort {
+                    closure_shims(hir, typed, owner, expr)
+                } else {
+                    closure_shims_with_panic_strategy(hir, typed, owner, expr, strategy)
+                },
             })
             .collect();
         Built {
@@ -1028,7 +1137,7 @@ enum Item {
     Function(FunctionId, crate::PanicStrategy),
     Const(ConstId),
     /// The closure expression `expr` in `owner`'s body.
-    Closure(ClosureOwner, ExprId),
+    Closure(ClosureOwner, ExprId, crate::PanicStrategy),
 }
 
 /// Builds the MIR of closure `expr` of `owner`'s body, as the method of
@@ -1036,6 +1145,17 @@ enum Item {
 /// args)` or `call_once(self, args)`, with its parameters bound from
 /// the tuple `args` and what it captures read through `self`.
 pub fn build_closure(hir: &Hir, typed: &TypedFile, owner: ClosureOwner, expr: ExprId) -> Body {
+    build_closure_with_panic_strategy(hir, typed, owner, expr, crate::PanicStrategy::Abort)
+}
+
+/// Builds the closure's own call method with explicit exceptional cleanup.
+pub fn build_closure_with_panic_strategy(
+    hir: &Hir,
+    typed: &TypedFile,
+    owner: ClosureOwner,
+    expr: ExprId,
+    strategy: crate::PanicStrategy,
+) -> Body {
     let (body, source_map) = closure_body(hir, owner);
     let types = closure_types(typed, owner);
     let info = &types.closures[expr];
@@ -1056,7 +1176,7 @@ pub fn build_closure(hir: &Hir, typed: &TypedFile, owner: ClosureOwner, expr: Ex
         source_map,
         types,
         &sig,
-        Item::Closure(owner, expr),
+        Item::Closure(owner, expr, strategy),
     )
 }
 
@@ -1121,6 +1241,17 @@ pub fn closure_shims(
     typed: &TypedFile,
     owner: ClosureOwner,
     expr: ExprId,
+) -> Vec<(flux_ty::ClosureKind, Body)> {
+    closure_shims_with_panic_strategy(hir, typed, owner, expr, crate::PanicStrategy::Abort)
+}
+
+/// Builds call adapters, preserving capture ownership on exceptional exits.
+pub fn closure_shims_with_panic_strategy(
+    hir: &Hir,
+    typed: &TypedFile,
+    owner: ClosureOwner,
+    expr: ExprId,
+    strategy: crate::PanicStrategy,
 ) -> Vec<(flux_ty::ClosureKind, Body)> {
     use flux_ty::ClosureKind;
     let items = &hir.items;
@@ -1223,6 +1354,32 @@ pub fn closure_shims(
             statements: Vec::new(),
             terminator: terminator(TerminatorKind::Return),
         });
+        if strategy == crate::PanicStrategy::Unwind {
+            use crate::UnwindAction;
+            if mode == ClosureKind::FnOnce {
+                let resume = blocks.alloc(BasicBlockData {
+                    statements: Vec::new(),
+                    terminator: terminator(TerminatorKind::UnwindResume),
+                });
+                let cleanup = blocks.alloc(BasicBlockData {
+                    statements: Vec::new(),
+                    terminator: Terminator {
+                        kind: TerminatorKind::Drop {
+                            place: this.into(),
+                            target: resume,
+                        },
+                        unwind: UnwindAction::Terminate,
+                        range,
+                    },
+                });
+                blocks[Body::entry()].terminator.unwind = UnwindAction::Cleanup(cleanup);
+                blocks[after].terminator.unwind = UnwindAction::Cleanup(resume);
+            } else {
+                // Borrowed receivers stay owned by the caller. Their adapter
+                // has nothing to destroy once its argument tuple has moved.
+                blocks[Body::entry()].terminator.unwind = UnwindAction::Continue;
+            }
+        }
         shims.push((
             mode,
             Body {
@@ -1261,33 +1418,37 @@ fn build_body(
     item: Item,
 ) -> Body {
     let module = match item {
-        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => {
+        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _, _) => {
             hir.items.functions[f].loc.module
         }
-        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => hir.items.consts[c].loc.module,
+        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _, _) => {
+            hir.items.consts[c].loc.module
+        }
     };
     // The bounds in scope, for what is `Copy`.
     let env = match item {
-        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => {
+        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _, _) => {
             flux_solve::traits::elaborate(
                 &typed.sigs,
                 &flux_solve::traits::predicates_of(&hir.items, &typed.sigs, f),
             )
         }
-        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => flux_solve::traits::elaborate(
-            &typed.sigs,
-            &flux_solve::traits::owner_predicates(
-                &hir.items,
+        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _, _) => {
+            flux_solve::traits::elaborate(
                 &typed.sigs,
-                hir.items.consts[c].owner,
-            ),
-        ),
+                &flux_solve::traits::owner_predicates(
+                    &hir.items,
+                    &typed.sigs,
+                    hir.items.consts[c].owner,
+                ),
+            )
+        }
     };
     let projections = match item {
-        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => {
+        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _, _) => {
             flux_solve::traits::projections_of(&hir.items, &typed.sigs, f)
         }
-        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => {
+        Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _, _) => {
             flux_solve::traits::owner_projections(
                 &hir.items,
                 &typed.sigs,
@@ -1299,16 +1460,24 @@ fn build_body(
         hir,
         typed,
         panic_strategy: match item {
-            Item::Function(_, strategy) => strategy,
-            _ => crate::PanicStrategy::Abort,
+            Item::Function(_, strategy) | Item::Closure(_, _, strategy) => strategy,
+            Item::Const(_) => crate::PanicStrategy::Abort,
         },
         cleanup_suffixes: Default::default(),
         unwind_resume: None,
+        unwind_can_escape: match item {
+            Item::Function(f, _) if !hir.items.functions[f].is_async => {
+                hir.items.functions[f].abi.can_unwind()
+            }
+            // A closure or coroutine body has Rust's unwind contract even
+            // when the function that constructs it uses a foreign ABI.
+            _ => true,
+        },
         items: &hir.items,
         body,
         source_map,
         types,
-        in_const_closure: matches!(item, Item::Closure(ClosureOwner::Const(_), _)),
+        in_const_closure: matches!(item, Item::Closure(ClosureOwner::Const(_), _, _)),
         locals: Arena::new(),
         call_regions: ArenaMap::new(),
         reification_regions: ArenaMap::new(),
@@ -1368,7 +1537,7 @@ fn build_body(
     let entry = b.new_block();
     b.current = Some(entry);
     let (root, param_pats) = match item {
-        Item::Closure(_, expr) => {
+        Item::Closure(_, expr, _) => {
             let Expr::Closure {
                 params: pats,
                 body: closure_body,
@@ -1427,7 +1596,7 @@ fn build_body(
         }
     }
     let upvars = match item {
-        Item::Closure(_, expr) => {
+        Item::Closure(_, expr, _) => {
             let info = &types.closures[expr];
             Some(crate::Upvars {
                 kind: info.kind,
@@ -1548,8 +1717,8 @@ fn build_body(
         upvars,
         capture_uses: b.capture_uses,
         owner: match item {
-            Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => Some(f),
-            Item::Const(_) | Item::Closure(ClosureOwner::Const(_), _) => None,
+            Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _, _) => Some(f),
+            Item::Const(_) | Item::Closure(ClosureOwner::Const(_), _, _) => None,
         },
         constant_owner: None,
         promoted: b.promoted,
@@ -1561,7 +1730,7 @@ fn build_body(
     let owner = match item {
         Item::Function(f, _) => ClosureOwner::Function(f),
         Item::Const(c) => ClosureOwner::Const(c),
-        Item::Closure(owner, _) => owner,
+        Item::Closure(owner, _, _) => owner,
     };
     let unsized_parameters = closure_unsized_parameters(hir, owner);
     built.init_errors.extend(crate::transmute::check(
@@ -1576,6 +1745,9 @@ fn build_body(
         Item::Const(_) | Item::Closure(..) => false,
     };
     crate::drops::elaborate(&mut built, &hir.items, &typed.sigs, &b.env, precise);
+    if b.panic_strategy == crate::PanicStrategy::Unwind {
+        built.discard_unreachable();
+    }
     built
 }
 
@@ -1685,6 +1857,7 @@ struct LoopScope {
 
 struct Builder<'a> {
     panic_strategy: crate::PanicStrategy,
+    unwind_can_escape: bool,
     /// Shared lexical cleanup suffixes, keyed by the local and continuation.
     cleanup_suffixes: rustc_hash::FxHashMap<(Local, BasicBlock), BasicBlock>,
     unwind_resume: Option<BasicBlock>,
@@ -2039,14 +2212,23 @@ impl Builder<'_> {
 
     fn terminate(&mut self, kind: TerminatorKind, range: TextRange) {
         let block = self.block();
-        let unwind = if self.panic_strategy == crate::PanicStrategy::Unwind
-            && matches!(
-                kind,
-                TerminatorKind::Call { .. }
-                    | TerminatorKind::CallIndirect { .. }
-                    | TerminatorKind::Drop { .. }
-                    | TerminatorKind::Assert { .. }
-            ) {
+        let can_unwind = self.panic_strategy == crate::PanicStrategy::Unwind
+            && match &kind {
+                TerminatorKind::Call { func, .. } => self.items.functions[*func].abi.can_unwind(),
+                TerminatorKind::CallIndirect { callee, .. } => {
+                    let ty = match callee {
+                        Operand::Copy(place) | Operand::Move(place) => self.place_ty(place),
+                        Operand::Const(constant) => constant.ty(),
+                    };
+                    ty.fn_sig()
+                        .expect("indirect callee is a function pointer")
+                        .abi
+                        .can_unwind()
+                }
+                TerminatorKind::Drop { .. } | TerminatorKind::Assert { .. } => true,
+                _ => false,
+            };
+        let unwind = if can_unwind {
             crate::UnwindAction::Cleanup(self.cleanup_ladder(range))
         } else {
             crate::UnwindAction::Unreachable
@@ -2067,7 +2249,11 @@ impl Builder<'_> {
         } else {
             let resume = self.new_block();
             self.blocks[resume.index()].1 = Some(Terminator {
-                kind: TerminatorKind::UnwindResume,
+                kind: if self.unwind_can_escape {
+                    TerminatorKind::UnwindResume
+                } else {
+                    TerminatorKind::UnwindTerminate
+                },
                 unwind: crate::UnwindAction::Unreachable,
                 range,
             });
@@ -4034,6 +4220,16 @@ impl Builder<'_> {
                 then_branch,
                 else_branch,
             } => {
+                if let Some(enabled) = self.panic_strategy_condition(*condition) {
+                    if enabled {
+                        self.lower_into(*then_branch, dest);
+                    } else if let Some(branch) = else_branch {
+                        self.lower_into(*branch, dest);
+                    } else {
+                        self.assign_unit(dest, range);
+                    }
+                    return;
+                }
                 let cond = self.scoped(ScopeKind::Temps, range, |b| b.lower_operand(*condition));
                 let then_block = self.new_block();
                 let else_block = self.new_block();
@@ -4740,6 +4936,18 @@ impl Builder<'_> {
 
     /// Calls `func` with generic arguments `generic_args`, storing the
     /// result in `dest`.
+    /// Trusted library mode branches share one type graph but retain only the
+    /// selected implementation in MIR, including when optimization is disabled.
+    fn panic_strategy_condition(&self, expression: ExprId) -> Option<bool> {
+        let Expr::Call { callee, .. } = self.body.exprs[expression] else {
+            return None;
+        };
+        let instance = self.types.calls.get(callee)?;
+        (self.items.functions[instance.function].intrinsic
+            == Some(flux_hir::Intrinsic::PanicUnwindEnabled))
+        .then_some(self.panic_strategy == crate::PanicStrategy::Unwind)
+    }
+
     fn call(
         &mut self,
         func: FunctionId,
@@ -4748,6 +4956,16 @@ impl Builder<'_> {
         dest: &Place,
         range: TextRange,
     ) {
+        if self.items.functions[func].intrinsic == Some(flux_hir::Intrinsic::PanicUnwindEnabled) {
+            self.assign(
+                dest,
+                Rvalue::Use(Operand::Const(Constant::Bool(
+                    self.panic_strategy == crate::PanicStrategy::Unwind,
+                ))),
+                range,
+            );
+            return;
+        }
         let returns = self.typed.sigs[func].ret.subst(generic_args) != Ty::NEVER;
         let target = returns.then(|| self.new_block());
         self.terminate(

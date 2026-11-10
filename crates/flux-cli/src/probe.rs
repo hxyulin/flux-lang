@@ -86,6 +86,7 @@ fn compile(probe: Probe) -> Result<(), String> {
     flux_proc_macro::write_sources(&runtime).map_err(|e| e.to_string())?;
     let api = runtime.join("proc_macro.flib");
     let options = crate::BuildOptions {
+        panic_strategy: flux_syntax::PanicStrategy::Abort,
         optimize: false,
         fast_build: false,
         timings: false,

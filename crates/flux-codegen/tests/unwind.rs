@@ -2,7 +2,7 @@
 use flux_mir::{TerminatorKind, UnwindAction};
 
 #[test]
-fn unwind_mir_is_rejected_before_monomorphization() {
+fn exceptional_mir_is_rejected_in_abort_compilations() {
     let source = "fn called() {} fn main() { called(); }";
     let (_, _, hir) = flux_hir::lower_text("unwind.rs", source);
     assert!(hir.diagnostics.is_empty());
@@ -30,7 +30,7 @@ fn unwind_mir_is_rejected_before_monomorphization() {
         assert!(
             errors
                 .iter()
-                .any(|e| e.message == "unwind code generation is not supported yet")
+                .any(|e| e.message == "exceptional MIR requires panic=unwind")
         );
     }
     mir.bodies.get_mut(owner).unwrap().blocks[block]
@@ -43,7 +43,7 @@ fn unwind_mir_is_rejected_before_monomorphization() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message == "unwind code generation is not supported yet")
+            .any(|e| e.message == "exceptional MIR requires panic=unwind")
     );
     let built =
         flux_mir::build_with_panic_strategy(&hir, &typed, owner, flux_mir::PanicStrategy::Unwind);
@@ -53,7 +53,7 @@ fn unwind_mir_is_rejected_before_monomorphization() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message == "unwind code generation is not supported yet")
+            .any(|e| e.message == "exceptional MIR requires panic=unwind")
     );
     mir.bodies.get_mut(owner).unwrap().blocks[block]
         .terminator
@@ -62,6 +62,6 @@ fn unwind_mir_is_rejected_before_monomorphization() {
     assert!(
         errors
             .iter()
-            .any(|e| e.message == "unwind code generation is not supported yet")
+            .any(|e| e.message == "exceptional MIR requires panic=unwind")
     );
 }

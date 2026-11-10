@@ -221,6 +221,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
                 timings,
                 ..
             } => Some(crate::BuildOptions {
+                panic_strategy: flux_syntax::PanicStrategy::Abort,
                 optimize: *optimize,
                 fast_build: *fast_build,
                 timings: *timings,
@@ -466,6 +467,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         output: &executable,
         sources: &sources,
         options: crate::BuildOptions {
+            panic_strategy: flux_syntax::PanicStrategy::Abort,
             optimize: *optimize,
             fast_build: *fast_build,
             timings: *timings,

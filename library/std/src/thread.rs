@@ -2,10 +2,9 @@
 
 use crate::time::Duration;
 
-/// Flux panics abort the process without unwinding or running destructors.
-/// Ordinary executing code therefore never observes an unwinding thread.
+/// Whether the current thread is running panic cleanup.
 pub fn panicking() -> bool {
-    false
+    crate::panic::is_panicking()
 }
 
 mod local;
@@ -14,7 +13,7 @@ pub use local::{AccessError, LocalKey};
 mod scoped;
 pub use scoped::{scope, spawn, JoinHandle, Scope, ScopedJoinHandle};
 
-/// A joined thread's result. Worker panics currently abort in Flux.
+/// A joined thread's value or its owned panic payload.
 pub type Result<T> = core::result::Result<T, crate::boxed::Box<dyn core::any::Any + Send + 'static>>;
 
 /// Sleeps for at least the requested duration, resuming after signal interruption.

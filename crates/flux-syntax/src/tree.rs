@@ -104,6 +104,24 @@ pub(crate) struct NodeData {
 
 const _: () = assert!(size_of::<NodeData>() == 16);
 
+/// Panic behavior selected for a compiled crate and its conditional compilation.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PanicStrategy {
+    /// Panics terminate the process without local cleanup.
+    #[default]
+    Abort,
+    /// Panics run cleanup and may propagate to a compatible caller.
+    Unwind,
+}
+impl PanicStrategy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Abort => "abort",
+            Self::Unwind => "unwind",
+        }
+    }
+}
+
 /// Conditional-compilation inputs attached by the source layer. Parsing
 /// preserves these inputs without interpreting or filtering the syntax.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -112,6 +130,7 @@ pub struct CfgOptions {
     pub values: Box<[(Box<str>, Box<str>)]>,
     /// Whether `cfg(debug_assertions)` holds: rustc's `-C debug-assertions`.
     pub debug_assertions: bool,
+    pub panic_strategy: PanicStrategy,
 }
 
 impl Default for CfgOptions {
@@ -120,6 +139,7 @@ impl Default for CfgOptions {
             names: Box::default(),
             values: Box::default(),
             debug_assertions: true,
+            panic_strategy: PanicStrategy::Abort,
         }
     }
 }

@@ -283,20 +283,20 @@ fn collect_roots(
         }
         let depth = depths[&caller];
         let shim;
-        let (body, caller_args) = if let Some(generated) =
-            crate::coroutine::body_of(hir, sigs, mir, caller)
-        {
-            shim = generated;
-            (&shim, &[][..])
-        } else {
-            match mir.instance_body(&hir.items, caller) {
-                Some(found) => found,
-                None => {
-                    shim = builtin_shim(&hir.items, sigs, caller).expect("instances have bodies");
-                    (&shim, caller.args)
+        let (body, caller_args) =
+            if let Some(generated) = crate::coroutine::body_of(hir, sigs, mir, caller) {
+                shim = generated;
+                (&shim, &[][..])
+            } else {
+                match mir.instance_body(&hir.items, caller) {
+                    Some(found) => found,
+                    None => {
+                        shim = builtin_shim(&hir.items, sigs, caller, mir.panic_strategy)
+                            .expect("instances have bodies");
+                        (&shim, caller.args)
+                    }
                 }
-            }
-        };
+            };
         // A generic wrapper can acquire a vtable tail only at this instance.
         // Reject that unrepresented dynamic layout before intrinsic expansion.
         let mut types: Vec<_> = body
@@ -956,7 +956,19 @@ pub fn body_of<'b>(
     match mir.instance_body(&hir.items, instance) {
         Some((body, args)) => instance_body(hir, sigs, &mir.discriminants, body, args),
         None => {
-            Cow::Owned(builtin_shim(&hir.items, sigs, instance).expect("instances have bodies"))
+            let mut body = builtin_shim(&hir.items, sigs, instance, mir.panic_strategy)
+                .expect("instances have bodies");
+            if mir.panic_strategy == crate::PanicStrategy::Unwind {
+                expand_intrinsics(&hir.items, sigs, &mir.discriminants, &mut body);
+                if body
+                    .blocks
+                    .values()
+                    .any(|block| matches!(block.terminator.kind, TerminatorKind::Drop { .. }))
+                {
+                    expand_drops(&hir.items, sigs, &mut body);
+                }
+            }
+            Cow::Owned(body)
         }
     }
 }
@@ -988,15 +1000,28 @@ fn is_builtin_shim(items: &ItemTree, instance: Instance) -> bool {
 }
 
 /// Clone function values by copying and closures by cloning their captures.
-fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option<Body> {
+fn builtin_shim(
+    items: &ItemTree,
+    sigs: &Signatures,
+    instance: Instance,
+    strategy: crate::PanicStrategy,
+) -> Option<Body> {
     if !is_builtin_shim(items, instance) {
         return None;
     }
     if is_fn_shim(items, instance) {
-        return Some(fn_shim(items, sigs, instance));
+        let mut body = fn_shim(items, sigs, instance);
+        if strategy == crate::PanicStrategy::Unwind {
+            mark_propagating_calls(&mut body);
+        }
+        return Some(body);
     }
     if is_pointer_debug_shim(items, instance) {
-        return Some(pointer_debug_shim(items, sigs, instance));
+        let mut body = pointer_debug_shim(items, sigs, instance);
+        if strategy == crate::PanicStrategy::Unwind {
+            mark_propagating_calls(&mut body);
+        }
+        return Some(body);
     }
     if is_pointer_address_shim(items, instance) {
         return Some(pointer_address_shim(items, sigs, instance));
@@ -1013,6 +1038,8 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
     });
     let range = flux_syntax::TextRange::default();
     let mut blocks = flux_arena::Arena::new();
+    let mut clone_calls = Vec::new();
+    let mut cloned = Vec::new();
     if let TyKind::Closure(_, args) = ty.kind() {
         // Even a Copy capture may have an observable Clone implementation.
         for (index, &field) in flux_ty::ClosureArgs::split(args)
@@ -1024,7 +1051,17 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
                 ty: Ty::new(TyKind::Ref(Mutability::Not, field)),
                 kind: LocalKind::Temp,
             });
-            blocks.alloc(BasicBlockData {
+            let destination = if strategy == crate::PanicStrategy::Unwind {
+                let capture = locals.alloc(LocalDecl {
+                    ty: field,
+                    kind: LocalKind::Temp,
+                });
+                cloned.push(capture);
+                Place::from(capture)
+            } else {
+                Place::from(ret).field(index as u32)
+            };
+            let call = blocks.alloc(BasicBlockData {
                 statements: vec![Statement {
                     kind: StatementKind::Assign(
                         reference.into(),
@@ -1043,15 +1080,34 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
                         func: instance.function,
                         generic_args: Ty::list(&[field]),
                         args: vec![Operand::Move(reference.into())],
-                        dest: Place::from(ret).field(index as u32),
+                        dest: destination,
                         target: Some(BasicBlock::from_raw(index as u32 + 1)),
                     },
                     range,
                 },
             });
+            if strategy == crate::PanicStrategy::Unwind {
+                clone_calls.push(call);
+            }
         }
         blocks.alloc(BasicBlockData {
-            statements: Vec::new(),
+            statements: if strategy == crate::PanicStrategy::Unwind {
+                vec![Statement {
+                    kind: StatementKind::Assign(
+                        ret.into(),
+                        Rvalue::Aggregate(
+                            crate::AggregateKind::Closure,
+                            cloned
+                                .iter()
+                                .map(|&local| Operand::Move(local.into()))
+                                .collect(),
+                        ),
+                    ),
+                    range,
+                }]
+            } else {
+                Vec::new()
+            },
             terminator: Terminator {
                 unwind: crate::UnwindAction::Unreachable,
                 kind: TerminatorKind::Return,
@@ -1074,6 +1130,34 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
             },
         });
     }
+    if strategy == crate::PanicStrategy::Unwind && !clone_calls.is_empty() {
+        use crate::UnwindAction;
+        blocks[clone_calls[0]].terminator.unwind = UnwindAction::Continue;
+        if clone_calls.len() > 1 {
+            let mut cleanup = blocks.alloc(BasicBlockData {
+                statements: Vec::new(),
+                terminator: Terminator {
+                    kind: TerminatorKind::UnwindResume,
+                    unwind: UnwindAction::Unreachable,
+                    range,
+                },
+            });
+            for index in 0..clone_calls.len() - 1 {
+                cleanup = blocks.alloc(BasicBlockData {
+                    statements: Vec::new(),
+                    terminator: Terminator {
+                        kind: TerminatorKind::Drop {
+                            place: cloned[index].into(),
+                            target: cleanup,
+                        },
+                        unwind: UnwindAction::Terminate,
+                        range,
+                    },
+                });
+                blocks[clone_calls[index + 1]].terminator.unwind = UnwindAction::Cleanup(cleanup);
+            }
+        }
+    }
     Some(Body {
         locals,
         call_regions: flux_arena::ArenaMap::new(),
@@ -1095,6 +1179,18 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
         bugs: Vec::new(),
         fn_spans: Default::default(),
     })
+}
+
+/// These adapters own neither their receiver nor arguments after the call starts.
+fn mark_propagating_calls(body: &mut Body) {
+    for data in body.blocks.values_mut() {
+        if matches!(
+            data.terminator.kind,
+            TerminatorKind::Call { .. } | TerminatorKind::CallIndirect { .. }
+        ) {
+            data.terminator.unwind = crate::UnwindAction::Continue;
+        }
+    }
 }
 
 /// The private address method accepts only function pointers, not function items.
@@ -1368,10 +1464,6 @@ pub fn instance_body<'b>(
     body: &'b Body,
     args: &[Ty],
 ) -> Cow<'b, Body> {
-    assert!(
-        !body.has_unwind(),
-        "unwind drop glue is not implemented yet"
-    );
     let mut body = if args.is_empty() && !mentions_opaques(body) {
         Cow::Borrowed(body)
     } else {
@@ -1385,10 +1477,13 @@ pub fn instance_body<'b>(
     if intrinsics {
         expand_intrinsics(&hir.items, sigs, discriminants, body.to_mut());
     }
+    let unwind_drop_intrinsics = body.has_unwind();
     let drops = body
         .blocks
         .values()
-        .any(|data| matches!(data.terminator.kind, TerminatorKind::Drop { .. }));
+        .any(|data| matches!(data.terminator.kind, TerminatorKind::Drop { .. })
+            || matches!(data.terminator.kind,TerminatorKind::Call{func,..}
+                if unwind_drop_intrinsics && hir.items.functions[func].intrinsic==Some(flux_hir::Intrinsic::DropInPlace)));
     if drops {
         expand_drops(&hir.items, sigs, body.to_mut());
     }
@@ -1414,10 +1509,8 @@ pub fn expand_intrinsics(
     discriminants: &crate::Discriminants,
     body: &mut Body,
 ) {
-    assert!(
-        !body.has_unwind(),
-        "unwind intrinsic expansion is not implemented yet"
-    );
+    let unwinding = body.has_unwind();
+    let mut intrinsic_blocks = Vec::new();
     let layouts = crate::layout::Layouts::new(items, sigs, discriminants);
     let blocks: Vec<_> = body.blocks.iter().map(|(b, _)| b).collect();
     for block in blocks {
@@ -1436,6 +1529,21 @@ pub fn expand_intrinsics(
         let Some(intrinsic) = data.intrinsic else {
             continue;
         };
+        if unwinding {
+            intrinsic_blocks.push(block);
+            // Only these operations can call Rust code. Instruction-like
+            // intrinsics cannot unwind, including loads, atomics and casts.
+            if !intrinsic.is_coroutine()
+                && !matches!(
+                    intrinsic,
+                    flux_hir::Intrinsic::DropInPlace
+                        | flux_hir::Intrinsic::BoxCallOnce
+                        | flux_hir::Intrinsic::SizedDispatch
+                )
+            {
+                body.blocks[block].terminator.unwind = crate::UnwindAction::Unreachable;
+            }
+        }
         if intrinsic.is_coroutine() {
             continue;
         }
@@ -1475,7 +1583,8 @@ pub fn expand_intrinsics(
         };
         if matches!(
             intrinsic.name(),
-            "caller_location"
+            "__panic_catch"
+                | "caller_location"
                 | "read_unaligned"
                 | "read_volatile"
                 | "write_volatile"
@@ -1520,6 +1629,9 @@ pub fn expand_intrinsics(
             continue;
         }
         if name == "drop_in_place" {
+            if unwinding {
+                continue;
+            } // Expanded with its exceptional continuation in expand_drops.
             expand_drop_in_place(items, sigs, body, block, &args[0], arg_ty, (target, range));
             continue;
         }
@@ -1821,6 +1933,18 @@ pub fn expand_intrinsics(
             range,
         });
         data.terminator.kind = goto;
+    }
+    if unwinding {
+        for block in intrinsic_blocks {
+            if !matches!(
+                body.blocks[block].terminator.kind,
+                TerminatorKind::Call { .. } | TerminatorKind::CallIndirect { .. }
+            ) {
+                body.call_regions.remove(block);
+                body.fn_spans.remove(&block);
+            }
+        }
+        body.discard_unreachable();
     }
 }
 

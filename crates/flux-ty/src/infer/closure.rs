@@ -494,6 +494,58 @@ impl Ctx<'_> {
         }
     }
 
+    /// An owning constructor still infers a sized payload, but a surrounding
+    /// unsizing coercion can tell a closure what arguments it must accept.
+    pub(super) fn hint_unsizing_constructor(
+        &mut self,
+        expr: ExprId,
+        ret: Ty,
+        params: &[Ty],
+        args: &[ExprId],
+    ) {
+        let Some(&expected) = self.expected.get(expr) else {
+            return;
+        };
+        let expected = self.shallow(expected);
+        let ret = self.shallow(ret);
+        let Some((wanted, actual)) = flux_solve::box_pointee(expected)
+            .zip(flux_solve::box_pointee(ret))
+            .or_else(|| crate::shared_pointees(self.items, expected, ret))
+            .or_else(|| self.pinned_pointees(expected, ret))
+        else {
+            return;
+        };
+        let TyKind::Dynamic(object) = self.shallow(wanted).kind() else {
+            return;
+        };
+        let Some(kind) = crate::fn_trait_kind(self.items, object.trait_) else {
+            return;
+        };
+        let [tupled] = object.args else {
+            return;
+        };
+        for (&argument, &param) in args.iter().zip(params) {
+            if self.shallow(param) != self.shallow(actual) {
+                continue;
+            }
+            let mut closure = argument;
+            while let Expr::Ref { expr, .. } = self.body.exprs[closure] {
+                closure = expr;
+            }
+            if matches!(self.body.exprs[closure], Expr::Closure { .. }) {
+                self.closure_hints.insert(
+                    closure,
+                    Hint {
+                        kind,
+                        params: *tupled,
+                        ret: object.assoc(Symbol::intern("Output")),
+                        at: self.range(argument),
+                    },
+                );
+            }
+        }
+    }
+
     /// `Fn::call` and the other methods may be called by name only
     /// with the unstable `fn_traits` feature.
     pub(super) fn check_fn_trait_method(&mut self, function: FunctionId, at: TextRange) {

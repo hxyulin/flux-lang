@@ -123,6 +123,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
             crate_name: &name,
             output: &executable,
             options: crate::BuildOptions {
+                panic_strategy: flux_syntax::PanicStrategy::Abort,
                 optimize: false,
                 fast_build: false,
                 timings: false,

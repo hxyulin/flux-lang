@@ -3,6 +3,7 @@ use flux_hir::flib::CrateIndices;
 
 fn empty_mir() -> flux_mir::FileMir {
     flux_mir::FileMir {
+        panic_strategy: flux_mir::PanicStrategy::Abort,
         bodies: Default::default(),
         closures: Default::default(),
         consts: Default::default(),

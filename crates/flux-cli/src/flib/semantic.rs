@@ -656,6 +656,7 @@ impl DependencyState {
             items,
             sigs,
             mir: FileMir {
+                panic_strategy: crate::builtins::selected_strategy(),
                 bodies: Default::default(),
                 closures: Default::default(),
                 consts: Default::default(),

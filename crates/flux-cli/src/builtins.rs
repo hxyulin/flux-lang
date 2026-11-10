@@ -1,7 +1,10 @@
 //! Explicitly staged, compiler-owned built-in metadata for fresh CLI processes.
 
+use flux_syntax::PanicStrategy;
+use std::cell::Cell;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -16,7 +19,41 @@ use crate::flib::{Archive, write_atomic};
 const MAGIC: &[u8; 8] = b"FLUXSUIT";
 const VERSION: u32 = 5;
 const NAME: &str = "flux-builtins.flib";
-static ACTIVE: OnceLock<Option<Arc<BuiltinSuite>>> = OnceLock::new();
+const UNWIND_NAME: &str = "flux-builtins-unwind.flib";
+static ABORT: OnceLock<Option<Arc<BuiltinSuite>>> = OnceLock::new();
+static UNWIND: OnceLock<Option<Arc<BuiltinSuite>>> = OnceLock::new();
+static SOURCE_SELECTED: AtomicBool = AtomicBool::new(false);
+std::thread_local! { static STRATEGY: Cell<PanicStrategy> = const { Cell::new(PanicStrategy::Abort) }; }
+fn slot(strategy: PanicStrategy) -> &'static OnceLock<Option<Arc<BuiltinSuite>>> {
+    match strategy {
+        PanicStrategy::Abort => &ABORT,
+        PanicStrategy::Unwind => &UNWIND,
+    }
+}
+fn suite_name(strategy: PanicStrategy) -> &'static str {
+    match strategy {
+        PanicStrategy::Abort => NAME,
+        PanicStrategy::Unwind => UNWIND_NAME,
+    }
+}
+pub(crate) fn selected_strategy() -> PanicStrategy {
+    STRATEGY.with(Cell::get)
+}
+pub(crate) struct StrategyGuard(PanicStrategy);
+impl Drop for StrategyGuard {
+    fn drop(&mut self) {
+        STRATEGY.with(|current| current.set(self.0));
+    }
+}
+/// Nested host builds select their own MIR/object variant and restore the caller.
+/// In-process callers which never selected a suite continue to use sources.
+pub(crate) fn strategy_scope(strategy: PanicStrategy) -> Result<StrategyGuard, String> {
+    if ABORT.get().is_some() || UNWIND.get().is_some() {
+        initialize_for_strategy(strategy)?;
+    }
+    let previous = STRATEGY.with(|current| current.replace(strategy));
+    Ok(StrategyGuard(previous))
+}
 
 /// One trusted, interleaved `core`, `alloc` and `std` prefix.
 #[derive(Debug)]
@@ -32,18 +69,25 @@ pub struct BuiltinSuite {
 
 /// The suite explicitly selected by the CLI. In-process callers stay in source mode.
 pub fn active() -> Option<&'static Arc<BuiltinSuite>> {
-    ACTIVE.get().and_then(Option::as_ref)
+    slot(selected_strategy()).get().and_then(Option::as_ref)
 }
 
 /// Selects one source or suite path before any compilation starts.
 pub fn initialize() -> Result<(), String> {
-    if ACTIVE.get().is_some() {
+    initialize_for_strategy(selected_strategy())
+}
+
+pub(crate) fn initialize_for_strategy(strategy: PanicStrategy) -> Result<(), String> {
+    let active = slot(strategy);
+    if active.get().is_some() {
         return Ok(());
     }
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let path = executable.with_file_name(NAME);
+    let path = executable.with_file_name(suite_name(strategy));
     let trace = std::env::var_os("FLUX_BUILTINS_TRACE").is_some();
-    let selected = if std::env::var_os("FLUX_BUILTINS_SOURCE").is_some() {
+    let selected = if SOURCE_SELECTED.load(Ordering::Acquire)
+        || std::env::var_os("FLUX_BUILTINS_SOURCE").is_some()
+    {
         if trace {
             eprintln!("flux builtins: source (forced)");
         }
@@ -52,6 +96,9 @@ pub fn initialize() -> Result<(), String> {
         let start = Instant::now();
         match load(&path, &executable)? {
             Some((suite, method)) => {
+                if suite.mir.panic_strategy != strategy {
+                    return Err(invalid(&path, "built-in panic strategy mismatch"));
+                }
                 crate::flib::checked_compiler_identity(suite.compiler)?;
                 flux_hir::Core::forbid_source_loading();
                 if trace {
@@ -79,7 +126,20 @@ pub fn initialize() -> Result<(), String> {
             }
         }
     };
-    ACTIVE
+    if selected.is_none() {
+        // Source HIR caches cannot be mixed with source-forbidden staged caches
+        // later in this process. Keep nested host builds in source mode too.
+        if ABORT.get().and_then(Option::as_ref).is_some()
+            || UNWIND.get().and_then(Option::as_ref).is_some()
+        {
+            return Err(format!(
+                "{}: missing strategy-compatible builtins; stage this variant before mixing host and target builds",
+                path.display()
+            ));
+        }
+        SOURCE_SELECTED.store(true, Ordering::Release);
+    }
+    active
         .set(selected)
         .map_err(|_| "built-in mode was selected twice".to_owned())
 }
@@ -261,6 +321,7 @@ fn already_staged(
     executable: &Path,
     native: bool,
     optimized: bool,
+    strategy: PanicStrategy,
 ) -> Option<Vec<u8>> {
     let check = (|| -> Result<Option<Vec<u8>>, String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
@@ -276,7 +337,11 @@ fn already_staged(
         }
         let mut d = Decoder::new(payload);
         let target = String::decode(&mut d).map_err(|e| e.to_string())?;
-        let tier = bool::decode(&mut d).map_err(|e| e.to_string())?;
+        let flags = u8::decode(&mut d).map_err(|e| e.to_string())?;
+        let tier = flags & 1 != 0;
+        if flags & !3 != 0 || (flags & 2 != 0) != (strategy == PanicStrategy::Unwind) {
+            return Ok(None);
+        }
         let object_hash = Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
         if flux_codegen::Target::host().is_none_or(|h| h.triple() != target)
             || (native && tier != optimized)
@@ -317,7 +382,16 @@ fn decode_payload(
     if flux_codegen::Target::host().is_none_or(|host| host.triple() != target) {
         return Err("built-in suite target mismatch".into());
     }
-    let optimized = bool::decode(&mut d).map_err(|e| e.to_string())?;
+    let flags = u8::decode(&mut d).map_err(|e| e.to_string())?;
+    if flags & !3 != 0 {
+        return Err("invalid built-in configuration flags".into());
+    }
+    let optimized = flags & 1 != 0;
+    let strategy = if flags & 2 != 0 {
+        PanicStrategy::Unwind
+    } else {
+        PanicStrategy::Abort
+    };
     let object_hash = Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
     match (&object, object_hash) {
         (Some(bytes), Some(hash)) if hash.as_slice() == digest(bytes) => {}
@@ -333,6 +407,7 @@ fn decode_payload(
             .map_err(|e| e.to_string())
     })?;
     let mut mir = empty_mir();
+    mir.panic_strategy = strategy;
     measured("mir-and-values", || {
         mir.decode_flib_into(&mut d, &items, &sigs)
             .map_err(|e| e.to_string())
@@ -352,6 +427,7 @@ fn decode_payload(
 /// An empty destination for decoded MIR or source-program imports.
 pub fn empty_mir() -> FileMir {
     FileMir {
+        panic_strategy: selected_strategy(),
         bodies: Default::default(),
         closures: Default::default(),
         consts: Default::default(),
@@ -409,8 +485,16 @@ pub fn graph_hashes(items: &ItemTree) -> Result<Vec<(flux_hir::CrateId, [u8; 32]
 
 /// Eagerly checks and stages the compiler-owned suite beside this executable.
 pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
+    stage_with_strategy(native_object, optimized, PanicStrategy::Abort)
+}
+
+pub(crate) fn stage_with_strategy(
+    native_object: bool,
+    optimized: bool,
+    strategy: PanicStrategy,
+) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-    let path = executable.with_file_name(NAME);
+    let path = executable.with_file_name(suite_name(strategy));
     let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     // Linux current_exe resolves symlinks. A local target directory may itself
     // point to a build cache, so compare its canonical path as well.
@@ -427,7 +511,7 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     {
         return Err("build-builtins requires an executable under target/ or out/".into());
     }
-    if let Some(bytes) = already_staged(&path, &executable, native_object, optimized) {
+    if let Some(bytes) = already_staged(&path, &executable, native_object, optimized, strategy) {
         // Restaging an unchanged suite repairs its stamp, so the next load
         // takes the stat path for both the suite and the executable.
         let suite = std::fs::metadata(&path).map_err(|e| invalid(&path, e))?;
@@ -461,7 +545,7 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     {
         return Err("built-in suite contains source or type diagnostics".into());
     }
-    let mir = flux_mir::build_file_with_roots(hir, &typed, &functions);
+    let mir = flux_mir::build_file_with_roots_and_panic_strategy(hir, &typed, &functions, strategy);
     if !mir.diagnostics.is_empty() || !mir.bugs.is_empty() {
         return Err(format!(
             "built-in suite contains MIR diagnostics: {:?} {:?}",
@@ -486,7 +570,7 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
         )
         .map_err(|e| format!("cannot lower built-in object: {e:?}"))?;
         Some(
-            flux_codegen::compile_object(
+            flux_codegen::compile_object_with_panic_strategy(
                 &mut module,
                 target,
                 if optimized {
@@ -494,6 +578,7 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
                 } else {
                     flux_codegen::OptimizationTier::None
                 },
+                strategy,
             )
             .map_err(|e| e.to_string())?,
         )
@@ -502,7 +587,9 @@ pub fn stage(native_object: bool, optimized: bool) -> Result<PathBuf, String> {
     };
     let mut e = Encoder::new();
     target.triple().encode(&mut e).map_err(|e| e.to_string())?;
-    optimized.encode(&mut e).map_err(|e| e.to_string())?;
+    (u8::from(optimized) | (u8::from(strategy == PanicStrategy::Unwind) << 1))
+        .encode(&mut e)
+        .map_err(|e| e.to_string())?;
     object
         .as_ref()
         .map(|bytes| digest(bytes).to_vec())

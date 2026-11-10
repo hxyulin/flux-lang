@@ -87,7 +87,11 @@ fn cfg_predicate(
         // On unless the crate was configured without them, as rustc's
         // `-C debug-assertions`; the embedded libraries keep them on.
         ("debug_assertions", None) => cfg.is_none_or(|cfg| cfg.debug_assertions),
-        ("panic", Some(v)) => v == "abort",
+        ("panic", Some(v)) => {
+            v == cfg
+                .map_or(flux_syntax::PanicStrategy::Abort, |cfg| cfg.panic_strategy)
+                .as_str()
+        }
         ("unix", None) => cfg!(unix),
         ("windows", None) => cfg!(windows),
         ("target_os", Some(v)) => v == os,

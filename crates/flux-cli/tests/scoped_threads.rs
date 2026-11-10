@@ -165,6 +165,8 @@ fn scope_cleanup_joins_on_host_unwind() {
         r#"
 extern crate alloc as alloc_crate;
 type Result<T> = std::thread::Result<T>;
+pub use std::panic;
+pub use std::thread::panicking;
 mod sync {{ pub use std::sync::Mutex; }}
 use std::io;
 // The worker's thread handle; this harness checks joining only.

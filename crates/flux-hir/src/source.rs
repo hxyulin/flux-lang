@@ -91,6 +91,7 @@ pub struct SourceDb {
     configured: rustc_hash::FxHashMap<(FileId, Option<Arc<flux_syntax::CfgOptions>>), FileId>,
     /// Applied to crate roots configured after it is set; on by default.
     debug_assertions: bool,
+    panic_strategy: flux_syntax::PanicStrategy,
 }
 
 /// Where `core`'s files appear to be, in paths and messages.
@@ -102,6 +103,10 @@ pub const STD_ROOT: &str = "<std>";
 
 const STD_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/std/src/lib.rs")),
+    (
+        "panic.rs",
+        include_str!("../../../library/std/src/panic.rs"),
+    ),
     (
         "io/buffered.rs",
         include_str!("../../../library/std/src/io/buffered.rs"),
@@ -531,6 +536,7 @@ impl SourceDb {
             environments: self.environments.clone(),
             configured: self.configured.clone(),
             debug_assertions: self.debug_assertions,
+            panic_strategy: self.panic_strategy,
         }
     }
 
@@ -560,6 +566,7 @@ impl SourceDb {
             environments: Default::default(),
             configured: Default::default(),
             debug_assertions: true,
+            panic_strategy: flux_syntax::PanicStrategy::Abort,
         }
     }
 
@@ -568,6 +575,11 @@ impl SourceDb {
     /// Unconfigured roots and the embedded libraries keep it on.
     pub fn set_debug_assertions(&mut self, enabled: bool) {
         self.debug_assertions = enabled;
+    }
+
+    /// Sets `cfg(panic)` for crate roots configured afterwards.
+    pub fn set_panic_strategy(&mut self, strategy: flux_syntax::PanicStrategy) {
+        self.panic_strategy = strategy;
     }
 
     /// Sets the compiler invocation directory used by host procedural macros.
@@ -667,13 +679,18 @@ impl SourceDb {
         names.dedup();
         values.sort();
         values.dedup();
-        let cfg = (!names.is_empty() || !values.is_empty() || !self.debug_assertions).then(|| {
-            Arc::new(flux_syntax::CfgOptions {
-                names: names.into(),
-                values: values.into(),
-                debug_assertions: self.debug_assertions,
-            })
-        });
+        let cfg = (!names.is_empty()
+            || !values.is_empty()
+            || !self.debug_assertions
+            || self.panic_strategy != flux_syntax::PanicStrategy::Abort)
+            .then(|| {
+                Arc::new(flux_syntax::CfgOptions {
+                    names: names.into(),
+                    values: values.into(),
+                    debug_assertions: self.debug_assertions,
+                    panic_strategy: self.panic_strategy,
+                })
+            });
         let mut source = (**source).clone();
         source.parse = source.parse.with_cfg_options(cfg);
         self.files[root.0 as usize] = Arc::new(source);

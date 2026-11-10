@@ -797,6 +797,11 @@ pub enum Abi {
 }
 
 impl Abi {
+    /// Whether an exception may cross this function's boundary.
+    pub fn can_unwind(self) -> bool {
+        matches!(self, Abi::Rust | Abi::CUnwind | Abi::SystemUnwind)
+    }
+
     /// Whether calls use the C calling convention.
     pub fn is_c(self) -> bool {
         self != Abi::Rust

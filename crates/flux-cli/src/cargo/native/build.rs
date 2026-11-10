@@ -169,6 +169,7 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let source = request.source()?;
     let options = BuildOptions {
+        panic_strategy: flux_syntax::PanicStrategy::Abort,
         optimize: request.optimize,
         fast_build: request.fast_build,
         debug_assertions: Some(request.debug_assertions),

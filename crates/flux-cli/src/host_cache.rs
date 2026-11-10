@@ -65,7 +65,9 @@ impl HostCache {
         {
             return Ok(None);
         }
-        let native = match crate::native_link::Snapshot::capture(&request.native) {
+        let native = match crate::native_link::Snapshot::capture(
+            &request.options.native_link(&request.native),
+        ) {
             Ok(snapshot) => snapshot,
             Err(_) => return Ok(None),
         };
@@ -84,6 +86,7 @@ impl HostCache {
         field!(request.options.fast_build);
         field!(crate::backend_units::count(request.options.fast_build)?.get());
         field!(request.options.debug_assertions());
+        field!(request.options.panic_strategy.as_str().to_owned());
         field!(
             flux_codegen::Target::host()
                 .ok_or("unsupported host target")?

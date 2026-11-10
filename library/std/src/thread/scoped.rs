@@ -31,6 +31,7 @@ unsafe extern "C" {
 
 struct JoinState {
     thread: Mutex<Option<NativeThread>>,
+    panicked: AtomicBool,
 }
 
 // SAFETY: native identifiers are accessed only under the mutex and joined once.
@@ -92,13 +93,20 @@ impl Drop for Threads {
     fn drop(&mut self) {
         // Workers may spawn further workers. Never hold the registry lock
         // while joining, and keep draining until those workers also finish.
+        let mut unhandled = false;
         loop {
             let next = self.registry.lock().unwrap().pop();
             match next {
-                Some(thread) => thread.join(),
+                Some(thread) => {
+                    thread.join();
+                    unhandled |= thread.panicked.load(Ordering::Acquire);
+                }
                 None => break,
             }
         }
+        // Join every worker before reporting a failure. A parent panic already
+        // in flight keeps its original payload rather than causing a double panic.
+        if unhandled && !super::panicking() { panic!("a scoped thread panicked"); }
     }
 }
 
@@ -117,7 +125,7 @@ where
 }
 
 struct Packet<T> {
-    value: UnsafeCell<Option<T>>,
+    value: UnsafeCell<Option<super::Result<T>>>,
     finished: AtomicBool,
     join: Arc<JoinState>,
 }
@@ -137,7 +145,10 @@ extern "C" fn run<F: FnOnce() -> T, T>(argument: *mut u8) -> *mut u8 {
     // SAFETY: spawn transferred precisely one Box<Job<F, T>> to this callback.
     let job = unsafe { *Box::from_raw(argument as *mut Job<F, T>) };
     super::set_current(job.thread);
-    let value = (job.function)();
+    // No exception may cross pthread's C entry point. The catch consumes the
+    // function once and restores this worker's panic state before publication.
+    let value = crate::panic::catch_unwind(core::panic::AssertUnwindSafe(job.function));
+    job.packet.join.panicked.store(value.is_err(), Ordering::Release);
     // SAFETY: the worker has sole access until pthread_join completes.
     unsafe {
         *job.packet.value.get() = Some(value);
@@ -211,6 +222,7 @@ fn start<F: FnOnce() -> T, T>(
     let thread = super::Thread::new(name);
     let join = Arc::new(JoinState {
         thread: Mutex::new(None),
+        panicked: AtomicBool::new(false),
     });
     let packet = Arc::new(Packet {
         value: UnsafeCell::new(None),
@@ -294,12 +306,13 @@ impl<T> JoinHandle<T> {
         let id = self.packet.join.thread.lock().unwrap().take();
         id.map_or(0, |id| id as usize)
     }
-    /// Panics abort in Flux; successful native joins therefore return Ok.
+    /// Waits for completion and returns the worker value or its panic payload.
     pub fn join(self) -> super::Result<T> {
         self.packet.join.join();
         // SAFETY: pthread_join finished publication; this consuming handle
         // uniquely extracts the result, leaving the packet empty on Drop.
-        Ok(unsafe { (*self.packet.value.get()).take() }.unwrap())
+        self.packet.join.panicked.store(false, Ordering::Release);
+        unsafe { (*self.packet.value.get()).take() }.unwrap()
     }
     pub fn is_finished(&self) -> bool {
         self.packet.finished.load(Ordering::Acquire)
@@ -321,11 +334,12 @@ impl<T> ScopedJoinHandle<'_, T> {
     pub fn is_finished(&self) -> bool {
         self.packet.finished.load(Ordering::Acquire)
     }
-    /// Flux panics abort, so a joined worker always returns its value.
+    /// Waits for completion and consumes the worker result, including a panic.
     pub fn join(self) -> super::Result<T> {
         self.packet.join.join();
         // SAFETY: the worker finished and this consuming handle is the only
         // reader. The scope registry holds only the separate join state.
-        Ok(unsafe { (*self.packet.value.get()).take() }.unwrap())
+        self.packet.join.panicked.store(false, Ordering::Release);
+        unsafe { (*self.packet.value.get()).take() }.unwrap()
     }
 }

@@ -34,9 +34,12 @@
 mod abi;
 mod reachability;
 mod shapes;
+mod unwind;
 use abi::{
     Argument, Convention, Return, attrs, c_signature, check_c_abi, ctx_signature, signature,
 };
+use unwind::Call;
+pub(crate) use unwind::PERSONALITY as UNWIND_PERSONALITY;
 
 use std::sync::Arc;
 
@@ -260,15 +263,15 @@ fn lower_inner(
     mut timings: Option<&mut LoweringTimings>,
     identity: SymbolIdentity,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
-    // Until invoke/drop-glue lowering is implemented, reject exceptional MIR
-    // before monomorphization can transform away an exceptional successor.
-    if let Some(body) = mir
-        .bodies
-        .iter()
-        .map(|(_, body)| body)
-        .chain(mir.closures.values())
-        .chain(mir.consts.iter().map(|(_, body)| body))
-        .find(|body| body.has_unwind())
+    // Exceptional bodies cannot silently use abort-mode object emission.
+    if mir.panic_strategy == flux_mir::PanicStrategy::Abort
+        && let Some(body) = mir
+            .bodies
+            .iter()
+            .map(|(_, body)| body)
+            .chain(mir.closures.values())
+            .chain(mir.consts.iter().map(|(_, body)| body))
+            .find(|body| body.has_unwind())
     {
         let range = body
             .blocks
@@ -285,7 +288,7 @@ fn lower_inner(
             .range;
         return Err(vec![Diagnostic::new(
             range,
-            "unwind code generation is not supported yet",
+            "exceptional MIR requires panic=unwind",
         )]);
     }
     let _shapes = shapes::scope(&typed.sigs);
@@ -540,7 +543,7 @@ fn lower_inner(
         if function.is_extern && declared.insert(symbols[&id].clone()) {
             declared_abort |= function.name.as_str() == "abort";
             module.decls.push(FuncDecl {
-                attrs: attrs(&typed.sigs[id]),
+                attrs: attrs(&typed.sigs[id], mir.panic_strategy, function.abi),
                 name: symbols[&id].clone(),
                 sig: if function.abi.is_c() {
                     c_signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic)
@@ -604,6 +607,9 @@ fn lower_inner(
         .collect();
     let names = |id: flux_hir::ConstId| items.const_name(id);
     let mut ctx = Ctx {
+        panic_strategy: mir.panic_strategy,
+        indirect_thunks: FxHashMap::default(),
+        generated_functions: Vec::new(),
         builder_context: FunctionBuilderContext::new(),
         hir,
         typed,
@@ -650,16 +656,29 @@ fn lower_inner(
                 instance.function,
                 instance.args,
             );
-            module.decls.push(FuncDecl {
-                name: instance_symbol(hir, &symbols, instance),
-                sig: ctx.instance_signature(instance, &sig, false),
-                attrs: attrs(&sig),
-            });
+            let name = instance_symbol(hir, &symbols, instance);
+            // A core extern bridge can name the same definition supplied by
+            // the separately compiled builtin object. Keep one declaration.
+            if declared.insert(name.clone()) {
+                module.decls.push(FuncDecl {
+                    name,
+                    sig: ctx.instance_signature(instance, &sig, false),
+                    attrs: attrs(
+                        &sig,
+                        mir.panic_strategy,
+                        items.functions[instance.function].abi,
+                    ),
+                });
+            }
             if items.functions[instance.function].track_caller {
                 module.decls.push(FuncDecl {
                     name: ctx.pointer_symbol(instance),
                     sig: ctx.instance_signature(instance, &sig, true),
-                    attrs: attrs(&sig),
+                    attrs: attrs(
+                        &sig,
+                        mir.panic_strategy,
+                        items.functions[instance.function].abi,
+                    ),
                 });
             }
             continue;
@@ -833,9 +852,13 @@ fn lower_inner(
             flush,
             runner,
             init,
+            (mir.panic_strategy == flux_mir::PanicStrategy::Unwind)
+                .then_some("__flux_panic_finish"),
         );
         module.functions.push(entry);
     }
+    module.functions.append(&mut ctx.generated_functions);
+    unwind::declare_personality(&mut module);
     module.sync_function_attrs();
     Ok(LoweredCrate {
         module,
@@ -1428,39 +1451,60 @@ fn entry_point(
     flush: Option<(String, Signature)>,
     runner: Option<(String, Signature)>,
     init: Option<(String, Signature)>,
+    unwind_finish: Option<&str>,
 ) -> Function {
     let mut function = Function::new(
         "main",
         Signature::new(&[Type::I32, Type::Ptr], &[Type::I32]),
     );
+    if unwind_finish.is_some() {
+        function.personality = Some(unwind::PERSONALITY.into());
+        function.attrs.nounwind = true;
+    }
     let mut b = FunctionBuilder::new(&mut function);
     let entry = b.create_block();
+    let landing = unwind_finish.map(|_| b.create_block());
     b.switch_to_block(entry);
     let argc = b.append_block_param(entry, Type::I32);
     let argv = b.append_block_param(entry, Type::Ptr);
     if let Some((name, sig)) = init {
         let init = b.import_function(&name, sig);
-        b.ins().call(init, &[argc, argv]);
+        unwind::entry_call(&mut b, init, &[argc, argv], landing);
     }
     let callee = b.import_function(rust_main, main_sig.clone());
     let status = if let Some((name, sig)) = runner {
         let address = b.ins().symbol_addr(keel_ir::Symbol::Func(callee));
         let runner = b.import_function(&name, sig);
-        let call = b.ins().call(runner, &[address]);
+        let call = unwind::entry_call(&mut b, runner, &[address], landing);
         Some(b.function().inst_results(call)[0])
     } else {
-        b.ins().call(callee, &[]);
+        unwind::entry_call(&mut b, callee, &[], landing);
         None
     };
-    if let Some((flush, flush_sig)) = flush.filter(|_| !never) {
-        let flush = b.import_function(&flush, flush_sig);
-        b.ins().call(flush, &[]);
+    if let Some((flush, flush_sig)) = flush.as_ref().filter(|_| !never) {
+        let flush = b.import_function(flush, flush_sig.clone());
+        unwind::entry_call(&mut b, flush, &[], landing);
     }
     if never {
         b.ins().trap();
     } else {
         let code = status.unwrap_or_else(|| b.ins().iconst(Type::I32, 0));
         b.ins().return_(&[code]);
+    }
+    if let Some((landing, finish)) = landing.zip(unwind_finish) {
+        b.switch_to_block(landing);
+        let pad = b.ins().build(keel_ir::InstData::LandingPad {
+            clauses: vec![keel_ir::Clause::Catch(None)],
+        });
+        let exception = b.function().inst_results(pad)[0];
+        let finish = b.import_function(finish, Signature::new(&[Type::Ptr], &[Type::I32]));
+        let status = b.ins().call(finish, &[exception]);
+        let status = b.function().inst_results(status)[0];
+        if let Some((name, sig)) = flush {
+            let flush = b.import_function(&name, sig);
+            b.ins().call(flush, &[]);
+        }
+        b.ins().return_(&[status]);
     }
     b.seal_all_blocks();
     b.finalize();
@@ -1475,6 +1519,9 @@ struct ReferencedStorage {
 }
 
 struct Ctx<'a> {
+    panic_strategy: flux_mir::PanicStrategy,
+    indirect_thunks: FxHashMap<Signature, String>,
+    generated_functions: Vec<Function>,
     /// Reuse SSA construction tables across functions without retaining their state.
     builder_context: FunctionBuilderContext,
     hir: &'a Hir,
@@ -1578,7 +1625,19 @@ impl Ctx<'_> {
             && self.hir.items.functions[instance.function]
                 .link_name
                 .is_none();
-        function.attrs = attrs(sig);
+        function.attrs = attrs(
+            sig,
+            self.panic_strategy,
+            self.hir.items.functions[instance.function].abi,
+        );
+        if body.blocks.values().any(|data| {
+            matches!(
+                data.terminator.unwind,
+                flux_mir::UnwindAction::Cleanup(_) | flux_mir::UnwindAction::Terminate
+            )
+        }) {
+            function.personality = Some(unwind::PERSONALITY.into());
+        }
         if !pointer_wrapper {
             let data = &self.hir.items.functions[instance.function];
             match data.inline {
@@ -1647,6 +1706,9 @@ impl Ctx<'_> {
             callees: FxHashMap::default(),
             address_align: FxHashMap::default(),
             panic_block: None,
+            unwind_action: flux_mir::UnwindAction::Unreachable,
+            exception_slot: None,
+            cleanup_propagates: None,
         };
         self.builder_context = lower.body();
         function
@@ -2236,6 +2298,9 @@ struct Lower<'a, 'c, 'f> {
     address_align: FxHashMap<Value, u64>,
     /// Calls `abort`; shared by every failed assertion.
     panic_block: Option<Block>,
+    unwind_action: flux_mir::UnwindAction,
+    exception_slot: Option<Value>,
+    cleanup_propagates: Option<Vec<bool>>,
 }
 
 /// Where locals of memory types are stored, from [`memory_storage`].
@@ -2505,6 +2570,9 @@ impl Lower<'_, '_, '_> {
             .map(|(&n, &borrowed)| n == 1 && !borrowed)
             .collect();
         self.b.switch_to_block(entry);
+        if body.has_unwind() {
+            self.exception_slot = Some(self.aligned_slot(8, 8));
+        }
         // A memory return is built directly in the caller's return slot.
         // Its input operands still have their own by-value storage.
         if let Return::Sret(layout) | Return::Memory(layout) =
@@ -4498,6 +4566,7 @@ impl Lower<'_, '_, '_> {
     }
 
     fn terminator(&mut self, kind: &TerminatorKind, offset: u32, block: flux_mir::BasicBlock) {
+        self.unwind_action = self.body.blocks[block].terminator.unwind;
         match kind {
             TerminatorKind::Goto(target) => {
                 self.b.ins().jump(self.blocks[target.index()], &[]);
@@ -4573,6 +4642,10 @@ impl Lower<'_, '_, '_> {
                         dest,
                         *target,
                     );
+                    return;
+                }
+                if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::PanicCatch) {
+                    self.catch_unwind(args, dest, *target);
                     return;
                 }
                 if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::CallerLocation) {
@@ -4859,14 +4932,7 @@ impl Lower<'_, '_, '_> {
                     args,
                     dest,
                     *target,
-                    |b, values| match location {
-                        Some(location) => {
-                            let mut values = values.to_vec();
-                            values.push(location);
-                            b.ins().call(callee, &values)
-                        }
-                        None => b.ins().call(callee, values),
-                    },
+                    Call::Direct { callee, location },
                 );
             }
             TerminatorKind::CallIndirect {
@@ -4901,7 +4967,10 @@ impl Lower<'_, '_, '_> {
                     args,
                     dest,
                     *target,
-                    |b, values| b.ins().call_indirect(sig_ref, pointer, values),
+                    Call::Indirect {
+                        sig: sig_ref,
+                        pointer,
+                    },
                 );
             }
             TerminatorKind::Assert {
@@ -4949,7 +5018,13 @@ impl Lower<'_, '_, '_> {
                     }
                     values.push(self.location_here(offset));
                     let callee = self.callee(function, Ty::list(&[]));
-                    self.b.ins().call(callee, &values);
+                    self.emit_call(
+                        Call::Direct {
+                            callee,
+                            location: None,
+                        },
+                        &values,
+                    );
                     self.b.ins().trap();
                 }
             }
@@ -4992,13 +5067,19 @@ impl Lower<'_, '_, '_> {
                     }
                 }
             }
-            TerminatorKind::UnwindResume | TerminatorKind::UnwindTerminate => {
-                unreachable!("exceptional MIR is rejected before lowering")
-            }
+            TerminatorKind::UnwindResume => self.resume_unwind(),
+            TerminatorKind::UnwindTerminate => self.abort_unwind(),
             TerminatorKind::Unreachable => {
                 self.b.ins().trap();
             }
-            TerminatorKind::Drop { .. } => unreachable!("drops are expanded into calls"),
+            TerminatorKind::Drop { place, .. } => panic!(
+                "unexpanded drop of {} in {:?} at bb{}",
+                self.body.place_ty(place, self.sigs),
+                self.body
+                    .owner
+                    .map(|owner| self.ctx.hir.items.functions[owner].name),
+                block.index()
+            ),
         }
     }
 
@@ -5012,7 +5093,7 @@ impl Lower<'_, '_, '_> {
         args: &[flux_mir::Operand],
         dest: &flux_mir::Place,
         target: Option<flux_mir::BasicBlock>,
-        make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
+        make: Call,
     ) {
         let direct = dest.projection.is_empty()
             && self.direct_sret[dest.local.index()]
@@ -5116,7 +5197,7 @@ impl Lower<'_, '_, '_> {
         rest: Values,
         dest: &flux_mir::Place,
         target: Option<flux_mir::BasicBlock>,
-        make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
+        make: Call,
     ) {
         let sret = self.sret_for(ret, None, Convention::RustReified);
         let mut values: Values = sret.iter().map(|(pointer, _)| *pointer).collect();
@@ -5144,7 +5225,7 @@ impl Lower<'_, '_, '_> {
         values: Values,
         dest: &flux_mir::Place,
         target: Option<flux_mir::BasicBlock>,
-        make: impl FnOnce(&mut FunctionBuilder<'_>, &[Value]) -> keel_ir::Inst,
+        make: Call,
     ) {
         let CallResult {
             ty: ret,
@@ -5152,7 +5233,7 @@ impl Lower<'_, '_, '_> {
             convention,
         } = result;
         let memory = is_memory(self.sigs, ret);
-        let call = make(&mut self.b, &values);
+        let call = self.emit_call(make, &values);
         // A call that does not return stores nothing: its destination may
         // be of any type (a `match` arm calling `panic`).
         if target.is_some() {
@@ -5313,9 +5394,17 @@ impl Lower<'_, '_, '_> {
         }
         let (&first, rest) = leaves.split_first().expect("a receiver address");
         let rest: Values = rest.iter().copied().collect();
-        self.call_values(sig.ret, first, rest, dest, target, |b, values| {
-            b.ins().call_indirect(sig_ref, pointer, values)
-        });
+        self.call_values(
+            sig.ret,
+            first,
+            rest,
+            dest,
+            target,
+            Call::Indirect {
+                sig: sig_ref,
+                pointer,
+            },
+        );
     }
 
     /// Packed values exist only inside the operation; Rust calls retain the
@@ -5818,7 +5907,13 @@ impl Lower<'_, '_, '_> {
                 self.b.switch_to_block(call);
                 let sig = Signature::new(&[Type::Ptr], &[]);
                 let sig_ref = self.b.import_signature(sig);
-                self.b.ins().call_indirect(sig_ref, drop, &[data]);
+                self.emit_call(
+                    Call::Indirect {
+                        sig: sig_ref,
+                        pointer: drop,
+                    },
+                    &[data],
+                );
                 self.b.ins().jump(done, &[]);
                 self.b.switch_to_block(done);
             }

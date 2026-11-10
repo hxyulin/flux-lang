@@ -40,7 +40,91 @@ pub fn compile_object(
     target: Target,
     tier: OptimizationTier,
 ) -> Result<Vec<u8>, Error> {
-    compile_object_inner(module, target, tier, None, None)
+    compile_object_inner(
+        module,
+        target,
+        tier,
+        flux_mir::PanicStrategy::Abort,
+        None,
+        None,
+    )
+}
+
+/// Compiles an object with an explicit panic strategy.
+///
+/// Modules lowered from unwind MIR require `Unwind`, including modules whose
+/// functions only forward calls. This retains unwind tables in ordinary frames.
+/// The panic runtime and strategy-compatible dependency objects must be linked
+/// by the caller. Unwind emission currently supports arm64 macOS only.
+///
+/// # Errors
+/// Returns a staged error for an unsupported target, invalid IR, optimization,
+/// native code generation or assembly.
+pub fn compile_object_with_panic_strategy(
+    module: &mut keel_ir::Module,
+    target: Target,
+    tier: OptimizationTier,
+    panic_strategy: flux_mir::PanicStrategy,
+) -> Result<Vec<u8>, Error> {
+    compile_object_inner(module, target, tier, panic_strategy, None, None)
+}
+
+/// The IR and native selection policy of an object build.
+#[derive(Clone, Copy, Debug)]
+pub enum ObjectOptimization {
+    /// The existing tier-based selection policy.
+    Tier(OptimizationTier),
+    /// Short IR optimization with full native instruction selection.
+    FastBuild,
+}
+/// Object policy carried independently of optimization and timing observations.
+#[derive(Clone, Copy, Debug)]
+pub struct ObjectOptions {
+    pub optimization: ObjectOptimization,
+    pub panic_strategy: flux_mir::PanicStrategy,
+}
+/// Compiles an object with explicit policy and panic strategy.
+///
+/// # Errors
+/// Returns staged verification, optimization, code generation or assembly errors.
+pub fn compile_object_with_options(
+    module: &mut Module,
+    target: Target,
+    options: ObjectOptions,
+) -> Result<Vec<u8>, Error> {
+    compile_options(module, target, options, None)
+}
+/// The timed equivalent of [`compile_object_with_options`].
+pub fn compile_object_with_options_and_timings(
+    module: &mut Module,
+    target: Target,
+    options: ObjectOptions,
+) -> (Result<Vec<u8>, Error>, ObjectTimings) {
+    let mut timings = ObjectTimings::default();
+    let result = compile_options(module, target, options, Some(&mut timings));
+    (result, timings)
+}
+fn compile_options(
+    module: &mut Module,
+    target: Target,
+    options: ObjectOptions,
+    timings: Option<&mut ObjectTimings>,
+) -> Result<Vec<u8>, Error> {
+    let (tier, selection) = match options.optimization {
+        ObjectOptimization::Tier(tier) => (tier, None),
+        ObjectOptimization::FastBuild => (
+            OptimizationTier::Fast,
+            Some(keel_codegen::SelectionTier::Full),
+        ),
+    };
+    compile_object_inner(
+        module,
+        target,
+        tier,
+        options.panic_strategy,
+        selection,
+        timings,
+    )
 }
 
 /// Uses the short IR pipeline with full native instruction selection.
@@ -55,6 +139,7 @@ pub fn compile_fast_object(module: &mut keel_ir::Module, target: Target) -> Resu
         module,
         target,
         OptimizationTier::Fast,
+        flux_mir::PanicStrategy::Abort,
         Some(keel_codegen::SelectionTier::Full),
         None,
     )
@@ -82,7 +167,14 @@ pub fn compile_object_with_timings(
     tier: OptimizationTier,
 ) -> (Result<Vec<u8>, Error>, ObjectTimings) {
     let mut timings = ObjectTimings::default();
-    let result = compile_object_inner(module, target, tier, None, Some(&mut timings));
+    let result = compile_object_inner(
+        module,
+        target,
+        tier,
+        flux_mir::PanicStrategy::Abort,
+        None,
+        Some(&mut timings),
+    );
     (result, timings)
 }
 
@@ -97,6 +189,7 @@ pub fn compile_fast_object_with_timings(
         module,
         target,
         OptimizationTier::Fast,
+        flux_mir::PanicStrategy::Abort,
         Some(keel_codegen::SelectionTier::Full),
         Some(&mut timings),
     );
@@ -115,9 +208,27 @@ fn compile_object_inner(
     module: &mut keel_ir::Module,
     target: Target,
     tier: OptimizationTier,
+    panic_strategy: flux_mir::PanicStrategy,
     selection: Option<keel_codegen::SelectionTier>,
     mut timings: Option<&mut ObjectTimings>,
 ) -> Result<Vec<u8>, Error> {
+    if panic_strategy == flux_mir::PanicStrategy::Unwind && target != Target::Aarch64AppleDarwin {
+        return Err(Error::message(
+            Stage::Codegen,
+            "panic=unwind is supported only for arm64 macOS",
+        ));
+    }
+    if panic_strategy == flux_mir::PanicStrategy::Abort
+        && module
+            .functions
+            .iter()
+            .any(|f| f.personality.as_deref() == Some(lower::UNWIND_PERSONALITY))
+    {
+        return Err(Error::message(
+            Stage::Codegen,
+            "unwind MIR requires panic=unwind object emission",
+        ));
+    }
     if let Err(errors) = measured(timings.as_deref_mut().map(|t| &mut t.verify), || {
         keel_ir::verify_module(module)
     }) {
@@ -164,11 +275,13 @@ fn compile_object_inner(
     let mut encoding = std::time::Duration::ZERO;
     let mut emitted = false;
     let start = timed.then(std::time::Instant::now);
-    let result = keel_codegen::compile_program_chunks_with_pipeline(
-        module,
-        target,
-        &pipeline,
-        &mut |mut chunk| {
+    let mut emission = keel_codegen::EmissionOptions::default();
+    if panic_strategy == flux_mir::PanicStrategy::Unwind {
+        emission.unwind_tables = keel_codegen::UnwindTables::All;
+    }
+    let result = keel_codegen::Request::new(target, pipeline)
+        .emission(emission)
+        .program_chunks(module, &mut |mut chunk| {
             if let Some(assembler) = &mut assembler {
                 let start = timed.then(std::time::Instant::now);
                 if target == Target::Aarch64AppleDarwin {
@@ -187,8 +300,7 @@ fn compile_object_inner(
                     encoding += start.elapsed();
                 }
             }
-        },
-    );
+        });
     if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
         // Encoding happens inside the codegen callback. Keep the two scopes exclusive.
         timings.codegen = Some(start.elapsed().saturating_sub(encoding));

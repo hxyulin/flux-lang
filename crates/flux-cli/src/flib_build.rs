@@ -54,6 +54,8 @@ pub(crate) fn compile_native(
     externs: &[(String, std::path::PathBuf)],
     native: &flux_codegen::NativeLink,
 ) -> Result<bool, String> {
+    options.validate()?;
+    let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
     let units = crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?;
     let whole_program = kind == CrateType::Bin && *native != Default::default();
     let mut timings = crate::build::Timings::new(options.timings, "compile scoped elapsed");
@@ -146,6 +148,7 @@ pub(crate) fn compile_native(
         state.db.load_with_edition(&input.file, input.edition)?
     };
     state.db.set_debug_assertions(options.debug_assertions());
+    state.db.set_panic_strategy(options.panic_strategy);
     state.db.set_crate_cfg(root, input.cfg.clone())?;
     if let Some(directory) = &input.compilation_dir {
         state.db.set_crate_directory(root, directory.clone())?;
@@ -172,7 +175,7 @@ pub(crate) fn compile_native(
         &state.dependencies,
         &configuration,
     )?;
-    let mut effective_native = native.clone();
+    let mut effective_native = options.native_link(native);
     for library in &hir.items.native_libraries {
         effective_native.add_library(*library);
     }
@@ -232,7 +235,13 @@ pub(crate) fn compile_native(
         return Ok(false);
     }
     let mir = timings.time("mir build + checks", || {
-        flux_mir::build_file_from_owned(&hir, &typed, imported, &roots.functions)
+        flux_mir::build_file_from_owned_with_panic_strategy(
+            &hir,
+            &typed,
+            imported,
+            &roots.functions,
+            options.panic_strategy,
+        )
     });
     errors.extend(mir.diagnostics.iter().cloned());
     if !errors.is_empty() {
@@ -296,19 +305,18 @@ pub(crate) fn compile_native(
             })?;
         let mut module = lowered.module;
         object_requirements = lowered.required_instances;
-        let tier = options.tier();
         let object = if units.get() > 1 {
             timings.time("backend units (parallel inclusive)", || {
-                crate::backend_units::compile(module, units, target, output)
+                crate::backend_units::compile(module, units, target, output, options.panic_strategy)
             })?
         } else {
             let object = if options.timings {
                 let (result, backend) = timings.time("backend (inclusive)", || {
-                    if options.fast_build {
-                        flux_codegen::compile_fast_object_with_timings(&mut module, target)
-                    } else {
-                        flux_codegen::compile_object_with_timings(&mut module, target, tier)
-                    }
+                    flux_codegen::compile_object_with_options_and_timings(
+                        &mut module,
+                        target,
+                        options.object_options(),
+                    )
                 });
                 for (name, duration) in [
                     ("  backend verify", backend.verify),
@@ -321,10 +329,12 @@ pub(crate) fn compile_native(
                     }
                 }
                 result
-            } else if options.fast_build {
-                flux_codegen::compile_fast_object(&mut module, target)
             } else {
-                flux_codegen::compile_object(&mut module, target, tier)
+                flux_codegen::compile_object_with_options(
+                    &mut module,
+                    target,
+                    options.object_options(),
+                )
             };
             vec![object.map_err(|e| e.to_string())?]
         };
@@ -432,6 +442,8 @@ fn configuration(
     aliases: &[(String, [u8; 32])],
     native: &flux_codegen::NativeLink,
 ) -> Result<Vec<u8>, String> {
+    let effective_native = options.native_link(native);
+    let native = &effective_native;
     let mut e = Encoder::new();
     let encode = |result: Result<(), flux_hir::flib::Error>| result.map_err(|e| e.to_string());
     encode("FLIB-REQUEST-v1".encode(&mut e))?;
@@ -482,6 +494,7 @@ fn configuration(
             .encode(&mut e),
     )?;
     encode(options.debug_assertions().encode(&mut e))?;
+    encode(options.panic_strategy.encode(&mut e))?;
     encode(
         match kind {
             CrateType::Bin => 0u8,
@@ -569,6 +582,8 @@ fn freshness_configuration(
     native: &flux_codegen::NativeLink,
     metadata_only: bool,
 ) -> Result<(Vec<u8>, Vec<[u8; 32]>), String> {
+    options.validate()?;
+    let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
     let known = crate::flib::semantic::DependencyState::new()?.dependencies;
     let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
     let artifacts = crate::flib::semantic::resolve_paths(&paths, &known)?;

@@ -26,6 +26,7 @@ fn source_array_lengths_use_imported_mir_and_values_without_inference() {
     let counts = first.items.counts();
     let loaded = LoadedTypes::new(&first.items, typed.sigs, &[(owner, [7; 32])]).unwrap();
     let mut own = flux_mir::FileMir {
+        panic_strategy: flux_mir::PanicStrategy::Abort,
         bodies: Default::default(),
         closures: Default::default(),
         consts: Default::default(),

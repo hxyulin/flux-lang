@@ -17,6 +17,7 @@ pub(super) fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body)
         kind: LocalKind::Temp,
     });
     let blocks: Vec<_> = body.blocks.iter().map(|(block, _)| block).collect();
+    let mut dynamic_drop = None;
     for block in blocks {
         let term = body.blocks[block].terminator.clone();
         let (place, ty, target) = match term.kind {
@@ -67,9 +68,41 @@ pub(super) fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body)
             }
             _ => continue,
         };
-        // Dynamic values still need a vtable call. Preserve that operation
-        // until exceptional indirect calls are supported by the backend.
         if ty.is_dyn() {
+            let intrinsic = *dynamic_drop.get_or_insert_with(|| {
+                items
+                    .functions
+                    .iter()
+                    .find_map(|(id, function)| {
+                        (function.intrinsic == Some(flux_hir::Intrinsic::DropInPlace)).then_some(id)
+                    })
+                    .expect("embedded drop_in_place intrinsic")
+            });
+            let pointer = body.locals.alloc(LocalDecl {
+                ty: Ty::new(TyKind::RawPtr(Mutability::Mut, ty)),
+                kind: LocalKind::Temp,
+            });
+            body.blocks[block].statements.push(Statement {
+                kind: StatementKind::Assign(
+                    pointer.into(),
+                    Rvalue::Ref {
+                        raw: true,
+                        mutability: Mutability::Mut,
+                        place,
+                        two_phase: false,
+                    },
+                ),
+                range: term.range,
+            });
+            body.blocks[block].terminator.kind = TerminatorKind::Call {
+                func: intrinsic,
+                generic_args: Ty::list(&[ty]),
+                args: vec![Operand::Move(pointer.into())],
+                dest: unit.into(),
+                target: Some(target),
+            };
+            body.call_regions.remove(block);
+            body.fn_spans.remove(&block);
             continue;
         }
         let mut glue = Vec::new();
@@ -87,7 +120,7 @@ pub(super) fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body)
         terminator.kind = TerminatorKind::Goto(entry);
         terminator.unwind = UnwindAction::Unreachable;
     }
-    discard_unreachable(body);
+    body.discard_unreachable();
 }
 
 struct Expand<'a> {
@@ -338,27 +371,5 @@ impl Expand<'_> {
             otherwise: element,
             variants: None,
         };
-    }
-}
-
-/// Specialization can remove every drop that led to an exception exit.
-fn discard_unreachable(body: &mut Body) {
-    let mut reached = vec![false; body.blocks.len()];
-    let mut pending = vec![Body::entry()];
-    while let Some(block) = pending.pop() {
-        if std::mem::replace(&mut reached[block.index()], true) {
-            continue;
-        }
-        pending.extend(body.blocks[block].terminator.successors());
-    }
-    for (index, data) in body.blocks.values_mut().enumerate() {
-        let block = BasicBlock::from_raw(index as u32);
-        if !reached[index] {
-            data.statements.clear();
-            data.terminator.kind = TerminatorKind::Unreachable;
-            data.terminator.unwind = UnwindAction::Unreachable;
-            body.call_regions.remove(block);
-            body.fn_spans.remove(&block);
-        }
     }
 }

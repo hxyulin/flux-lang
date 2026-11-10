@@ -28,6 +28,7 @@ pub(crate) fn compile(
     count: NonZeroUsize,
     target: flux_codegen::Target,
     output: &Path,
+    panic_strategy: flux_syntax::PanicStrategy,
 ) -> Result<Vec<Vec<u8>>, String> {
     let modules = flux_codegen::split_fast_module(module, count).map_err(|e| e.to_string())?;
     let units = modules.len();
@@ -72,14 +73,28 @@ pub(crate) fn compile(
                                         && module.debug_language.is_none()
                                 })
                                 .map(|(directory, compiler)| {
-                                    Entry::new(directory, index, compiler, target, &module)
+                                    Entry::new(
+                                        directory,
+                                        index,
+                                        compiler,
+                                        target,
+                                        &module,
+                                        panic_strategy,
+                                    )
                                 });
                             let cached = entry.as_ref().and_then(Entry::read);
                             let hit = cached.is_some();
                             let result = if let Some(bytes) = cached {
                                 Ok(bytes)
                             } else {
-                                flux_codegen::compile_fast_object(&mut module, target)
+                                flux_codegen::compile_object_with_options(
+                                    &mut module,
+                                    target,
+                                    flux_codegen::ObjectOptions {
+                                        optimization: flux_codegen::ObjectOptimization::FastBuild,
+                                        panic_strategy,
+                                    },
+                                )
                             };
                             if !hit && let (Some(entry), Ok(bytes)) = (&entry, &result) {
                                 entry.record(bytes);
@@ -129,6 +144,7 @@ impl Entry {
         compiler: &[u8; 32],
         target: flux_codegen::Target,
         module: &flux_codegen::Module,
+        panic_strategy: flux_syntax::PanicStrategy,
     ) -> Self {
         struct HashText(blake3::Hasher);
         impl std::fmt::Write for HashText {
@@ -142,6 +158,7 @@ impl Entry {
         hash.0.update(b"flux-fast-unit-v1");
         hash.0.update(compiler);
         hash.0.update(target.triple().as_bytes());
+        hash.0.update(panic_strategy.as_str().as_bytes());
         write!(&mut hash, "{module}").expect("hash text writes cannot fail");
         // Target admission checks inspect unused indirect signatures too.
         // Module's text format prints only signatures referenced by the body.
@@ -202,13 +219,29 @@ mod tests {
         assert!(mir.diagnostics.is_empty());
         let mut module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
         let target = flux_codegen::Target::X86_64LinuxGnu;
-        let before = Entry::new(Path::new("cache"), 0, &[0; 32], target, &module).key;
+        let before = Entry::new(
+            Path::new("cache"),
+            0,
+            &[0; 32],
+            target,
+            &module,
+            flux_syntax::PanicStrategy::Abort,
+        )
+        .key;
         let printed = module.to_string();
         let mut signature = module.functions[0].sig.clone();
         signature.variadic = true;
         module.functions[0].import_signature(signature);
         assert_eq!(module.to_string(), printed);
-        let after = Entry::new(Path::new("cache"), 0, &[0; 32], target, &module).key;
+        let after = Entry::new(
+            Path::new("cache"),
+            0,
+            &[0; 32],
+            target,
+            &module,
+            flux_syntax::PanicStrategy::Abort,
+        )
+        .key;
         assert_ne!(before, after);
     }
 }

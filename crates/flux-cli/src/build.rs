@@ -153,6 +153,8 @@ fn compile_host_cached(
     request: CompileRequest<'_>,
     generated: Option<(&str, &str)>,
 ) -> Result<bool, String> {
+    request.options.validate()?;
+    let _strategy = crate::builtins::strategy_scope(request.options.panic_strategy)?;
     let cache = crate::host_cache::HostCache::new(&request, generated)?;
     if let Some(cache) = &cache
         && cache.is_fresh(&request)?
@@ -178,6 +180,8 @@ fn compile_inner(
     generated: Option<&str>,
     cache: Option<(&crate::host_cache::HostCache, Option<&str>)>,
 ) -> Result<bool, String> {
+    request.options.validate()?;
+    let _strategy = crate::builtins::strategy_scope(request.options.panic_strategy)?;
     let cache_request = &request;
     let mut linked_inputs = None;
     let CompileRequest {
@@ -188,7 +192,7 @@ fn compile_inner(
         sources,
         native,
     } = &request;
-    let mut native = native.clone();
+    let mut native = options.native_link(native);
     let (file, crate_name, output, options, sources) =
         (*file, *crate_name, *output, *options, *sources);
     let suite = crate::builtins::active();
@@ -196,6 +200,7 @@ fn compile_inner(
     let (mut db, root) = timings.time("database + root load/parse", || {
         let mut db = suite.map_or_else(SourceDb::new, |s| s.db.fork());
         db.set_debug_assertions(options.debug_assertions());
+        db.set_panic_strategy(options.panic_strategy);
         let edition = sources
             .last()
             .map_or(flux_syntax::Edition::E2024, |s| s.edition);
@@ -206,7 +211,10 @@ fn compile_inner(
         (db, root)
     });
     let root = root?;
-    if sources.is_empty() && !options.debug_assertions() {
+    if sources.is_empty()
+        && (!options.debug_assertions()
+            || options.panic_strategy != flux_syntax::PanicStrategy::Abort)
+    {
         // A lone root is otherwise left unconfigured, which keeps them on.
         db.set_crate_cfg(root, flux_hir::CrateCfg::default())?;
     }
@@ -293,14 +301,15 @@ fn compile_inner(
     } else {
         let mir = timings.time("mir build + checks", || {
             if let Some((_, imported)) = &providers {
-                flux_mir::build_file_from(
+                flux_mir::build_file_from_with_panic_strategy(
                     &hir,
                     &typed,
                     imported,
                     &roots.as_ref().expect("provider roots").functions,
+                    options.panic_strategy,
                 )
             } else {
-                flux_mir::build_file(&hir, &typed)
+                flux_mir::build_file_with_panic_strategy(&hir, &typed, options.panic_strategy)
             }
         });
         errors.extend(mir.diagnostics.iter().cloned());
@@ -362,19 +371,24 @@ fn compile_inner(
                     return Ok(false);
                 }
             };
-            let tier = options.tier();
             let objects = if units.get() > 1 {
                 timings.time("backend units (parallel inclusive)", || {
-                    crate::backend_units::compile(module, units, target, output)
+                    crate::backend_units::compile(
+                        module,
+                        units,
+                        target,
+                        output,
+                        options.panic_strategy,
+                    )
                 })?
             } else {
                 let object = if options.timings {
                     let (result, backend) = timings.time("backend (inclusive)", || {
-                        if options.fast_build {
-                            flux_codegen::compile_fast_object_with_timings(&mut module, target)
-                        } else {
-                            flux_codegen::compile_object_with_timings(&mut module, target, tier)
-                        }
+                        flux_codegen::compile_object_with_options_and_timings(
+                            &mut module,
+                            target,
+                            options.object_options(),
+                        )
                     });
                     for (name, duration) in [
                         ("  backend verify", backend.verify),
@@ -388,11 +402,11 @@ fn compile_inner(
                     }
                     result.map_err(|error| error.to_string())?
                 } else {
-                    let result = if options.fast_build {
-                        flux_codegen::compile_fast_object(&mut module, target)
-                    } else {
-                        flux_codegen::compile_object(&mut module, target, tier)
-                    };
+                    let result = flux_codegen::compile_object_with_options(
+                        &mut module,
+                        target,
+                        options.object_options(),
+                    );
                     result.map_err(|error| error.to_string())?
                 };
                 vec![object]

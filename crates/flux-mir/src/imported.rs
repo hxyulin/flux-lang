@@ -64,6 +64,9 @@ impl ImportedMir {
         if !items.has_artifact_builtins() {
             return Err(Error::new("expected authenticated built-in metadata"));
         }
+        if mir.panic_strategy != suite.panic_strategy {
+            return Err(Error::new("panic strategy mismatch in built-in MIR"));
+        }
         let mut imported = Self::new(mir, items.counts())?;
         if suite
             .bodies
@@ -269,6 +272,10 @@ impl ImportedMir {
 
     /// Compatibility for callers retaining a borrowed provider after MIR construction.
     pub(crate) fn copy_bodies_into(&self, target: &mut FileMir) {
+        assert_eq!(
+            self.mir.panic_strategy, target.panic_strategy,
+            "checked dependency strategy"
+        );
         for (id, body) in self.mir.bodies.iter() {
             target.bodies.insert(id, body.clone());
         }
@@ -282,6 +289,10 @@ impl ImportedMir {
 
     /// Code generation needs the full graph; moving it here avoids copies while checking.
     pub(crate) fn finish(self, source: FileMir) -> FileMir {
+        assert_eq!(
+            self.mir.panic_strategy, source.panic_strategy,
+            "checked dependency strategy"
+        );
         fn append<T, V>(
             base: &mut flux_arena::ArenaMap<T, V>,
             mut source: flux_arena::ArenaMap<T, V>,
@@ -311,6 +322,11 @@ impl ImportedMir {
     /// Copies checked dependency MIR into a fresh compilation's evaluation tables.
     /// Existing entries are errors rather than silently replacing checked bodies.
     pub fn seed_into(&self, target: &mut FileMir) -> Result<(), Error> {
+        if self.mir.panic_strategy != target.panic_strategy {
+            return Err(Error::new(
+                "panic strategy mismatch in checked dependency MIR",
+            ));
+        }
         if self
             .mir
             .bodies
@@ -420,8 +436,28 @@ impl<'a> SharedMir<'a> {
         imported: Option<&'a ImportedMir>,
         owner: ClosureOwner,
     ) -> Option<Self> {
-        if let Some(library) =
-            crate::library::LibraryMir::of(hir).filter(|library| library.owns(owner))
+        Self::of_with_strategy(
+            hir,
+            imported,
+            owner,
+            imported.map_or(crate::PanicStrategy::Abort, |imported| {
+                imported.mir.panic_strategy
+            }),
+        )
+    }
+
+    pub(crate) fn of_with_strategy(
+        hir: &flux_hir::Hir,
+        imported: Option<&'a ImportedMir>,
+        owner: ClosureOwner,
+        strategy: crate::PanicStrategy,
+    ) -> Option<Self> {
+        assert!(
+            imported.is_none_or(|imported| imported.mir.panic_strategy == strategy),
+            "dependency compatibility must be checked before importing MIR"
+        );
+        if let Some(library) = crate::library::LibraryMir::of_with_strategy(hir, strategy)
+            .filter(|library| library.owns(owner))
         {
             Some(Self::Library(library))
         } else {

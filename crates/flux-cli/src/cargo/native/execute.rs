@@ -71,6 +71,7 @@ pub(super) fn run(
         )?,
     };
     let build = build.map(|b| crate::BuildOptions {
+        panic_strategy: flux_syntax::PanicStrategy::Abort,
         debug_assertions: Some(debug_assertions),
         ..b
     });
@@ -365,6 +366,7 @@ fn flux_unit(
         sources: &sources,
         native,
         options: crate::BuildOptions {
+            panic_strategy: flux_syntax::PanicStrategy::Abort,
             optimize: false,
             fast_build: false,
             timings: false,

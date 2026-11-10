@@ -5,7 +5,7 @@ use crate::{build, builtins, cargo, flib_build};
 
 use clap::{Parser, Subcommand};
 use flux_hir::{Diagnostic, Hir, SourceDb};
-use flux_syntax::{LexedStr, TextRange};
+use flux_syntax::{LexedStr, PanicStrategy, TextRange};
 
 #[derive(Parser)]
 #[command(name = "fluxc", version, about = "The flux compiler")]
@@ -27,6 +27,8 @@ enum Command {
     Print {
         #[arg(value_enum)]
         kind: PrintKind,
+        #[command(flatten)]
+        codegen: CodegenArgs,
     },
     /// Stage checked built-in types and MIR beside the compiler executable.
     BuildBuiltins {
@@ -35,6 +37,8 @@ enum Command {
         native_object: bool,
         #[arg(short = 'O')]
         optimize: bool,
+        #[command(flatten)]
+        codegen: CodegenArgs,
     },
     /// Print the tokens of a file, trivia included.
     Lex { file: PathBuf },
@@ -69,13 +73,13 @@ enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
         #[command(flatten)]
-        options: BuildOptions,
+        options: BuildArgs,
     },
     /// Compile a program and run it, exiting with its exit code.
     Run {
         file: PathBuf,
         #[command(flatten)]
-        options: BuildOptions,
+        options: BuildArgs,
         /// Arguments for the program.
         #[arg(last = true)]
         args: Vec<String>,
@@ -94,26 +98,61 @@ pub(crate) enum CrateType {
     Lib,
 }
 
-#[derive(clap::Args, Clone, Copy)]
-pub(crate) struct BuildOptions {
+#[derive(clap::Args, Clone)]
+struct CodegenArgs {
+    /// Codegen options: debug-assertions[=yes|no] and panic=abort|unwind.
+    #[arg(short = 'C', value_name = "OPT[=VALUE]", value_parser = parse_codegen_option)]
+    options: Vec<CodegenOption>,
+}
+#[derive(Clone, Copy)]
+enum CodegenOption {
+    DebugAssertions(bool),
+    Panic(PanicStrategy),
+}
+impl CodegenArgs {
+    fn apply(&self, options: &mut BuildOptions) {
+        for &option in &self.options {
+            match option {
+                CodegenOption::DebugAssertions(value) => options.debug_assertions = Some(value),
+                CodegenOption::Panic(strategy) => options.panic_strategy = strategy,
+            }
+        }
+    }
+}
+#[derive(clap::Args, Clone)]
+struct BuildArgs {
     /// Optimize with keel's full pipeline.
     #[arg(short = 'O')]
-    pub(crate) optimize: bool,
+    optimize: bool,
     /// Use a short optimization pipeline for faster builds.
     #[arg(long, conflicts_with = "optimize")]
-    pub(crate) fast_build: bool,
-    /// Print scoped compilation timings (excludes execution of the program).
+    fast_build: bool,
+    /// Print scoped compilation timings (excludes execution).
     #[arg(long)]
+    timings: bool,
+    #[command(flatten)]
+    codegen: CodegenArgs,
+}
+impl BuildArgs {
+    fn resolve(&self) -> BuildOptions {
+        let mut options = BuildOptions {
+            optimize: self.optimize,
+            fast_build: self.fast_build,
+            timings: self.timings,
+            debug_assertions: None,
+            panic_strategy: PanicStrategy::Abort,
+        };
+        self.codegen.apply(&mut options);
+        options
+    }
+}
+#[derive(Clone, Copy)]
+pub(crate) struct BuildOptions {
+    pub(crate) optimize: bool,
+    pub(crate) fast_build: bool,
     pub(crate) timings: bool,
-    /// Codegen option, as rustc's: only `debug-assertions[=yes|no]`, which
-    /// is on by default without `-O` and off with it.
-    #[arg(
-        short = 'C',
-        value_name = "OPT[=VALUE]",
-        value_parser = parse_codegen_option,
-        overrides_with = "debug_assertions"
-    )]
     pub(crate) debug_assertions: Option<bool>,
+    pub(crate) panic_strategy: PanicStrategy,
 }
 
 impl BuildOptions {
@@ -136,6 +175,38 @@ impl BuildOptions {
         }
     }
 
+    pub(crate) fn object_options(&self) -> flux_codegen::ObjectOptions {
+        flux_codegen::ObjectOptions {
+            optimization: if self.fast_build {
+                flux_codegen::ObjectOptimization::FastBuild
+            } else {
+                flux_codegen::ObjectOptimization::Tier(self.tier())
+            },
+            panic_strategy: self.panic_strategy,
+        }
+    }
+    pub(crate) fn native_link(
+        &self,
+        native: &flux_codegen::NativeLink,
+    ) -> flux_codegen::NativeLink {
+        let mut native = native.clone();
+        if self.panic_strategy == PanicStrategy::Unwind {
+            native.add_library(flux_hir::NativeLibrary {
+                name: flux_intern::Symbol::intern("c++"),
+                kind: flux_hir::NativeKind::Dylib,
+            });
+        }
+        native
+    }
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.panic_strategy == PanicStrategy::Unwind
+            && !cfg!(all(target_arch = "aarch64", target_os = "macos"))
+        {
+            return Err("panic=unwind is supported only for arm64 macOS".into());
+        }
+        Ok(())
+    }
+
     pub(crate) fn profile_name(&self) -> &'static str {
         if self.fast_build {
             "fast"
@@ -148,14 +219,23 @@ impl BuildOptions {
 }
 
 /// Parses `-C debug-assertions[=VALUE]` with rustc's boolean spellings.
-fn parse_codegen_option(text: &str) -> Result<bool, String> {
+fn parse_codegen_option(text: &str) -> Result<CodegenOption, String> {
     let (name, value) = text.split_once('=').unwrap_or((text, "yes"));
+    if name == "panic" {
+        return match value {
+            "abort" => Ok(CodegenOption::Panic(PanicStrategy::Abort)),
+            "unwind" => Ok(CodegenOption::Panic(PanicStrategy::Unwind)),
+            _ => Err(format!(
+                "expected `abort` or `unwind` for `panic`, found `{value}`"
+            )),
+        };
+    }
     if name != "debug-assertions" {
         return Err(format!("unsupported codegen option `{name}`"));
     }
     match value {
-        "y" | "yes" | "on" | "true" => Ok(true),
-        "n" | "no" | "off" | "false" => Ok(false),
+        "y" | "yes" | "on" | "true" => Ok(CodegenOption::DebugAssertions(true)),
+        "n" | "no" | "off" | "false" => Ok(CodegenOption::DebugAssertions(false)),
         _ => Err(format!(
             "expected `yes` or `no` for `debug-assertions`, found `{value}`"
         )),
@@ -168,14 +248,25 @@ pub fn compiler_main() -> ExitCode {
         return crate::probe::run();
     }
     let cli = Cli::parse();
-    if let Command::Print { kind } = &cli.command {
+    if let Command::Print { kind, codegen } = &cli.command {
+        let mut options = BuildOptions {
+            optimize: false,
+            fast_build: false,
+            timings: false,
+            debug_assertions: None,
+            panic_strategy: PanicStrategy::Abort,
+        };
+        codegen.apply(&mut options);
         let result = match kind {
             PrintKind::Host => crate::target::host().map(|host| println!("{host}")),
-            PrintKind::Cfg => crate::target::cfg(true).map(|cfg| {
-                for line in cfg {
-                    println!("{line}");
-                }
-            }),
+            PrintKind::Cfg => {
+                crate::target::cfg_with_panic(options.debug_assertions(), options.panic_strategy)
+                    .map(|cfg| {
+                        for line in cfg {
+                            println!("{line}");
+                        }
+                    })
+            }
         };
         return match result {
             Ok(()) => ExitCode::SUCCESS,
@@ -194,8 +285,13 @@ pub fn compiler_main() -> ExitCode {
             | Command::Lex { .. }
             | Command::Parse { .. }
             | Command::Check { .. }
-    ) && let Err(message) = crate::builtins::initialize()
-    {
+            | Command::BuildUnit { .. }
+    ) && let Err(message) = crate::builtins::initialize_for_strategy(match &cli.command {
+        Command::Build { options, .. } | Command::Run { options, .. } => {
+            options.resolve().panic_strategy
+        }
+        _ => PanicStrategy::Abort,
+    }) {
         eprintln!("error: {message}");
         return ExitCode::from(2);
     }
@@ -205,7 +301,7 @@ pub fn compiler_main() -> ExitCode {
         args,
     } = &cli.command
     {
-        return match build::run(file, *options, args) {
+        return match build::run(file, options.resolve(), args) {
             Ok(code) => code,
             Err(message) => {
                 eprintln!("error: {message}");
@@ -230,8 +326,21 @@ fn run(command: Command) -> Result<bool, String> {
         Command::BuildBuiltins {
             native_object,
             optimize,
+            codegen,
         } => {
-            let path = crate::builtins::stage(native_object, optimize)?;
+            let mut options = BuildOptions {
+                optimize,
+                fast_build: false,
+                timings: false,
+                debug_assertions: None,
+                panic_strategy: PanicStrategy::Abort,
+            };
+            codegen.apply(&mut options);
+            let path = crate::builtins::stage_with_strategy(
+                native_object,
+                optimize,
+                options.panic_strategy,
+            )?;
             println!("{}", path.display());
             Ok(true)
         }
@@ -323,6 +432,7 @@ fn run(command: Command) -> Result<bool, String> {
             metadata_only,
             externs,
         } => {
+            let options = options.resolve();
             let name = crate_name.unwrap_or_else(|| build::crate_name(&file));
             if crate_type == CrateType::Lib {
                 let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.flib")));

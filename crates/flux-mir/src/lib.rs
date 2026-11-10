@@ -98,8 +98,11 @@ pub fn discriminant_bits(
 }
 
 pub use build::{
-    build, build_file, build_file_from, build_file_from_owned, build_file_with_roots,
-    build_with_panic_strategy, check_clean_bodies, check_clean_bodies_from,
+    build, build_closure_with_panic_strategy, build_file, build_file_from, build_file_from_owned,
+    build_file_from_owned_with_panic_strategy, build_file_from_with_panic_strategy,
+    build_file_with_panic_strategy, build_file_with_roots,
+    build_file_with_roots_and_panic_strategy, build_with_panic_strategy, check_clean_bodies,
+    check_clean_bodies_from, closure_shims_with_panic_strategy,
 };
 pub use lens::{check_file, check_file_from};
 
@@ -136,11 +139,11 @@ pub struct Body {
     /// functions' wrap, as flux compiles them with overflow checks off;
     /// constants' are always checked.
     pub inherits_overflow_checks: bool,
-    /// The drops as built that may find a value, with where it was made
+    /// The drops reached by normal control flow that may find a value, with where it was made
     /// and the type of the place dropped, before [`drops`] split or
     /// guarded them: what E0493 reports in a constant or `const fn`,
     /// which may not drop anything whose `drop` runs code, even part of
-    /// it.
+    /// it. Unwind-only drops never execute during constant evaluation.
     pub live_drops: Vec<(TextRange, Ty)>,
     /// What [`init`] found, before drop elaboration added the tests of
     /// the variants enums hold to drop what they still hold, as rustc
@@ -178,6 +181,30 @@ impl Body {
                     TerminatorKind::UnwindResume | TerminatorKind::UnwindTerminate
                 )
         })
+    }
+    /// Make unreachable blocks inert without changing block indices.
+    pub(crate) fn discard_unreachable(&mut self) {
+        if self.blocks.is_empty() {
+            return;
+        }
+        let mut reached = vec![false; self.blocks.len()];
+        let mut pending = vec![Body::entry()];
+        while let Some(block) = pending.pop() {
+            if std::mem::replace(&mut reached[block.index()], true) {
+                continue;
+            }
+            pending.extend(self.blocks[block].terminator.successors());
+        }
+        for (index, data) in self.blocks.values_mut().enumerate() {
+            let block = BasicBlock::from_raw(index as u32);
+            if !reached[index] {
+                data.statements.clear();
+                data.terminator.kind = TerminatorKind::Unreachable;
+                data.terminator.unwind = UnwindAction::Unreachable;
+                self.call_regions.remove(block);
+                self.fn_spans.remove(&block);
+            }
+        }
     }
 }
 
@@ -836,15 +863,7 @@ pub struct Terminator {
     pub range: TextRange,
 }
 
-/// Panic behavior used while building MIR. Runtime unwind lowering is not enabled yet.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum PanicStrategy {
-    /// Panics abort without running local cleanup.
-    #[default]
-    Abort,
-    /// Panics transfer ownership to cleanup before propagating to the caller.
-    Unwind,
-}
+pub use flux_syntax::PanicStrategy;
 
 /// The exceptional exit of a call, drop, or assertion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -992,8 +1011,10 @@ impl TerminatorKind {
 }
 
 /// The MIR of a file: one body per function with a body.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct FileMir {
+    /// Semantic build mode, including generated bodies that have no source calls.
+    pub panic_strategy: PanicStrategy,
     pub bodies: flux_arena::ArenaMap<flux_hir::Function, Body>,
     /// Each closure's body, as the method of each `Fn`-family trait it
     /// implements: its own kind's, built from its expression and

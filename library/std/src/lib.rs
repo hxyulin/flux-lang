@@ -21,21 +21,7 @@ pub use core::{slice, str, i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u1
 
 mod float;
 
-/// Panic support. Flux compiles with panic=abort, so no panic reaches a
-/// caller of catch_unwind.
-pub mod panic {
-    pub use core::panic::*;
-    /// Calls `f`. A panic inside it aborts the process, as under rustc's
-    /// panic=abort, so the result is always Ok.
-    pub fn catch_unwind<F: FnOnce() -> R + UnwindSafe, R>(f: F) -> crate::thread::Result<R> {
-        Ok(f())
-    }
-    /// Aborts the process: with panic=abort there is no unwinding to resume.
-    pub fn resume_unwind(payload: crate::boxed::Box<dyn core::any::Any + Send>) -> ! {
-        drop(payload);
-        core::panicking::abort_now()
-    }
-}
+pub mod panic;
 
 pub mod arch;
 

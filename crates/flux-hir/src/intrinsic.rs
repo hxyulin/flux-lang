@@ -113,6 +113,8 @@ intrinsics! {
     CoroutineDrop => "__coroutine_drop",
     SizedDispatch => "__sized_dispatch",
     BoxCallOnce => "__box_call_once",
+    PanicUnwindEnabled => "__panic_unwind_enabled",
+    PanicCatch => "__panic_catch",
     NeonVld1U8 => "__neon_vld1_u8",
     NeonVst1U8 => "__neon_vst1_u8",
     NeonVdupNU8 => "__neon_vdup_n_u8",

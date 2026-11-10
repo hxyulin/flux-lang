@@ -370,11 +370,14 @@ pub(super) fn check_c_abi(
     errors
 }
 
-pub(super) fn attrs(sig: &FnSig) -> FunctionAttrs {
+pub(super) fn attrs(
+    sig: &FnSig,
+    strategy: flux_mir::PanicStrategy,
+    abi: flux_hir::Abi,
+) -> FunctionAttrs {
     FunctionAttrs {
         noreturn: sig.ret == Ty::NEVER,
-        // Flux has no unwinding: a panic aborts.
-        nounwind: true,
+        nounwind: strategy == flux_mir::PanicStrategy::Abort || !abi.can_unwind(),
         ..FunctionAttrs::default()
     }
 }

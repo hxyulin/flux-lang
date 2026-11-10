@@ -840,16 +840,49 @@ impl Encode for flux_syntax::CfgOptions {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.names.encode(e)?;
         self.values.encode(e)?;
-        self.debug_assertions.encode(e)
+        // Abort retains the old boolean bytes. Bit one adds unwind without
+        // changing existing default syntax metadata.
+        (u8::from(self.debug_assertions)
+            | (u8::from(self.panic_strategy == flux_syntax::PanicStrategy::Unwind) << 1))
+            .encode(e)
     }
 }
 impl Decode for flux_syntax::CfgOptions {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        let names = Decode::decode(d)?;
+        let values = Decode::decode(d)?;
+        let flags = u8::decode(d)?;
+        if flags & !3 != 0 {
+            return Err(Error::new("invalid syntax configuration flags"));
+        }
         Ok(Self {
-            names: Decode::decode(d)?,
-            values: Decode::decode(d)?,
-            debug_assertions: Decode::decode(d)?,
+            names,
+            values,
+            debug_assertions: flags & 1 != 0,
+            panic_strategy: if flags & 2 == 0 {
+                flux_syntax::PanicStrategy::Abort
+            } else {
+                flux_syntax::PanicStrategy::Unwind
+            },
         })
+    }
+}
+impl Encode for flux_syntax::PanicStrategy {
+    fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        match self {
+            Self::Abort => 0u8,
+            Self::Unwind => 1u8,
+        }
+        .encode(e)
+    }
+}
+impl Decode for flux_syntax::PanicStrategy {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        match u8::decode(d)? {
+            0 => Ok(Self::Abort),
+            1 => Ok(Self::Unwind),
+            _ => Err(Error::new("invalid panic strategy")),
+        }
     }
 }
 

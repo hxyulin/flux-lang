@@ -11,6 +11,13 @@ pub(crate) fn host() -> Result<&'static str, String> {
 
 /// The target's cfg names and values, as `rustc --print cfg` prints them.
 pub(crate) fn cfg(debug_assertions: bool) -> Result<BTreeSet<String>, String> {
+    cfg_with_panic(debug_assertions, flux_syntax::PanicStrategy::Abort)
+}
+
+pub(crate) fn cfg_with_panic(
+    debug_assertions: bool,
+    strategy: flux_syntax::PanicStrategy,
+) -> Result<BTreeSet<String>, String> {
     host()?;
     let macos = std::env::consts::OS == "macos";
     let mut result = BTreeSet::from(["unix".into()]);
@@ -26,7 +33,7 @@ pub(crate) fn cfg(debug_assertions: bool) -> Result<BTreeSet<String>, String> {
         ("target_abi", ""),
         ("target_endian", "little"),
         ("target_pointer_width", "64"),
-        ("panic", "abort"),
+        ("panic", strategy.as_str()),
     ] {
         result.insert(format!("{name}={value:?}"));
     }

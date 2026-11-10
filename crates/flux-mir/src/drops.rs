@@ -54,6 +54,21 @@ pub(crate) fn elaborate(
     precise: bool,
 ) {
     let unwinding = body.has_unwind();
+    // Constant evaluation reports a panic without unwinding. Cleanup-only
+    // drops must not cause E0493 in otherwise valid const functions.
+    let normal = unwinding.then(|| {
+        let mut reached = vec![false; body.blocks.len()];
+        let mut pending = vec![Body::entry()];
+        while let Some(block) = pending.pop() {
+            if std::mem::replace(&mut reached[block.index()], true) {
+                continue;
+            }
+            pending.extend(body.blocks[block].terminator.kind.successors());
+        }
+        reached
+    });
+    let const_reachable =
+        |block: BasicBlock| normal.as_ref().is_none_or(|reached| reached[block.index()]);
     let mut roots = FxHashSet::default();
     for data in body.blocks.values() {
         if let TerminatorKind::Drop { place, .. } = &data.terminator.kind
@@ -66,8 +81,9 @@ pub(crate) fn elaborate(
         // Only drops through pointers, which always find a value.
         body.live_drops = body
             .blocks
-            .values()
-            .filter_map(|data| match &data.terminator.kind {
+            .iter()
+            .filter(|(block, _)| const_reachable(*block))
+            .filter_map(|(_, data)| match &data.terminator.kind {
                 TerminatorKind::Drop { place, .. } => {
                     Some((data.terminator.range, body.place_ty(place, sigs)))
                 }
@@ -99,7 +115,9 @@ pub(crate) fn elaborate(
         };
         let live = (data.terminator.range, body.place_ty(place, sigs));
         let Some((path, false)) = paths.find(place) else {
-            body.live_drops.push(live);
+            if const_reachable(block) {
+                body.live_drops.push(live);
+            }
             continue;
         };
         let mut steps = Vec::new();
@@ -109,7 +127,10 @@ pub(crate) fn elaborate(
                     paths.apply(&mut state, &event, true);
                 }
             }
-            if !precise && paths.subtree(path).any(|p| state.maybe_held[p]) {
+            if const_reachable(block)
+                && !precise
+                && paths.subtree(path).any(|p| state.maybe_held[p])
+            {
                 body.live_drops.push(live);
             }
             let ty = body.place_ty(place, sigs);
@@ -123,7 +144,7 @@ pub(crate) fn elaborate(
                 variants: Vec::new(),
             };
             open.drop(path, place.clone(), ty);
-            if precise && !steps.is_empty() {
+            if const_reachable(block) && precise && !steps.is_empty() {
                 body.live_drops.push(live);
             }
         }

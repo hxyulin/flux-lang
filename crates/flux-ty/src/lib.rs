@@ -787,6 +787,29 @@ pub fn core_roots(items: &ItemTree) -> Vec<FunctionId> {
     roots
 }
 
+/// Compiler-invoked unwind runtime entry points in the trusted library prefix.
+/// Type checking validates them even before a MIR strategy selects their code.
+pub fn unwind_runtime_roots(items: &ItemTree) -> Vec<FunctionId> {
+    items
+        .functions
+        .iter()
+        .filter_map(|(id, function)| {
+            (id.into_raw() < items.core.functions
+                && !function.is_extern
+                && matches!(
+                    function.link_name.map(|name| name.as_str()),
+                    Some(
+                        "__flux_panic_str"
+                            | "__flux_panic_fmt"
+                            | "__flux_eh_personality"
+                            | "__flux_panic_finish"
+                    )
+                ))
+            .then_some(id)
+        })
+        .collect()
+}
+
 /// `Deref::deref`, or `DerefMut::deref_mut` for `Mut`: what an
 /// overloaded dereference calls.
 pub fn deref_fn(items: &ItemTree, mutability: Mutability) -> Option<FunctionId> {
@@ -924,6 +947,7 @@ fn check(
     // functions code generation calls, then the program's bodies, then
     // the `core` bodies they reach.
     queue.extend(core_roots(items));
+    queue.extend(unwind_runtime_roots(items));
     queue.extend_from_slice(required_functions);
     queue.extend(entry::main_runner(items, &sigs));
     queue.extend(

@@ -1167,6 +1167,12 @@ fn encode_map<K: FlibItem, V: Encode>(map: &ArenaMap<K, V>, e: &mut Encoder) -> 
 }
 fn decode_map<K: FlibItem, V: Decode>(d: &mut Decoder<'_>) -> Result<ArenaMap<K, V>, Error> {
     let n = d.length()?;
+    decode_map_entries(d, n)
+}
+fn decode_map_entries<K: FlibItem, V: Decode>(
+    d: &mut Decoder<'_>,
+    n: usize,
+) -> Result<ArenaMap<K, V>, Error> {
     let mut map = ArenaMap::new();
     for _ in 0..n {
         let key = Idx::<K>::decode(d)?;
@@ -1428,6 +1434,12 @@ impl FileMir {
             .iter()
             .filter(|(id, _)| e.ids.contains_owned(IdKind::Function, id.into_raw()))
             .collect();
+        if self.panic_strategy == PanicStrategy::Unwind {
+            // A reserved count introduces strategy-tagged MIR. Abort keeps its
+            // original byte stream; legacy decoders reject the reserved count.
+            u32::MAX.encode(e)?;
+            self.panic_strategy.encode(e)?;
+        }
         bodies.len().encode(e)?;
         for (id, body) in bodies {
             id.encode(e)?;
@@ -1507,7 +1519,24 @@ impl FileMir {
         sigs: &Signatures,
     ) -> Result<(), Error> {
         let check_types = !d.mir_typing_staged();
-        let bodies = decode_map::<flux_hir::Function, Body>(d)?;
+        let prefix = u32::decode(d)?;
+        let (strategy, count) = if prefix == u32::MAX {
+            let strategy = PanicStrategy::decode(d)?;
+            if strategy != PanicStrategy::Unwind {
+                return Err(Error::new("noncanonical MIR strategy header"));
+            }
+            (strategy, d.length()?)
+        } else {
+            let count = prefix as usize;
+            if count > flux_hir::flib::MAX_RECORD_LENGTH || count > d.remaining() {
+                return Err(Error::new("metadata allocation limit exceeded"));
+            }
+            (PanicStrategy::Abort, count)
+        };
+        if strategy != self.panic_strategy {
+            return Err(Error::new("panic strategy mismatch in MIR metadata"));
+        }
+        let bodies = decode_map_entries::<flux_hir::Function, Body>(d, count)?;
         for (id, body) in bodies.iter() {
             if body.owner != Some(id) || body.constant_owner.is_some() {
                 return Err(Error::new("MIR function owner mismatch"));

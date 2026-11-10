@@ -4380,6 +4380,7 @@ impl Ctx<'_> {
         let at = self.source_map.segments.get(callee).copied();
         let at = at.unwrap_or_else(|| self.range(callee));
         self.hint_closure_args(function, &generic_args, &sig.params, args, at);
+        self.hint_unsizing_constructor(id, sig.ret, &sig.params, args);
         // Closures last, as rustc checks them, so that the other
         // arguments may tell their parameters' types.
         for closures in [false, true] {
@@ -6950,6 +6951,25 @@ impl Ctx<'_> {
                 && !self.unknown(var).0
             {
                 self.set_var(var, VarValue::Known(Ty::NEVER));
+            }
+        }
+        // Resolve unconstrained outputs fed only by divergence before trait
+        // obligations ask whether their fallback type implements a bound.
+        for index in 0..self.vars.len() {
+            if matches!(
+                self.vars[index].0,
+                VarValue::Unknown {
+                    int: false,
+                    float: false,
+                    diverging: true
+                }
+            ) {
+                let fallback = if self.items.edition(self.module) == flux_syntax::Edition::E2024 {
+                    Ty::NEVER
+                } else {
+                    Ty::UNIT
+                };
+                self.set_var(InferVar(index as u32), VarValue::Known(fallback));
             }
         }
         self.finish_obligations(&mut reported);

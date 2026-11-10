@@ -486,6 +486,7 @@ impl Ctx<'_> {
         expr: ExprId,
     ) -> bool {
         let range = self.range(expr);
+        let source = self.shallow(source);
         let mut callable_source = source;
         while let TyKind::Ref(_, inner) = callable_source.kind() {
             callable_source = inner;

@@ -2,11 +2,15 @@
 use crate::{
     AggregateKind, AssertMessage, BasicBlock, BasicBlockData, Body, Constant, FileMir, Local,
     LocalDecl, LocalKind, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind,
-    Terminator, TerminatorKind,
+    Terminator, TerminatorKind, UnwindAction,
 };
 use flux_hir::{Hir, Intrinsic, ItemTree};
 use flux_intern::Symbol;
 use flux_ty::{ClosureArgs, ClosureKind, Instance, IntTy, Mutability, Signatures, Ty, TyKind};
+
+// Suspension indices start at one; these states have no remaining scoped values.
+const COMPLETE: u64 = u64::MAX;
+const POISONED: u64 = u64::MAX - 1;
 
 fn lang(items: &ItemTree, name: &str) -> flux_hir::FunctionId {
     items.lang_fns[&Symbol::intern(name)]
@@ -47,16 +51,13 @@ struct Source {
     body: Body,
     frame: Ty,
     awaits: Vec<(BasicBlock, BasicBlock)>,
+    panic_strategy: crate::PanicStrategy,
 }
 fn source(hir: &Hir, sigs: &Signatures, mir: &FileMir, capture: Ty) -> Source {
     let TyKind::Closure(id, args) = capture.kind() else {
         panic!("coroutine capture is a closure");
     };
     let template = &mir.closures[&(id, ClosureKind::FnOnce)];
-    assert!(
-        !template.has_unwind(),
-        "unwind coroutine lowering is not implemented yet"
-    );
     let body = crate::mono::subst_body(hir, sigs, template, ClosureArgs::split(args).parent);
     let mut fields = vec![Ty::int(IntTy::Usize)];
     fields.extend(body.locals.values().map(|local| local.ty));
@@ -88,6 +89,7 @@ fn source(hir: &Hir, sigs: &Signatures, mir: &FileMir, capture: Ty) -> Source {
         })
         .collect();
     Source {
+        panic_strategy: mir.panic_strategy,
         body,
         frame: Ty::tuple(&fields),
         awaits,
@@ -344,6 +346,7 @@ fn resume(
     source: &Source,
     dropping: bool,
 ) -> Body {
+    let unwinding = source.panic_strategy == crate::PanicStrategy::Unwind;
     let signature =
         flux_solve::traits::instance_sig(&hir.items, sigs, instance.function, instance.args);
     let mut body = Body::empty(source.body.owner);
@@ -391,6 +394,12 @@ fn resume(
         }
         let mut terminator = data.terminator.clone();
         rebase.terminator(&mut terminator.kind, &mut statements);
+        if let UnwindAction::Cleanup(target) = &mut terminator.unwind {
+            *target = BasicBlock::from_raw(target.into_raw() + 1);
+        }
+        if unwinding && !dropping && matches!(terminator.kind, TerminatorKind::UnwindResume) {
+            statements.push(assign(state(pointer), Rvalue::Use(number(POISONED))));
+        }
         body.blocks.alloc(BasicBlockData {
             statements,
             terminator,
@@ -422,6 +431,22 @@ fn resume(
             )],
             TerminatorKind::Return,
         );
+        let free_unwind = if unwinding {
+            let resume = block(&mut body, vec![], TerminatorKind::UnwindResume);
+            Some(block(
+                &mut body,
+                vec![],
+                TerminatorKind::Call {
+                    func: lang(&hir.items, "coroutine_free"),
+                    generic_args: &[],
+                    args: vec![Operand::Copy(Local::from_raw(1).into())],
+                    dest: Body::RETURN.into(),
+                    target: Some(resume),
+                },
+            ))
+        } else {
+            None
+        };
         let unstarted = block(
             &mut body,
             vec![],
@@ -430,6 +455,9 @@ fn resume(
                 target: free,
             },
         );
+        if let Some(free_unwind) = free_unwind {
+            body.blocks[unstarted].terminator.unwind = UnwindAction::Cleanup(free_unwind);
+        }
         dispatch.push((0, unstarted));
         for (index, &(_, cancel)) in source.awaits.iter().enumerate() {
             dispatch.push((
@@ -443,14 +471,18 @@ fn resume(
             .skip(1)
             .take(source.body.blocks.len())
         {
-            if matches!(
-                data.terminator.kind,
-                TerminatorKind::Return
-                    | TerminatorKind::UnwindResume
-                    | TerminatorKind::UnwindTerminate
-                    | TerminatorKind::Unreachable
-            ) {
-                data.terminator.kind = go(free);
+            match data.terminator.kind {
+                TerminatorKind::Return | TerminatorKind::Unreachable => {
+                    data.terminator.kind = go(free);
+                    data.terminator.unwind = UnwindAction::Unreachable;
+                }
+                TerminatorKind::UnwindResume => {
+                    data.terminator.kind =
+                        go(free_unwind.expect("unwind source has exceptional deallocation"));
+                    data.terminator.unwind = UnwindAction::Unreachable;
+                }
+                TerminatorKind::UnwindTerminate => {} // Abort paths do not return to their owner.
+                _ => {}
             }
         }
         body.blocks[Body::entry()].terminator.kind = TerminatorKind::SwitchInt {
@@ -474,7 +506,7 @@ fn resume(
             let current = BasicBlock::from_raw((original.index() as u32) + 1);
             if matches!(body.blocks[current].terminator.kind, TerminatorKind::Return) {
                 body.blocks[current].statements.extend([
-                    assign(state(pointer), Rvalue::Use(number(u64::MAX))),
+                    assign(state(pointer), Rvalue::Use(number(COMPLETE))),
                     assign(
                         Body::RETURN.into(),
                         Rvalue::Aggregate(
@@ -497,6 +529,7 @@ fn resume(
             else {
                 unreachable!();
             };
+            let on_panic = body.blocks[current].terminator.unwind;
             let future = generic_args[0];
             let reference = Ty::new(TyKind::Ref(Mutability::Mut, future));
             let pin_ty = Ty::adt(pin, hir.items.structs[pin].name, &[reference]);
@@ -505,12 +538,32 @@ fn resume(
             let poll_ty = Ty::adt(poll.strukt, hir.items.structs[poll.strukt].name, &[output]);
             let result = local(&mut body, poll_ty, LocalKind::Temp);
             let tag = local(&mut body, Ty::int(IntTy::Isize), LocalKind::Temp);
+            let mut prepare = Vec::new();
+            let future_ref = if unwinding {
+                let (Operand::Move(place) | Operand::Copy(place)) = &args[0] else {
+                    panic!("await borrows a future place")
+                };
+                let reference = local(&mut body, reference, LocalKind::Temp);
+                prepare.push(assign(
+                    reference.into(),
+                    Rvalue::Ref {
+                        raw: false,
+                        mutability: Mutability::Mut,
+                        place: place.clone().deref(),
+                        two_phase: false,
+                    },
+                ));
+                Operand::Move(reference.into())
+            } else {
+                args[0].clone()
+            };
+            prepare.push(assign(
+                pinned.into(),
+                Rvalue::Aggregate(AggregateKind::Struct(pin), vec![future_ref]),
+            ));
             let poll_block = block(
                 &mut body,
-                vec![assign(
-                    pinned.into(),
-                    Rvalue::Aggregate(AggregateKind::Struct(pin), vec![args[0].clone()]),
-                )],
+                prepare,
                 TerminatorKind::Call {
                     func: poll_method,
                     generic_args: Ty::list(&[future]),
@@ -522,6 +575,7 @@ fn resume(
                     target: None,
                 },
             );
+            body.blocks[poll_block].terminator.unwind = on_panic;
             let decide = block(
                 &mut body,
                 vec![assign(tag.into(), Rvalue::Discriminant(result.into()))],
@@ -558,7 +612,32 @@ fn resume(
                 variants: Some(poll.strukt),
             };
             body.blocks[current].terminator.kind = go(poll_block);
+            body.blocks[current].terminator.unwind = UnwindAction::Unreachable;
             dispatch.push((index as u128 + 1, poll_block));
+        }
+        if unwinding {
+            // Propagation-only calls also need to poison their still-owned frame.
+            let continues: Vec<_> = body
+                .blocks
+                .iter()
+                .filter_map(|(block, data)| {
+                    (data.terminator.unwind == UnwindAction::Continue).then_some(block)
+                })
+                .collect();
+            if !continues.is_empty() {
+                let poison = block(
+                    &mut body,
+                    vec![assign(state(pointer), Rvalue::Use(number(POISONED)))],
+                    TerminatorKind::UnwindResume,
+                );
+                for current in continues {
+                    body.blocks[current].terminator.unwind = UnwindAction::Cleanup(poison);
+                }
+            }
+            let completed = invalid_poll(hir, &mut body, "`async fn` resumed after completion");
+            let poisoned = invalid_poll(hir, &mut body, "`async fn` resumed after panicking");
+            dispatch.push((u128::from(COMPLETE), completed));
+            dispatch.push((u128::from(POISONED), poisoned));
         }
         let invalid = block(&mut body, vec![], TerminatorKind::Unreachable);
         body.blocks[Body::entry()].terminator.kind = TerminatorKind::SwitchInt {
@@ -570,21 +649,60 @@ fn resume(
     }
     // Drop dispatch enters only cancellation blocks. Clear unreachable code so
     // collection cannot instantiate awaits from the original forward body.
-    let mut seen = vec![false; body.blocks.len()];
-    let mut work = vec![Body::entry()];
-    while let Some(block) = work.pop() {
-        if std::mem::replace(&mut seen[block.index()], true) {
-            continue;
+    if unwinding {
+        body.discard_unreachable();
+    } else {
+        let mut seen = vec![false; body.blocks.len()];
+        let mut work = vec![Body::entry()];
+        while let Some(block) = work.pop() {
+            if std::mem::replace(&mut seen[block.index()], true) {
+                continue;
+            }
+            work.extend(body.blocks[block].terminator.successors());
         }
-        work.extend(body.blocks[block].terminator.successors());
-    }
-    for (index, data) in body.blocks.values_mut().enumerate() {
-        if !seen[index] {
-            data.statements.clear();
-            data.terminator.kind = TerminatorKind::Unreachable;
+        for (index, data) in body.blocks.values_mut().enumerate() {
+            if !seen[index] {
+                data.statements.clear();
+                data.terminator.kind = TerminatorKind::Unreachable;
+            }
         }
     }
     body
+}
+
+/// An inactive frame cannot be polled again. Its panic must not re-enter old
+/// cleanup or change the completion state, even if the caller catches it.
+fn invalid_poll(hir: &Hir, body: &mut Body, message: &str) -> BasicBlock {
+    let index = body.promoted.len() as u32;
+    body.promoted.push(crate::eval::Value::Aggregate(
+        message
+            .bytes()
+            .map(|byte| crate::eval::Value::Int {
+                bits: u128::from(byte),
+                ty: IntTy::U8,
+            })
+            .collect(),
+    ));
+    let unit = local(body, Ty::UNIT, LocalKind::Temp);
+    let target = block(
+        body,
+        vec![],
+        TerminatorKind::Call {
+            func: hir
+                .items
+                .panic_fn
+                .expect("coroutine repoll panics through core"),
+            generic_args: &[],
+            args: vec![Operand::Const(crate::Constant::Promoted {
+                index,
+                ty: Ty::new(TyKind::Ref(Mutability::Not, Ty::STR)),
+            })],
+            dest: unit.into(),
+            target: None,
+        },
+    );
+    body.blocks[target].terminator.unwind = UnwindAction::Continue;
+    target
 }
 
 /// Heap-backed execution must still reject source futures whose Rust layout
