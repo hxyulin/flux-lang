@@ -150,9 +150,13 @@ fn cleanup_rejects_returns_normal_entries_and_second_unwinds() {
     let body = call_body(false, true);
     for action in [
         UnwindAction::Continue,
-        UnwindAction::Cleanup(BasicBlock::from_raw(2)),
+        UnwindAction::Cleanup(BasicBlock::from_raw(3)),
     ] {
         let mut bad = body.clone();
+        push(
+            &mut bad,
+            terminator(TerminatorKind::UnwindResume, UnwindAction::Unreachable),
+        );
         bad.blocks[BasicBlock::from_raw(2)].terminator = terminator(
             TerminatorKind::CallIndirect {
                 callee: Operand::Const(Constant::Unit),
@@ -195,7 +199,7 @@ fn cleanup_rejects_returns_normal_entries_and_second_unwinds() {
     assert!(
         validate::unwind_errors(&bad)
             .iter()
-            .any(|e| e.contains("resume outside cleanup"))
+            .any(|e| e.contains("unwind exit outside cleanup"))
     );
 }
 
@@ -243,4 +247,41 @@ fn unwind_terminators_round_trip_without_changing_abort_metadata() {
     let mut e = Encoder::new();
     bad.encode(&mut e).unwrap();
     assert!(Body::decode(&mut Decoder::new(&e.into_bytes())).is_err());
+}
+
+#[test]
+fn secondary_cleanup_can_finish_a_value_but_cannot_resume() {
+    let mut body = call_body(false, true);
+    push(
+        &mut body,
+        terminator(TerminatorKind::UnwindResume, UnwindAction::Unreachable),
+    );
+    push(
+        &mut body,
+        terminator(TerminatorKind::UnwindTerminate, UnwindAction::Unreachable),
+    );
+    body.blocks[BasicBlock::from_raw(2)].terminator = terminator(
+        TerminatorKind::CallIndirect {
+            callee: Operand::Const(Constant::Unit),
+            args: Vec::new(),
+            dest: Body::RETURN.into(),
+            target: Some(BasicBlock::from_raw(3)),
+        },
+        UnwindAction::Cleanup(BasicBlock::from_raw(4)),
+    );
+    assert!(validate::unwind_errors(&body).is_empty());
+    let mut e = Encoder::new();
+    body.encode(&mut e).unwrap();
+    let bytes = e.into_bytes();
+    let copy = Body::decode(&mut Decoder::new(&bytes)).unwrap();
+    assert!(matches!(
+        copy.blocks[BasicBlock::from_raw(4)].terminator.kind,
+        TerminatorKind::UnwindTerminate
+    ));
+    body.blocks[BasicBlock::from_raw(4)].terminator.kind = TerminatorKind::UnwindResume;
+    assert!(
+        validate::unwind_errors(&body)
+            .iter()
+            .any(|e| e.contains("instead of terminating"))
+    );
 }

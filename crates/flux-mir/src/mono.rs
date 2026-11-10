@@ -13,6 +13,8 @@
 //! a `Drop` impl, the outer before the inner and fields in order, and
 //! for an enum, of the variant it holds.
 
+mod unwind;
+
 use std::borrow::Cow;
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -1942,6 +1944,8 @@ fn drop_fn(items: &ItemTree) -> Option<FunctionId> {
 /// What dropping a value runs: its `Drop` impls, the parts of it whose
 /// types have one, in the order dropping it runs them.
 enum Glue {
+    /// A complete child value, including its destructor and owned fields.
+    Value(Vec<Glue>),
     /// `Drop::drop(&mut place)`, for a `place` of type `ty`.
     Drop(Place, Ty),
     /// Move the whole unaligned field before invoking its destructor.
@@ -1984,7 +1988,9 @@ fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
                     glue_types(variant, out);
                 }
             }
-            Glue::Elements { glue, .. } | Glue::Unaligned(_, _, glue) => glue_types(glue, out),
+            Glue::Value(glue) | Glue::Elements { glue, .. } | Glue::Unaligned(_, _, glue) => {
+                glue_types(glue, out)
+            }
         }
     }
 }
@@ -1993,6 +1999,36 @@ fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
 /// fields', in order; an enum's, then the fields' of the variant it
 /// holds.
 fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mut Vec<Glue>) {
+    drop_glue_inner::<false>(items, sigs, place, ty, out);
+}
+
+// Unwind glue retains each child's exception boundary. The const parameter
+// keeps abort glue flat without allocating vectors for individual children.
+fn child_glue<const GROUPED: bool>(
+    items: &ItemTree,
+    sigs: &Signatures,
+    place: Place,
+    ty: Ty,
+    out: &mut Vec<Glue>,
+) {
+    if GROUPED {
+        let mut glue = Vec::new();
+        drop_glue_inner::<true>(items, sigs, place, ty, &mut glue);
+        if !glue.is_empty() {
+            out.push(Glue::Value(glue));
+        }
+    } else {
+        drop_glue_inner::<false>(items, sigs, place, ty, out);
+    }
+}
+
+fn drop_glue_inner<const GROUPED: bool>(
+    items: &ItemTree,
+    sigs: &Signatures,
+    place: Place,
+    ty: Ty,
+    out: &mut Vec<Glue>,
+) {
     match ty.kind() {
         TyKind::Adt(adt, _) if flux_solve::is_lang_struct(items, adt.strukt, "manually_drop") => {
             return;
@@ -2009,7 +2045,13 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
                         let mut glue = Vec::new();
                         let variant = place.downcast(v as u32);
                         for (i, &field) in fields.iter().enumerate() {
-                            drop_glue(items, sigs, variant.field(i as u32), field, &mut glue);
+                            child_glue::<GROUPED>(
+                                items,
+                                sigs,
+                                variant.field(i as u32),
+                                field,
+                                &mut glue,
+                            );
                         }
                         glue
                     })
@@ -2026,7 +2068,7 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
             let depth = place.index_locals().count();
             let index = element_index(depth);
             let mut glue = Vec::new();
-            drop_glue(items, sigs, place.index(index), elem, &mut glue);
+            child_glue::<GROUPED>(items, sigs, place.index(index), elem, &mut glue);
             if !glue.is_empty() && len > 0 {
                 out.push(Glue::Elements {
                     index,
@@ -2039,7 +2081,7 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
         TyKind::Slice(elem) => {
             let index = element_index(place.index_locals().count());
             let mut glue = Vec::new();
-            drop_glue(items, sigs, place.index(index), elem, &mut glue);
+            child_glue::<GROUPED>(items, sigs, place.index(index), elem, &mut glue);
             if !glue.is_empty() {
                 out.push(Glue::Elements {
                     index,
@@ -2061,24 +2103,25 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
             matches!(ty.kind(),TyKind::Adt(adt,_) if items.structs[adt.strukt].repr_pack.is_some());
         if packed {
             let mut glue = Vec::new();
-            drop_glue(items, sigs, field_place.clone(), field, &mut glue);
+            child_glue::<GROUPED>(items, sigs, field_place.clone(), field, &mut glue);
             if !glue.is_empty() {
                 out.push(Glue::Unaligned(field_place, field, glue));
             }
         } else {
-            drop_glue(items, sigs, field_place, field, out);
+            child_glue::<GROUPED>(items, sigs, field_place, field, out);
         }
     }
 }
 
 /// Replaces each drop in `body`, whose types are known, with its drop
 /// glue: `Drop::drop(&mut place)` for each part that has a `Drop` impl,
-/// and for enums, a test of the variant they hold.
+/// and for enums, a test of the variant they hold. Exceptional MIR also
+/// expands non-dynamic `drop_in_place` intrinsics and preserves value boundaries.
 pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
-    assert!(
-        !body.has_unwind(),
-        "unwind drop glue is not implemented yet"
-    );
+    if body.has_unwind() {
+        unwind::expand_drops(items, sigs, body);
+        return;
+    }
     let Some(drop) = drop_fn(items) else {
         return;
     };
@@ -2150,6 +2193,7 @@ impl Expand<'_> {
 
     fn part(&mut self, part: &Glue, target: BasicBlock) -> (Vec<Statement>, TerminatorKind) {
         match part {
+            Glue::Value(glue) => self.glue(glue, target),
             Glue::Unaligned(place, ty, _) => {
                 let local = self.body.locals.alloc(LocalDecl {
                     ty: *ty,
@@ -2308,6 +2352,7 @@ impl Glue {
             })),
         };
         match self {
+            Glue::Value(glue) => Glue::Value(glue.iter().map(|g| g.reindex(from, to)).collect()),
             Glue::Drop(p, ty) => Glue::Drop(place(p), *ty),
             Glue::Unaligned(p, ty, glue) => Glue::Unaligned(
                 place(p),
@@ -2507,6 +2552,7 @@ fn map_body_types(body: &Body, args: &[Ty], subst: impl Fn(Ty) -> Ty) -> Body {
             | TerminatorKind::Drop { .. }
             | TerminatorKind::Return
             | TerminatorKind::UnwindResume
+            | TerminatorKind::UnwindTerminate
             | TerminatorKind::Unreachable => {}
         }
     }

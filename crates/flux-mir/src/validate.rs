@@ -436,6 +436,7 @@ impl Validator<'_> {
             | TerminatorKind::Drop { .. }
             | TerminatorKind::Return
             | TerminatorKind::UnwindResume
+            | TerminatorKind::UnwindTerminate
             | TerminatorKind::Unreachable => {}
         }
     }
@@ -558,7 +559,7 @@ pub fn unwind_errors(body: &Body) -> Vec<String> {
             pending.push(target);
         }
     }
-    let walk = |pending: &mut Vec<crate::BasicBlock>, reached: &mut [bool]| {
+    let walk = |pending: &mut Vec<crate::BasicBlock>, reached: &mut [bool], exceptional: bool| {
         while let Some(block) = pending.pop() {
             let Some(visited) = reached.get_mut(block.index()) else {
                 continue;
@@ -566,13 +567,17 @@ pub fn unwind_errors(body: &Body) -> Vec<String> {
             if std::mem::replace(visited, true) {
                 continue;
             }
-            pending.extend(body.blocks[block].terminator.kind.successors());
+            if exceptional {
+                pending.extend(body.blocks[block].terminator.successors());
+            } else {
+                pending.extend(body.blocks[block].terminator.kind.successors());
+            }
         }
     };
-    walk(&mut pending, &mut cleanup);
+    walk(&mut pending, &mut cleanup, false);
     if !body.blocks.is_empty() {
         pending.push(Body::entry());
-        walk(&mut pending, &mut normal);
+        walk(&mut pending, &mut normal, false);
     }
     for (block, data) in body.blocks.iter() {
         let index = block.index();
@@ -582,19 +587,39 @@ pub fn unwind_errors(body: &Body) -> Vec<String> {
             ));
         }
         if cleanup[index] {
+            if let UnwindAction::Cleanup(target) = data.terminator.unwind {
+                pending.push(target);
+            }
             if matches!(data.terminator.kind, TerminatorKind::Return) {
                 errors.push(format!("bb{index}: cleanup returns normally"));
             }
-            if matches!(
-                data.terminator.unwind,
-                UnwindAction::Continue | UnwindAction::Cleanup(_)
-            ) {
+            if matches!(data.terminator.unwind, UnwindAction::Continue) {
                 errors.push(format!(
                     "bb{index}: cleanup can unwind instead of terminating"
                 ));
             }
-        } else if matches!(data.terminator.kind, TerminatorKind::UnwindResume) {
-            errors.push(format!("bb{index}: resume outside cleanup"));
+        } else if matches!(
+            data.terminator.kind,
+            TerminatorKind::UnwindResume | TerminatorKind::UnwindTerminate
+        ) {
+            errors.push(format!("bb{index}: unwind exit outside cleanup"));
+        }
+    }
+    // A value may finish its own fields after a panic during cleanup. Every
+    // exit from that secondary cleanup must terminate rather than resume.
+    let mut secondary = vec![false; body.blocks.len()];
+    walk(&mut pending, &mut secondary, true);
+    for (block, data) in body.blocks.iter() {
+        if secondary[block.index()]
+            && (matches!(
+                data.terminator.kind,
+                TerminatorKind::UnwindResume | TerminatorKind::Return
+            ) || data.terminator.unwind == UnwindAction::Continue)
+        {
+            errors.push(format!(
+                "bb{}: cleanup can unwind instead of terminating",
+                block.index()
+            ));
         }
     }
     errors

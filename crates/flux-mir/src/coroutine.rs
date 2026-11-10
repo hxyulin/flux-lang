@@ -304,6 +304,7 @@ impl Rebase {
             TerminatorKind::Goto(_)
             | TerminatorKind::Return
             | TerminatorKind::UnwindResume
+            | TerminatorKind::UnwindTerminate
             | TerminatorKind::Unreachable => {}
         }
         targets(kind, |block| {
@@ -329,7 +330,10 @@ fn targets(kind: &mut TerminatorKind, map: impl Fn(BasicBlock) -> BasicBlock) {
             }
             *otherwise = map(*otherwise);
         }
-        TerminatorKind::Return | TerminatorKind::UnwindResume | TerminatorKind::Unreachable => {}
+        TerminatorKind::Return
+        | TerminatorKind::UnwindResume
+        | TerminatorKind::UnwindTerminate
+        | TerminatorKind::Unreachable => {}
     }
 }
 
@@ -441,7 +445,10 @@ fn resume(
         {
             if matches!(
                 data.terminator.kind,
-                TerminatorKind::Return | TerminatorKind::UnwindResume | TerminatorKind::Unreachable
+                TerminatorKind::Return
+                    | TerminatorKind::UnwindResume
+                    | TerminatorKind::UnwindTerminate
+                    | TerminatorKind::Unreachable
             ) {
                 data.terminator.kind = go(free);
             }

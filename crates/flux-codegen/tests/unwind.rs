@@ -55,4 +55,13 @@ fn unwind_mir_is_rejected_before_monomorphization() {
             .iter()
             .any(|e| e.message == "unwind code generation is not supported yet")
     );
+    mir.bodies.get_mut(owner).unwrap().blocks[block]
+        .terminator
+        .kind = TerminatorKind::UnwindTerminate;
+    let errors = flux_codegen::lower_module(&hir, &typed, &mir).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message == "unwind code generation is not supported yet")
+    );
 }

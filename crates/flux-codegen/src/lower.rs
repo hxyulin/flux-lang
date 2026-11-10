@@ -275,7 +275,10 @@ fn lower_inner(
             .values()
             .find(|block| {
                 block.terminator.unwind != flux_mir::UnwindAction::Unreachable
-                    || matches!(block.terminator.kind, TerminatorKind::UnwindResume)
+                    || matches!(
+                        block.terminator.kind,
+                        TerminatorKind::UnwindResume | TerminatorKind::UnwindTerminate
+                    )
             })
             .expect("has_unwind found an exceptional terminator")
             .terminator
@@ -4989,7 +4992,7 @@ impl Lower<'_, '_, '_> {
                     }
                 }
             }
-            TerminatorKind::UnwindResume => {
+            TerminatorKind::UnwindResume | TerminatorKind::UnwindTerminate => {
                 unreachable!("exceptional MIR is rejected before lowering")
             }
             TerminatorKind::Unreachable => {

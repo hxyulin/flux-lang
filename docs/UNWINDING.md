@@ -8,7 +8,7 @@ and `thread::panicking()` still returns false. There is no user-facing
 
 MIR terminators carry an exceptional action: unreachable, continue unwinding,
 enter a cleanup block, or terminate if an exception escapes. A cleanup can end
-with `UnwindResume`. CFG traversal includes cleanup edges. Initialization analysis
+with `UnwindResume` or `UnwindTerminate`. CFG traversal includes cleanup edges. Initialization analysis
 moves call arguments before either successor and initializes the destination only
 on the normal successor. A diverging call can still reach cleanup.
 
@@ -21,7 +21,7 @@ these edges. The existing abort-mode encoding stays byte-identical.
 lexical cleanup ladders before drop elaboration. Cleanup suffixes are shared.
 Moved values are removed. Conditional drop flags are captured before ownership
 is cleared, so the remaining split fields still get dropped if an earlier field
-panics. A second panic on a cleanup path terminates. The return slot is excluded
+panics. An exception escaping a terminating cleanup boundary aborts. The return slot is excluded
 from lexical cleanup, matching rustc's behavior when an epilogue panics.
 
 A test executes the generated MIR and compares drop events with native rustc
@@ -31,15 +31,33 @@ arguments, failed aggregate construction, assertions, epilogue panics and double
 panics. The test also checks metadata round-trips of those graphs. This tests MIR
 cleanup behavior; it does not execute Flux-generated native unwind paths.
 
+Whole-value drop expansion preserves each child's exception boundary. If a
+user destructor panics, the remaining fields are cleaned up. Array and slice
+loops continue from the current element, including its remaining fields. Packed
+fields move into aligned temporaries before their destructors run. Non-dynamic
+`drop_in_place` intrinsics use the same expansion.
+
+A panic during cleanup can still finish the current value before termination.
+`UnwindTerminate` represents that final exit. The validator permits nested
+cleanup only when all of its exits terminate rather than resume. Specialization
+that removes all drops also removes unreachable exceptional exits.
+
+The expanded-MIR oracle covers 52 cases, including nested destructor failures,
+whole structs/enums/tuples, nested arrays, packed fields, slices, and concrete
+specializations with and without destructors. Slice tests substitute the private
+intrinsic for its public forwarding wrapper to isolate glue expansion. These
+checks do not qualify general wrapper instantiation, dynamic drop calls or Box
+deallocation during unwinding. Metadata round-trips preserve every tested graph.
+
 Normal source compilation, closure builders and generated shims still use abort
-mode. Instance expansion and code generation reject exceptional MIR until drop
-glue and backend lowering can preserve it. No panic runtime is enabled.
+mode. General instance expansion and code generation still reject exceptional
+MIR until remaining intrinsics and backend lowering can preserve it. No panic runtime is enabled.
 
 ## Next implementation steps
 
-1. Expand whole-value drop glue with exceptional continuations. Preserve fields
-   when a user `Drop::drop` panics, including enums, arrays, boxes and packed
-   fields. Extend the panic strategy through closure bodies and generated shims.
+1. Complete general instance expansion and remaining intrinsics. Extend the
+   panic strategy through closure bodies and generated shims. Qualify Box
+   deallocation and dynamic drop calls during unwinding.
 2. Lower exceptional calls and cleanup to Keel invoke and landing-pad instructions.
    Preserve unwind metadata in ordinary forwarding frames. Distinguish `C` and
    `C-unwind` boundaries. The pinned Keel has no indirect invoke instruction.

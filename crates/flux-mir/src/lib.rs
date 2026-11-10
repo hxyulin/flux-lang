@@ -173,7 +173,10 @@ impl Body {
     pub fn has_unwind(&self) -> bool {
         self.blocks.values().any(|block| {
             block.terminator.unwind != UnwindAction::Unreachable
-                || matches!(block.terminator.kind, TerminatorKind::UnwindResume)
+                || matches!(
+                    block.terminator.kind,
+                    TerminatorKind::UnwindResume | TerminatorKind::UnwindTerminate
+                )
         })
     }
 }
@@ -918,6 +921,8 @@ pub enum TerminatorKind {
     Return,
     /// Resume the exception whose cleanup is running in this frame.
     UnwindResume,
+    /// Abort after an exception escapes a terminating cleanup boundary.
+    UnwindTerminate,
     /// Never reached: code after something that diverges.
     Unreachable,
 }
@@ -978,7 +983,9 @@ impl TerminatorKind {
                 (&[], Some(*target))
             }
             Self::Call { target, .. } | Self::CallIndirect { target, .. } => (&[], *target),
-            Self::Return | Self::UnwindResume | Self::Unreachable => (&[], None),
+            Self::Return | Self::UnwindResume | Self::UnwindTerminate | Self::Unreachable => {
+                (&[], None)
+            }
         };
         targets.iter().map(|&(_, block)| block).chain(last)
     }
@@ -1196,6 +1203,7 @@ impl TerminatorKind {
             | Self::Drop { .. }
             | Self::Return
             | Self::UnwindResume
+            | Self::UnwindTerminate
             | Self::Unreachable => (None, &[]),
         };
         first.into_iter().chain(rest)

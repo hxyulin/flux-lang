@@ -210,6 +210,7 @@ fn body_text(
             }
             TerminatorKind::Return => "return".to_owned(),
             TerminatorKind::UnwindResume => "resume".to_owned(),
+            TerminatorKind::UnwindTerminate => "terminate".to_owned(),
             TerminatorKind::Unreachable => "unreachable".to_owned(),
         };
         let unwind = match data.terminator.unwind {

@@ -771,7 +771,10 @@ fn retarget(kind: &mut TerminatorKind, map: &[BasicBlock]) {
         TerminatorKind::Call { target, .. } | TerminatorKind::CallIndirect { target, .. } => {
             target.iter_mut().for_each(new)
         }
-        TerminatorKind::Return | TerminatorKind::UnwindResume | TerminatorKind::Unreachable => {}
+        TerminatorKind::Return
+        | TerminatorKind::UnwindResume
+        | TerminatorKind::UnwindTerminate
+        | TerminatorKind::Unreachable => {}
     }
 }
 

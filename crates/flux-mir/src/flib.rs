@@ -803,6 +803,10 @@ impl Encode for TerminatorKind {
                 8u8.encode(e)?;
                 Ok(())
             }
+            Self::UnwindTerminate => {
+                9u8.encode(e)?;
+                Ok(())
+            }
         })
     }
 }
@@ -850,6 +854,7 @@ impl TerminatorKind {
             6 => Ok(Self::Return),
             7 => Ok(Self::Unreachable),
             8 => Ok(Self::UnwindResume),
+            9 => Ok(Self::UnwindTerminate),
             _ => Err(Error::new("invalid MIR metadata tag")),
         }
     }
