@@ -108,56 +108,58 @@ extended = ["corpus_subject/io", "corpus_subject/sink", "corpus_subject/channel"
                     .stdout
                     .ends_with(b"queue [5, 8] delayed 37 polls 3\n")
             );
-            for optimized in [false, true] {
-                let label = format!("{extended}-{optimized}");
-                let plan = root.join(format!("plan-{label}.json"));
-                let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
-                command
-                    .args([
-                        "build",
-                        "--offline",
-                        "--macro-host-compiler",
-                        "rustc",
-                        "-j1",
-                        "--manifest-path",
-                    ])
-                    .arg(&manifest)
-                    .arg("--plan")
-                    .arg(&plan);
-                if extended {
-                    command.args(["--features", "extended"]);
+            for host in ["rustc", "flux"] {
+                for optimized in [false, true] {
+                    let label = format!("{extended}-{optimized}-{host}");
+                    let plan = root.join(format!("plan-{label}.json"));
+                    let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+                    command
+                        .args([
+                            "build",
+                            "--offline",
+                            "--macro-host-compiler",
+                            host,
+                            "-j1",
+                            "--manifest-path",
+                        ])
+                        .arg(&manifest)
+                        .arg("--plan")
+                        .arg(&plan);
+                    if extended {
+                        command.args(["--features", "extended"]);
+                    }
+                    if optimized {
+                        command.arg("--release");
+                    }
+                    run(&mut command, root, &format!("flux-build-{label}"));
+                    let plan: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(plan).unwrap()).unwrap();
+                    assert_eq!(plan["kind"], "flux-native-prepared");
+                    assert_eq!(plan["macro_host_compiler"], host);
+                    let source = plan["plan"]["units"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|s| s["target"]["name"] == "futures_util")
+                        .unwrap();
+                    let features = source["features"].as_array().unwrap();
+                    assert!(features.iter().any(|f| f == "async-await-macro"));
+                    for feature in ["io", "sink", "channel"] {
+                        assert_eq!(features.iter().any(|f| f == feature), extended);
+                    }
+                    let actual = run(
+                        &mut Command::new(root.join(if optimized {
+                            "target/flux/release/futures-util-readiness-consumer"
+                        } else {
+                            "target/flux/debug/futures-util-readiness-consumer"
+                        })),
+                        root,
+                        &format!("flux-run-{label}"),
+                    );
+                    assert_eq!(actual.status.code(), expected.status.code());
+                    assert_eq!(actual.stdout, expected.stdout);
+                    assert_eq!(actual.stderr, expected.stderr);
                 }
-                if optimized {
-                    command.arg("--release");
-                }
-                run(&mut command, root, &format!("flux-build-{label}"));
-                let plan: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(plan).unwrap()).unwrap();
-                assert_eq!(plan["kind"], "flux-native-prepared");
-                assert_eq!(plan["macro_host_compiler"], "rustc");
-                let source = plan["plan"]["units"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|s| s["target"]["name"] == "futures_util")
-                    .unwrap();
-                let features = source["features"].as_array().unwrap();
-                assert!(features.iter().any(|f| f == "async-await-macro"));
-                for feature in ["io", "sink", "channel"] {
-                    assert_eq!(features.iter().any(|f| f == feature), extended);
-                }
-                let actual = run(
-                    &mut Command::new(root.join(if optimized {
-                        "target/flux/release/futures-util-readiness-consumer"
-                    } else {
-                        "target/flux/debug/futures-util-readiness-consumer"
-                    })),
-                    root,
-                    &format!("flux-run-{label}"),
-                );
-                assert_eq!(actual.status.code(), expected.status.code());
-                assert_eq!(actual.stdout, expected.stdout);
-                assert_eq!(actual.stderr, expected.stderr);
             }
         }
     });

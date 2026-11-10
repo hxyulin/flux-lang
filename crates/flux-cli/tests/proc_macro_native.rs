@@ -293,3 +293,19 @@ use proc_macro::{TokenStream,Literal,Span};
     let actual = success(fixture.run(true));
     assert_eq!(actual.stdout, expected.stdout);
 }
+
+#[test]
+fn generated_anonymous_lifetimes_without_rustc() {
+    let fixture = Fixture::new();
+    fixture.write("macros/src/lib.rs", r#"
+use proc_macro::TokenStream;
+#[proc_macro]
+pub fn answer(_: TokenStream) -> TokenStream {
+    "{ struct Borrowed<'a>(&'a u32); impl Borrowed<'_> { fn value(&self) -> u32 { *self.0 } } Borrowed(&37).value() }".parse().unwrap()
+}
+"#);
+    let reference = success(fixture.run(false));
+    let native = success(fixture.run(true));
+    assert_eq!(native.stdout, reference.stdout);
+    assert_eq!(native.stdout, b"37\n");
+}

@@ -967,7 +967,8 @@ fn output_tokens(
         if let Some(previous) = joined.last_mut()
             && previous.text == "'"
             && previous.joint
-            && (token.kind == SyntaxKind::IDENT || token.kind.is_keyword())
+            && (matches!(token.kind, SyntaxKind::IDENT | SyntaxKind::UNDERSCORE)
+                || token.kind.is_keyword())
         {
             previous.text.push_str(&token.text);
             previous.kind = SyntaxKind::LIFETIME_IDENT;

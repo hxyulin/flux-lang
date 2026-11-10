@@ -2123,7 +2123,8 @@ default features and with `io`, `sink` and `channel` enabled. The maintained
 `futures_util_readiness` test compares native consumer output with rustc in
 Flux debug and release builds. It exercises higher-ranked callback adapters,
 try-future chains, streams, buffered futures, peeking, sinks, remote handles
-and asynchronous I/O. Procedural macros use an explicitly selected rustc host.
+and asynchronous I/O. The same consumer runs with both rustc-hosted and Flux-built procedural macros.
+Flux-built macro output accepts anonymous lifetimes such as `'_`.
 Futures 0.1 compatibility and portable-atomic dependencies are not covered by
 this support milestone.
 
