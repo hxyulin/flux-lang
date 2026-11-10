@@ -1597,6 +1597,29 @@ fn functions(
                 sigs.impl_traits.get(imp).copied(),
                 Some(self_ty),
             );
+            let memberships = flux_solve::traits::elaborate(
+                sigs,
+                sigs.impl_predicates.get(imp).map_or(&[], |p| p),
+            );
+            let projections = flux_solve::traits::caller_owner_projections_of(
+                items,
+                sigs,
+                Some(flux_hir::Owner::Impl(imp)),
+            );
+            let parameters = flux_solve::unsized_params(
+                items,
+                Some(flux_hir::Owner::Impl(imp)),
+                &flux_hir::Generics::default(),
+            );
+            let proof = flux_solve::traits::RigidSolver::new(
+                items,
+                sigs,
+                &memberships,
+                &projections,
+                &parameters,
+            );
+            let definitions =
+                flux_solve::traits::associated_self_types(items, sigs, &candidates, Some(&proof));
             let mut tables = Vec::new();
             for candidate in candidates.iter().skip(1) {
                 for associated in &items.traits[candidate.trait_ref.trait_].types {
@@ -1607,13 +1630,24 @@ fn functions(
                     {
                         continue;
                     }
-                    match inherited_self_regions(
-                        items,
-                        sigs,
-                        *candidate,
-                        self_regions.as_deref().unwrap_or(&[]),
-                        associated.name,
-                    ) {
+                    let table = definitions
+                        .iter()
+                        .find(|(tr, name, ty)| {
+                            *tr == candidate.trait_ref
+                                && *name == associated.name
+                                && is_closed_region_free(items, *ty)
+                        })
+                        .map(|_| Box::default())
+                        .or_else(|| {
+                            inherited_self_regions(
+                                items,
+                                sigs,
+                                *candidate,
+                                self_regions.as_deref().unwrap_or(&[]),
+                                associated.name,
+                            )
+                        });
+                    match table {
                         Some(regions) => tables.push((associated.name, regions)),
                         None => unmapped_self_types.push(associated.name),
                     }

@@ -8,6 +8,11 @@ fn typed_receivers_and_anonymous_imports_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "pinned_mutable_reference_self",
+            "use std::pin::Pin;use std::future::Future;use std::task::{Context,Poll};struct Wrap<'a,F:?Sized>{inner:&'a mut F}impl<F:Unpin+?Sized>Unpin for Wrap<'_,F>{}impl<F:Future+Unpin+?Sized>Future for Wrap<'_,F>{type Output=F::Output;fn poll(mut self:Pin<&mut Self>,cx:&mut Context<'_>)->Poll<Self::Output>{Pin::new(&mut self.inner).poll(cx)}}fn main(){}",
+            true,
+        ),
+        (
             "pinned_receiver_elision",
             "use core::pin::Pin;trait T{fn get(self:Pin<&mut Self>,other:&u32)->&u32;}struct S(u32);impl T for S{fn get(self:Pin<&mut Self>,_:&u32)->&u32{&self.get_mut().0}}fn main(){}",
             true,

@@ -422,7 +422,7 @@ impl Cx<'_> {
         }
         let selected = flux_solve::traits::select_definite_impl(self.items, self.sigs, goal);
         let mut assumptions = if self.body.owner.is_some() {
-            self.caller_region_goals(false)
+            self.caller_region_goals()
         } else {
             self.family_goals.clone()
         };

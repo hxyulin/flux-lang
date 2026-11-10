@@ -1393,8 +1393,19 @@ impl Ctx<'_> {
             .unwrap_or_default();
         let self_supertraits =
             flux_solve::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
-        let self_inherited_types =
-            flux_solve::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
+        let inherited_proof = flux_solve::traits::RigidSolver::new(
+            self.items,
+            self.sigs,
+            &self.param_env,
+            &self.caller_projections,
+            &self.unsized_params,
+        );
+        let self_inherited_types = flux_solve::traits::associated_self_types(
+            self.items,
+            self.sigs,
+            &self_supertraits,
+            Some(&inherited_proof),
+        );
         let scope = TypeScope {
             self_ty: self.self_ty,
             self_supertraits: &self_supertraits,
@@ -2025,8 +2036,19 @@ impl Ctx<'_> {
             .unwrap_or_default();
         let self_supertraits =
             flux_solve::traits::associated_self_bounds(self.sigs, self.self_trait, self.self_ty);
-        let self_inherited_types =
-            flux_solve::traits::associated_self_types(self.items, self.sigs, &self_supertraits);
+        let inherited_proof = flux_solve::traits::RigidSolver::new(
+            self.items,
+            self.sigs,
+            &self.param_env,
+            &self.caller_projections,
+            &self.unsized_params,
+        );
+        let self_inherited_types = flux_solve::traits::associated_self_types(
+            self.items,
+            self.sigs,
+            &self_supertraits,
+            Some(&inherited_proof),
+        );
         let scope = TypeScope {
             self_ty: self.self_ty,
             self_supertraits: &self_supertraits,
@@ -6129,6 +6151,7 @@ impl Ctx<'_> {
         // A by-value method on `&mut T` reborrows its receiver, just as
         // passing that reference to an ordinary `&mut T` parameter does.
         let (derefs, autoref) = if autoref.is_none()
+            && !wrapped_self(self.items, self.sigs, function)
             && matches!(self.shallow(base).kind(), TyKind::Ref(Mutability::Mut, _))
         {
             (derefs + 1, Some(Mutability::Mut))

@@ -1,0 +1,98 @@
+use corpus_subject::{FutureExt, StreamExt, TryFutureExt, TryStreamExt, future, stream};
+use std::future::Future;
+use std::task::{Context, Poll, Waker};
+
+fn complete<F: Future>(future: F) -> F::Output {
+    let mut future = Box::pin(future);
+    let mut context = Context::from_waker(Waker::noop());
+    loop {
+        if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
+            return value;
+        }
+    }
+}
+
+fn main() {
+    let mut observed = 0;
+    let value = complete(future::ready(7).inspect(|x| observed = *x).map(|x| x * 3));
+    assert_eq!((value, observed), (21, 7));
+    let chained = complete(future::ready(Ok::<_, u32>(5))
+        .and_then(|x| future::ready(Ok(x + 4)))
+        .map_ok(|x| x * 2));
+    assert_eq!(chained, Ok(18));
+    let recovered = complete(future::ready(Err::<u32, _>(6))
+        .or_else(|x| future::ready(Ok::<_, u32>(x + 2))));
+    assert_eq!(recovered, Ok(8));
+    let pair = complete(async { corpus_subject::join!(future::ready(3), future::ready(4)) });
+    assert_eq!(pair, (3, 4));
+    let values = complete(stream::iter(0..8)
+        .filter(|x| future::ready(x % 2 == 0))
+        .map(|x| x * 3)
+        .collect::<Vec<_>>());
+    assert_eq!(values, vec![0, 6, 12, 18]);
+    let sum = complete(stream::iter(1..5).fold(0, |sum, x| future::ready(sum + x)));
+    assert_eq!(sum, 10);
+    let tried = complete(stream::iter(vec![Ok::<u32, u32>(1), Ok(2), Ok(3)])
+        .map_ok(|x| x + 5).try_collect::<Vec<_>>());
+    assert_eq!(tried, Ok(vec![6, 7, 8]));
+    let mut peek = stream::iter(vec![11, 12, 13]).peekable();
+    let first = complete(std::pin::Pin::new(&mut peek).peek()).copied();
+    assert_eq!(first, Some(11));
+    let matched = complete(std::pin::Pin::new(&mut peek).next_if_eq(&11));
+    assert_eq!(matched, Some(11));
+    let next = complete(peek.next());
+    assert_eq!(next, Some(12));
+    let ordered: stream::FuturesOrdered<_> = vec![future::ready(4), future::ready(2)].into_iter().collect();
+    assert_eq!(complete(ordered.collect::<Vec<_>>()), vec![4, 2]);
+    let unordered: stream::FuturesUnordered<_> = vec![future::ready(8), future::ready(5)].into_iter().collect();
+    let mut unordered_values = complete(unordered.collect::<Vec<_>>());
+    unordered_values.sort();
+    assert_eq!(unordered_values, vec![5, 8]);
+    let mut polls = 0;
+    let delayed = complete(future::poll_fn(|cx| {
+        polls += 1;
+        if polls < 3 { cx.waker().wake_by_ref(); Poll::Pending } else { Poll::Ready(37) }
+    }).boxed());
+    assert_eq!((delayed, polls), (37, 3));
+    let buffered = complete(stream::iter(vec![
+        Ok::<_, u32>(future::ready(Ok::<u32, u32>(4))),
+        Ok(future::ready(Ok(9))),
+    ]).try_buffered(2).try_collect::<Vec<_>>());
+    assert_eq!(buffered, Ok(vec![4, 9]));
+    let nested = stream::iter(vec![Ok::<_, u32>(stream::iter(vec![Ok::<u32, u32>(2), Ok(6)]))]);
+    let flattened = complete(nested.try_flatten_unordered(2).try_collect::<Vec<_>>());
+    assert_eq!(flattened, Ok(vec![2, 6]));
+    #[cfg(feature = "extended")]
+    extended();
+    println!("future {value} {observed} {chained:?} {recovered:?} {pair:?}");
+    println!("stream {values:?} {sum} {tried:?} {first:?} {matched:?} {next:?}");
+    println!("queue {unordered_values:?} delayed {delayed} polls {polls}");
+}
+
+#[cfg(feature = "extended")]
+fn extended() {
+    use corpus_subject::{SinkExt, io::{self, AsyncReadExt, AsyncWriteExt, AsyncSeekExt}};
+    use std::io::SeekFrom;
+    let mut sink = corpus_subject::sink::drain::<u32>();
+    complete(sink.send(7)).unwrap();
+    complete(sink.flush()).unwrap();
+    complete(sink.close()).unwrap();
+    let (remote, handle) = future::ready(29).remote_handle();
+    let (_, result) = complete(future::join(remote, handle));
+    assert_eq!(result, 29);
+    let mut cursor = io::Cursor::new(vec![0u8; 8]);
+    complete(cursor.write_all(b"flux")).unwrap();
+    complete(cursor.seek(SeekFrom::Start(0))).unwrap();
+    let mut bytes = [0u8; 4];
+    complete(cursor.read_exact(&mut bytes)).unwrap();
+    assert_eq!(&bytes, b"flux");
+    let mut source = io::Cursor::new(vec![3u8, 5, 8]);
+    let mut dest = io::Cursor::new(Vec::new());
+    assert_eq!(complete(io::copy_buf(&mut source, &mut dest)).unwrap(), 3);
+    assert_eq!(dest.into_inner(), vec![3, 5, 8]);
+    let mut standard = io::AllowStdIo::new(std::io::Cursor::new(vec![11u8, 13]));
+    let mut collected = Vec::new();
+    complete(standard.read_to_end(&mut collected)).unwrap();
+    assert_eq!(collected, vec![11, 13]);
+    println!("extended {result} {bytes:?} {collected:?}");
+}

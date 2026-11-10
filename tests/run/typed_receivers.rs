@@ -46,7 +46,20 @@ impl Items {
     }
 }
 
+struct BorrowedFuture<'a, F: ?Sized> { inner: &'a mut F }
+impl<F: Unpin + ?Sized> Unpin for BorrowedFuture<'_, F> {}
+impl<F: std::future::Future + Unpin + ?Sized> std::future::Future for BorrowedFuture<'_, F> {
+    type Output = F::Output;
+    fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        std::pin::Pin::new(&mut self.inner).poll(cx)
+    }
+}
+
 fn main() {
+    let mut ready = std::future::ready(31);
+    let mut borrowed = BorrowedFuture { inner: &mut ready };
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert_eq!(std::future::Future::poll(std::pin::Pin::new(&mut borrowed), &mut cx), std::task::Poll::Ready(31));
     let drops = Rc::new(Cell::new(0));
     let mut item = Item { name: String::from("owned"), n: 40, _drop: CountDrop(drops.clone()) };
     item.inc();

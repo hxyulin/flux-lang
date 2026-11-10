@@ -142,11 +142,6 @@ pub(super) fn extend_signatures(
         }
         ty
     }
-    for (id, imp) in items.impls.iter().skip(from.impls as usize) {
-        let ty = impl_type(items, imp, lens, &mut reported);
-        sigs.impls.insert(id, ty);
-    }
-    sigs.impl_index = impl_index::ImplIndex::new(items, &sigs);
     let in_file = |errors: Vec<(TextRange, String)>, file, reported: &mut Vec<Diagnostic>| {
         reported.extend(errors.into_iter().map(|(range, message)| Diagnostic {
             file,
@@ -316,6 +311,13 @@ pub(super) fn extend_signatures(
             sigs.trait_projections.insert(id, projections.into());
         }
     }
+    // Impl self types may name outputs inherited from traits declared in
+    // this source graph, so resolve them after the trait headers exist.
+    for (id, imp) in items.impls.iter().skip(from.impls as usize) {
+        let ty = impl_type(items, &sigs, imp, lens, &mut reported);
+        sigs.impls.insert(id, ty);
+    }
+    sigs.impl_index = impl_index::ImplIndex::new(items, &sigs);
     // Structs' bounds, then their fields, in which `T::Out` may name
     // the associated type of a bound on `T`.
     for (id, s) in items.structs.iter().skip(from.structs as usize) {
@@ -487,7 +489,7 @@ pub(super) fn extend_signatures(
         let self_supertraits =
             flux_solve::traits::associated_self_bounds(&sigs, self_trait, Some(self_ty));
         let self_inherited_types =
-            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits);
+            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits, None);
         let scope = TypeScope {
             bounds: &bounds,
             self_trait,
@@ -592,7 +594,7 @@ pub(super) fn extend_signatures(
             self_ty(&sigs, konst.owner),
         );
         let self_inherited_types =
-            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits);
+            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits, None);
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
             self_supertraits: &self_supertraits,
@@ -689,8 +691,22 @@ pub(super) fn extend_signatures(
             self_trait,
             self_ty(&sigs, function.owner),
         );
-        let self_inherited_types =
-            flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits);
+        let inherited_env = flux_solve::traits::elaborate(&sigs, &owner_bounds);
+        let inherited_projections =
+            flux_solve::traits::caller_owner_projections_of(items, &sigs, function.owner);
+        let inherited_proof = flux_solve::traits::RigidSolver::new(
+            items,
+            &sigs,
+            &inherited_env,
+            &inherited_projections,
+            &unsized_params,
+        );
+        let self_inherited_types = flux_solve::traits::associated_self_types(
+            items,
+            &sigs,
+            &self_supertraits,
+            Some(&inherited_proof),
+        );
         let scope = TypeScope {
             // Tuple constructors reuse their fields' written types. `Self`
             // in those types still names the declaring ADT, not a free function.

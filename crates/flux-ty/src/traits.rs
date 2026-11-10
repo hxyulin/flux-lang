@@ -514,7 +514,16 @@ fn selected_auto_bound_is_uniform(
     );
     // The existing policy still guards conditional applicability. A mapping
     // alone must never certify new lifetime relations or type-outlives bounds.
-    required.is_empty()
+    let mut implied = Vec::new();
+    crate::regions::implied_outlives_with_static(
+        items,
+        sigs,
+        sigs.impls[id],
+        &regions.self_ty,
+        Some(Region::Static),
+        &mut implied,
+    );
+    required.iter().all(|bound| implied.contains(bound))
 }
 
 /// Rust's ordered orphan check: a local trait, or a local input type with

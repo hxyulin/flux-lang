@@ -125,3 +125,21 @@ fn nested_object_pointer_cast_is_reinterpretation() {
         true,
     );
 }
+
+#[test]
+fn raw_pointer_retry_borrow() {
+    compare(
+        "raw_pointer_retry_borrow",
+        r#"unsafe fn retry<'a>(p:*mut Vec<u8>)->&'a [u8]{loop{let value=unsafe{&mut *p};if !value.is_empty(){return value.as_slice();}}}"#,
+        true,
+    );
+}
+
+#[test]
+fn reference_retry_borrow_remains_exclusive() {
+    compare(
+        "reference_retry_borrow_remains_exclusive",
+        r#"fn retry(p:&mut Vec<u8>)->&[u8]{loop{let value=&mut *p;if !value.is_empty(){return value.as_slice();}}}"#,
+        false,
+    );
+}

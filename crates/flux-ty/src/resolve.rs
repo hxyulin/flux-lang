@@ -1422,6 +1422,18 @@ fn assoc_type_base(
                 .collect();
             match found.as_slice() {
                 [inherited] => {
+                    // A closed, region-free definition cannot capture the
+                    // borrowed inputs. Its impl requirements are proved by
+                    // namespace lookup and checked with regions separately.
+                    if !captures_inputs(inherited.trait_)
+                        && let Some(&(_, _, ty)) = scope
+                            .self_inherited_types
+                            .iter()
+                            .find(|(tr, n, _)| tr == inherited && *n == name)
+                        && regions::is_closed_region_free(items, ty)
+                    {
+                        return ty;
+                    }
                     // AliasTy has no table for erased trait-argument regions.
                     // Preserve the qualified-projection boundary here too.
                     if !captures_inputs(inherited.trait_)

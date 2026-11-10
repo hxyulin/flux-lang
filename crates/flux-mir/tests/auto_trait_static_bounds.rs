@@ -41,6 +41,16 @@ fn main(){}
             true,
         ),
         (
+            "projected_marker_self_wellformedness",
+            r#"use std::marker::PhantomData;use std::pin::Pin;
+trait Select{type Value:?Sized;}struct Helper<T:?Sized>(T);impl<T:?Sized>Select for Helper<T>{type Value=T;}
+struct Outer<'a,T>{field:Pin<&'a mut T>}
+struct Origin<'p,'a,T>{dummy:PhantomData<&'p ()>,field:Pin<&'a mut T>}
+impl<'p,'a,T>Unpin for Outer<'a,T>where <Helper<Origin<'p,'a,T>>as Select>::Value:Unpin{}
+fn need<T:Unpin>(_:T){}fn check<'a,T>(value:Outer<'a,T>){need(value);}fn main(){}"#,
+            true,
+        ),
+        (
             "concrete",
             r#"struct Guard<T>(T); impl<T: 'static> Unpin for Guard<T>{} fn need<T:Unpin>(_:T){}
 fn probe(){need(Guard(5u32));}

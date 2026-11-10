@@ -43,6 +43,18 @@ pub use flux_ty_ir::regions::{
 
 pub use crate::fn_regions::variances as fn_pointer_variances;
 
+/// A concrete definition whose shape cannot acquire regions by substitution.
+pub(crate) fn is_closed_region_free(items: &ItemTree, ty: Ty) -> bool {
+    !ty.has_error()
+        && !ty.has_params()
+        && !ty.has_aliases()
+        && !ty.has_opaques()
+        && slots(items, ty) == 0
+        && ty
+            .children()
+            .all(|child| is_closed_region_free(items, child))
+}
+
 pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
     "lifetimes in associated type annotations are not supported yet";
 

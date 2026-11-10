@@ -10,6 +10,11 @@ fn inherited_self_names_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, accepted, declaration) in [
         (
+            "closed_output_borrowed_trait_arg",
+            true,
+            "trait Base<T>{type Item;} trait Child<A>:Base<A>{fn get()->Self::Item;} struct S; impl Base<&'static u8> for S{type Item=u8;} impl Child<&'static u8> for S{fn get()->Self::Item{7}}",
+        ),
+        (
             "direct",
             true,
             r#"trait Base {type Item;} trait Child: Base {fn get()->Self::Item;} struct S; impl Base for S {type Item=u32;} impl Child for S {fn get()->Self::Item {7}}"#,
@@ -164,11 +169,6 @@ fn unrepresented_inherited_region_maps_reject_explicitly() {
             "rhs",
             "trait Base{type Item;} trait Child:Base{type Other;} struct S<'a>(&'a u8); impl<'a> Base for S<'a>{type Item=&'a u8;} impl Child for S<'_>{type Other=Self::Item;}",
             "outside function signatures",
-        ),
-        (
-            "trait_arg",
-            "trait Base<T>{type Item;} trait Child:Base<&'static u8>{fn get()->Self::Item;} struct S; impl Base<&'static u8> for S{type Item=u8;} impl Child for S{fn get()->Self::Item{7}}",
-            "lifetimes in inherited trait projections",
         ),
         (
             "expanded_slots",

@@ -68,7 +68,7 @@ pub(crate) fn check_signature_projection_requirements(
             }
         }
         cx.close_known();
-        let mut env = cx.caller_region_goals(false);
+        let mut env = cx.caller_region_goals();
         let mut complete = regions.selected_inputs.len() == signature.params.len() + 1
             || (regions.selected_inputs.is_empty()
                 && signature

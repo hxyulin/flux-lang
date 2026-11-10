@@ -7,6 +7,36 @@ fn contextual_candidates_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "borrowed_callback_closed_output",
+            "trait Once<A>{type Out;fn once(self,a:A)->Self::Out;}trait Mut<A>:Once<A>{fn call(&mut self,a:A)->Self::Out;}struct Inspect<F>(F);impl<'a,F,T>Once<&'a T>for Inspect<F>where F:FnOnce(&'a T){type Out=();fn once(self,a:&'a T)->Self::Out{(self.0)(a)}}impl<'a,F,T>Mut<&'a T>for Inspect<F>where F:FnMut(&'a T){fn call(&mut self,a:&'a T)->Self::Out{(self.0)(a)}}",
+            true,
+        ),
+        (
+            "borrowed_callback_static_header",
+            "trait Once<A>{type Out;}trait Mut<A>:Once<A>{fn call(&mut self,a:A)->Self::Out;}struct Inspect;impl Once<&'static u32>for Inspect{type Out=();}impl<'a>Mut<&'a u32>for Inspect{fn call(&mut self,_:&'a u32)->Self::Out{}}",
+            false,
+        ),
+        (
+            "borrowed_callback_static_requirement",
+            "trait Once<A>{type Out;}trait Mut<A>:Once<A>{fn call(&mut self,a:A)->Self::Out;}struct Inspect<F>(F);impl<'a,F:FnOnce(&'a u32)+'static>Once<&'a u32>for Inspect<F>{type Out=();}impl<'a,F:FnMut(&'a u32)>Mut<&'a u32>for Inspect<F>{fn call(&mut self,a:&'a u32)->Self::Out{(self.0)(a)}}",
+            false,
+        ),
+        (
+            "ranked_callback_supertrait",
+            "trait Call<A>{type Out;}impl<F:FnMut(A)->R,A,R>Call<A>for F{type Out=R;}trait Source{type Item;}trait Fused:Source{}struct Filter<S,R,F>(S,R,F);impl<S:Source,R,F>Source for Filter<S,R,F>where F:for<'a>Call<&'a S::Item,Out=R>{type Item=S::Item;}impl<S:Fused,R,F>Fused for Filter<S,R,F>where F:FnMut(&S::Item)->R{}",
+            true,
+        ),
+        (
+            "local_supertrait_output_in_self_header",
+            "trait Parent{type Item;}trait Child:Parent{}trait Mark{}struct Pair<T,U>(T,U);impl<T:Child>Mark for Pair<T,T::Item>{}fn need<T:Mark>(_:T){}fn check<T:Child<Item=u32>>(t:T){need(Pair(t,7u32));}",
+            true,
+        ),
+        (
+            "inherited_output_in_self_header",
+            "trait Mark{}struct Pair<I,T>(I,T);impl<I:DoubleEndedIterator>Mark for Pair<I,I::Item>{}fn need<T:Mark>(_:T){}fn check<I:DoubleEndedIterator<Item=u32>>(i:I){need(Pair(i,7u32));}",
+            true,
+        ),
+        (
             "object_output_signature",
             "trait Child:Iterator{fn get(&mut self)->Option<Self::Item>;}impl Child for dyn Iterator<Item=u32>{fn get(&mut self)->Option<u32>{self.next()}}",
             true,

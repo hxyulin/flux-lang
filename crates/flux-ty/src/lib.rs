@@ -377,6 +377,7 @@ pub fn all_fields(s: &flux_hir::Struct) -> impl Iterator<Item = &flux_hir::Field
 /// its parameters; an error if its path did not resolve (reported).
 fn impl_type(
     items: &ItemTree,
+    sigs: &Signatures,
     imp: &Impl,
     lens: Option<&ArrayLens<'_>>,
     diagnostics: &mut Vec<Diagnostic>,
@@ -403,8 +404,9 @@ fn impl_type(
     // these predicates completely once trait defaults and supertraits exist.
     let preliminary =
         traits::resolve_predicates(items, imp.module, &imp.generics, scope, &mut Vec::new());
+    let bounds = flux_solve::traits::elaborate(sigs, &preliminary.predicates);
     let scope = TypeScope {
-        bounds: &preliminary.predicates,
+        bounds: &bounds,
         ..scope
     };
     let mut errors = Vec::new();

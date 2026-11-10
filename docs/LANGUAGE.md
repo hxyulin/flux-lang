@@ -1539,9 +1539,8 @@ associated-type equalities, under the impl header's universal lifetimes.
 Projection selection on a definition's right-hand side must satisfy those
 lifetimes even when its normalized result has no reference slots. Missing
 projection input mappings remain explicitly unsupported.
-Unrepresented supertrait argument regions and higher-ranked callback obligations
-needed by a selected supertrait impl are explicitly unsupported; unrelated
-callback bounds remain allowed.
+Supertrait argument regions and higher-ranked callback input/output rows need
+represented occurrence mappings. Missing mappings remain explicitly unsupported.
 
 `Fn`, `FnMut` and `FnOnce` bounds may return references whose lifetime
 is supplied by the callable contract. Owner-bearing function items passed to
@@ -2118,3 +2117,26 @@ OR/XOR, halfword reversal within words, and integer reinterpretations used by
 aho-corasick and chacha20. Immediate ranges are checked on collected instances,
 including reified function pointers. Scalar implementations preserve lane
 results and do not establish hardware acceleration.
+
+Modern futures-util 0.3.34 builds from unchanged registry sources with its
+default features and with `io`, `sink` and `channel` enabled. The maintained
+`futures_util_readiness` test compares native consumer output with rustc in
+Flux debug and release builds. It exercises higher-ranked callback adapters,
+try-future chains, streams, buffered futures, peeking, sinks, remote handles
+and asynchronous I/O. Procedural macros use an explicitly selected rustc host.
+Futures 0.1 compatibility and portable-atomic dependencies are not covered by
+this support milestone.
+
+Derives preserve inline and projected generic bounds through macro expansion.
+Impl self types can use associated outputs inherited through local or imported
+supertraits. A selected inherited definition with a closed, region-free output
+can be used when trait arguments contain references. Its impl requirements still
+receive a separate lifetime proof. Region-dependent inherited outputs retain
+their existing occurrence-table boundaries.
+
+Higher-ranked callback proofs retain ordinary caller bounds and check a selected
+closure's exported requirements. Auto-trait projection bounds may rely on the
+well-formedness conditions already implied by their self type. Pinned receivers
+whose Self is a mutable reference keep their wrapper when passed by value.
+Borrows through raw pointer dereferences retain region constraints without
+claiming exclusive access to that pointee's allocation.

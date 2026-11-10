@@ -4382,7 +4382,12 @@ impl Collector<'_> {
             .collect();
         // As rustc expands it: each parameter's own bounds and the
         // trait's, then the struct's `where` clause.
-        let inline = |p: &WherePredicate| p.ty_range.end() <= s.generics.range.end();
+        let inline = |p: &WherePredicate| {
+            p.ty_range.end() <= s.generics.range.end()
+                && matches!(&p.ty, TypeRef::Path(path)
+                    if path.args.iter().all(Option::is_none)
+                        && params.iter().any(|param| !param.is_const() && path.as_name() == Some(param.name)))
+        };
         let mut predicates = Vec::new();
         for param in params.iter().filter(|p| !p.is_const()) {
             let ty = TypeRef::Path(Path::single(param.name));
@@ -4390,7 +4395,8 @@ impl Collector<'_> {
                 s.generics
                     .predicates
                     .iter()
-                    .filter(|p| inline(p) && p.ty == ty)
+                    .filter(|p| inline(p) && matches!(&p.ty, TypeRef::Path(path)
+                        if path.as_name() == Some(param.name) && path.args.iter().all(Option::is_none)))
                     .cloned(),
             );
             if bounds_params {

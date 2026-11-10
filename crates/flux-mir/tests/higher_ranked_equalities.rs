@@ -332,3 +332,39 @@ fn builtin_type_contracts_remain_valid() {
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
 }
+
+#[test]
+fn ordinary_callable_bound_proves_ranked_adapter() {
+    compare(
+        "ordinary_callable_bound_proves_ranked_adapter",
+        r#"trait Call<A>{type Out;}impl<F:FnOnce(A)->R,A,R>Call<A>for F{type Out=R;}fn need<T,F>(_:F)where F:for<'a>Call<&'a T,Out=()>{}fn forward<T,F:FnOnce(&T)>(f:F){need::<T,F>(f);}"#,
+        true,
+    );
+}
+
+#[test]
+fn static_callable_bound_cannot_prove_ranked_adapter() {
+    compare(
+        "static_callable_bound_cannot_prove_ranked_adapter",
+        r#"trait Call<A>{type Out;}impl<F:FnOnce(A)->R,A,R>Call<A>for F{type Out=R;}fn need<T,F>(_:F)where F:for<'a>Call<&'a T,Out=()>{}fn forward<T:'static,F:FnOnce(&'static T)>(f:F){need::<T,F>(f);}"#,
+        false,
+    );
+}
+
+#[test]
+fn ranked_adapter_invokes_closure_requirements() {
+    compare(
+        "ranked_adapter_invokes_closure_requirements",
+        r#"trait Call<A>{type Out;}impl<F:FnOnce(A)->R,A,R>Call<A>for F{type Out=R;}fn need<F>(_:F)where F:for<'a>Call<&'a u32,Out=()>{}fn check(){let mut seen=0;need(|value:&u32|seen=*value);}"#,
+        true,
+    );
+}
+
+#[test]
+fn ranked_adapter_rejects_closure_escape() {
+    compare(
+        "ranked_adapter_rejects_closure_escape",
+        r#"trait Call<A>{type Out;}impl<F:FnOnce(A)->R,A,R>Call<A>for F{type Out=R;}fn need<F>(_:F)where F:for<'a>Call<&'a u32,Out=()>{}fn check(){let mut saved=None;need(|value:&u32|saved=Some(value));}"#,
+        false,
+    );
+}

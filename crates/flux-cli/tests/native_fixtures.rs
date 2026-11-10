@@ -196,3 +196,8 @@ fn pin_unsizing() {
 fn contextual_impl_outputs() {
     support::oracle::compare_fixture("contextual_impl_outputs");
 }
+
+#[test]
+fn derived_projection_bounds() {
+    support::oracle::compare_fixture("derived_projection_bounds");
+}

@@ -667,12 +667,20 @@ pub fn associated_self_types(
     items: &ItemTree,
     sigs: &Signatures,
     candidates: &[Predicate],
+    proof: Option<&RigidSolver<'_>>,
 ) -> Vec<(TraitRef, Symbol, Ty)> {
     let mut out = Vec::new();
     for &goal in candidates.iter().skip(1) {
-        // A possible conditional impl cannot turn a caller-owned inherited
-        // output into its concrete RHS during namespace lookup.
-        let Some((imp, args)) = select_definite_impl(items, sigs, goal) else {
+        // Conditional definitions need independent caller evidence. An
+        // explicit caller membership still owns its abstract output.
+        let selected = select_definite_impl(items, sigs, goal).or_else(|| {
+            let proof = proof?;
+            if in_env(sigs, proof.memberships, goal) {
+                return None;
+            }
+            proof.select_impl(goal)
+        });
+        let Some((imp, args)) = selected else {
             continue;
         };
         for associated in &items.traits[goal.trait_ref.trait_].types {

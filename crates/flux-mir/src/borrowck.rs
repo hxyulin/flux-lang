@@ -66,6 +66,9 @@ pub fn check(
         loans
             .iter()
             .enumerate()
+            // A raw pointer does not loan its pointee's allocation. Retain
+            // its region constraints, but no alias exclusion on that place.
+            .filter(|(_, (loan, _))| !through_raw_pointer(body, sigs, &loan.place))
             .map(|(id, (loan, _))| (loan.place.local.index() as u32, id as u32)),
     );
     let made_into = regions::Adjacency::new(
@@ -453,6 +456,23 @@ struct Checker<'a> {
 struct Live {
     point: u32,
     except: Option<usize>,
+}
+
+fn through_raw_pointer(body: &Body, sigs: &Signatures, place: &Place) -> bool {
+    place.projection.iter().enumerate().any(|(i, &elem)| {
+        elem == ProjectionElem::Deref
+            && matches!(
+                body.place_ty(
+                    &Place {
+                        local: place.local,
+                        projection: place.projection.prefix(i),
+                    },
+                    sigs
+                )
+                .kind(),
+                TyKind::RawPtr(..)
+            )
+    })
 }
 
 /// Whether one place contains the other: they are the same local and

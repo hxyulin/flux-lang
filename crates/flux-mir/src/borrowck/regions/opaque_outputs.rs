@@ -80,7 +80,7 @@ impl Cx<'_> {
                 args: &alias.args[1..],
             },
         };
-        let env = self.caller_region_goals(false);
+        let env = self.caller_region_goals();
         let mut found = None;
         for (index, projection) in sig.projections.iter().enumerate() {
             if projection.subst(&args).alias != alias {

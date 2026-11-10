@@ -209,3 +209,5 @@ fixture!(
 fixture!(pin_unsizing, "pin_unsizing.rs");
 
 fixture!(contextual_impl_outputs, "contextual_impl_outputs.rs");
+
+fixture!(derived_projection_bounds, "derived_projection_bounds.rs");

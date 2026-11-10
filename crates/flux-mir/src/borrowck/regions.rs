@@ -2206,6 +2206,31 @@ impl<'a> Cx<'a> {
                 && object.args.iter().all(|&ty| self.slots(ty) == 0);
         }
         if flux_ty::fn_trait_kind(self.items, goal.predicate.trait_ref.trait_).is_some()
+            && let TyKind::Closure(id, list) = goal.predicate.self_ty.kind()
+        {
+            if !goal.lifetimes.is_empty()
+                || goal.vars.len() != 2
+                || goal.vars[0].len() != self.slots(goal.predicate.self_ty) as usize
+                || goal.predicate.trait_ref.args.len() != 1
+                || goal.vars[1].len() != self.slots(goal.predicate.trait_ref.args[0]) as usize
+                || !flux_solve::traits::holds(self.items, self.sigs, &[], goal.predicate)
+            {
+                return false;
+            }
+            // Selected callable adapters still invoke the original closure.
+            // Reuse its exported requirements with these exact capture/input
+            // rows; result relations are proved by the Output equality.
+            self.closure_goal(
+                id,
+                list,
+                Some(&goal.vars[0]),
+                Some(&goal.vars[1]),
+                None,
+                range,
+            );
+            return true;
+        }
+        if flux_ty::fn_trait_kind(self.items, goal.predicate.trait_ref.trait_).is_some()
             && let TyKind::FnPtr(signature) = goal.predicate.self_ty.kind()
         {
             if !flux_solve::traits::holds(self.items, self.sigs, &[], goal.predicate) {
@@ -2350,7 +2375,14 @@ impl<'a> Cx<'a> {
             // Only the impl header's equalities are assumptions. A selected
             // impl's required equality must also hold after lifetime erasure,
             // including when neither side contributes any region slots.
-            if self.normalize(actual_ty) != self.normalize(p.ty.subst(&args)) {
+            let proof = flux_solve::traits::RigidSolver::new(
+                self.items,
+                self.sigs,
+                &self.header_predicates,
+                &self.env,
+                &self.unsized_params,
+            );
+            if proof.normalize_ty(actual_ty, None) != proof.normalize_ty(p.ty.subst(&args), None) {
                 return false;
             }
             if expected.is_empty() {
@@ -3705,7 +3737,7 @@ impl<'a> Cx<'a> {
                 let known = if self.body.owner.is_none() {
                     self.family_goals.clone()
                 } else {
-                    self.caller_region_goals(false)
+                    self.caller_region_goals()
                 };
                 let requirement = ImplRegionGoal {
                     predicate: goal,
@@ -6595,9 +6627,17 @@ impl<'a> Cx<'a> {
             return None;
         }
         if trait_regions.bound != 0 {
-            let goal =
-                self.impl_region_goal(p, self_table, trait_regions, lifetimes, args, arg_vars);
-            let env = self.caller_ranked_goals();
+            let env = self.caller_region_goals();
+            let goal = self.impl_region_goal_with_proof(
+                p,
+                self_table,
+                trait_regions,
+                lifetimes,
+                args,
+                arg_vars,
+                Some((&env, depth)),
+                false,
+            );
             if goal
                 .as_ref()
                 .is_none_or(|goal| !self.impl_prove_super(goal, &env, depth))
@@ -6715,7 +6755,7 @@ impl<'a> Cx<'a> {
         goal: flux_ty::Predicate,
     ) -> Option<(flux_hir::ImplId, Vec<Ty>)> {
         if matches!(goal.self_ty.kind(), TyKind::Param(_)) {
-            let known = self.caller_region_goals(false);
+            let known = self.caller_region_goals();
             let mut candidates = Vec::new();
             for imp in
                 self.sigs
@@ -6811,7 +6851,7 @@ impl<'a> Cx<'a> {
                 args: Ty::list(&alias.args[1..]),
             },
         };
-        let known = self.caller_region_goals(false);
+        let known = self.caller_region_goals();
         if !known.iter().any(|known| {
             known.predicate == owner
                 && known.bound.is_empty()
@@ -6896,7 +6936,7 @@ impl<'a> Cx<'a> {
             }
         }
         if flux_ty::fn_trait_kind(self.items, goal.trait_ref.trait_).is_none() {
-            let known = self.caller_region_goals(false);
+            let known = self.caller_region_goals();
 
             if let Some(equalities) =
                 self.caller_goal_equalities(&known, goal, vars, trait_lifetimes)
@@ -7156,14 +7196,9 @@ impl<'a> Cx<'a> {
         })
     }
 
-    fn caller_ranked_goals(&mut self) -> Vec<ImplRegionGoal> {
-        self.caller_region_goals(true)
-    }
-
-    /// Reconstruct original caller assumptions. Opaque selection proofs also
-    /// need ordinary bounds required by a selected impl; ranked call sites
-    /// keep their original filtering behavior.
-    fn caller_region_goals(&mut self, ranked_only: bool) -> Vec<ImplRegionGoal> {
+    /// Reconstruct original caller assumptions, including ordinary bounds
+    /// needed by an impl that forwards a higher-ranked callback contract.
+    fn caller_region_goals(&mut self) -> Vec<ImplRegionGoal> {
         if self.body.constant_owner.is_some() {
             return self.family_goals.clone();
         }
@@ -7226,12 +7261,6 @@ impl<'a> Cx<'a> {
         }
         let mut goals = Vec::new();
         for (p, row, tr) in written {
-            if ranked_only
-                && tr.bound == 0
-                && !self.trait_has_ranked_super(p.trait_ref.trait_, &mut FxHashSet::default())
-            {
-                continue;
-            }
             // These are original declaration assumptions, not selected impl
             // conclusions. Their abstract subject is already well formed;
             // keep strict occurrence checks for every trait argument row.
@@ -7338,7 +7367,7 @@ impl<'a> Cx<'a> {
         }
         arg_vars.push(own.to_vec());
         let args = flux_solve::traits::opaque_args(opaque);
-        let env = self.caller_region_goals(false);
+        let env = self.caller_region_goals();
         let mut goals = Vec::new();
         for ((bound, predicate), origin) in decl
             .bounds
@@ -7627,7 +7656,7 @@ impl<'a> Cx<'a> {
             return;
         }
         let Some((imp, impl_args)) = flux_solve::traits::select_impl(items, sigs, goal)
-            .or_else(|| dynamic_object.then(|| self.matching_impl(goal)).flatten())
+            .or_else(|| self.matching_impl(goal))
             .or_else(|| self.family_blanket_impl(goal))
             .or(caller_blanket)
         else {
@@ -7656,7 +7685,7 @@ impl<'a> Cx<'a> {
         // These assumptions belong to the caller, never to the selected
         // required goal. Saved projection inputs may use earlier header
         // bindings to match a concrete associated output without inversion.
-        let selection_env = self.caller_region_goals(false);
+        let selection_env = self.caller_region_goals();
         let Some(binding) = self.bind_impl(
             imp,
             &impl_args,
