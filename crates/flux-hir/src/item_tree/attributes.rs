@@ -42,8 +42,8 @@ pub(super) fn bare_attr(attr: ast::Attr<'_>) -> bool {
     })
 }
 
-/// rustc interprets the string as a decimal host-sized expansion depth.
-pub(super) fn recursion_limit_attr(attr: ast::Attr<'_>) -> Option<usize> {
+/// rustc parses limit attributes as decimal host-sized integer strings.
+pub(super) fn integer_limit_attr(attr: ast::Attr<'_>) -> Option<usize> {
     let token = attr
         .meta()
         .filter(|m| {
@@ -78,14 +78,18 @@ pub(super) fn check_inner_attrs(
             .map(|(r, m)| Diagnostic::new(*r, m.clone())),
     );
     for attr in attrs.iter() {
-        if attr_name(attr) == Some("recursion_limit") {
-            if recursion_limit_attr(attr).is_none() {
+        if let Some(name @ ("recursion_limit" | "type_length_limit")) = attr_name(attr) {
+            if integer_limit_attr(attr).is_none() {
                 diagnostics.push(Diagnostic::new(
                     attr.syntax().text_range(),
-                    "recursion limit must be a non-negative integer string",
+                    format!(
+                        "{} must be a non-negative integer string",
+                        name.replace('_', " ")
+                    ),
                 ));
             }
-            // Like rustc's unused-attribute warning, non-root occurrences have no effect.
+            // Stable rustc does not enforce type_length_limit. Like its unused
+            // attribute warning, non-root occurrences of either have no effect.
             continue;
         }
         if attr_name(attr) == Some("macro_use") {

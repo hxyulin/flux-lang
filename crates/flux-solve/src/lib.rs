@@ -62,7 +62,15 @@ pub fn maybe_unsized(
     unsized_params: &[bool],
     bounds: &[Predicate],
 ) -> bool {
-    maybe_unsized_with(items, Some(&sigs.structs), ty, unsized_params, bounds)
+    if bounds
+        .iter()
+        .any(|bound| bound.self_ty == ty && trait_requires_sized(items, bound.trait_ref.trait_))
+    {
+        return false;
+    }
+    let tail = metadata::tail(Some(&sigs.structs), ty, |id| items.structs[id].is_enum());
+    let tail = traits::normalize(items, sigs, &[], tail);
+    maybe_unsized_with(items, Some(&sigs.structs), tail, unsized_params, bounds)
 }
 
 pub fn maybe_unsized_with(
@@ -72,6 +80,12 @@ pub fn maybe_unsized_with(
     unsized_params: &[bool],
     bounds: &[Predicate],
 ) -> bool {
+    if bounds
+        .iter()
+        .any(|bound| bound.self_ty == ty && trait_requires_sized(items, bound.trait_ref.trait_))
+    {
+        return false;
+    }
     let ty = metadata::tail(fields, ty, |id| items.structs[id].is_enum());
     match ty.kind() {
         TyKind::Alias(alias) => {
@@ -94,7 +108,7 @@ pub fn maybe_unsized_with(
 }
 
 /// A supertrait's Self bound applies even before its signature is installed.
-fn trait_requires_sized(items: &ItemTree, root: flux_hir::TraitId) -> bool {
+pub fn trait_requires_sized(items: &ItemTree, root: flux_hir::TraitId) -> bool {
     let mut work = vec![root];
     let mut seen = rustc_hash::FxHashSet::default();
     while let Some(id) = work.pop() {

@@ -82,7 +82,7 @@ fn as_mut<T: ?Sized>(value: &T) -> &mut T {
 /// is rustc's `UnsafeCell`, which hides its invalid values from enums
 /// around it (the `lang` name says so to layouts).
 #[lang = "cell"]
-pub struct Cell<T> {
+pub struct Cell<T: ?Sized> {
     value: T,
 }
 
@@ -114,7 +114,9 @@ impl<T> Cell<T> {
     pub fn into_inner(self) -> T {
         self.value
     }
+}
 
+impl<T: ?Sized> Cell<T> {
     /// The value, mutably: the cell is borrowed mutably, so no one else
     /// sees it.
     pub fn get_mut(&mut self) -> &mut T {
@@ -404,6 +406,17 @@ impl<'b, T: ?Sized> Ref<'b, T> {
         orig.borrow.set(orig.borrow.get() + 1);
         Ref { value: orig.value, borrow: orig.borrow }
     }
+
+    /// Splits one shared loan into two projected loans.
+    pub fn map_split<U: ?Sized, V: ?Sized, F>(orig: Self, f: F) -> (Ref<'b, U>, Ref<'b, V>)
+    where F: FnOnce(&T) -> (&U, &V),
+    {
+        let (left, right) = f(orig.value);
+        let borrow = orig.borrow;
+        borrow.set(borrow.get().checked_add(1).expect("too many shared borrows"));
+        mem::forget(orig);
+        (Ref { value: left, borrow }, Ref { value: right, borrow })
+    }
 }
 
 impl<'b, T: ?Sized> Deref for Ref<'b, T> {
@@ -437,6 +450,20 @@ impl<'b, T: ?Sized> RefMut<'b, T> {
     fn value_mut(&mut self) -> &mut T {
         &mut *self.value
     }
+
+    /// Splits one exclusive loan into two disjoint projected loans.
+    pub fn map_split<U: ?Sized, V: ?Sized, F>(orig: Self, f: F) -> (RefMut<'b, U>, RefMut<'b, V>)
+    where F: FnOnce(&mut T) -> (&mut U, &mut V),
+    {
+        let borrow = orig.borrow;
+        // SAFETY: transfer the exclusive reference out of the guard without
+        // dropping it. The callback guarantees the returned loans are disjoint.
+        let value = unsafe { crate::ptr::read(&orig.value) };
+        let (left, right) = f(value);
+        borrow.set(borrow.get().checked_sub(1).expect("too many mutable borrows"));
+        mem::forget(orig);
+        (RefMut { value: left, borrow }, RefMut { value: right, borrow })
+    }
 }
 
 impl<'b, T: ?Sized> Deref for RefMut<'b, T> {
@@ -462,7 +489,7 @@ impl<'b, T: ?Sized + Debug> Debug for RefMut<'b, T> {
 
 impl<'b, T: ?Sized> Drop for RefMut<'b, T> {
     fn drop(&mut self) {
-        self.borrow.set(0);
+        self.borrow.set(self.borrow.get() + 1);
     }
 }
 

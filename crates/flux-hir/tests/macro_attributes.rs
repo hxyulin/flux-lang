@@ -270,3 +270,28 @@ fn dependency_macros_use_invocation_limit() {
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn type_length_limits_match_stable_rustc() {
+    for (name, source, accepted) in [
+        ("unused", "#![type_length_limit=\"0\"] struct S;", true),
+        ("plus", "#![type_length_limit=\"+4\"]", true),
+        ("kind", "#![type_length_limit=12]", false),
+        ("radix", "#![type_length_limit=\"0x10\"]", false),
+        ("separator", "#![type_length_limit=\"1_2\"]", false),
+        ("negative", "#![type_length_limit=\"-1\"]", false),
+        (
+            "module",
+            "mod m { #![type_length_limit=\"0\"] struct S; }",
+            true,
+        ),
+    ] {
+        compare(
+            &format!("type_length_{name}"),
+            source,
+            None,
+            accepted,
+            flux_syntax::Edition::E2024,
+        );
+    }
+}

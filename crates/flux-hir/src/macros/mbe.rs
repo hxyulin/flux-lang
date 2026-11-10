@@ -1532,6 +1532,12 @@ impl Transcriber<'_, '_> {
                         let result = self.transcribe(inner, repeats, out);
                         repeats.pop();
                         result?;
+                        // The last template token touched the repetition's
+                        // closing delimiter, not the next expansion token.
+                        // Do not turn a trailing `+` followed by `=>` into `+=`.
+                        if let Some(last) = out.last_mut() {
+                            last.joint = false;
+                        }
                     }
                 }
             }

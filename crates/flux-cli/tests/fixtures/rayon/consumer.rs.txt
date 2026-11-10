@@ -24,6 +24,19 @@ fn main() {
         assert_eq!(chunks, ["abc", "def", "g"]);
         let flattened: Vec<_> = [vec![1, 2], vec![3, 4]].into_par_iter().flat_map_iter(|v| v).collect();
         assert_eq!(flattened, [1, 2, 3, 4]);
+        let parallel_flattened: Vec<_> = (0..3u32).into_par_iter().flat_map(Some).collect();
+        assert_eq!(parallel_flattened, [0, 1, 2]);
+        let nested: Vec<_> = (0..3).into_par_iter().flat_map(|n| (0..n).into_par_iter()).collect();
+        assert_eq!(nested, [0, 0, 1]);
+        let options: Vec<_> = (0..1000).map(Some).collect();
+        let separated: Vec<_> = options.par_iter().intersperse(&None).collect();
+        assert_eq!(separated.len(), 1999);
+        assert_eq!(separated[1], &None);
+        let (indices, (squares, cubes)): (Vec<_>, (Vec<_>, Vec<_>)) =
+            [1, 2, 3, 4, 5].par_iter().map(|x| (x * x, x * x * x)).enumerate().unzip();
+        assert_eq!(indices, [0, 1, 2, 3, 4]);
+        assert_eq!(squares, [1, 4, 9, 16, 25]);
+        assert_eq!(cubes, [1, 8, 27, 64, 125]);
         let borrowed = [3, 5, 7];
         let copied: Vec<_> = borrowed.par_iter().cloned().collect();
         assert_eq!(copied, borrowed);

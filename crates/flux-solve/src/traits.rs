@@ -240,6 +240,7 @@ pub struct RigidSolver<'a> {
     sigs: &'a Signatures,
     env: Vec<Predicate>,
     memberships: &'a [Predicate],
+    abstract_outputs: &'a [Predicate],
     projections: &'a [Projection],
     unsized_params: &'a [bool],
     depth: std::cell::Cell<u32>,
@@ -272,6 +273,7 @@ impl<'a> RigidSolver<'a> {
                 .map(|&p| Self::normalize_predicate(items, sigs, projections, p))
                 .collect(),
             memberships,
+            abstract_outputs: &[],
             projections,
             unsized_params,
             depth: std::cell::Cell::new(0),
@@ -373,6 +375,13 @@ impl<'a> RigidSolver<'a> {
             active: guard.map(Ty::alias).into_iter().collect(),
         };
         normalizer.go(ty, 0)
+    }
+
+    /// Keep outputs owned by method-local assumptions abstract, even when
+    /// their substituted receiver also has a globally definite impl.
+    pub fn with_abstract_outputs(mut self, memberships: &'a [Predicate]) -> Self {
+        self.abstract_outputs = memberships;
+        self
     }
 
     pub fn normalize_ty(&self, ty: Ty, guard: Option<AliasTy>) -> Ty {
@@ -1481,6 +1490,7 @@ impl Normalizer<'_> {
                 }
                 if self.caller_only {
                     if let Some(proof) = self.impl_proof
+                        && !in_env(sigs, proof.abstract_outputs, alias_predicate(alias))
                         // Conditional impls cannot specialize a caller-owned
                         // output. Globally definite impls retain their RHS.
                         && (!in_env(sigs, &proof.env, alias_predicate(alias))
@@ -1889,18 +1899,28 @@ fn match_impl_with_bindings(
         long.resize(count, None);
         &mut long[..]
     };
-    if !match_impl_argument(self_ty, goal.self_ty, binds, &normalize, 0) {
+    let mut deferred = Vec::new();
+    if !match_impl_argument(self_ty, goal.self_ty, binds, &normalize, &mut deferred, 0) {
         return None;
     }
     for (&x, &y) in trait_ref.args.iter().zip(goal.trait_ref.args) {
         // Matching Self may already fix the input of a projection in a
         // trait argument (`A::Item` for `SmallVec<A>`). Normalize it using
         // those bindings before matching the remaining header.
-        if !match_impl_argument(x, y, binds, &normalize, 0) {
+        if !match_impl_argument(x, y, binds, &normalize, &mut deferred, 0) {
             return None;
         }
     }
     bind(binds);
+    // Associated outputs are not injective. Match their inputs throughout the
+    // header and bind output-only parameters before checking these equalities.
+    let args: Vec<_> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
+    if deferred.into_iter().any(|(pattern, actual)| {
+        let pattern = pattern.subst(&args);
+        pattern.has_error() || normalize(pattern) != normalize(actual)
+    }) {
+        return None;
+    }
     // Its parameters are `Sized` unless bounded `?Sized`.
     let params = &items.impls[imp].generics.params;
     if sized
@@ -1911,7 +1931,6 @@ fn match_impl_with_bindings(
     {
         return None;
     }
-    let args: Vec<_> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
     if !crate::fn_regions::same_binders(items, self_ty.subst(&args), goal.self_ty)
         || trait_ref
             .args
@@ -1931,6 +1950,7 @@ fn match_impl_argument(
     actual: Ty,
     binds: &mut [Option<Ty>],
     normalize: &impl Fn(Ty) -> Ty,
+    deferred: &mut Vec<(Ty, Ty)>,
     depth: u32,
 ) -> bool {
     if depth > 64 {
@@ -1956,10 +1976,14 @@ fn match_impl_argument(
         let normalized = normalize(bound);
         return normalized == actual;
     }
+    if matches!(pattern.kind(), TyKind::Alias(_)) && !matches!(actual.kind(), TyKind::Alias(_)) {
+        deferred.push((pattern, actual));
+        return true;
+    }
     let mut all = |left: &[Ty], right: &[Ty]| {
         left.len() == right.len()
             && left.iter().zip(right).all(|(&left, &right)| {
-                match_impl_argument(left, right, binds, normalize, depth + 1)
+                match_impl_argument(left, right, binds, normalize, deferred, depth + 1)
             })
     };
     match (pattern.kind(), actual.kind()) {
@@ -1967,13 +1991,14 @@ fn match_impl_argument(
         (TyKind::Tuple(xs), TyKind::Tuple(ys)) => all(xs, ys),
         (TyKind::Ref(left, x), TyKind::Ref(right, y))
         | (TyKind::RawPtr(left, x), TyKind::RawPtr(right, y)) => {
-            left == right && match_impl_argument(x, y, binds, normalize, depth + 1)
+            left == right && match_impl_argument(x, y, binds, normalize, deferred, depth + 1)
         }
         (TyKind::Slice(x), TyKind::Slice(y)) => {
-            match_impl_argument(x, y, binds, normalize, depth + 1)
+            match_impl_argument(x, y, binds, normalize, deferred, depth + 1)
         }
         (TyKind::Array(x, n), TyKind::Array(y, m)) => {
-            match_ty(n, m, binds) && match_impl_argument(x, y, binds, normalize, depth + 1)
+            match_ty(n, m, binds)
+                && match_impl_argument(x, y, binds, normalize, deferred, depth + 1)
         }
         _ => match_ty(pattern, actual, binds),
     }

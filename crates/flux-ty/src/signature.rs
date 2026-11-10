@@ -204,6 +204,23 @@ pub(super) fn extend_signatures(
             ..TypeScope::default()
         };
         let mut errors = Vec::new();
+        // A supertrait argument may project from an owner parameter bound,
+        // e.g. `trait V<M: Machine>: Lane<M::Word>`. Seed that context before
+        // resolving edges; the final pass below reports predicate errors.
+        let header = resolve_predicates(
+            items,
+            &sigs,
+            t.loc.module,
+            &t.generics,
+            scope,
+            &mut Vec::new(),
+        );
+        let header_bounds: Vec<_> = bounds.iter().chain(&header.predicates).copied().collect();
+        let header_bounds = flux_solve::traits::elaborate(&sigs, &header_bounds);
+        let scope = TypeScope {
+            bounds: &header_bounds,
+            ..scope
+        };
         let mut supertraits = Vec::new();
         let mut projections = Vec::new();
         let mut implied = Vec::new();
@@ -235,6 +252,22 @@ pub(super) fn extend_signatures(
         );
         projections.extend(resolved.projections);
         let header_projections = projections.clone().into_boxed_slice();
+        let owner_bounds: Vec<_> = bounds
+            .iter()
+            .copied()
+            .chain(predicates.iter().copied())
+            .chain(
+                supertraits
+                    .iter()
+                    .map(|trait_ref| trait_ref.with_self(self_param)),
+            )
+            .collect();
+        let owner_bounds = flux_solve::traits::elaborate(&sigs, &owner_bounds);
+        let scope = TypeScope {
+            bounds: &owner_bounds,
+            ..scope
+        };
+
         let mut type_bounds = Vec::new();
         let mut families = Vec::new();
         for ty in &t.types {
@@ -258,8 +291,11 @@ pub(super) fn extend_signatures(
                 family_scope,
                 &mut errors,
             );
-            let family_bounds: Vec<_> =
-                bounds.iter().chain(&resolved.predicates).copied().collect();
+            let family_bounds: Vec<_> = owner_bounds
+                .iter()
+                .chain(&resolved.predicates)
+                .copied()
+                .collect();
             let family_bounds = flux_solve::traits::elaborate(&sigs, &family_bounds);
             let family_scope = TypeScope {
                 bounds: &family_bounds,

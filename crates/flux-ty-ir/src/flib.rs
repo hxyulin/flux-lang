@@ -85,7 +85,7 @@ record!(OpaqueSig {
     predicates,
     projections
 });
-record!(Builtins { sized });
+record!(Builtins { sized, auto_traits });
 record!(LifetimeName { name, range });
 record!(FnRegions {
     names,

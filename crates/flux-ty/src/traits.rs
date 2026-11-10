@@ -1399,7 +1399,16 @@ fn check_method(
     );
     let signature_env = elaborate(sigs, &signature_env);
     let parameters = flux_solve::unsized_params(items, Some(Owner::Impl(imp)), &decl.generics);
-    let proof = RigidSolver::new(items, sigs, &signature_env, projections, &parameters);
+    let method_memberships = sigs
+        .fn_predicates
+        .get(required)
+        .into_iter()
+        .flatten()
+        .map(|p| p.subst(&args))
+        .collect::<Vec<_>>();
+    let method_memberships = elaborate(sigs, &method_memberships);
+    let proof = RigidSolver::new(items, sigs, &signature_env, projections, &parameters)
+        .with_abstract_outputs(&method_memberships);
     // Keep caller-owned outputs abstract while resolving impl outputs with
     // independent evidence, using the same context on both sides.
     let normalize_signature = |ty| proof.normalize_ty(ty, None);

@@ -167,7 +167,17 @@ fn select(
             let input_row: Vec<_> = input.args.iter().flatten().copied().collect();
             let normalized = flux_solve::traits::normalize(items, sigs, &[], ty);
             if normalized != ty {
-                let row = selected::projection(items, sigs, alias, &input_row)?;
+                // Declaration equalities can normalize an abstract family
+                // without selecting an impl. An empty row carries no region
+                // substitution, but its original membership is still proved.
+                let row = if input_row.is_empty()
+                    && regions.is_empty()
+                    && slots(items, normalized) == 0
+                {
+                    Vec::new()
+                } else {
+                    selected::projection(items, sigs, alias, &input_row)?
+                };
                 if row.len() != slots(items, normalized) {
                     return None;
                 }

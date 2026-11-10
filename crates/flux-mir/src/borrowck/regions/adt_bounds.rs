@@ -685,6 +685,24 @@ pub(crate) fn check_adt_declarations(
         for i in lifetimes.len()..metadata.names.len() {
             lifetimes.push(cx.new_universal(format!("'{i}")));
         }
+        if let Some(flux_hir::Owner::Trait(owner)) = data.owner {
+            complete &= sigs.regions.traits.get(owner).is_some_and(|row| {
+                row.names.len() == metadata.owner as usize
+                    && metadata.names.get(..row.names.len()) == Some(&row.names[..])
+            });
+            let predicate = flux_solve::traits::trait_self_predicate(items, owner);
+            let trait_regions = TraitRefRegions {
+                bound: 0,
+                lifetimes: (0..metadata.owner).map(Region::Param).collect(),
+                args: vec![Box::default(); predicate.trait_ref.args.len()].into(),
+            };
+            cx.header_predicates
+                .extend(flux_solve::traits::elaborate(sigs, &[predicate]));
+            match cx.impl_region_goal(predicate, &[], &trait_regions, &lifetimes, &[], &[]) {
+                Some(goal) => complete &= cx.impl_super_goals(goal, &mut env, 0),
+                None => complete = false,
+            }
+        }
         let map = |r| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => lifetimes.get(i as usize).copied(),
@@ -711,6 +729,7 @@ pub(crate) fn check_adt_declarations(
                 }
             }
         }
+        let mut pending = Vec::new();
         for (index, &predicate) in sigs
             .fn_predicates
             .get(function)
@@ -731,13 +750,35 @@ pub(crate) fn check_adt_declarations(
                 sigs.regions.impls.get(imp).map(|owner| &owner.self_ty)
             });
             let self_row = original_self.or_else(|| metadata.bound_selfs.get(index));
-            let goal = self_row
-                .zip(metadata.bound_traits.get(index))
-                .and_then(|(s, t)| cx.impl_region_goal(predicate, s, t, &lifetimes, &[], &[]));
-            match goal {
-                Some(goal) => complete &= cx.impl_super_goals(goal, &mut env, 0),
+            match self_row.zip(metadata.bound_traits.get(index)) {
+                Some((row, traits)) => pending.push((predicate, row.clone(), traits.clone())),
                 None => complete = false,
             }
+        }
+        while !pending.is_empty() {
+            let count = pending.len();
+            let mut remaining = Vec::new();
+            for (predicate, row, traits) in pending {
+                match cx.impl_region_goal_with_inputs(
+                    predicate,
+                    &row,
+                    &traits,
+                    &lifetimes,
+                    &[],
+                    &[],
+                    None,
+                    true,
+                    Some(&env),
+                ) {
+                    Some(goal) => complete &= cx.impl_super_goals(goal, &mut env, 0),
+                    None => remaining.push((predicate, row, traits)),
+                }
+            }
+            if remaining.len() == count {
+                complete = false;
+                break;
+            }
+            pending = remaining;
         }
         for (projection, table) in own_projections.iter().zip(metadata.projections.iter()) {
             if let Some(row) = cx.instantiate_sig(projection.ty, table, &mut { map }, &[], &[]) {

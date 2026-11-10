@@ -258,3 +258,220 @@ fn borrowed<'a>(x:&'a u32){let guard=Guard(x);require(move||{let _=&guard;});}
         false,
     );
 }
+
+#[test]
+fn projected_impl_headers_retain_output_equality() {
+    let common = r#"
+trait Sink<T> { type Result; }
+struct Count;
+impl Sink<u32> for Count { type Result = usize; }
+struct Folder<C, F, R>(C, F, R);
+trait Complete<T> {}
+impl<T, U, C, F> Complete<T> for Folder<C, F, C::Result>
+where C: Sink<U>, F: Fn(T) -> U {}
+fn need<C: Complete<u8>>(_: C) {}
+"#;
+    compare(
+        "header_output",
+        &format!("{common}fn f() {{ need(Folder(Count, |x: u8| u32::from(x), 1usize)); }}"),
+        true,
+    );
+    compare(
+        "wrong_header_output",
+        &format!("{common}fn f() {{ need(Folder(Count, |x: u8| u32::from(x), false)); }}"),
+        false,
+    );
+    compare(
+        "wrong_header_input",
+        &format!("{common}fn f() {{ need(Folder(Count, |x: u16| u32::from(x), 1usize)); }}"),
+        false,
+    );
+}
+
+#[test]
+fn associated_bounds_see_trait_where_clause() {
+    compare(
+        "associated_owner_where",
+        r#"
+trait Invariants { type Aliasing; }
+trait Project<I> where I: Invariants {
+    type Invariants: Invariants<Aliasing = I::Aliasing>;
+}
+"#,
+        true,
+    );
+}
+
+#[test]
+fn projected_lifetime_method_requirements_remain_obligations() {
+    let common = r#"
+trait Source<'a> { type Src: ?Sized; }
+trait Dest<'a> { type Dst: ?Sized;
+ fn project(self) -> Result<&'a Self::Dst, &'a Self::Src>
+ where Self: Source<'a>, Self::Src: std::fmt::Debug, Self::Dst: std::fmt::Debug;
+}
+struct Pair<'a>(&'a str);
+impl<'a>Source<'a> for Pair<'a>{type Src=str;}
+impl<'a>Dest<'a> for Pair<'a>{type Dst=str;fn project(self)->Result<&'a str,&'a <Self as Source<'a>>::Src>{Ok(self.0)}}
+fn borrow<'a,T:Source<'a,Src=str>+Dest<'a,Dst=str>>(x:T)->&'a str{x.project().unwrap()}
+"#;
+    compare(
+        "projected_life_positive",
+        &format!("{common}fn f(s:&str)->&str{{borrow(Pair(s))}}"),
+        true,
+    );
+    compare(
+        "projected_life_escape",
+        &format!("{common}fn f()->&'static str{{let s=String::from(\"local\");borrow(Pair(&s))}}"),
+        false,
+    );
+}
+
+#[test]
+fn const_calls_after_divergence_match_rustc() {
+    compare(
+        "const_dead_call",
+        "fn runtime()->u32{1}const fn f()->u32{loop{};runtime()}",
+        true,
+    );
+    compare(
+        "const_live_call",
+        "fn runtime()->u32{1}const fn f()->u32{if false{runtime()}else{2}}",
+        false,
+    );
+    compare(
+        "const_conditional_call",
+        "fn runtime()->u32{1}const fn f(b:bool)->u32{if b{loop{}};runtime()}",
+        false,
+    );
+}
+
+#[test]
+fn associated_macro_collects_anonymous_lengths() {
+    compare(
+        "associated_macro_lengths",
+        r#"
+use std::marker::PhantomData;
+macro_rules! member { ($n:ident, $len:expr) => { const VALUE: $n<T> = $n([0; $len], PhantomData); }; }
+struct Bytes<T>([u8; std::mem::size_of::<usize>()], PhantomData<T>);
+impl<T> Bytes<T> { member!(Bytes, std::mem::size_of::<usize>()); }
+"#,
+        true,
+    );
+    compare(
+        "associated_macro_generic_lengths",
+        r#"
+macro_rules! member { () => { const VALUE: [u8; N + 1] = [0; N + 1]; }; }
+struct Bytes<const N: usize>;
+impl<const N: usize> Bytes<N> { member!(); }
+"#,
+        false,
+    );
+}
+
+#[test]
+fn declaration_equalities_normalize_region_free_metadata() {
+    compare(
+        "declaration_metadata",
+        r#"
+trait Layout {
+ type Meta: Copy;
+ type Storage: Layout<Meta=Self::Meta>;
+ fn raw(_: Self::Meta);
+}
+struct Wrapper<T: Layout>(T);
+impl<T: Layout> Layout for Wrapper<T> {
+ type Meta = <T::Storage as Layout>::Meta;
+ type Storage = T::Storage;
+ fn raw(_: <T::Storage as Layout>::Meta) {}
+}
+"#,
+        true,
+    );
+}
+
+#[test]
+fn required_method_keeps_owner_membership() {
+    compare(
+        "required_owner_membership",
+        r#"
+trait Source<'a> { type Src: ?Sized; }
+trait Valid {}
+struct Error<S, D: ?Sized + Valid>(S, std::marker::PhantomData<D>);
+trait Dest<'a> {
+ type Dst: ?Sized;
+ fn transmute(self) -> Result<&'a Self::Dst, Error<&'a Self::Src, Self::Dst>>
+ where Self: Sized + Source<'a>, Self::Dst: Valid;
+}
+"#,
+        true,
+    );
+}
+
+#[test]
+fn method_local_memberships_keep_outputs_abstract() {
+    let prefix = r#"
+trait Source<'a> { type Src: ?Sized; }
+trait Dest<'a> {
+ type Dst: ?Sized;
+ fn f(self) -> Result<&'a Self::Dst, &'a Self::Src> where Self: Source<'a>;
+}
+struct Pair<'a>(&'a str);
+impl<'a> Source<'a> for Pair<'a> { type Src = str; }
+"#;
+    compare(
+        "method_output_projection",
+        &format!(
+            "{prefix} impl<'a> Dest<'a> for Pair<'a> {{ type Dst=str; fn f(self)->Result<&'a str,&'a <Self as Source<'a>>::Src>{{Ok(self.0)}} }}"
+        ),
+        true,
+    );
+    compare(
+        "method_output_concrete",
+        &format!(
+            "{prefix} impl<'a> Dest<'a> for Pair<'a> {{ type Dst=str; fn f(self)->Result<&'a str,&'a str>{{Ok(self.0)}} }}"
+        ),
+        false,
+    );
+}
+
+#[test]
+fn supertraits_resolve_owner_parameter_projections() {
+    compare(
+        "owner_parameter_supertrait",
+        r#"
+trait Machine { type Word; }
+trait Lane<W> { fn word(self) -> W; }
+trait Vector<M: Machine>: Lane<M::Word> {}
+struct Cpu; impl Machine for Cpu {type Word=u32;}
+struct Value; impl Lane<u32> for Value {fn word(self)->u32{7}}
+impl Vector<Cpu> for Value {}
+fn word<M:Machine, V:Vector<M>>(v:V)->M::Word{v.word()}
+"#,
+        true,
+    );
+}
+
+#[test]
+fn anonymous_const_macro_arguments_are_not_evaluated() {
+    compare(
+        "discarded_generic_const_argument",
+        r#"
+macro_rules! discard {($t:ty)=>{0};}
+struct Value<T>(T);
+impl<T> Value<T> { const N:usize = discard!(T); const Z:[u8; discard!(T)]=[]; }
+trait Const<T,const N:usize>{}
+impl<T> Const<T,{discard!(T)}> for () {}
+"#,
+        true,
+    );
+    compare(
+        "retained_generic_const_argument",
+        r#"
+macro_rules! retained {($t:ty)=>{std::mem::size_of::<$t>()};}
+struct Value<T>(T);
+impl<T> Value<T> { const Z:[u8; retained!(T)]=[]; }
+"#,
+        false,
+    );
+}

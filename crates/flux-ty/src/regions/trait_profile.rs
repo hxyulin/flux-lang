@@ -342,7 +342,7 @@ fn region_graph(
                 });
             }
             copy |= items.traits[id].lang == Some(flux_intern::sym::copy);
-            let edges = region_free_edges(items, sigs, id, associated && id == trait_)?;
+            let edges = region_free_edges(items, sigs, id, associated)?;
             work.push((id, true));
             work.extend(edges.into_iter().rev().map(|id| (id, false)));
         }
@@ -565,7 +565,7 @@ fn method_profile(
                 }),
                 TypeRef::ImplParam(index) => synthetic(*index),
                 _ => false,
-            };
+            } || (projected && written_type(&predicate.ty, false));
             if !subject
                 || predicate.bound.path.qself.is_some()
                 || predicate.bound.path.args.iter().flatten().any(|arguments| {
@@ -923,6 +923,20 @@ fn region_free_edges(
     // TraitRegions has no predicate/projection region tables. Root Self/type-parameter
     // outlives bounds have their own reconstructible table; other edges must
     // remain region-free. Missing tables cannot stand for represented regions.
+    if associated {
+        let Some(contract) = super::trait_bound_schemes(items, sigs, id) else {
+            return Err(fail(TraitProfileReason::SupertraitRegions));
+        };
+        let expected = contract
+            .predicates
+            .iter()
+            .zip(contract.traits.iter())
+            .filter(|(predicate, _)| predicate.self_ty == Ty::param(0, flux_intern::kw::SelfUpper))
+            .map(|(_, row)| row);
+        if regions.supertraits.iter().ne(expected) {
+            return Err(fail(TraitProfileReason::SupertraitMetadata));
+        }
+    }
     let represented_outlives = associated
         && t.generics.outlives.is_empty()
         && t.generics.type_outlives.iter().all(|bound| {
@@ -968,7 +982,7 @@ fn region_free_edges(
     let valid_bound = |b: &flux_hir::Bound| {
         b.path.qself.is_none()
             && b.path.args.iter().flatten().all(|a| {
-                a.lifetimes.is_empty()
+                (a.lifetimes.is_empty() || associated)
                     && a.bindings.iter().all(|binding| {
                         associated && binding.args.is_none() && written_type(&binding.ty, false)
                     })
@@ -1086,7 +1100,7 @@ fn region_free_edges(
             .traits
             .get(edge.trait_)
             .ok_or(fail(TraitProfileReason::MissingMetadata))?;
-        if !target.generics.lifetimes.is_empty()
+        if (!associated && !target.generics.lifetimes.is_empty())
             || edge.args.len() != target.generics.params.len()
             || edge
                 .args
@@ -1102,7 +1116,15 @@ fn region_free_edges(
             .traits
             .get(edge.trait_)
             .ok_or(fail(TraitProfileReason::MissingMetadata))?;
-        if !r.names.is_empty() {
+        if (!associated && !r.names.is_empty())
+            || r.names.len() != target.generics.lifetimes.len()
+            || r.names
+                .iter()
+                .zip(&target.generics.lifetimes)
+                .any(|(name, declared)| {
+                    name.name != Some(declared.name) || name.range != declared.range
+                })
+        {
             return Err(fail(TraitProfileReason::SupertraitMetadata));
         }
         if !r.outlives.is_empty() {
@@ -1577,6 +1599,31 @@ mod tests {
                 generic_method_profile(&hir.items, &[], &bad, owner).is_err(),
                 "corruption {corruption}"
             );
+        }
+    }
+    #[test]
+    fn inherited_lifetime_edges_reconstruct_original_rows() {
+        let source = "trait Parent<'a>{} trait Child<'a>:Parent<'a>{fn value(&self)->usize;}";
+        let (_, file, hir) = flux_hir::lower_text("inherited-profile.rs", source);
+        let (sigs, diagnostics) = crate::signatures(&hir.items);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let owner = hir
+            .items
+            .traits
+            .iter()
+            .find(|(_, t)| t.loc.file == file && t.name.as_str() == "Child")
+            .unwrap()
+            .0;
+        assert!(generic_method_profile(&hir.items, &[], &sigs, owner).is_ok());
+        for corruption in 0..2 {
+            let mut bad = sigs.clone();
+            let row = bad.regions.traits.get_mut(owner).unwrap();
+            if corruption == 0 {
+                row.supertraits[0].lifetimes[0] = Region::Static;
+            } else {
+                row.supertraits = Box::default();
+            }
+            assert!(generic_method_profile(&hir.items, &[], &bad, owner).is_err());
         }
     }
 }

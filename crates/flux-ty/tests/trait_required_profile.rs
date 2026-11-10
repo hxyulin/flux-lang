@@ -352,8 +352,6 @@ fn unsupported_declarations_keep_the_production_gate() {
     for source in [
         "trait T<'a,U> where (U,): 'a {}",
         "trait T<'a> {fn f(x: fn(&'a i32));}",
-        "trait T<'a>: A<'a> {} trait A<'b> {}",
-        "trait T<'a>: A {} trait A:B<'static> {} trait B<'b> {}",
     ] {
         let (hir, sigs, id) = resolve(source);
         assert!(profile(&hir, &sigs, id).is_err(), "{source}");
@@ -413,4 +411,21 @@ fn generic_profile_admits_static_defaults_and_local_lifetimes() {
         let (_, diagnostics) = flux_ty::signatures(&hir.items);
         assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
     }
+}
+
+#[test]
+fn represented_supertrait_lifetimes_use_the_generic_profile() {
+    let source = "trait T<'a>: A<'a> {} trait A<'b> {}";
+    let (hir, sigs, id) = resolve(source);
+    assert!(profile(&hir, &sigs, id).is_err());
+    let (_, diagnostics) = flux_ty::signatures(&hir.items);
+    assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
+}
+
+#[test]
+fn region_free_supertrait_keeps_its_lifetime_edge_boundary() {
+    let (hir, _, _) = resolve("trait T<'a>: A {} trait A:B<'static> {} trait B<'b> {}");
+    let (_, diagnostics) = flux_ty::signatures(&hir.items);
+    assert!(diagnostics.iter().any(|d| d.message
+        == "lifetimes in supertraits and associated type bounds are not supported yet"));
 }

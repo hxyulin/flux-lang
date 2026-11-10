@@ -260,6 +260,12 @@ fn may_hold(sigs: &Signatures, p: Predicate, depth: u32) -> Option<bool> {
             None => {}
         }
     }
+    // Structural auto traits need not have a written impl. This query only
+    // selects a field projection's candidate; it cannot disprove such a bound
+    // from the absence of explicit blocks. The trait solver checks the bound.
+    if found.is_none() && sigs.builtins.auto_traits.contains(&p.trait_ref.trait_) {
+        return Some(false);
+    }
     if found.is_none() && p.trait_ref.args.iter().any(|&a| rigid(a)) {
         return Some(false);
     }

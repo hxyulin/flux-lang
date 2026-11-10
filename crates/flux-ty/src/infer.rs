@@ -4117,8 +4117,12 @@ impl Ctx<'_> {
     }
 
     fn infer_block(&mut self, stmts: &[Stmt], tail: Option<ExprId>) -> Ty {
+        let context = self.const_context;
         let mut diverges = false;
         for stmt in stmts {
+            if diverges {
+                self.const_context = None;
+            }
             match *stmt {
                 Stmt::Let {
                     pat,
@@ -4177,11 +4181,16 @@ impl Ctx<'_> {
                 }
             }
         }
-        match tail {
+        if diverges {
+            self.const_context = None;
+        }
+        let ty = match tail {
             Some(tail) => self.infer_expr(tail),
             None if diverges => Ty::NEVER,
             None => Ty::UNIT,
-        }
+        };
+        self.const_context = context;
+        ty
     }
 
     /// Where `values` are function items of different functions, or
@@ -7521,6 +7530,22 @@ impl Ctx<'_> {
     /// bound that no bound makes `Sized`.
     fn is_unsized(&mut self, ty: Ty) -> bool {
         let ty = self.shallow(ty);
+        if self.param_env.iter().any(|bound| {
+            bound.self_ty == ty
+                && flux_solve::trait_requires_sized(self.items, bound.trait_ref.trait_)
+        }) {
+            return false;
+        }
+        let tail = self.sigs.structural_tail(ty);
+        let tail = self.shallow(tail);
+        // Only projection selection needs resolved inputs. Walking every
+        // child here expands shared tuple DAGs even though only the tail
+        // determines whether a value can be unsized.
+        let ty = if matches!(tail.kind(), TyKind::Alias(_)) {
+            self.known(tail)
+        } else {
+            tail
+        };
         flux_solve::maybe_unsized(
             self.items,
             self.sigs,

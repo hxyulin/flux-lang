@@ -333,7 +333,7 @@ impl Collector<'_> {
         if crate_root {
             if let Some(limit) = attrs.iter().find_map(|attr| {
                 (attr_name(attr) == Some("recursion_limit"))
-                    .then(|| super::attributes::recursion_limit_attr(attr))
+                    .then(|| super::attributes::integer_limit_attr(attr))
                     .flatten()
             }) {
                 let own = self.items.modules[module].krate;
@@ -2029,6 +2029,7 @@ impl Collector<'_> {
                 }
                 AssocOwner::Trait(id) => self.collect_trait_items(ctx, id, &nodes),
             }
+            self.collect_assoc_anon_consts(ctx, owner, &nodes);
         });
         self.tag(start, file);
         self.expansion_depth -= 1;
@@ -2976,6 +2977,45 @@ impl Collector<'_> {
         }
     }
 
+    /// Expanded associated items are outside their owner's original syntax tree.
+    /// Collect their const expressions with the same owner restrictions.
+    fn collect_assoc_anon_consts(&mut self, ctx: Ctx, owner: AssocOwner, nodes: &[NodeId]) {
+        let owner = match owner {
+            AssocOwner::Impl(id, _) => Owner::Impl(id),
+            AssocOwner::Trait(id) => Owner::Trait(id),
+        };
+        let generics = self
+            .items
+            .owner_generics(Some(owner))
+            .expect("associated owner has generics");
+        let generic_self = matches!(owner, Owner::Trait(_))
+            || !generics.params.is_empty()
+            || !generics.lifetimes.is_empty();
+        let mut scope = AnonScope {
+            self_adt: None,
+            module: ctx.module,
+            owner: (!generic_self).then_some(owner),
+            generics: generics
+                .params
+                .iter()
+                .map(|param| (param.name, param.is_const()))
+                .collect(),
+            generic_self,
+            function: None,
+            item: kw::Empty,
+        };
+        let shared = self.db.shared(ctx.file);
+        let mut counts = rustc_hash::FxHashMap::default();
+        for &node in nodes {
+            self.anon_walk(
+                ctx.file,
+                shared.parse.tree().node(node),
+                &mut scope,
+                &mut counts,
+            );
+        }
+    }
+
     /// Allocates the anonymous constants of item `node` (array lengths,
     /// repeat counts and const generic arguments written as expressions
     /// other than literals and paths), its associated items' and its
@@ -3141,7 +3181,22 @@ impl Collector<'_> {
         let diagnostics = &mut self.items.diagnostics;
         let mut generic = false;
         let mut depends = false;
+        // Macro arguments are token trees, not evaluated expressions. A macro
+        // can discard a generic name entirely; its expansion is checked when
+        // lowering this constant's body.
+        let arguments: Vec<_> = expr
+            .syntax()
+            .descendants()
+            .filter(|node| node.kind() == SyntaxKind::TOKEN_TREE)
+            .map(|node| node.text_range())
+            .collect();
         for token in expr.syntax().tokens() {
+            if arguments.iter().any(|range| {
+                range.start() <= token.text_range().start()
+                    && token.text_range().end() <= range.end()
+            }) {
+                continue;
+            }
             match token.kind() {
                 SyntaxKind::SELF_TYPE_KW if scope.generic_self => {
                     diagnostics.push(Diagnostic::new(

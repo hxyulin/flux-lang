@@ -556,6 +556,12 @@ impl<T> [T] {
         Windows { v: self, size }
     }
 
+    /// Overlapping windows of `N` elements. Panics if `N` is zero.
+    #[track_caller]
+    pub fn array_windows<const N: usize>(&self) -> ArrayWindows<'_, T, N> {
+        ArrayWindows { inner: self.windows(N) }
+    }
+
     /// An iterator over chunks of `chunk_size` elements, in order, the
     /// last one shorter if the length is not a multiple; panics if
     /// `chunk_size` is 0.
@@ -1514,6 +1520,36 @@ impl<'a, T> DoubleEndedIterator for Windows<'a, T> {
 }
 
 impl<'a, T> ExactSizeIterator for Windows<'a, T> {}
+
+/// [`[T]::array_windows`]'s overlapping fixed-size windows.
+pub struct ArrayWindows<'a, T, const N: usize> {
+    inner: Windows<'a, T>,
+}
+
+impl<'a, T, const N: usize> Clone for ArrayWindows<'a, T, N> {
+    fn clone(&self) -> Self {
+        Self { inner: Windows { v: self.inner.v, size: N } }
+    }
+}
+
+impl<'a, T, const N: usize> Iterator for ArrayWindows<'a, T, N> {
+    type Item = &'a [T; N];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().and_then(|window| window.first_chunk::<N>())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+
+impl<'a, T, const N: usize> DoubleEndedIterator for ArrayWindows<'a, T, N> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        self.inner.next_back().and_then(|window| window.first_chunk::<N>())
+    }
+}
+
+impl<T, const N: usize> ExactSizeIterator for ArrayWindows<'_, T, N> {}
+impl<T, const N: usize> crate::iter::FusedIterator for ArrayWindows<'_, T, N> {}
 
 /// [`[T]::chunks`]'s iterator.
 pub struct Chunks<'a, T> {

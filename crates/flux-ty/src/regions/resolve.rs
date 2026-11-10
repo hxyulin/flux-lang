@@ -723,15 +723,23 @@ fn resolve_supertrait_regions(
             ..Generics::default()
         };
         let mut local = Vec::new();
-        let (_, tables, _) = bound_regions(
+        let bounds =
+            flux_solve::traits::owner_predicates(items, sigs, Some(flux_hir::Owner::Trait(id)));
+        let mut walker = Walker::new(items, data.loc.module, owner);
+        walker.scope = TypeScope {
+            generics: &names,
+            bounds: &bounds,
+            ..TypeScope::default()
+        };
+        walker.add_projection_bounds(&data.generics);
+        let (_, tables, _) = bound_regions_with_walker(
             items,
-            data.loc.module,
             &schema,
-            &owner,
-            &names,
             &predicates,
             &[],
             &mut local,
+            &mut walker,
+            None,
         );
         if tables.len() != predicates.len() {
             local.push((
@@ -1513,15 +1521,15 @@ pub(super) fn safe_method_contract(
         Outlives::Type(_, b) => b != Region::Erased,
     });
     dedup(&mut outlives);
-    let (bound_selfs, bound_traits, projections) = bound_regions(
+    walker.names = region_names.clone();
+    let (bound_selfs, bound_traits, projections) = bound_regions_with_walker(
         items,
-        function.loc.module,
         &function.generics,
-        &region_names,
-        &names,
         &bounds.predicates,
         &bounds.projections,
         &mut errors,
+        &mut walker,
+        None,
     );
     check_bound_wf(
         items,

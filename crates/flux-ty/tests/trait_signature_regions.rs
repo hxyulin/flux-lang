@@ -178,14 +178,7 @@ fn undeclared_nested_names_and_untracked_projections_are_rejected() {
     ] {
         oracle(source, true);
         let messages = resolve(source).2;
-        assert!(
-            messages
-                .iter()
-                .any(|m| m.contains("supertraits and associated type bounds")
-                    || m.contains("lifetime parameters on traits")
-                    || m.contains("qualified trait projections")),
-            "{source}: {messages:?}"
-        );
+        assert!(messages.is_empty(), "{source}: {messages:?}");
     }
 }
 

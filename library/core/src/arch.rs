@@ -14,6 +14,204 @@ pub mod x86_64;
 #[cfg(target_arch = "aarch64")]
 pub mod aarch64 {
 
+    /// A NEON vector with 2 f32 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct float32x2_t(pub(crate) [f32; 2]);
+
+    /// A NEON vector with 4 f32 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct float32x4_t(pub(crate) [f32; 4]);
+
+    /// A NEON vector with 1 f64 lane.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct float64x1_t(pub(crate) [f64; 1]);
+
+    /// A NEON vector with 2 f64 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct float64x2_t(pub(crate) [f64; 2]);
+
+    /// A NEON vector with 4 i16 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct int16x4_t(pub(crate) [i16; 4]);
+
+    /// A NEON vector with 1 i64 lane.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct int64x1_t(pub(crate) [i64; 1]);
+
+    /// A NEON vector with 2 i64 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct int64x2_t(pub(crate) [i64; 2]);
+
+    /// A NEON vector with 8 u8 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct poly8x8_t(pub(crate) [u8; 8]);
+
+    /// A NEON vector with 16 u8 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct poly8x16_t(pub(crate) [u8; 16]);
+
+    /// A NEON vector with 4 u16 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct poly16x4_t(pub(crate) [u16; 4]);
+
+    /// A NEON vector with 8 u16 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct poly16x8_t(pub(crate) [u16; 8]);
+
+    /// A NEON vector with 1 u64 lane.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(8))]
+    #[derive(Clone, Copy)]
+    pub struct poly64x1_t(pub(crate) [u64; 1]);
+
+    /// A NEON vector with 2 u64 lanes.
+    #[allow(non_camel_case_types)]
+    #[repr(C, align(16))]
+    #[derive(Clone, Copy)]
+    pub struct poly64x2_t(pub(crate) [u64; 2]);
+
+    /// 2 NEON int8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct int8x8x2_t(pub int8x8_t, pub int8x8_t);
+
+    /// 3 NEON int8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct int8x8x3_t(pub int8x8_t, pub int8x8_t, pub int8x8_t);
+
+    /// 4 NEON int8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct int8x8x4_t(pub int8x8_t, pub int8x8_t, pub int8x8_t, pub int8x8_t);
+
+    /// 2 NEON int8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct int8x16x2_t(pub int8x16_t, pub int8x16_t);
+
+    /// 3 NEON int8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct int8x16x3_t(pub int8x16_t, pub int8x16_t, pub int8x16_t);
+
+    /// 4 NEON int8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct int8x16x4_t(pub int8x16_t, pub int8x16_t, pub int8x16_t, pub int8x16_t);
+
+    /// 2 NEON uint8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint8x8x2_t(pub uint8x8_t, pub uint8x8_t);
+
+    /// 3 NEON uint8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint8x8x3_t(pub uint8x8_t, pub uint8x8_t, pub uint8x8_t);
+
+    /// 4 NEON uint8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint8x8x4_t(pub uint8x8_t, pub uint8x8_t, pub uint8x8_t, pub uint8x8_t);
+
+    /// 3 NEON uint8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint8x16x3_t(pub uint8x16_t, pub uint8x16_t, pub uint8x16_t);
+
+    /// 4 NEON uint8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint8x16x4_t(pub uint8x16_t, pub uint8x16_t, pub uint8x16_t, pub uint8x16_t);
+
+    /// 2 NEON poly8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct poly8x8x2_t(pub poly8x8_t, pub poly8x8_t);
+
+    /// 3 NEON poly8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct poly8x8x3_t(pub poly8x8_t, pub poly8x8_t, pub poly8x8_t);
+
+    /// 4 NEON poly8x8 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct poly8x8x4_t(pub poly8x8_t, pub poly8x8_t, pub poly8x8_t, pub poly8x8_t);
+
+    /// 2 NEON poly8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct poly8x16x2_t(pub poly8x16_t, pub poly8x16_t);
+
+    /// 3 NEON poly8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct poly8x16x3_t(pub poly8x16_t, pub poly8x16_t, pub poly8x16_t);
+
+    /// 4 NEON poly8x16 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct poly8x16x4_t(pub poly8x16_t, pub poly8x16_t, pub poly8x16_t, pub poly8x16_t);
+
+    /// 2 NEON uint16x4 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint16x4x2_t(pub uint16x4_t, pub uint16x4_t);
+
+    /// 3 NEON uint16x4 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint16x4x3_t(pub uint16x4_t, pub uint16x4_t, pub uint16x4_t);
+
+    /// 4 NEON uint16x4 vectors in lane order.
+    #[allow(non_camel_case_types)]
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct uint16x4x4_t(pub uint16x4_t, pub uint16x4_t, pub uint16x4_t, pub uint16x4_t);
+
     /// 16 i8 lanes with the native NEON size and alignment.
     #[allow(non_camel_case_types)]
     #[repr(C, align(16))]

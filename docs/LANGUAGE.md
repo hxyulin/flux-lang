@@ -363,7 +363,8 @@ repetitions `$(..)*`, `+` and `?` with separators, nested), with rustc's
 errors ("no rules expected `x`", "unexpected end of macro invocation",
 local ambiguity, a fragment followed by what its kind does not allow,
 "recursion limit reached while expanding `m!`" past the crate recursion limit
-(default 128, configurable with `#![recursion_limit = "..."]`)). Empty statement
+(default 128, configurable with `#![recursion_limit = "..."]`)). The `type_length_limit`
+attribute accepts a non-negative integer string and has no effect, as on stable rustc. Empty statement
 expansions do not hide the preceding tail expression. Items and semicolons
 still prevent it from becoming the block's value. Forwarded type fragments
 remain grouped in casts such as `value as $t << count`; their synthetic
@@ -519,7 +520,7 @@ when too short; zero gives an empty prefix and the complete suffix),
 zero gives the complete prefix and an empty suffix),
 `swap`, `reverse`, `rotate_left`, `rotate_right`, `split_at`,
 `split_at_mut`, `copy_from_slice`, `clone_from_slice`, `fill`,
-`contains`, `starts_with`, `ends_with`, `windows`, `chunks`,
+`contains`, `starts_with`, `ends_with`, `windows`, `array_windows::<N>`, `chunks`,
 `chunks_exact`, `chunks_mut`, `chunks_exact_mut` (with
 `into_remainder`), `rchunks`, `rchunks_exact` (iterators from both
 ends), `copy_within` (with any range, `core::ops::RangeBounds`), `binary_search`
@@ -705,6 +706,9 @@ and arguments on the left side of associated-type bindings remain unsupported.
 Lifetime-bearing trait admission remains bounded to represented signatures; this
 does not admit every combination of trait parameters, supertrait regions and
 dynamic or opaque outputs.
+Represented inherited trait lifetimes and method-local associated-type bounds
+retain their original region rows. Method-local memberships keep their outputs
+abstract when comparing an implementation with its trait declaration.
 
 `Sized` is, as a bound and implicitly: every type
 is sized but slices, `str` and trait objects, and a type parameter is
@@ -1002,7 +1006,9 @@ a conflicting `borrow` or `borrow_mut` panics with rustc's message, at
 its caller; `Ref<T>` and `RefMut<T>` implement `Deref`, and `RefMut<T>`
 also implements `DerefMut`, with references tied to the borrowed guard;
 slice and str guard targets are supported; guards implement Debug when their
-possibly unsized target does. Cells with supported Debug payloads, `BorrowError`
+possibly unsized target does. `Ref::map_split` and `RefMut::map_split` keep the
+cell borrowed until both projected guards are dropped. `Cell<T: ?Sized>` supports
+`get_mut`, `as_ptr` and `from_mut`. Cells with supported Debug payloads, `BorrowError`
 and `BorrowMutError` also implement Debug),
 `core::cell::OnceCell<T>` supports const construction and runtime `get`,
 `get_mut`, `set`, `get_or_init`, `take` and `into_inner`, plus Default, Clone,
@@ -1719,6 +1725,9 @@ Vector C ABI support remains unsupported. Narrowing currently lowers to scalar l
 and exactly eight byte stores. Pairwise maximum uses scalarized shuffles and
 packed unsigned comparison/selection; native `shrn`/`umaxp` selection is not
 implemented in the pinned Keel IR.
+Additional floating-point, signed and polynomial vector types and byte-vector
+tuple aggregates provide Copy/Clone storage with Rust sizes and alignments.
+These storage types do not add vector operations or vector C ABI support.
 
 `std::arch::is_aarch64_feature_detected!` accepts `"crc"`, `"dit"` and `"sb"`,
 querying the runtime CPU through macOS sysctl or Linux HWCAP. Imported aliases and explicit std in no_std crates

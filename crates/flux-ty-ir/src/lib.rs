@@ -178,16 +178,22 @@ pub struct OpaqueSig {
 }
 
 /// The traits of `core` that `flux_solve::field_types` needs to know,
-/// recorded from the items: `Sized`, which every type implements.
-#[derive(Debug, Clone, Copy, Default)]
+/// recorded by lang item so projection normalization does not guess by name.
+#[derive(Debug, Clone, Default)]
 pub struct Builtins {
     pub sized: Option<flux_hir::TraitId>,
+    /// Traits that can have compiler-provided structural implementations.
+    pub auto_traits: Vec<flux_hir::TraitId>,
 }
 
 impl Builtins {
     pub fn of(items: &ItemTree) -> Builtins {
         Builtins {
             sized: items.lang_traits.get(&flux_intern::sym::sized).copied(),
+            auto_traits: ["send", "sync", "unpin", "unwind_safe", "ref_unwind_safe"]
+                .into_iter()
+                .filter_map(|name| items.lang_traits.get(&Symbol::intern(name)).copied())
+                .collect(),
         }
     }
 }
@@ -234,7 +240,7 @@ impl Signatures {
             array_lens: self.array_lens.clone(),
             arg_tys: self.arg_tys.clone(),
             regions: self.regions.clone(),
-            builtins: self.builtins,
+            builtins: self.builtins.clone(),
         }
     }
 
