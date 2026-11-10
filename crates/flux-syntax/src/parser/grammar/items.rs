@@ -82,6 +82,12 @@ pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
         return Ok(());
     }
     let has_visibility = opt_visibility(p);
+    if p.at_safe() && matches!(p.nth(1), T![fn] | T![static]) {
+        if !matches!(p.item_owner, EXTERN_BLOCK | MACRO_ITEMS) {
+            p.error("`safe` items are only allowed in extern blocks");
+        }
+        p.bump_safe();
+    }
     if p.at(T![extern]) && p.nth(1) == T![crate] {
         extern_crate(p, m);
         return Ok(());
@@ -258,11 +264,13 @@ fn missing_keyword_item(p: &mut Parser<'_>) {
 /// `fn name<T>(params) -> Ret where ... { body }`, or `;` for a
 /// declaration without a body.
 fn fn_(p: &mut Parser<'_>, m: Marker) {
+    let owner = std::mem::replace(&mut p.item_owner, SOURCE_FILE);
+    let anonymous = owner == TRAIT && p.input.edition() == crate::Edition::E2015;
     p.bump(T![fn]);
     name_r(p, TokenSet::new(&[T!['('], T![<]]));
     generics::opt_generic_param_list(p);
     if p.at(T!['(']) {
-        params::fn_param_list(p);
+        params::fn_param_list(p, anonymous);
     } else {
         p.error("expected function parameters");
     }
@@ -275,6 +283,7 @@ fn fn_(p: &mut Parser<'_>, m: Marker) {
             p.error("expected a function body or `;`");
         }
     }
+    p.item_owner = owner;
     m.complete(p, FN);
 }
 
@@ -401,7 +410,7 @@ fn trait_(p: &mut Parser<'_>, m: Marker) {
         generics::bounds(p);
     }
     generics::opt_where_clause(p);
-    assoc_item_list(p);
+    assoc_item_list(p, TRAIT);
     m.complete(p, TRAIT);
 }
 
@@ -419,15 +428,16 @@ fn impl_(p: &mut Parser<'_>, m: Marker) {
         types::type_(p);
     }
     generics::opt_where_clause(p);
-    assoc_item_list(p);
+    assoc_item_list(p, IMPL);
     m.complete(p, IMPL);
 }
 
-fn assoc_item_list(p: &mut Parser<'_>) {
+fn assoc_item_list(p: &mut Parser<'_>, owner: SyntaxKind) {
     if !p.at(T!['{']) {
         p.error("expected `{`");
         return;
     }
+    let previous = std::mem::replace(&mut p.item_owner, owner);
     let m = p.start();
     p.bump(T!['{']);
     attributes::inner_attrs(p);
@@ -435,6 +445,7 @@ fn assoc_item_list(p: &mut Parser<'_>) {
         item_or_macro(p, true);
     }
     p.expect(T!['}']);
+    p.item_owner = previous;
     m.complete(p, ASSOC_ITEM_LIST);
 }
 
@@ -517,6 +528,7 @@ fn extern_crate(p: &mut Parser<'_>, m: Marker) {
 
 /// `unsafe extern "C" { fn f(); static X: i32; }`, after the ABI.
 fn extern_block(p: &mut Parser<'_>, m: Marker) {
+    let previous = std::mem::replace(&mut p.item_owner, EXTERN_BLOCK);
     let list = p.start();
     p.bump(T!['{']);
     attributes::inner_attrs(p);
@@ -524,6 +536,7 @@ fn extern_block(p: &mut Parser<'_>, m: Marker) {
         item_or_macro(p, true);
     }
     p.expect(T!['}']);
+    p.item_owner = previous;
     list.complete(p, EXTERN_ITEM_LIST);
     m.complete(p, EXTERN_BLOCK);
 }

@@ -138,6 +138,9 @@ pub(crate) struct Parser<'i> {
     /// The end of the input closes a block, as at the end of statements
     /// a macro expanded to.
     eof_ends_block: bool,
+    /// Owner grammar for foreign qualifiers and legacy anonymous parameters.
+    /// Item fragments have no enclosing owner until their expansion is placed.
+    item_owner: SyntaxKind,
 }
 
 const STEP_LIMIT: u32 = 15_000_000;
@@ -154,6 +157,7 @@ impl<'i> Parser<'i> {
             },
             steps: 0,
             eof_ends_block: false,
+            item_owner: SOURCE_FILE,
         }
     }
 
@@ -169,6 +173,7 @@ impl<'i> Parser<'i> {
             },
             steps: 0,
             eof_ends_block: false,
+            item_owner: SOURCE_FILE,
         }
     }
 
@@ -265,6 +270,15 @@ impl<'i> Parser<'i> {
     pub(crate) fn bump_contextual_dyn(&mut self) {
         assert!(self.at_contextual_dyn());
         self.do_bump(DYN_KW, 1);
+    }
+
+    pub(crate) fn at_safe(&mut self) -> bool {
+        self.at(IDENT) && self.input.is_safe_keyword(self.pos)
+    }
+
+    pub(crate) fn bump_safe(&mut self) {
+        assert!(self.at_safe());
+        self.do_bump(SAFE_KW, 1);
     }
 
     /// Consumes the next raw token as-is.

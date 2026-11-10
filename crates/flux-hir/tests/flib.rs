@@ -1076,3 +1076,24 @@ fn sixty_four_bit_type_level_integer_aliases_encode() {
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     encode(&hir.items, hir.items.main_crate());
 }
+
+#[test]
+fn contextual_safe_token_round_trips_with_existing_kinds() {
+    use flux_hir::flib::{Decode, Encode};
+    use flux_syntax::SyntaxKind;
+    let kinds = [
+        SyntaxKind::SAFE_KW,
+        SyntaxKind::UNION_KW,
+        SyntaxKind::MACRO_FRAGMENT,
+    ];
+    let mut encoder = Encoder::new();
+    for kind in kinds {
+        kind.encode(&mut encoder).unwrap();
+    }
+    let bytes = encoder.into_bytes();
+    let mut decoder = Decoder::new(&bytes);
+    for kind in kinds {
+        assert_eq!(SyntaxKind::decode(&mut decoder).unwrap(), kind);
+    }
+    decoder.finish().unwrap();
+}

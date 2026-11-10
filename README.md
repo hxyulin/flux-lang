@@ -45,17 +45,21 @@ overrides and package-specific lockfile updates. The
 
 ## Compatibility
 
-Measured on 2026-11-10 at `2ec3416d`,
-on arm64 macOS. [Counts and measurement scope](docs/status/compatibility.json).
+Snapshot recorded on 2026-11-10, on arm64 macOS. [Counts and measurement scope](docs/status/compatibility.json).
 
-![Rust source corpus: 67,909 of 68,236 files parse without syntax diagnostics, 99.5%; 1.27 GB across 1,890 package versions.](docs/status/rust-corpus.svg)
+![Rust source corpus: 67,922 of 68,236 files parse without syntax diagnostics, 99.5%; 1.27 GB across 1,890 package versions.](docs/status/rust-corpus.svg)
 
 The parser scan covers every `.rs` file in the local Cargo registry cache,
 using edition 2024. All 68,236 files produced valid, lossless syntax trees,
-with no panics or time-budget failures. The 327 files with syntax diagnostics
+with no panics or time-budget failures. The 314 files with syntax diagnostics
 include invalid test fixtures, older-edition code and nightly syntax.
-This measures parsing only. A current full-corpus compilation success rate has
-not been measured.
+A second full scan using each file's inferred package edition parses
+68,183 of 68,236 files without diagnostics (99.92%). Its 53 remaining files are
+31 code-generation templates, 13 nightly-syntax files, five invalid fixtures,
+three bare-string include fragments and one inactive file missing a semicolon.
+The edition comes from the nearest package manifest; fixture overrides and cfg
+are not applied. These counts measure parsing only. A current full-corpus
+compilation success rate has not been measured.
 
 ![Rayon runtime comparisons: 111 of 115 integration cases match rustc; four require unwinding, with zero failures or compile blockers.](docs/status/rayon-runtime.svg)
 
@@ -105,7 +109,7 @@ Counted with `tokei` on 2026-10-30, Rust only, vendored code excluded.
 | flux tests | 134k |
 | Keel tests, suite and tools | 172k |
 
-As of 2026-11-10, `tests/run` holds 638 programs compiled and run against rustc.
+As of 2026-11-10, `tests/run` holds 640 programs compiled and run against rustc.
 
 ## Compile time
 

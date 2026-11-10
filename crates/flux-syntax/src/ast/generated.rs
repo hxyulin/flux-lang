@@ -964,7 +964,7 @@ impl<'t> AstNode<'t> for FieldExpr<'t> {
 /// ```text
 /// Fn =
 ///   Attr* Visibility?
-///   'const'? 'async'? 'unsafe'? Abi?
+///   'safe'? 'const'? 'async'? 'unsafe'? Abi?
 ///   'fn' Name GenericParamList? ParamList RetType? WhereClause?
 ///   (body:BlockExpr | ';')
 /// ```
@@ -979,6 +979,9 @@ impl<'t> Fn<'t> {
     }
     pub fn visibility(self) -> Option<Visibility<'t>> {
         support::child(self.syntax)
+    }
+    pub fn safe_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, SAFE_KW)
     }
     pub fn const_token(self) -> Option<SyntaxToken<'t>> {
         support::token(self.syntax, CONST_KW)
@@ -3574,7 +3577,7 @@ impl<'t> AstNode<'t> for SourceFile<'t> {
 
 /// ```text
 /// Static =
-///   Attr* Visibility? 'static' 'mut'? Name ':' Type ('=' body:Expr)? ';'
+///   Attr* Visibility? 'safe'? 'static' 'mut'? Name ':' Type ('=' body:Expr)? ';'
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Static<'t> {
@@ -3587,6 +3590,9 @@ impl<'t> Static<'t> {
     }
     pub fn visibility(self) -> Option<Visibility<'t>> {
         support::child(self.syntax)
+    }
+    pub fn safe_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, SAFE_KW)
     }
     pub fn static_token(self) -> Option<SyntaxToken<'t>> {
         support::token(self.syntax, STATIC_KW)

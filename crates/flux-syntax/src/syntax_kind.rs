@@ -130,6 +130,7 @@ pub enum SyntaxKind {
 
     // Contextual keywords, remapped from identifiers only where expected.
     UNION_KW,
+    SAFE_KW,
 
     // Literals and names.
     INT_NUMBER,
@@ -644,6 +645,7 @@ macro_rules! T {
     [Self] => { $crate::SyntaxKind::SELF_TYPE_KW };
     [static] => { $crate::SyntaxKind::STATIC_KW };
     [union] => { $crate::SyntaxKind::UNION_KW };
+    [safe] => { $crate::SyntaxKind::SAFE_KW };
     [struct] => { $crate::SyntaxKind::STRUCT_KW };
     [super] => { $crate::SyntaxKind::SUPER_KW };
     [trait] => { $crate::SyntaxKind::TRAIT_KW };

@@ -295,3 +295,14 @@ fn type_length_limits_match_stable_rustc() {
         );
     }
 }
+
+#[test]
+fn safe_foreign_items_survive_item_fragment_matching() {
+    compare(
+        "safe_foreign_item_fragment",
+        r#"macro_rules! accept {($item:item)=>{$item}} accept!(unsafe extern "C" {safe fn count()->u32;});"#,
+        None,
+        true,
+        flux_syntax::Edition::E2024,
+    );
+}

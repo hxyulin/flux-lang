@@ -102,19 +102,9 @@ fn bounds_for(p: &mut Parser<'_>, allow_bounds: bool) {
         generics::bounds(p);
     } else {
         let list = p.start();
-        if p.at_ts(paths::PATH_FIRST.union(TokenSet::new(&[LIFETIME_IDENT, T![?], T![for]]))) {
-            // A single bound; reuse the list rule but stop before `+`.
-            let bound = p.start();
-            if p.at(LIFETIME_IDENT) {
-                lifetime(p);
-            } else {
-                p.eat(T![?]);
-                if p.at(T![for]) {
-                    generics::for_binder(p);
-                }
-                path_type(p);
-            }
-            bound.complete(p, TYPE_BOUND);
+        if p.at_ts(generics::BOUND_FIRST) {
+            // A single bound, including a parenthesized trait.
+            generics::type_bound(p);
         } else {
             p.error("expected a trait");
         }

@@ -882,6 +882,9 @@ pointer type; coercions preserve the ABI and may weaken safety. All but
 their base under `panic=abort`. ABIs rustc rejects for the target get
 rustc's errors. Functions and pointers of ABIs other than `Rust` do not
 implement the `Fn` traits.
+Foreign function declarations are unsafe by default. A `safe fn` declaration
+inside an extern block permits ordinary calls and safe function-pointer
+coercions. The qualifier does not permit a function body or an unsafe qualifier.
 C aggregate calls support repr(C) records and recursively nested fixed arrays
 whose physical offsets, padding, size and alignment match Keel's natural layout.
 Fieldless enums with an explicit C or integer representation cross calls as

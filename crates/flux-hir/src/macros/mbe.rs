@@ -831,7 +831,10 @@ impl<'a> CallInput<'a> {
         // part of a compound token before the next matcher reads its suffix.
         let glued: Vec<_> = (0..toks.len()).map(|i| glue_at(toks, i)).collect();
         let closes = match_delimiters(&glued);
-        let mut parser_input = parser::Input::default();
+        let mut parser_input = parser::Input::with_edition(
+            toks.first()
+                .map_or(flux_syntax::Edition::E2024, |token| token.edition),
+        );
         let mut to_parser = Vec::with_capacity(toks.len() + 1);
         let mut from_parser = Vec::with_capacity(toks.len());
         for (raw, t) in toks.iter().enumerate() {
@@ -845,6 +848,9 @@ impl<'a> CallInput<'a> {
                 t.is_union_keyword(),
                 t.kind == SyntaxKind::IDENT && t.text.as_str() == "dyn",
             );
+            if t.kind == SyntaxKind::IDENT && t.text.as_str() == "safe" {
+                parser_input.set_last_safe_keyword();
+            }
             if t.kind == T!['('] && t.origin.range.is_empty() {
                 parser_input.set_last_invisible_paren();
             }

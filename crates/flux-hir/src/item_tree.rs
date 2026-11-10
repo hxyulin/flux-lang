@@ -2825,8 +2825,16 @@ fn lower_bound_type(ty: ast::Type<'_>, diagnostics: &mut Vec<Diagnostic>) -> Opt
 /// A lifetime as written.
 pub(crate) fn lower_lifetime(lifetime: ast::Lifetime<'_>) -> LifetimeRef {
     LifetimeRef {
-        name: Symbol::intern(lifetime.text()),
+        name: lifetime_name(lifetime.text()),
         range: lifetime.syntax().text_range(),
+    }
+}
+
+/// Raw and ordinary spellings name the same lifetime or loop label.
+pub(crate) fn lifetime_name(text: &str) -> Symbol {
+    match text.strip_prefix("'r#") {
+        Some(name) => Symbol::intern(&format!("'{name}")),
+        None => Symbol::intern(text),
     }
 }
 
@@ -3767,6 +3775,9 @@ fn binder_names(
                     .and_then(SyntaxKind::from_keyword)
                     .is_some()
                     && !lifetime.is_static()
+                    && !l
+                        .lifetime()
+                        .is_some_and(|lifetime| lifetime.text().starts_with("'r#"))
                 {
                     diagnostics.push(Diagnostic::new(
                         lifetime.range,
@@ -3789,7 +3800,7 @@ fn binder_names(
                     let shadows = node.children().filter_map(ast::GenericParamList::cast).any(|g| {
                         g.syntax() != list.syntax() && g.generic_params().any(|p| {
                             matches!(p, ast::GenericParam::LifetimeParam(p)
-                                if p.lifetime().is_some_and(|l| Symbol::intern(l.text()) == lifetime.name))
+                                if p.lifetime().is_some_and(|l| lifetime_name(l.text()) == lifetime.name))
                         })
                     });
                     if shadows {

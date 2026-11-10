@@ -193,7 +193,7 @@ pub fn parse_expansion_with_token_kinds(
 ) -> Parse {
     let mut lexed = LexedStr::with_edition(&text, edition);
     lexed.set_token_kinds(kinds);
-    let mut input = parser::Input::default();
+    let mut input = parser::Input::with_edition(edition);
     for (index, &kind) in lexed.kinds().iter().enumerate() {
         if kind.is_trivia() {
             continue;
@@ -203,6 +203,9 @@ pub fn parse_expansion_with_token_kinds(
             lexed.is_union_keyword(index),
             lexed.is_dyn_keyword(index),
         );
+        if lexed.is_safe_keyword(index) {
+            input.set_last_safe_keyword();
+        }
         if kind == T!['(']
             && origins
                 .binary_search_by_key(&lexed.token_start(index), |(start, _)| *start)

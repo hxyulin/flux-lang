@@ -1,0 +1,79 @@
+SOURCE_FILE@0..97
+  TYPE_ALIAS@0..47
+    TYPE_KW@0..4 "type"
+    WHITESPACE@4..5 " "
+    NAME@5..13
+      IDENT@5..13 "Callback"
+    WHITESPACE@13..14 " "
+    EQ@14..15 "="
+    WHITESPACE@15..16 " "
+    FN_PTR_TYPE@16..46
+      UNSAFE_KW@16..22 "unsafe"
+      WHITESPACE@22..23 " "
+      ABI@23..33
+        EXTERN_KW@23..29 "extern"
+        WHITESPACE@29..30 " "
+        STRING@30..33 "\"C\""
+      WHITESPACE@33..34 " "
+      FN_KW@34..36 "fn"
+      PARAM_LIST@36..46
+        L_PAREN@36..37 "("
+        PARAM@37..40
+          DOT3@37..40 "..."
+        COMMA@40..41 ","
+        WHITESPACE@41..42 " "
+        PARAM@42..45
+          PATH_TYPE@42..45
+            PATH@42..45
+              PATH_SEGMENT@42..45
+                NAME_REF@42..45
+                  IDENT@42..45 "i32"
+        R_PAREN@45..46 ")"
+    SEMICOLON@46..47 ";"
+  WHITESPACE@47..48 "\n"
+  FN@48..68
+    SAFE_KW@48..52 "safe"
+    WHITESPACE@52..53 " "
+    FN_KW@53..55 "fn"
+    WHITESPACE@55..56 " "
+    NAME@56..63
+      IDENT@56..63 "outside"
+    PARAM_LIST@63..65
+      L_PAREN@63..64 "("
+      R_PAREN@64..65 ")"
+    WHITESPACE@65..66 " "
+    BLOCK_EXPR@66..68
+      L_CURLY@66..67 "{"
+      R_CURLY@67..68 "}"
+  WHITESPACE@68..69 "\n"
+  STRUCT@69..96
+    STRUCT_KW@69..75 "struct"
+    WHITESPACE@75..76 " "
+    NAME@76..79
+      IDENT@76..79 "Raw"
+    GENERIC_PARAM_LIST@79..85
+      L_ANGLE@79..80 "<"
+      LIFETIME_PARAM@80..84
+        LIFETIME@80..84
+          LIFETIME_IDENT@80..84 "'r#_"
+      R_ANGLE@84..85 ">"
+    TUPLE_FIELD_LIST@85..95
+      L_PAREN@85..86 "("
+      TUPLE_FIELD@86..94
+        REF_TYPE@86..94
+          AMP@86..87 "&"
+          LIFETIME@87..91
+            LIFETIME_IDENT@87..91 "'r#_"
+          WHITESPACE@91..92 " "
+          PATH_TYPE@92..94
+            PATH@92..94
+              PATH_SEGMENT@92..94
+                NAME_REF@92..94
+                  IDENT@92..94 "u8"
+      R_PAREN@94..95 ")"
+    SEMICOLON@95..96 ";"
+  WHITESPACE@96..97 "\n"
+error 40..40: `...` must be the last argument of a C-variadic function
+error 48..48: `safe` items are only allowed in extern blocks
+error 80..84: `_` cannot be a raw lifetime
+error 87..91: `_` cannot be a raw lifetime

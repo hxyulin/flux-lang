@@ -1,6 +1,5 @@
 {
   "date": "2026-11-10",
-  "revision": "2ec3416dc878a3e30b13b6925c02f7e0991e36f8",
   "host": "aarch64-apple-darwin",
   "parser": {
     "source": "local Cargo registry source cache",
@@ -8,14 +7,15 @@
     "files": 68236,
     "rust_source_bytes": 1271843178,
     "package_versions": 1890,
-    "without_syntax_diagnostics": 67909,
-    "with_syntax_diagnostics": 327,
-    "without_syntax_diagnostics_percent": 99.52,
+    "without_syntax_diagnostics": 67922,
+    "with_syntax_diagnostics": 314,
+    "without_syntax_diagnostics_percent": 99.54,
     "panics": 0,
     "invalid_or_lossy_trees": 0,
     "budget_failures": 0,
     "command": "FLUX_CORPUS=\"$HOME/.cargo/registry/src\" cargo test -p flux-syntax --release --test corpus -- --ignored --nocapture",
-    "scope": "Raw source parsing, including invalid fixtures, other editions and nightly syntax. Not full compilation or overall Rust compatibility."
+    "scope": "Raw source parsing, including invalid fixtures, other editions and nightly syntax. Not full compilation or overall Rust compatibility.",
+    "source_state": "working tree after the syntax-corpus cleanup"
   },
   "rayon": {
     "version": "1.12.0",
@@ -29,5 +29,24 @@
     "dependencies": "Original upstream sources and default rand 0.9.5 features, including zerocopy 0.8.63.",
     "scope": "Standalone adapters for upstream integration functions. Original test bodies and assertions retained; libtest annotations removed. Each runnable function compared with a rustc-built adapter. Unit tests and doctests are not included.",
     "evidence": "Recorded compiler qualification at revision 2ec3416d; original local reports in out/rand-zerocopy/."
+  },
+  "baseline_revision": "d2bad0208088dad0b09f4ef911a1f81a43f7f0c7",
+  "edition_aware_parser": {
+    "files": 68236,
+    "without_syntax_diagnostics": 68183,
+    "with_syntax_diagnostics": 53,
+    "without_syntax_diagnostics_percent": 99.92,
+    "previous_without_syntax_diagnostics": 68164,
+    "new_failures": 0,
+    "remaining_classifications": {
+      "nightly-only syntax": 13,
+      "include fragments containing a bare error string": 3,
+      "unexpanded code-generation templates": 31,
+      "intentional invalid syntax fixtures": 5,
+      "invalid inactive experimental source (missing semicolon)": 1
+    },
+    "edition_inference": "Nearest ancestor package Cargo.toml; all files scanned in the inferred edition. No unresolved inherited edition fields in this inventory.",
+    "scope": "Raw source parsing, not full crate compilation. cfg, source-level fixture edition overrides and per-target edition overrides are not applied.",
+    "local_evidence": "out/corpus-syntax-20261110/{summary.json,baseline-full-census.json,final-census.json,inventory.json}"
   }
 }

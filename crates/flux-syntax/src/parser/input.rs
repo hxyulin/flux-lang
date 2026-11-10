@@ -10,20 +10,32 @@ use crate::lexer::LexedStr;
 #[derive(Debug, Default)]
 pub struct Input {
     kinds: Vec<SyntaxKind>,
+    edition: crate::Edition,
     joint: Vec<u64>,
     /// Identifiers spelled `union`, excluding raw identifiers.
     union_keywords: Vec<u64>,
     dyn_keywords: Vec<u64>,
+    safe_keywords: Vec<u64>,
     invisible_parens: Vec<u64>,
 }
 
 impl Input {
+    /// Creates a manually assembled stream under its original source edition.
+    pub fn with_edition(edition: crate::Edition) -> Self {
+        Self {
+            edition,
+            ..Self::default()
+        }
+    }
+
     pub fn from_lexed(lexed: &LexedStr<'_>) -> Input {
         let mut input = Input {
             kinds: Vec::with_capacity(lexed.len()),
+            edition: lexed.edition(),
             joint: Vec::with_capacity(lexed.len() / 64 + 1),
             union_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             dyn_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
+            safe_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             invisible_parens: Vec::with_capacity(lexed.len() / 64 + 1),
         };
         let mut was_joint = false;
@@ -36,6 +48,9 @@ impl Input {
                 input.set_last_joint();
             }
             input.push_contextual(kind, lexed.is_union_keyword(i), lexed.is_dyn_keyword(i));
+            if lexed.is_safe_keyword(i) {
+                input.set_last_safe_keyword();
+            }
             was_joint = i + 1 < lexed.len() && !lexed.kind(i + 1).is_trivia();
         }
         input
@@ -53,6 +68,7 @@ impl Input {
             self.joint.push(0);
             self.union_keywords.push(0);
             self.dyn_keywords.push(0);
+            self.safe_keywords.push(0);
             self.invisible_parens.push(0);
         }
         if kind == SyntaxKind::IDENT && is_union {
@@ -62,6 +78,13 @@ impl Input {
         if kind == SyntaxKind::IDENT && is_dyn {
             self.dyn_keywords[idx / 64] |= 1 << (idx % 64);
         }
+    }
+
+    /// Classifies the last identifier as a contextual `safe` qualifier.
+    pub fn set_last_safe_keyword(&mut self) {
+        let index = self.kinds.len() - 1;
+        debug_assert_eq!(self.kinds[index], SyntaxKind::IDENT);
+        self.safe_keywords[index / 64] |= 1 << (index % 64);
     }
 
     /// Marks expander-inserted grouping, which preserves expression precedence
@@ -82,6 +105,10 @@ impl Input {
     pub fn set_last_joint(&mut self) {
         let idx = self.kinds.len() - 1;
         self.joint[idx / 64] |= 1 << (idx % 64);
+    }
+
+    pub(crate) fn edition(&self) -> crate::Edition {
+        self.edition
     }
 
     pub fn len(&self) -> usize {
@@ -105,6 +132,12 @@ impl Input {
 
     pub(crate) fn is_dyn_keyword(&self, i: usize) -> bool {
         self.dyn_keywords
+            .get(i / 64)
+            .is_some_and(|word| word & (1 << (i % 64)) != 0)
+    }
+
+    pub(crate) fn is_safe_keyword(&self, i: usize) -> bool {
+        self.safe_keywords
             .get(i / 64)
             .is_some_and(|word| word & (1 << (i % 64)) != 0)
     }

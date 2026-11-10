@@ -4324,7 +4324,10 @@ impl<'a> Ctx<'a> {
                 "labels cannot use keyword names",
             );
         }
-        Ident::new(Symbol::intern(text), lifetime.syntax().ctxt())
+        Ident::new(
+            crate::item_tree::lifetime_name(text),
+            lifetime.syntax().ctxt(),
+        )
     }
 
     /// The target of `break` or `continue` (`keyword`) at `range`: the

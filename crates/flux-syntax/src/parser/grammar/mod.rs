@@ -34,6 +34,7 @@ pub(super) fn expansion(p: &mut Parser<'_>, kind: Fragment) {
     let m = p.start();
     let root = match kind {
         Fragment::Items => {
+            p.item_owner = MACRO_ITEMS;
             items::mod_contents(p, false);
             MACRO_ITEMS
         }

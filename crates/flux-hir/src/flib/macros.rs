@@ -502,6 +502,7 @@ impl Encode for SyntaxKind {
             Self::MACRO_ITEMS => 245,
             Self::MACRO_STMTS => 246,
             Self::MACRO_FRAGMENT => 247,
+            Self::SAFE_KW => 248,
         };
         tag.encode(e)
     }
@@ -757,6 +758,7 @@ impl Decode for SyntaxKind {
             245 => Ok(Self::MACRO_ITEMS),
             246 => Ok(Self::MACRO_STMTS),
             247 => Ok(Self::MACRO_FRAGMENT),
+            248 => Ok(Self::SAFE_KW),
             _ => Err(Error("invalid syntax kind tag")),
         }
     }

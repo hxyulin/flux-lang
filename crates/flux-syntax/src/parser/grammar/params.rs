@@ -2,12 +2,12 @@ use super::*;
 
 /// `(self, a: A, b: B)` for a function or method, or `(fmt: *const u8, ...)`
 /// for a C-variadic foreign function.
-pub(super) fn fn_param_list(p: &mut Parser<'_>) {
+pub(super) fn fn_param_list(p: &mut Parser<'_>, anonymous: bool) {
     let list = p.start();
     p.bump(T!['(']);
     let mut first = true;
     while !p.at(T![')']) && !p.at_end() {
-        if !p.at_ts(patterns::PATTERN_FIRST.union(TokenSet::new(&[T![#]]))) {
+        if !p.at(T![...]) && !p.at_ts(patterns::PATTERN_FIRST.union(TokenSet::new(&[T![#]]))) {
             if p.at(T!['{']) || p.at(T![;]) {
                 break;
             }
@@ -19,6 +19,12 @@ pub(super) fn fn_param_list(p: &mut Parser<'_>) {
         if first && at_self_param(p) {
             self_param(p, m);
         } else if p.eat(T![...]) {
+            m.complete(p, PARAM);
+        } else if anonymous
+            && matches!(p.current(), IDENT | T![Self])
+            && matches!(p.nth(1), T![,] | T![')'])
+        {
+            types::type_(p);
             m.complete(p, PARAM);
         } else {
             // An or-pattern is not allowed without parentheses, but is
@@ -70,11 +76,16 @@ pub(super) fn fn_ptr_param_list(p: &mut Parser<'_>) {
         p,
         T!['('],
         T![')'],
-        types::TYPE_FIRST.union(TokenSet::new(&[T![#]])),
+        types::TYPE_FIRST.union(TokenSet::new(&[T![#], T![.]])),
         "a parameter type",
         |p| {
             let m = p.start();
             attributes::outer_attrs(p);
+            if p.eat(T![...]) {
+                variadic_is_last(p);
+                m.complete(p, PARAM);
+                return;
+            }
             let named =
                 matches!(p.current(), IDENT | T![_]) && p.nth(1) == T![:] && !p.nth_at(1, T![::]);
             if named {
@@ -114,4 +125,10 @@ pub(super) fn closure_param_list(p: &mut Parser<'_>) {
     }
     p.expect(T![|]);
     list.complete(p, PARAM_LIST);
+}
+
+fn variadic_is_last(p: &mut Parser<'_>) {
+    if !p.at(T![')']) && !(p.at(T![,]) && p.nth(1) == T![')']) {
+        p.error("`...` must be the last argument of a C-variadic function");
+    }
 }

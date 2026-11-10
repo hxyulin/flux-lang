@@ -2066,6 +2066,19 @@ impl Collector<'_> {
     ) -> Option<FunctionId> {
         let in_extern_block = extern_block.is_some();
         let is_core = self.items.is_core(ctx.module);
+        if let Some(safe) = f.safe_token() {
+            if !in_extern_block {
+                self.items.diagnostics.push(Diagnostic::new(
+                    safe.text_range(),
+                    "`safe` functions are only allowed in extern blocks",
+                ));
+            } else if f.unsafe_token().is_some() {
+                self.items.diagnostics.push(Diagnostic::new(
+                    safe.text_range(),
+                    "a function cannot be both safe and unsafe",
+                ));
+            }
+        }
         let mut inherits_overflow_checks = false;
         let mut const_unstable = false;
         let mut precise_live_drops = false;
@@ -2539,7 +2552,7 @@ impl Collector<'_> {
                 file: ctx.file,
                 vis,
             },
-            is_unsafe: in_extern_block || f.unsafe_token().is_some(),
+            is_unsafe: (in_extern_block && f.safe_token().is_none()) || f.unsafe_token().is_some(),
             target_features: has_target_feature.then(|| enabled_features.into_boxed_slice()),
             is_extern: in_extern_block,
             link_name,

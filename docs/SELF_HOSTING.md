@@ -179,10 +179,10 @@ cargo test -p flux-cli --test equivalent_readiness
 cargo test -p flux-cli --test crc32fast_readiness
 ```
 
-The typed-AST consumer exercises 135 generated node interfaces, 536 accessors
+The typed-AST consumer exercises 135 generated node interfaces, 538 accessors
 and 82 conversions. It reads the current parser fixtures and compares complete
 observable results, including casts, conversion identity and handwritten
-accessors. A recorded run produced identical 830,745-byte outputs.
+accessors. An earlier recorded run produced identical 830,745-byte outputs.
 
 The hashbrown consumer covers collision-heavy growth, lookup, removal, reserve,
 clone, retain, mutable iteration, draining and reuse. It checks reserve overflow,

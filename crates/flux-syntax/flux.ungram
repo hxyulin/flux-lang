@@ -106,7 +106,7 @@ Visibility =
 
 Fn =
   Attr* Visibility?
-  'const'? 'async'? 'unsafe'? Abi?
+  'safe'? 'const'? 'async'? 'unsafe'? Abi?
   'fn' Name GenericParamList? ParamList RetType? WhereClause?
   (body:BlockExpr | ';')
 
@@ -177,7 +177,7 @@ Const =
   Attr* Visibility? 'const' (Name | '_') ':' Type ('=' body:Expr)? ';'
 
 Static =
-  Attr* Visibility? 'static' 'mut'? Name ':' Type ('=' body:Expr)? ';'
+  Attr* Visibility? 'safe'? 'static' 'mut'? Name ':' Type ('=' body:Expr)? ';'
 
 Module =
   Attr* Visibility? 'mod' Name (ItemList | ';')

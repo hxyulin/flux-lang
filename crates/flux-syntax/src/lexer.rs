@@ -132,6 +132,10 @@ impl<'a> LexedStr<'a> {
         self.kind(i) == SyntaxKind::IDENT && self.token_text(i) == "dyn"
     }
 
+    pub(crate) fn is_safe_keyword(&self, i: usize) -> bool {
+        self.kind(i) == SyntaxKind::IDENT && self.token_text(i) == "safe"
+    }
+
     pub fn token_range(&self, i: usize) -> TextRange {
         TextRange::new(self.starts[i], self.starts[i + 1])
     }
@@ -314,6 +318,21 @@ impl Lexer<'_> {
     /// Lexes after `'`: a lifetime (`'a`), a char literal (`'a'`), or an
     /// unterminated char.
     fn quote(&mut self, error: &mut Option<String>) -> SyntaxKind {
+        if matches!(
+            self.res.edition,
+            crate::Edition::E2021 | crate::Edition::E2024
+        ) && self.byte(0) == b'r'
+            && self.byte(1) == b'#'
+            && self.char_at(self.pos + 2).is_some_and(is_ident_start)
+        {
+            self.pos += 2;
+            let name = self.pos;
+            self.ident_continue();
+            if &self.text[name..self.pos] == "_" {
+                *error = Some("`_` cannot be a raw lifetime".to_owned());
+            }
+            return LIFETIME_IDENT;
+        }
         let first = self.char_at(self.pos);
         let second = first.and_then(|c| self.char_at(self.pos + c.len_utf8()));
         match (first, second) {
