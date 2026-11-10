@@ -142,7 +142,7 @@ fn named_closure_parameters_match_rustc() {
 }
 
 #[test]
-fn callable_alias_regions_keep_an_explicit_metadata_boundary() {
+fn callable_alias_regions_preserve_static_and_shared_inputs() {
     let root = std::env::temp_dir().join(format!(
         "flux-callable-alias-regions-{}",
         std::process::id()
@@ -183,11 +183,8 @@ fn callable_alias_regions_keep_an_explicit_metadata_boundary() {
             &root,
             &format!("flux-{name}"),
         );
-        assert!(!actual.status.success());
         assert!(
-            String::from_utf8_lossy(&actual.stderr).contains(
-                "references and trait objects in trait objects' arguments are not supported yet"
-            ),
+            actual.status.success(),
             "{}",
             String::from_utf8_lossy(&actual.stderr)
         );

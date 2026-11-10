@@ -399,6 +399,11 @@ impl<T> [T] {
         let finished = self.is_empty();
         SplitInclusive { slice: self, pred, finished }
     }
+    /// Splits mutably after each element accepted by `pred`.
+    pub fn split_inclusive_mut<P: FnMut(&T) -> bool>(&mut self, pred: P) -> SplitInclusiveMut<'_, T, P> {
+        let finished = self.is_empty();
+        SplitInclusiveMut { slice: self, pred, finished }
+    }
     /// Splits around accepted elements, into at most `n` pieces.
     pub fn splitn<P: FnMut(&T) -> bool>(&self, n: usize, pred: P) -> SplitN<'_, T, P> {
         SplitN { inner: self.split(pred), count: n }
@@ -418,6 +423,10 @@ impl<T> [T] {
     /// Splits into runs of adjacent elements that `pred` accepts pairwise.
     pub fn chunk_by<F: FnMut(&T, &T) -> bool>(&self, pred: F) -> ChunkBy<'_, T, F> {
         ChunkBy { slice: self, predicate: pred }
+    }
+    /// Splits mutably into runs accepted pairwise by `pred`.
+    pub fn chunk_by_mut<P: FnMut(&T, &T) -> bool>(&mut self, pred: P) -> ChunkByMut<'_, T, P> {
+        ChunkByMut { slice: self, predicate: pred }
     }
     /// The first element and the rest, mutably.
     pub fn split_first_mut(&mut self) -> Option<(&mut T, &mut [T])> {
@@ -643,6 +652,21 @@ impl<T> [T] {
             rem: fst,
             chunk_size,
         }
+    }
+
+    /// Mutable chunks from the end. Panics if `chunk_size` is zero.
+    #[track_caller]
+    pub fn rchunks_mut(&mut self, chunk_size: usize) -> RChunksMut<'_, T> {
+        if chunk_size == 0 { panic("chunk size must be non-zero") }
+        RChunksMut { slice: self, chunk_size }
+    }
+    /// Exact mutable chunks from the end, excluding the initial remainder.
+    #[track_caller]
+    pub fn rchunks_exact_mut(&mut self, chunk_size: usize) -> RChunksExactMut<'_, T> {
+        if chunk_size == 0 { panic("chunk size must be non-zero") }
+        let remainder = self.len() % chunk_size;
+        let (rem, slice) = self.split_at_mut(remainder);
+        RChunksExactMut { inner: slice.chunks_exact_mut(chunk_size), rem }
     }
 
     /// Copies the elements of `src`, a range of indices, to the ones from
@@ -2013,3 +2037,124 @@ impl<T, const N: usize> [[T; N]] {
         unsafe { from_raw_parts_mut(self.as_mut_ptr() as *mut T, len) }
     }
 }
+
+/// Mutable chunks yielded from the end of a slice.
+pub struct RChunksMut<'a, T> { slice: &'a mut [T], chunk_size: usize }
+impl<'a, T> Iterator for RChunksMut<'a, T> {
+    type Item = &'a mut [T];
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.slice.is_empty() { return None; }
+        let index = self.slice.len().saturating_sub(self.chunk_size);
+        let (head, tail) = crate::mem::take(&mut self.slice).split_at_mut(index);
+        self.slice = head;
+        Some(tail)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.slice.len();
+        let count = len / self.chunk_size + if len % self.chunk_size != 0 { 1 } else { 0 };
+        (count, Some(count))
+    }
+}
+impl<'a, T> DoubleEndedIterator for RChunksMut<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.slice.is_empty() { return None; }
+        let rem = self.slice.len() % self.chunk_size;
+        let count = if rem == 0 { self.chunk_size } else { rem };
+        let (head, tail) = crate::mem::take(&mut self.slice).split_at_mut(count);
+        self.slice = tail;
+        Some(head)
+    }
+}
+impl<T> ExactSizeIterator for RChunksMut<'_, T> {}
+impl<T> crate::iter::FusedIterator for RChunksMut<'_, T> {}
+
+/// Exact mutable chunks yielded from the end of a slice.
+pub struct RChunksExactMut<'a, T> { inner: ChunksExactMut<'a, T>, rem: &'a mut [T] }
+impl<'a, T> RChunksExactMut<'a, T> {
+    /// The initial elements that do not fill a chunk.
+    pub fn into_remainder(self) -> &'a mut [T] { self.rem }
+}
+impl<'a, T> Iterator for RChunksExactMut<'a, T> {
+    type Item = &'a mut [T];
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next_back() }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<'a, T> DoubleEndedIterator for RChunksExactMut<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next() }
+}
+impl<T> ExactSizeIterator for RChunksExactMut<'_, T> {}
+impl<T> crate::iter::FusedIterator for RChunksExactMut<'_, T> {}
+
+impl<'a, T, P: FnMut(&T) -> bool> DoubleEndedIterator for SplitMut<'a, T, P> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.finished { return None; }
+        let mut index = None;
+        let mut i = self.slice.len();
+        while i > 0 { i -= 1; if (self.pred)(&self.slice[i]) { index = Some(i); break; } }
+        let slice = crate::mem::take(&mut self.slice);
+        match index {
+            Some(i) => { let (head, tail) = slice.split_at_mut(i); self.slice = head; Some(&mut tail[1..]) }
+            None => { self.finished = true; Some(slice) }
+        }
+    }
+}
+
+/// Mutable pieces ending with an element accepted by the predicate.
+pub struct SplitInclusiveMut<'a, T, P: FnMut(&T) -> bool> { slice: &'a mut [T], pred: P, finished: bool }
+impl<'a, T, P: FnMut(&T) -> bool> Iterator for SplitInclusiveMut<'a, T, P> {
+    type Item = &'a mut [T];
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished { return None; }
+        let mut end = self.slice.len();
+        let mut i = 0;
+        while i < self.slice.len() { if (self.pred)(&self.slice[i]) { end = i + 1; break; } i += 1; }
+        if end == self.slice.len() { self.finished = true; }
+        let (head, tail) = crate::mem::take(&mut self.slice).split_at_mut(end);
+        self.slice = tail;
+        Some(head)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.finished { (0, Some(0)) } else { (1, Some(self.slice.len())) }
+    }
+}
+impl<'a, T, P: FnMut(&T) -> bool> DoubleEndedIterator for SplitInclusiveMut<'a, T, P> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.finished { return None; }
+        let mut start = 0;
+        let mut i = self.slice.len().saturating_sub(1);
+        while i > 0 { i -= 1; if (self.pred)(&self.slice[i]) { start = i + 1; break; } }
+        if start == 0 { self.finished = true; }
+        let (head, tail) = crate::mem::take(&mut self.slice).split_at_mut(start);
+        self.slice = head;
+        Some(tail)
+    }
+}
+impl<T, P: FnMut(&T) -> bool> crate::iter::FusedIterator for SplitInclusiveMut<'_, T, P> {}
+
+/// Mutable runs accepted pairwise by a predicate.
+pub struct ChunkByMut<'a, T, P> { slice: &'a mut [T], predicate: P }
+impl<'a, T, P: FnMut(&T, &T) -> bool> Iterator for ChunkByMut<'a, T, P> {
+    type Item = &'a mut [T];
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.slice.is_empty() { return None; }
+        let mut len = 1;
+        while len < self.slice.len() && (self.predicate)(&self.slice[len - 1], &self.slice[len]) { len += 1; }
+        let (head, tail) = crate::mem::take(&mut self.slice).split_at_mut(len);
+        self.slice = tail;
+        Some(head)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.slice.is_empty() { (0, Some(0)) } else { (1, Some(self.slice.len())) }
+    }
+}
+impl<'a, T, P: FnMut(&T, &T) -> bool> DoubleEndedIterator for ChunkByMut<'a, T, P> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.slice.is_empty() { return None; }
+        let mut start = self.slice.len() - 1;
+        while start > 0 && (self.predicate)(&self.slice[start - 1], &self.slice[start]) { start -= 1; }
+        let (head, tail) = crate::mem::take(&mut self.slice).split_at_mut(start);
+        self.slice = head;
+        Some(tail)
+    }
+}
+impl<T, P: FnMut(&T, &T) -> bool> crate::iter::FusedIterator for ChunkByMut<'_, T, P> {}

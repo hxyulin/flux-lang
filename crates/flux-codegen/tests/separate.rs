@@ -682,20 +682,20 @@ pub fn constant<T: Callback>() -> fn(i32) -> i32 { T::FUNCTION }
     // Each case requires a different symbolic dependency operation. Keeping
     // them in separate libraries prevents another export from retaining it.
     for (index, operation) in [
-        "dep::read(Private)",
-        "dep::object(&Private).value()",
-        "dep::constant::<Private>()(7)",
+        "dep::read(Private::<T>(std::marker::PhantomData))",
+        "dep::object(&Private::<T>(std::marker::PhantomData)).value()",
+        "dep::constant::<Private<T>>()(7)",
     ]
     .iter()
     .enumerate()
     {
         let library = format!(
             r#"
-struct Private;
+struct Private<T>(std::marker::PhantomData<T>);
 static PRIVATE_STATE: i32 = 41;
-impl dep::Value for Private {{ fn value(&self) -> i32 {{ PRIVATE_STATE }} }}
+impl<T> dep::Value for Private<T> {{ fn value(&self) -> i32 {{ PRIVATE_STATE }} }}
 fn callback(x: i32) -> i32 {{ x + 5 }}
-impl dep::Callback for Private {{ const FUNCTION: fn(i32) -> i32 = callback; }}
+impl<T> dep::Callback for Private<T> {{ const FUNCTION: fn(i32) -> i32 = callback; }}
 pub fn exported<T>(_: T) -> i32 {{ {operation} }}
 "#
         );
@@ -1106,4 +1106,123 @@ fn main() {
         .err()
         .unwrap();
     assert_eq!(errors[0].message, "missing checked built-in MIR");
+}
+
+#[test]
+fn branching_exported_templates_reach_a_parametric_fixed_point() {
+    let mut library = String::from("fn native_helper() -> i32 { 7 }\n");
+    library.push_str("struct Left<T>(T); struct Right<T>(T);\n");
+    for level in 0..24 {
+        library.push_str(&format!(
+            "fn layer{level}<T>() {{ layer{}::<Left<T>>(); layer{}::<Right<T>>(); }}\n",
+            level + 1,
+            level + 1
+        ));
+    }
+    library
+        .push_str("fn layer24<T>() { native_helper(); } pub fn exported<T>() { layer0::<T>(); }");
+    let module = staged_module(&[("branching", &library, &[], 111)], Some(0));
+    assert!(
+        module
+            .functions
+            .iter()
+            .any(|f| f.name.contains("native_helper"))
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[test]
+fn symbolic_drop_effects_follow_calls_without_dropping_type_only_arguments() {
+    let dependency = r#"
+pub fn consume<T>(value:T){drop(value);}
+pub fn forward<T>(value:T){consume(value);}
+pub fn type_only<T>(){}
+pub fn forget<T>(value:T){std::mem::forget(value);}
+"#;
+    let library = r#"
+static mut COUNT:u32=0;
+fn drop_helper(){unsafe{COUNT+=1;}}
+struct Dropped;impl Drop for Dropped{fn drop(&mut self){drop_helper();}}
+fn recursive<T>(){recursive::<(T,T)>();}
+struct Forgotten;impl Drop for Forgotten{fn drop(&mut self){recursive::<u8>();}}
+pub fn exported<T>()->u32{
+ dep::forward((std::marker::PhantomData::<T>,Dropped));
+ dep::type_only::<(T,Forgotten)>();
+ dep::forget((std::marker::PhantomData::<T>,Forgotten));
+ unsafe{COUNT}
+}
+"#;
+    let d = staged_module(&[("dep", dependency, &[], 112)], Some(0));
+    let a = staged_module(
+        &[
+            ("dep", dependency, &[], 112),
+            ("a", library, &[("dep", 0)], 113),
+        ],
+        Some(1),
+    );
+    assert!(a.functions.iter().any(|f| f.name.contains("drop_helper")));
+    assert!(!a.functions.iter().any(|f| f.name.contains("recursive")));
+    let executable = staged_module(
+        &[
+            ("dep", dependency, &[], 112),
+            ("a", library, &[("dep", 0)], 113),
+            (
+                "root",
+                "fn main(){println!(\"{}\",a::exported::<u8>());}",
+                &[("a", 1)],
+                114,
+            ),
+        ],
+        None,
+    );
+    run_objects(&[d, a, executable], "symbolic-drop-effects", "1\n");
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[test]
+fn foreign_blanket_contracts_retain_private_constructors_and_projection_drops() {
+    let dependency = r#"
+pub struct Factory<T>(pub std::marker::PhantomData<T>);
+pub trait Make{type Output;fn make()->Self::Output;}
+impl<T:Default>Make for Factory<T>{type Output=T;fn make()->T{T::default()}}
+fn consume<T>(value:T){drop(value);}
+pub fn run<F:Make>(){consume(F::make());}
+"#;
+    let library = r#"
+static mut COUNT:u32=0;
+fn constructed(){unsafe{COUNT+=1;}}
+fn destroyed(){unsafe{COUNT+=2;}}
+struct Private;
+impl Default for Private{fn default()->Self{constructed();Private}}
+impl Drop for Private{fn drop(&mut self){destroyed();}}
+pub fn exported<T:Default>()->u32{dep::run::<dep::Factory<(T,Private)>>();unsafe{COUNT}}
+"#;
+    let d = staged_module(&[("dep", dependency, &[], 115)], Some(0));
+    let a = staged_module(
+        &[
+            ("dep", dependency, &[], 115),
+            ("a", library, &[("dep", 0)], 116),
+        ],
+        Some(1),
+    );
+    for name in ["constructed", "destroyed"] {
+        assert!(
+            a.functions.iter().any(|f| f.name.contains(name)),
+            "missing {name}"
+        );
+    }
+    let executable = staged_module(
+        &[
+            ("dep", dependency, &[], 115),
+            ("a", library, &[("dep", 0)], 116),
+            (
+                "root",
+                "fn main(){println!(\"{}\",a::exported::<u8>());}",
+                &[("a", 1)],
+                117,
+            ),
+        ],
+        None,
+    );
+    run_objects(&[d, a, executable], "foreign-blanket-contracts", "3\n");
 }

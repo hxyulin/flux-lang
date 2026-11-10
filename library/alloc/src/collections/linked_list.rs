@@ -385,3 +385,9 @@ unsafe impl<T: Sync> Sync for Iter<'_, T> {}
 unsafe impl<T: Send> Send for IterMut<'_, T> {}
 // SAFETY: shared iterator access cannot advance or mutate its elements.
 unsafe impl<T: Sync> Sync for IterMut<'_, T> {}
+
+impl<'a, T: 'a + Copy> Extend<&'a T> for LinkedList<T> {
+    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        for &value in iter { self.push_back(value); }
+    }
+}

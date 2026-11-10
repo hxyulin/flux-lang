@@ -11,6 +11,29 @@ fn accesses(pointer: *mut u32) -> u32 {
     }
 }
 fn main() {
+    #[derive(Copy,Clone)]
+    struct Pair(u64,u64);
+    let mut pair=std::mem::MaybeUninit::new(Pair(3,5));
+    // SAFETY: both pointers refer to initialized, aligned local storage.
+    unsafe {
+        write_volatile(&mut pair,std::mem::MaybeUninit::new(Pair(11,17)));
+        let value=read_volatile(&pair).assume_init();
+        assert_eq!((value.0,value.1),(11,17));
+        let mut wide=&[2u8,3][..] as *const [u8];
+        let bytes=[7u8,11,13];
+        write_volatile(&mut wide,&bytes[..] as *const [u8]);
+        assert_eq!(&*read_volatile(&wide),&bytes);
+        let mut large=3u128;
+        write_volatile(&mut large,0x112233445566778899aabbccddeeff00);
+        assert_eq!(read_volatile(&large),0x112233445566778899aabbccddeeff00);
+        let mut array=[1u32,2];
+        write_volatile(&mut array,[7,19]);
+        assert_eq!(read_volatile(&array),[7,19]);
+        let mut optional=Some(1u8);
+        write_volatile(&mut optional,None);
+        assert_eq!(read_volatile(&optional),None);
+    }
+
     let mut word = 17u32;
     assert_eq!(accesses(&mut word), 2);
     assert_eq!(word, 2);

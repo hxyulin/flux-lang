@@ -68,6 +68,12 @@ impl<T> Vec<T> {
         v
     }
 
+    /// Transfers the allocation, initialized length and capacity to the caller.
+    pub fn into_raw_parts(self) -> (*mut T,usize,usize) {
+        let mut values=ManuallyDrop::new(self);
+        (values.as_mut_ptr(),values.len,values.capacity())
+    }
+
     /// The elements as a boxed slice, the room past them given back.
     pub fn into_boxed_slice(mut self) -> crate::boxed::Box<[T]> {
         self.shrink_to_fit();

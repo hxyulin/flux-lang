@@ -1761,8 +1761,7 @@ impl Ctx<'_> {
                 let upvars = self.shallow(ClosureArgs::split(args).upvars);
                 match upvars.kind() {
                     TyKind::Tuple(list) => {
-                        let trait_ref = flux_solve::traits::copy_trait_ref(self.items)
-                            .unwrap_or(pred.trait_ref);
+                        let trait_ref = pred.trait_ref;
                         ClosureSelection::Met(
                             list.iter()
                                 .map(|&ty| Predicate {

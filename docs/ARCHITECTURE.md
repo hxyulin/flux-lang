@@ -530,7 +530,11 @@ associated types. Inferring the function's own body, each of its
 opaque types is a variable instead (and so is the type a call of
 itself returns), whose bounds are obligations; once the body is
 inferred, the variable's value is the *hidden type*
-(`Signatures::hidden`). MIR building gives the body's return place the
+(`Signatures::hidden`). Consumers of opaque auto traits wait for called
+providers to publish their hidden types. A finite dependency walk rejects
+recursive hidden-type cycles. Ordinary traits still use only declared opaque
+bounds; auto traits additionally inspect hidden captures and retain their
+lifetime requirements. MIR building gives the body's return place the
 hidden types, and monomorphization (`flux_solve::traits::instance_ty`) and the MIR
 validator reveal every opaque type, so code generation sees only the
 hidden ones.
@@ -1316,3 +1320,24 @@ Run `just selfhost-subset` for this test alone.
 This is executable coverage of compiler components; full self-compilation
 still needs more language and library support; see
 [the milestone plan](SELF_HOSTING.md).
+
+Native library reachability inspects symbolic function bodies at their identity
+parameters. Each invocation first contributes its instantiated callback bounds,
+including owner and inherited bounds. These contracts retain private native
+implementations without enumerating every generic adapter combination. Closed
+instances keep precise dispatch. A finite ownership-effect summary propagates
+which generic parameters can be dropped across direct call edges; type-only
+arguments and borrowed parameters do not become unconditional drop roots.
+
+Callable trait objects may carry a function-pointer region recipe beside their
+principal type arguments and output equality. The recipe distinguishes bound
+input lifetimes from captures. Coercion instantiates it against the occurrence's
+rows rather than treating captured inputs as newly quantified lifetimes. FLIB
+serializes this recipe and the associated-output constraint metadata.
+
+Rigid proof contexts reuse completed normalizations with the projection guard as
+part of the key. Recursion cuts prevent caching answers that depend on their
+caller. The cache lasts for one immutable context. Normalized trait arguments
+retain the original membership receiver. Signature impl evidence uses original
+memberships. Projection inputs written in bounds preserve a parameter's original
+trait arguments while allowing receiver projections to normalize.

@@ -191,6 +191,7 @@ fn collect_generics_as_written(
             &mut relaxed,
             diagnostics,
         );
+        expand_associated_bounds(&mut predicates, &mut type_outlives, diagnostics);
         mark_relaxed(&mut [], relaxed, diagnostics);
         return Generics {
             predicates: predicates.into(),
@@ -400,6 +401,7 @@ fn collect_generics_as_written(
         &mut relaxed,
         diagnostics,
     );
+    expand_associated_bounds(&mut predicates, &mut type_outlives, diagnostics);
     mark_relaxed(&mut params, relaxed, diagnostics);
     Generics {
         params: params.into(),
@@ -532,4 +534,86 @@ pub(crate) fn lower_type(ty: Option<ast::Type<'_>>, diagnostics: &mut Vec<Diagno
     };
     unsupported(diagnostics, ty.syntax().text_range(), what);
     TypeRef::Error
+}
+
+fn expand_associated_bounds(
+    predicates: &mut Vec<WherePredicate>,
+    outlives: &mut Vec<TypeOutlives>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    fn expand(
+        mut predicate: WherePredicate,
+        output: &mut Vec<WherePredicate>,
+        outlives: &mut Vec<TypeOutlives>,
+        diagnostics: &mut Vec<Diagnostic>,
+        depth: usize,
+    ) {
+        if depth > 64 {
+            diagnostics.push(Diagnostic::new(
+                predicate.bound.range,
+                "associated type bounds are nested too deeply",
+            ));
+            return;
+        }
+        let constraints = predicate
+            .bound
+            .path
+            .args
+            .last_mut()
+            .and_then(Option::as_mut)
+            .map(|args| std::mem::take(&mut args.bounds))
+            .unwrap_or_default();
+        output.push(predicate.clone());
+        for constraint in constraints {
+            if constraint.bounds.is_empty() && constraint.lifetimes.is_empty() {
+                diagnostics.push(Diagnostic::new(
+                    constraint.range,
+                    "empty associated type bounds are not supported yet",
+                ));
+                continue;
+            }
+            if constraint.args.is_some() || !predicate.bound.bound_lifetimes.is_empty() {
+                diagnostics.push(Diagnostic::new(
+                    constraint.range,
+                    "associated family and higher-ranked output bounds are not supported yet",
+                ));
+                continue;
+            }
+            let mut path = Path::single(constraint.name);
+            path.qself = Some(Box::new(super::QSelf {
+                associated_bound: true,
+                ty: predicate.ty.clone(),
+                ty_range: predicate.ty_range,
+                trait_: Some(predicate.bound.path.clone()),
+                range: constraint.range,
+            }));
+            let ty = TypeRef::Path(path);
+            for bound in constraint.bounds {
+                expand(
+                    WherePredicate {
+                        ty: ty.clone(),
+                        ty_range: constraint.range,
+                        bound,
+                    },
+                    output,
+                    outlives,
+                    diagnostics,
+                    depth + 1,
+                );
+            }
+            outlives.extend(
+                constraint
+                    .lifetimes
+                    .into_iter()
+                    .map(|lifetime| TypeOutlives {
+                        ty: ty.clone(),
+                        ty_range: constraint.range,
+                        lifetime,
+                    }),
+            );
+        }
+    }
+    for predicate in std::mem::take(predicates) {
+        expand(predicate, predicates, outlives, diagnostics, 0);
+    }
 }

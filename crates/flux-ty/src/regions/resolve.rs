@@ -1675,6 +1675,15 @@ fn functions(
                     .collect(),
             );
         }
+        let self_trait = items
+            .impl_of(id)
+            .and_then(|imp| sigs.impl_traits.get(imp).copied());
+        let resolved_self_types = items
+            .impl_of(id)
+            .filter(|_| self_trait.is_some())
+            .and_then(|imp| sigs.impl_types.get(imp))
+            .map_or(&[][..], |types| types.as_ref());
+        let resolved_bounds = flux_solve::traits::predicates_of(items, sigs, id);
         let mut walker = Walker::new(items, function.loc.module, names);
         walker.self_regions = self_regions.as_deref();
         walker.self_types = &self_types;
@@ -1682,6 +1691,9 @@ fn functions(
         walker.inherited_self_types = &inherited_self_types;
         walker.scope = TypeScope {
             self_ty,
+            self_trait,
+            self_types: resolved_self_types,
+            bounds: &resolved_bounds,
             generics: &generics,
             signature_of: Some("functions"),
             ..TypeScope::default()
@@ -1698,6 +1710,17 @@ fn functions(
             }),
             None => None,
         };
+        if let Some(flux_hir::Owner::Impl(owner)) = function.owner
+            && let (Some(self_ty), Some(trait_), Some(bound)) = (
+                self_ty,
+                items.impls[owner].trait_,
+                &items.impls[owner].trait_ref,
+            )
+        {
+            walker
+                .projection_owners
+                .push((self_ty, trait_, bound.clone()));
+        }
         for generics in items
             .owner_generics(function.owner)
             .into_iter()
@@ -2946,6 +2969,8 @@ fn opaque_regions(
         }
         let captures: Box<[Region]> = match &decl.captures {
             None if decl.edition == flux_syntax::Edition::E2024
+                || matches!(function.owner, Some(flux_hir::Owner::Trait(_)))
+                || matches!(function.owner, Some(flux_hir::Owner::Impl(owner)) if walker.items.impls[owner].trait_.is_some())
                 || (function.is_async && i + 1 == function.opaques.len()) =>
             {
                 (0..all as u32).map(Region::Param).collect()

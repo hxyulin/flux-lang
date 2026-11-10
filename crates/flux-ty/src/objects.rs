@@ -263,6 +263,46 @@ pub(crate) fn resolve_dyn(
             .iter()
             .chain(&tys)
             .all(|&ty| represented_argument(ty));
+    let callable = if !callable_inputs && crate::fn_trait_kind(items, t).is_some() {
+        let bound = d
+            .bounds
+            .iter()
+            .find(|bound| items.resolve_trait(module, bound).0 == Some(t));
+        bound.and_then(|bound| {
+            let written = callable_type_ref(&bound.path, &bound.bound_lifetimes)?;
+            let flux_hir::TypeRef::FnPtr {
+                bound_lifetimes,
+                params,
+                ret,
+                ..
+            } = written
+            else {
+                return None;
+            };
+            let [tuple] = trait_ref.args else {
+                return None;
+            };
+            let TyKind::Tuple(types) = tuple.kind() else {
+                return None;
+            };
+            let signature = crate::FnSigTy::new(types, *tys.first()?, false);
+            let description = crate::fn_regions::describe(
+                items,
+                module,
+                &bound_lifetimes,
+                &params,
+                &ret,
+                signature,
+                errors,
+            );
+            Some(crate::FnSigTy {
+                regions: Some(description.regions),
+                ..signature
+            })
+        })
+    } else {
+        None
+    };
     if trait_ref
         .args
         .iter()
@@ -270,6 +310,7 @@ pub(crate) fn resolve_dyn(
         .any(|&ty| crate::regions::slots(items, ty) > 0 || mentions_object(ty))
         && !callable_inputs
         && !represented
+        && callable.is_none()
     {
         return fail(
             errors,
@@ -278,6 +319,7 @@ pub(crate) fn resolve_dyn(
         );
     }
     Ty::new(TyKind::Dynamic(DynTy {
+        callable: callable.map(|signature| Ty::new(TyKind::FnPtr(signature))),
         auto_traits: crate::ty::object_auto_traits(&auto_traits),
         trait_: t,
         name: data.name,
@@ -371,4 +413,31 @@ pub(crate) fn inherited_projections(
         }
     }
     result
+}
+
+/// The bare-function syntax used to build a callable object's relative region recipe.
+pub(crate) fn callable_type_ref(
+    path: &flux_hir::Path,
+    names: &[flux_intern::Symbol],
+) -> Option<flux_hir::TypeRef> {
+    let args = path.args(path.segments.len().checked_sub(1)?)?;
+    if !args.parenthesized {
+        return None;
+    }
+    let [flux_hir::TypeRef::Tuple(params)] = &*args.types else {
+        return None;
+    };
+    let ret = args
+        .bindings
+        .iter()
+        .find(|binding| binding.name.as_str() == "Output")?
+        .ty
+        .clone();
+    Some(flux_hir::TypeRef::FnPtr {
+        bound_lifetimes: names.into(),
+        params: params.clone(),
+        ret: Box::new(ret),
+        is_unsafe: false,
+        abi: flux_hir::Abi::Rust,
+    })
 }

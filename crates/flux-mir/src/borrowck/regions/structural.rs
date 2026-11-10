@@ -2,14 +2,39 @@
 use super::*;
 
 impl Cx<'_> {
+    pub(super) fn structural_requirements(
+        &self,
+        goal: flux_ty::Predicate,
+    ) -> Option<Vec<flux_ty::Predicate>> {
+        if let Some(requirements) =
+            flux_solve::traits::auto_trait_requirements(self.items, self.sigs, goal)
+        {
+            return Some(requirements);
+        }
+        if let TyKind::Closure(_, args) = goal.self_ty.kind()
+            && let flux_solve::traits::ClosureGoal::Upvars(types) =
+                flux_solve::traits::closure_goal(self.items, goal.trait_ref.trait_, args)
+        {
+            return Some(
+                types
+                    .iter()
+                    .map(|&self_ty| flux_ty::Predicate {
+                        self_ty,
+                        trait_ref: goal.trait_ref,
+                    })
+                    .collect(),
+            );
+        }
+        None
+    }
+
     pub(super) fn prove_auto_super(
         &mut self,
         goal: &ImplRegionGoal,
         env: &[ImplRegionGoal],
         depth: u32,
     ) -> Option<bool> {
-        let requirements =
-            flux_solve::traits::auto_trait_requirements(self.items, self.sigs, goal.predicate)?;
+        let requirements = self.structural_requirements(goal.predicate)?;
         Some(
             self.auto_super_goals(goal, &requirements, env, depth)
                 .is_some_and(|goals| {
@@ -37,6 +62,36 @@ impl Cx<'_> {
         }
         if requirements.is_empty() {
             return Some(Vec::new());
+        }
+        if let TyKind::Opaque(opaque) = ty.kind() {
+            let hidden = *self.sigs.hidden.get(&(opaque.function, opaque.index))?;
+            let mut offset = opaque.lifetimes as usize;
+            let mut arguments = Vec::new();
+            for &argument in opaque.args {
+                let end = offset + self.slots(argument) as usize;
+                arguments.push(row.get(offset..end)?.to_vec());
+                offset = end;
+            }
+            if offset != row.len() {
+                return None;
+            }
+            // Type arguments provide their complete existing rows. Written
+            // hidden lifetimes need a separate recipe and cannot be guessed.
+            let output =
+                self.instantiate_sig(hidden, &[], &mut |_| None, opaque.args, &arguments)?;
+            let actual = hidden.subst(opaque.args);
+            if requirements.len() != 1
+                || requirements[0].self_ty != actual
+                || output.len() != self.slots(actual) as usize
+            {
+                return None;
+            }
+            return Some(vec![ImplRegionGoal {
+                predicate: requirements[0],
+                vars: vec![output],
+                lifetimes: Vec::new(),
+                bound: Vec::new(),
+            }]);
         }
         if let TyKind::Adt(adt, args) = ty.kind() {
             let metadata = self.sigs.regions.structs.get(adt.strukt)?;
@@ -88,7 +143,14 @@ impl Cx<'_> {
             TyKind::Tuple(types) => types.to_vec(),
             TyKind::Array(element, _) | TyKind::Slice(element) => vec![element],
             TyKind::Ref(_, inner) | TyKind::RawPtr(_, inner) => vec![inner],
-            TyKind::Closure(_, args) => vec![flux_ty::ClosureArgs::split(args).upvars],
+            TyKind::Closure(_, args) => {
+                let parts = flux_ty::ClosureArgs::split(args);
+                if requirements.len() == 1 && requirements[0].self_ty == parts.upvars {
+                    vec![parts.upvars]
+                } else {
+                    parts.upvar_types().to_vec()
+                }
+            }
             _ => return None,
         };
         let mut at = usize::from(matches!(ty.kind(), TyKind::Ref(..)));
@@ -317,6 +379,7 @@ mod tests {
             Ty::new(TyKind::Ref(Mutability::Not, Ty::int(flux_ty::IntTy::U8))),
         ]);
         let object = flux_ty::DynTy {
+            callable: None,
             trait_,
             name: data.name,
             args,

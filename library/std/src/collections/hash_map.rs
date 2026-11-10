@@ -597,3 +597,13 @@ impl<K, V> Iterator for IntoValues<K, V> {
 }
 impl<K, V> ExactSizeIterator for IntoValues<K, V> {}
 impl<K, V> FusedIterator for IntoValues<K, V> {}
+
+impl<'a, K: 'a + Copy + Eq + Hash, V: 'a + Copy, S: BuildHasher> Extend<(&'a K, &'a V)>
+    for HashMap<K, V, S>
+{
+    fn extend<I: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: I) {
+        for (&key, &value) in iter {
+            self.insert(key, value);
+        }
+    }
+}

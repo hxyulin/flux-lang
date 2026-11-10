@@ -1,0 +1,72 @@
+use rayon::prelude::*;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, VecDeque};
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+
+fn main() {
+    let started = Arc::new(AtomicUsize::new(0));
+    let count = started.clone();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(2)
+        .thread_name(|index| format!("flux-{index}"))
+        .start_handler(move |_| { count.fetch_add(1, Ordering::SeqCst); })
+        .build().unwrap();
+    pool.install(|| {
+        let sum = (0u64..100).into_par_iter().map(|x| x * x).sum::<u64>();
+        assert_eq!(sum, 328350);
+        let values: Vec<i32> = (0..100).into_par_iter().filter_map(|x| (x % 2 == 0).then_some(x)).collect();
+        assert_eq!(values.len(), 50);
+        assert_eq!(values[49], 98);
+        let joined: Vec<_> = (0..3).into_par_iter().chain(3..6).collect();
+        assert_eq!(joined, [0, 1, 2, 3, 4, 5]);
+        let chunks: Vec<String> = "abcdefg".chars().collect::<Vec<_>>().into_par_iter()
+            .fold_chunks_with(3, String::new(), |mut text, character| { text.push(character); text })
+            .collect();
+        assert_eq!(chunks, ["abc", "def", "g"]);
+        let flattened: Vec<_> = [vec![1, 2], vec![3, 4]].into_par_iter().flat_map_iter(|v| v).collect();
+        assert_eq!(flattened, [1, 2, 3, 4]);
+        let borrowed = [3, 5, 7];
+        let copied: Vec<_> = borrowed.par_iter().cloned().collect();
+        assert_eq!(copied, borrowed);
+        let paired: Vec<_> = (&borrowed, &borrowed).into_par_iter().map(|(a, b)| *a + *b).collect();
+        assert_eq!(paired, [6, 10, 14]);
+        let mut numbers = [9, 1, 8, 2, 7, 3];
+        numbers.par_iter_mut().for_each(|n| *n += 1);
+        numbers.par_sort_unstable();
+        assert_eq!(numbers, [2, 3, 4, 8, 9, 10]);
+        numbers.par_rchunks_mut(2).for_each(|chunk| chunk.reverse());
+        assert_eq!(numbers, [3, 2, 8, 4, 10, 9]);
+        let groups: Vec<_> = [1, 1, 2, 3, 3].par_chunk_by(|a, b| a == b).map(|g| g.len()).collect();
+        assert_eq!(groups, [2, 1, 2]);
+        let indices: Vec<_> = "ab x x".par_match_indices('x').collect();
+        assert_eq!(indices, [(3, "x"), (5, "x")]);
+        let lines: Vec<_> = "alpha\nbeta\n".par_lines().collect();
+        assert_eq!(lines, ["alpha", "beta"]);
+        let map: BTreeMap<_, _> = (0..8).into_par_iter().map(|n| (n, n * n)).collect();
+        let hash: HashMap<_, _> = map.par_iter().map(|(&k, &v)| (k, v)).collect();
+        assert_eq!(hash.get(&7), Some(&49));
+        let mut set: BTreeSet<i32> = BTreeSet::new(); set.par_extend(&borrowed); assert_eq!(set.len(), 3);
+        let mut deque = VecDeque::from(vec![1, 2, 3, 4]);
+        deque.pop_front(); deque.push_back(5);
+        let collected: Vec<_> = deque.into_par_iter().collect();
+        assert_eq!(collected, [2, 3, 4, 5]);
+        let mut heap = BinaryHeap::from(vec![2, 4, 6]);
+        assert_eq!(heap.par_drain().sum::<i32>(), 12);
+        assert!(heap.is_empty());
+        let mut drain = vec![1, 2, 3, 4, 5];
+        assert_eq!(drain.par_drain(1..4).sum::<i32>(), 9);
+        assert_eq!(drain, [1, 5]);
+        let option: Option<Vec<_>> = (0..5).into_par_iter().map(Some).collect();
+        assert_eq!(option.unwrap(), [0, 1, 2, 3, 4]);
+        println!("rayon sum {sum} collections slices strings and adapters passed");
+    });
+    let mut first = 0;
+    let mut second = 0;
+    pool.scope(|scope| {
+        scope.spawn(|_| first = 17);
+        scope.spawn(|_| second = 23);
+    });
+    assert_eq!((first, second), (17, 23));
+    assert_eq!(pool.install(|| rayon::join(|| 7, || 11)), (7, 11));
+    assert!(started.load(Ordering::SeqCst) > 0);
+    println!("rayon scoped workers {first} {second}");
+}

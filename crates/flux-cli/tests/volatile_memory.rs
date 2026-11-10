@@ -17,24 +17,8 @@ fn unsupported_aggregate_volatile_layouts_fail_explicitly() {
     std::fs::create_dir_all(&directory).unwrap();
     for (name, text) in [
         (
-            "array",
-            "fn main(){let mut a=[1u32,2];unsafe{std::ptr::write_volatile(&mut a,[3,4]);}}",
-        ),
-        (
-            "pair",
-            "struct Pair(u32,u32);fn main(){let a=Pair(1,2);let _=unsafe{std::ptr::read_volatile(&a)};}",
-        ),
-        (
-            "int128",
-            "fn main(){let mut a=1u128;unsafe{std::ptr::write_volatile(&mut a,2);}}",
-        ),
-        (
-            "enum",
-            "fn main(){let mut a=Some(1u8);unsafe{std::ptr::write_volatile(&mut a,None);}}",
-        ),
-        (
-            "wide",
-            "fn main(){let bytes=[1u8,2];let mut a=&bytes[..] as *const [u8];unsafe{std::ptr::write_volatile(&mut a,&bytes[..] as *const [u8]);}}",
+            "large_array",
+            "fn main(){let mut a=[1u8;64];unsafe{std::ptr::write_volatile(&mut a,[2u8;64]);}}",
         ),
         (
             "overaligned",

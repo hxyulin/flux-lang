@@ -251,6 +251,8 @@ pub struct OpaqueTy {
 /// gives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DynTy {
+    /// Represented callable inputs, including bound and captured regions.
+    pub callable: Option<Ty>,
     /// Canonically ordered, trusted auto-trait bounds of this object.
     pub auto_traits: &'static [crate::TraitRef],
     pub trait_: TraitId,
@@ -262,6 +264,12 @@ pub struct DynTy {
 }
 
 impl DynTy {
+    pub fn callable_signature(self) -> Option<FnSigTy> {
+        match self.callable?.kind() {
+            TyKind::FnPtr(signature) => Some(signature),
+            _ => None,
+        }
+    }
     /// The type its associated type `name` is, if it has one so named.
     pub fn assoc(self, name: Symbol) -> Option<Ty> {
         let i = self.assoc_names.iter().position(|&n| n == name)?;
@@ -271,8 +279,10 @@ impl DynTy {
     /// The same with each type in it replaced by `f`'s.
     pub fn map(self, mut f: impl FnMut(Ty) -> Ty) -> DynTy {
         let args = map_list(self.args, &mut f);
-        let assoc = map_list(self.assoc_tys, f);
+        let assoc = map_list(self.assoc_tys, &mut f);
+        let callable = self.callable.map(&mut f);
         DynTy {
+            callable,
             args,
             assoc_tys: assoc,
             ..self
@@ -1160,7 +1170,10 @@ impl TyKind {
             }
             TyKind::FnPtr(sig) => (sig.inputs_output, &[]),
             TyKind::FnDef(def) => (def.args, def.sig.inputs_output),
-            TyKind::Dynamic(d) => (d.args, d.assoc_tys),
+            TyKind::Dynamic(d) => {
+                inline[0] = d.callable;
+                (d.args, d.assoc_tys)
+            }
             _ => (&[], &[]),
         };
         let captures = match self {

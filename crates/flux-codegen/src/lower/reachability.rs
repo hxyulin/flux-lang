@@ -94,6 +94,7 @@ struct Reach<'a> {
     const_functions: FxHashSet<(FunctionId, flux_ty::GenericArgs)>,
     runtime_functions: FxHashSet<(FunctionId, flux_ty::GenericArgs)>,
     work: Vec<Template>,
+    drop_parameters: FxHashMap<FunctionId, DropParameters>,
     current: Vec<Context>,
     constants: FxHashSet<(ConstId, flux_ty::GenericArgs)>,
     statics: FxHashSet<ConstId>,
@@ -102,11 +103,17 @@ struct Reach<'a> {
     opaque: FxHashSet<StructId>,
     opaque_traits: FxHashMap<TraitId, Vec<Ty>>,
     callback_bounds: FxHashMap<TraitId, Vec<flux_ty::Predicate>>,
+    callback_contexts: FxHashMap<TraitId, Vec<flux_ty::GenericArgs>>,
     dropped: FxHashSet<StructId>,
     traits: FxHashSet<TraitId>,
     impls: FxHashSet<flux_hir::ImplId>,
     drop_impls: FxHashSet<flux_hir::ImplId>,
     aliases: FxHashSet<flux_hir::TypeAliasId>,
+    // Inputs are immutable for this traversal. Keep top-level normalization
+    // separate from recursive erasure, which deliberately treats aliases as
+    // unknown even when an independent closed occurrence can normalize.
+    normalized_templates: std::cell::RefCell<FxHashMap<Ty, Ty>>,
+    erased_templates: std::cell::RefCell<FxHashMap<Ty, Ty>>,
     symbolic_calls: FxHashMap<(FunctionId, flux_ty::GenericArgs, bool), Vec<Context>>,
     symbolic_constants: FxHashMap<flux_ty::ConstInstance, Vec<Context>>,
     closures: FxHashMap<ClosureOwner, Vec<&'a Body>>,
@@ -129,6 +136,7 @@ impl<'a> Reach<'a> {
             const_functions: FxHashSet::default(),
             runtime_functions: FxHashSet::default(),
             work: Vec::new(),
+            drop_parameters: drop_parameters(&hir.items, sigs, mir),
             current: Vec::new(),
             constants: FxHashSet::default(),
             statics: FxHashSet::default(),
@@ -137,11 +145,14 @@ impl<'a> Reach<'a> {
             opaque: FxHashSet::default(),
             opaque_traits: FxHashMap::default(),
             callback_bounds: FxHashMap::default(),
+            callback_contexts: FxHashMap::default(),
             dropped: FxHashSet::default(),
             traits: FxHashSet::default(),
             impls: FxHashSet::default(),
             drop_impls: FxHashSet::default(),
             aliases: FxHashSet::default(),
+            normalized_templates: Default::default(),
+            erased_templates: Default::default(),
             symbolic_calls: FxHashMap::default(),
             symbolic_constants: FxHashMap::default(),
         }
@@ -483,7 +494,11 @@ impl<'a> Reach<'a> {
     }
 
     fn enqueue(&mut self, owner: ClosureOwner, args: flux_ty::GenericArgs, runtime: bool) {
-        let args = if args.is_empty() {
+        // A symbolic invocation contributes its concrete callback contracts in
+        // `call`, before this point. Inspect its parametric body once, rather
+        // than constructing every producer/consumer adapter combination.
+        // Closed invocations retain their precise instance selection.
+        let args = if args.is_empty() || args.iter().any(|ty| ty.has_params()) {
             self.parameters(owner)
         } else {
             args
@@ -538,6 +553,14 @@ impl<'a> Reach<'a> {
     }
 
     fn implementation_args(&self, imp: flux_hir::ImplId, wanted: flux_ty::GenericArgs) -> Vec<Ty> {
+        let normalized: Vec<_> = wanted
+            .iter()
+            .map(|&ty| {
+                let result = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
+                if result.has_error() { ty } else { result }
+            })
+            .collect();
+        let wanted = Ty::list(&normalized);
         let owner = &self.items.impls[imp].generics;
         let mut bindings = vec![None; owner.len()];
         if let (Some(&pattern), Some(&actual)) = (self.sigs.impls.get(imp), wanted.first()) {
@@ -557,6 +580,14 @@ impl<'a> Reach<'a> {
     }
 
     fn constant_reference(&mut self, c: flux_ty::ConstInstance) {
+        self.callback_contracts(
+            flux_solve::traits::owner_predicates(
+                self.items,
+                self.sigs,
+                self.items.consts[c.konst].owner,
+            ),
+            c.args,
+        );
         self.konst_args(c.konst, c.args);
         if !c.args.iter().any(|ty| ty.has_params()) {
             let resolved = flux_solve::traits::resolve_const(self.items, self.sigs, c);
@@ -602,22 +633,110 @@ impl<'a> Reach<'a> {
         }
     }
 
+    fn callback_contracts(&mut self, bounds: Vec<flux_ty::Predicate>, args: flux_ty::GenericArgs) {
+        let bounds: Vec<_> = bounds.into_iter().map(|bound| bound.subst(args)).collect();
+        let mut pending = flux_solve::traits::elaborate(self.sigs, &bounds);
+        while let Some(bound) = pending.pop() {
+            if !self.callback_subject(bound.self_ty)
+                && !bound
+                    .trait_ref
+                    .args
+                    .iter()
+                    .any(|&ty| self.callback_subject(ty))
+            {
+                continue;
+            }
+            let mut wanted = vec![bound.self_ty];
+            wanted.extend_from_slice(bound.trait_ref.args);
+            let wanted = Ty::list(&wanted);
+            let contexts = self
+                .callback_contexts
+                .entry(bound.trait_ref.trait_)
+                .or_default();
+            if contexts
+                .iter()
+                .any(|&old| old == wanted || growing_args(old, wanted))
+            {
+                continue;
+            }
+            contexts.push(wanted);
+            self.expose_trait(bound.trait_ref.trait_);
+            self.callback_bounds
+                .entry(bound.trait_ref.trait_)
+                .or_default()
+                .push(bound);
+            // A foreign blanket implementation can introduce callbacks absent
+            // from the called function's written bounds. Follow its contract,
+            // without instantiating its adapter body in this context.
+            let implementations = self
+                .items
+                .trait_impls
+                .get(&bound.trait_ref.trait_)
+                .cloned()
+                .unwrap_or_default();
+            for imp in implementations {
+                let Some(&self_ty) = self.sigs.impls.get(imp) else {
+                    continue;
+                };
+                if !self.template_matches(self_ty, bound.self_ty)
+                    || !self.trait_arguments_match(imp, wanted)
+                {
+                    continue;
+                }
+                if matches!(
+                    bound.self_ty.kind(),
+                    TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
+                ) && !self.own(self.items.impls[imp].module)
+                {
+                    continue;
+                }
+                let args = Ty::list(&self.implementation_args(imp, wanted));
+                let requirements: Vec<_> = self
+                    .sigs
+                    .impl_predicates
+                    .get(imp)
+                    .into_iter()
+                    .flatten()
+                    .map(|bound| bound.subst(args))
+                    .collect();
+                pending.extend(flux_solve::traits::elaborate(self.sigs, &requirements));
+                let outputs: Vec<_> = self
+                    .sigs
+                    .impl_types
+                    .get(imp)
+                    .into_iter()
+                    .flatten()
+                    .map(|&(_, ty)| ty.subst(args))
+                    .collect();
+                for output in outputs {
+                    self.expose(output, true);
+                }
+            }
+        }
+    }
+
     fn call(&mut self, f: FunctionId, args: flux_ty::GenericArgs, runtime: bool) {
-        if runtime && let Some(bounds) = self.sigs.fn_predicates.get(f) {
-            for bound in bounds {
-                let bound = bound.subst(args);
-                if !self.available(bound.self_ty) {
-                    // A generic callback can invoke this trait on a private
-                    // adapter supplied by an exported template. Its own saved
-                    // methods may call monomorphic helpers in this object.
-                    self.expose_trait(bound.trait_ref.trait_);
-                    let bounds = self
-                        .callback_bounds
-                        .entry(bound.trait_ref.trait_)
-                        .or_default();
-                    if !bounds.contains(&bound) {
-                        bounds.push(bound);
-                    }
+        self.callback_contracts(
+            flux_solve::traits::predicates_of(self.items, self.sigs, f),
+            args,
+        );
+        if runtime && args.iter().any(|ty| ty.has_params()) {
+            let effects = self.drop_parameters.get(&f).cloned().unwrap_or_default();
+            for index in effects.owned {
+                if let Some(&ty) = args.get(index as usize) {
+                    self.drop_type(ty);
+                }
+            }
+            let mut pending: Vec<_> = effects
+                .projected
+                .into_iter()
+                .filter_map(|index| args.get(index as usize).copied())
+                .collect();
+            let mut seen = FxHashSet::default();
+            while let Some(ty) = pending.pop() {
+                if seen.insert(ty) {
+                    self.drop_type(ty);
+                    pending.extend(ty.children());
                 }
             }
         }
@@ -702,20 +821,17 @@ impl<'a> Reach<'a> {
             memo.insert(ty, erased);
             erased
         }
-        let normalize = |ty: Ty| {
-            if ty.has_params() {
-                ty
-            } else {
-                flux_solve::traits::normalize(self.items, self.sigs, &[], ty)
+        let canonical = |ty: Ty| {
+            if let Some(&known) = self.normalized_templates.borrow().get(&ty) {
+                return known;
             }
+            let candidate = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
+            let normalized = if candidate.has_error() { ty } else { candidate };
+            let erased = erase_unresolved(normalized, &mut self.erased_templates.borrow_mut());
+            self.normalized_templates.borrow_mut().insert(ty, erased);
+            erased
         };
-        let left = normalize(left);
-        let right = normalize(right);
-        let mut memo = FxHashMap::default();
-        flux_ty_ir::overlap(
-            erase_unresolved(left, &mut memo),
-            erase_unresolved(right, &mut memo),
-        )
+        flux_ty_ir::overlap(canonical(left), canonical(right))
     }
 
     fn callback_available(&self, imp: flux_hir::ImplId, self_ty: Ty, trait_: TraitId) -> bool {
@@ -744,6 +860,12 @@ impl<'a> Reach<'a> {
                 .opaque_traits
                 .get(&trait_)
                 .is_some_and(|types| types.iter().any(|&hidden| flux_ty_ir::overlap(hidden, ty)))
+    }
+
+    fn callback_subject(&self, ty: Ty) -> bool {
+        !self.available(ty)
+            || matches!(ty.kind(), TyKind::Alias(_) | TyKind::Opaque(_))
+            || ty.children().any(|child| self.callback_subject(child))
     }
 
     fn available(&self, ty: Ty) -> bool {
@@ -1094,6 +1216,137 @@ fn template_key(args: flux_ty::GenericArgs) -> flux_ty::GenericArgs {
             .map(|&ty| visit(ty, &mut memo, &mut next))
             .collect::<Vec<_>>(),
     )
+}
+
+#[derive(Clone, Default)]
+struct DropParameters {
+    owned: FxHashSet<u32>,
+    // A projection may return an owned value of a nested argument even when
+    // the receiver itself is a reference or a non-owning wrapper.
+    projected: FxHashSet<u32>,
+}
+impl DropParameters {
+    fn extend(&mut self, other: Self) -> bool {
+        let mut changed = false;
+        for index in other.owned {
+            changed |= self.owned.insert(index);
+        }
+        for index in other.projected {
+            changed |= self.projected.insert(index);
+        }
+        changed
+    }
+}
+
+// Native drop glue follows ownership effects, not every type mentioned by a
+// generic call. The finite parameter sets propagate through call edges without
+// constructing the corresponding nested adapter types.
+fn drop_parameters(
+    items: &ItemTree,
+    sigs: &Signatures,
+    mir: &FileMir,
+) -> FxHashMap<FunctionId, DropParameters> {
+    fn parameters(items: &ItemTree, ty: Ty, projected: bool) -> DropParameters {
+        let mut result = DropParameters::default();
+        let mut pending = vec![(ty, projected)];
+        let mut seen = FxHashSet::default();
+        while let Some((ty, mut projected)) = pending.pop() {
+            if !ty.has_params() || !seen.insert((ty, projected)) {
+                continue;
+            }
+            projected |= matches!(ty.kind(), TyKind::Alias(_) | TyKind::Opaque(_));
+            match ty.kind() {
+                TyKind::Param(p) => {
+                    if projected {
+                        result.projected.insert(p.index);
+                    } else {
+                        result.owned.insert(p.index);
+                    }
+                }
+                _ if projected => pending.extend(ty.children().map(|ty| (ty, true))),
+                TyKind::Ref(..) | TyKind::RawPtr(..) | TyKind::FnDef(_) | TyKind::FnPtr(_) => {}
+                TyKind::Adt(adt, _)
+                    if flux_solve::is_lang_struct(items, adt.strukt, "manually_drop")
+                        || flux_solve::is_lang_struct(items, adt.strukt, "phantom_data") => {}
+                TyKind::Closure(_, args) => pending.extend(
+                    flux_ty::ClosureArgs::split(args)
+                        .upvar_types()
+                        .iter()
+                        .map(|&ty| (ty, false)),
+                ),
+                _ => pending.extend(ty.children().map(|ty| (ty, false))),
+            }
+        }
+        result
+    }
+    let mut drops: FxHashMap<FunctionId, DropParameters> = FxHashMap::default();
+    let mut edges = Vec::new();
+    for (f, function) in items.functions.iter() {
+        if matches!(function.owner, Some(Owner::Trait(_))) && mir.bodies.get(f).is_none() {
+            let count = flux_ty::generic_names(items, function.owner, &function.generics).len();
+            drops
+                .entry(f)
+                .or_default()
+                .projected
+                .extend((0..count).map(|i| i as u32));
+        }
+    }
+    let bodies = mir
+        .bodies
+        .iter()
+        .chain(
+            mir.closures
+                .iter()
+                .filter_map(|((closure, _), body)| match closure.owner {
+                    ClosureOwner::Function(f) => Some((f, body)),
+                    ClosureOwner::Const(_) => None,
+                }),
+        );
+    for (f, body) in bodies {
+        for block in body.blocks.values() {
+            match &block.terminator.kind {
+                TerminatorKind::Drop { place, .. } => {
+                    drops.entry(f).or_default().extend(parameters(
+                        items,
+                        body.place_ty(place, sigs),
+                        false,
+                    ));
+                }
+                TerminatorKind::Call {
+                    func, generic_args, ..
+                } => edges.push((f, *func, *generic_args)),
+                TerminatorKind::CallIndirect { args, .. } => {
+                    for arg in args {
+                        drops.entry(f).or_default().extend(parameters(
+                            items,
+                            body.operand_ty(arg, sigs),
+                            false,
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for &(owner, callee, args) in &edges {
+            let mut inherited = DropParameters::default();
+            if let Some(dropped) = drops.get(&callee) {
+                for (indices, projected) in [(&dropped.owned, false), (&dropped.projected, true)] {
+                    for &index in indices {
+                        if let Some(&ty) = args.get(index as usize) {
+                            inherited.extend(parameters(items, ty, projected));
+                        }
+                    }
+                }
+            }
+            changed |= drops.entry(owner).or_default().extend(inherited);
+        }
+        if !changed {
+            return drops;
+        }
+    }
 }
 
 fn growing_args(previous: flux_ty::GenericArgs, next: flux_ty::GenericArgs) -> bool {

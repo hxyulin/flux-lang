@@ -760,6 +760,10 @@ trait lifetime arguments, nested objects, region-bearing function-pointer
 arguments and unrepresented supertrait argument transforms remain restricted. Same-object
 reference-to-raw-pointer casts preserve metadata; checked Any downcasts are
 supported with represented auto-trait bounds.
+Callable objects retain a relative input/output region recipe when their inputs
+contain nested references or captured lifetimes. Bound input lifetimes stay
+separate from captures, including static aliases and repeated borrowed tuple
+inputs. Owned nested object inputs such as `Box<dyn Any + Send>` are represented.
 A trait's crate may
 write inherent `impl dyn Tr` blocks (E0116 elsewhere), whose methods
 trait objects of it have.
@@ -1220,8 +1224,7 @@ cloneable keys/values without an `Ord` bound. Replacement
 retains the original key. Storage uses a safe AVL tree with indices into a
 vector; lookup, insertion and removal follow logarithmic tree paths. Removed
 slots are reused. Range and allocator APIs, remaining entry conveniences,
-other collections, and `String::drain` remain
-unsupported. Collecting an owning iterator does not
+and `String::drain` remain unsupported. Collecting an owning iterator does not
 reuse its source allocation as rustc sometimes does, so capacities can differ in those
 cases; a panic inside `alloc` that rustc reports at its own
 source (`swap_remove`, `drain` out of range) is reported at flux's.
@@ -1296,7 +1299,9 @@ shared reference, by mutable reference if it changes it, or by value
 if it moves it, all by value with `move` (cut at the first
 dereference); a place used whole and in part is captured whole. It is
 `FnOnce` if it moves what it captures out, `FnMut` if it changes it,
-and `Fn` otherwise, and `Copy` if what it captures is. The borrow
+and `Fn` otherwise. It implements `Copy` when every capture is `Copy`, and
+`Clone` when every capture is `Clone`. Cloning invokes each capture's `clone`,
+including custom implementations on `Copy` types. The borrow
 checker treats a closure as holding the borrows of what it captures,
 for as long as it, or any value it is moved into (an adapter like
 `Map`, a struct, a call's result), may be used, with rustc's messages.
@@ -1345,8 +1350,9 @@ hides, which must meet them (E0277, E0271), be the same for every
 return (E0308), and not contain itself (E0720); a body that only calls
 itself hides `!`. A closure returned so gets its signature from the
 `Fn` bound. Opaque types capture all type and const parameters. Edition 2024
-also captures every lifetime in scope, including elided ones. Older editions
-capture only lifetimes occurring in the opaque's bounds, including explicit
+also captures every lifetime in scope, including elided ones. Trait-method
+opaque returns capture all lifetimes in every supported edition. Older-edition
+free and inherent functions capture only lifetimes occurring in the opaque's bounds, including explicit
 trait lifetime arguments, reference-bearing type arguments and associated
 type equalities. Each written bound retains its own region rows; hidden-type
 checking and caller obligations use the same occurrence rather than borrowing
@@ -1365,7 +1371,8 @@ used, what they borrow stays borrowed, and its hidden type may borrow
 only them (E0700, E0597, E0373, as in rustc), and only for as long as
 its `+ 'a` bounds and what its bounds say associated types are
 (`Item = &'a T`, elided lifetimes as in the return type) say. Auto
-trait leakage through the hidden type remains unsupported.
+traits follow the inferred hidden type and its captures. This does not expose
+ordinary hidden-type traits such as `Copy` or `Clone` without declared bounds.
 Trait methods support opaque returns inside tuples and generic return types, including generic methods,
 default bodies and concrete return-type refinement. Implementations retain the
 promised trait bounds, associated-type equalities and represented lifetime
@@ -1789,9 +1796,11 @@ and `as_mut`; a `*mut T` coerces to a `*const T`. `align_offset` returns an
 element count for sized pointees, with zero-sized and impossible-alignment
 cases, and panics for non-power-of-two alignments. It is runtime-only and
 does not establish allocation bounds or memory validity.
-Volatile reads/writes preserve actual volatile operations for supported scalar
-values, thin pointers and same-layout scalar wrappers. Aggregates, enums, wide
-pointers, 128-bit integers and over-aligned values remain explicitly unsupported.
+Volatile reads/writes preserve actual volatile operations for scalar values,
+thin pointers and same-layout scalar wrappers. Aggregates with a supported layout
+of at most 32 bytes also work, including wide pointers,
+enums and 128-bit integers. Aggregate accesses use multiple volatile integer
+operations; they are not atomic. Larger layouts, including alignment padding beyond that limit, remain unsupported.
 Unsafe `[T]::align_to<U>` splits a shared slice into a T prefix, aligned U
 middle and T suffix, preserving whole-element boundaries and the source
 lifetime. Zero-sized and impossible-alignment cases are supported. Callers
@@ -2141,3 +2150,21 @@ well-formedness conditions already implied by their self type. Pinned receivers
 whose Self is a mutable reference keep their wrapper when passed by value.
 Borrows through raw pointer dereferences retain region constraints without
 claiming exclusive access to that pointee's allocation.
+
+Rayon 1.12.0 and rayon-core 1.13.0 build from unchanged registry sources on
+AArch64 macOS. The `rayon_readiness` test compares native output with rustc in
+Flux debug, fast-build and release modes. It covers parallel collection and drain
+adapters, borrowed multizip, cloned captures, mutable slices, sorting, string
+iteration, custom pools, scoped jobs and `join`. This is consumer coverage, not
+an execution of Rayon's complete upstream test suite.
+
+Associated output bounds such as `Iterator<Item: Send>` elaborate into predicates
+on the named owner's output, including inherited outputs and nested bounds.
+Associated family constraints, higher-ranked output constraints and empty
+`Item:` constraints remain explicitly unsupported.
+
+Collection conversions include boxed slices into vectors, heap into vector,
+and vector/deque ownership transfers. A contiguous vector keeps its allocation
+when converted to a deque. Deques preserve capacity while moving wrapped spans
+into vector order. Mutable slices support reverse chunks, inclusive splitting
+and adjacent-group splitting with double-ended iteration.

@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::panic::{AssertUnwindSafe,catch_unwind};
 use std::rc::Rc;
+mod vec {pub use std::vec::Vec;}
 mod raw_vec {
     use std::mem::MaybeUninit;
     pub struct RawVec<T>{data:Vec<MaybeUninit<T>>}
@@ -8,6 +9,11 @@ mod raw_vec {
     impl<T> RawVec<T>{
         pub const fn new()->Self{Self{data:Vec::new()}}
         pub fn with_capacity(capacity:usize)->Self{Self{data:Vec::with_capacity(capacity)}}
+        pub unsafe fn from_raw_parts(pointer:*mut T,capacity:usize)->Self{
+            // SAFETY: the caller transfers a compatible allocation; the shim
+            // leaves its slots uninitialized so RawVec never drops elements.
+            Self{data:unsafe{Vec::from_raw_parts(pointer.cast::<MaybeUninit<T>>(),0,capacity)}}
+        }
         pub fn capacity(&self)->usize{self.data.capacity()}
         pub fn ptr(&self)->*mut T{self.data.as_ptr() as *mut T}
     }

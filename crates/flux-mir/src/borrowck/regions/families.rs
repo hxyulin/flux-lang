@@ -20,7 +20,7 @@ impl Cx<'_> {
 
     /// Return a declaration's output guarantees only after proving this exact
     /// projection occurrence's owner and family prerequisites.
-    fn proven_family_output(
+    pub(super) fn proven_family_output(
         &mut self,
         alias: AliasTy,
         row: &[Var],
@@ -137,7 +137,7 @@ impl Cx<'_> {
         else {
             return false;
         };
-        contract.output_outlives.iter().any(|bound| {
+        let declared = contract.output_outlives.iter().any(|bound| {
             let source = match *bound {
                 Region::Static => STATIC,
                 Region::Param(index) => match lifetimes.get(index as usize) {
@@ -155,7 +155,20 @@ impl Cx<'_> {
                     (Some(&source), Some(&target)) => self.known(source, target),
                     _ => false,
                 }
-        })
+        });
+        if declared {
+            return true;
+        }
+        // A well-formed projection outlives a region when every input does.
+        // These are occurrence inputs, not the unknown output's fields. Keep
+        // both their concrete regions and their abstract type requirements.
+        for &region in row {
+            self.outlives(region, target, Category::Boring, self.call_range);
+        }
+        for &argument in alias.template_args().iter() {
+            self.type_outlives(argument, target, self.call_range);
+        }
+        true
     }
 
     /// Instantiate declaration bounds with the exact captured projection inputs.

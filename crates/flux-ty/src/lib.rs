@@ -402,8 +402,14 @@ fn impl_type(
     // The impl header may project through its own generic bounds, as in
     // `impl<A: Array> Trait for [A::Item]`. The later signature pass checks
     // these predicates completely once trait defaults and supertraits exist.
-    let preliminary =
-        traits::resolve_predicates(items, imp.module, &imp.generics, scope, &mut Vec::new());
+    let preliminary = resolve_predicates(
+        items,
+        sigs,
+        imp.module,
+        &imp.generics,
+        scope,
+        &mut Vec::new(),
+    );
     let bounds = flux_solve::traits::elaborate(sigs, &preliminary.predicates);
     let scope = TypeScope {
         bounds: &bounds,
@@ -931,6 +937,7 @@ fn check(
     if all {
         queue.extend(items.functions.iter().map(|(id, _)| id));
     }
+    let mut pending_opaque_dependencies = rustc_hash::FxHashSet::default();
     while let Some(id) = queue.pop() {
         if bodies.get(id).is_some() {
             continue;
@@ -950,6 +957,30 @@ fn check(
                 infer_body(items, &sigs, id, body, source_map)
             }
         };
+        let providers: Vec<_> = result
+            .calls
+            .iter()
+            .map(|(_, call)| call.function)
+            .filter(|&provider| {
+                provider != id
+                    && bodies.get(provider).is_none()
+                    && !pending_opaque_dependencies.contains(&provider)
+                    && sigs
+                        .opaques
+                        .get(provider)
+                        .is_some_and(|types| !types.is_empty())
+                    && hir.body(provider).is_some()
+            })
+            .collect();
+        if !providers.is_empty() && pending_opaque_dependencies.insert(id) {
+            queue.push(id);
+            queue.extend(providers);
+            continue;
+        }
+        for (index, &hidden) in result.opaques.iter().enumerate() {
+            sigs.hidden.insert((id, index as u32), hidden);
+        }
+        pending_opaque_dependencies.remove(&id);
         reached(&result, &mut queue);
         bodies.insert(id, result);
     }
@@ -1007,6 +1038,43 @@ fn check(
     for (id, result) in bodies.iter() {
         for (i, &ty) in result.opaques.iter().enumerate() {
             sigs.hidden.insert((id, i as u32), ty);
+        }
+    }
+    fn recursive_opaque(sigs: &Signatures, ty: Ty, target: (FunctionId, u32)) -> bool {
+        let mut pending = vec![ty];
+        let mut seen = rustc_hash::FxHashSet::default();
+        while let Some(ty) = pending.pop() {
+            if !ty.has_opaques() {
+                continue;
+            }
+            let mut recursive = false;
+            ty.map_opaques(&mut |opaque| {
+                let key = (opaque.function, opaque.index);
+                if key == target {
+                    recursive = true;
+                } else if seen.insert(key)
+                    && let Some(&hidden) = sigs.hidden.get(&key)
+                {
+                    pending.push(hidden);
+                }
+                Ty::opaque(opaque)
+            });
+            if recursive {
+                return true;
+            }
+        }
+        false
+    }
+    for (id, result) in bodies.iter() {
+        for (index, &hidden) in result.opaques.iter().enumerate() {
+            if recursive_opaque(&sigs, hidden, (id, index as u32)) {
+                let mut diagnostic = Diagnostic::new(
+                    items.functions[id].def_range,
+                    "cannot resolve recursive opaque type",
+                );
+                diagnostic.file = items.functions[id].loc.file;
+                diagnostics.push(diagnostic);
+            }
         }
     }
     for (id, result) in consts.iter() {

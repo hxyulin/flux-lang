@@ -1203,3 +1203,9 @@ impl<'a, K, V> core::iter::DoubleEndedIterator for Range<'a, K, V> {
     }
 }
 impl<K, V> core::iter::FusedIterator for Range<'_, K, V> {}
+
+impl<'a, K: 'a + Copy + Ord, V: 'a + Copy> core::iter::Extend<(&'a K, &'a V)> for BTreeMap<K, V> {
+    fn extend<I: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: I) {
+        for (&key, &value) in iter { self.insert(key, value); }
+    }
+}

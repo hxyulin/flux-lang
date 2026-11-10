@@ -4654,9 +4654,48 @@ impl Lower<'_, '_, '_> {
                 ) = items.functions[*func].intrinsic
                 {
                     let ty = generic_args[0];
-                    let scalar = flux_mir::mono::volatile_scalar(self.sigs, ty)
-                        .expect("validated volatile scalar");
-                    if let Some(machine) = keel_type(scalar) {
+                    let layout = self.ctx.layouts.of(ty);
+                    let scalar = flux_mir::mono::volatile_scalar(self.sigs, ty).filter(|&scalar| {
+                        let scalar_layout = self.ctx.layouts.of(scalar);
+                        layout.size == scalar_layout.size && layout.align == scalar_layout.align
+                    });
+                    if scalar.is_none() && layout.size != 0 {
+                        let slot = self.aligned_slot(layout.size, layout.align);
+                        let address = self.operand(&args[0])[0];
+                        let read = intrinsic == flux_hir::Intrinsic::ReadVolatile;
+                        if !read {
+                            let values = self.operand(&args[1]);
+                            self.store(slot, ty, &values);
+                        }
+                        let (source, destination) = if read {
+                            (address, slot)
+                        } else {
+                            (slot, address)
+                        };
+                        let mut offset = 0;
+                        for (bytes, machine) in [
+                            (8, Type::I64),
+                            (4, Type::I32),
+                            (2, Type::I16),
+                            (1, Type::I8),
+                        ] {
+                            while offset + bytes <= layout.size {
+                                let from = self.offset(source, offset);
+                                let to = self.offset(destination, offset);
+                                let mut load = self.chunk_flags(from, layout.align, offset, bytes);
+                                let mut store = self.chunk_flags(to, layout.align, offset, bytes);
+                                load.volatile = read;
+                                store.volatile = !read;
+                                let value = self.b.ins().load_with_flags(machine, from, load);
+                                self.b.ins().store_with_flags(value, to, store);
+                                offset += bytes;
+                            }
+                        }
+                        if read {
+                            let values = self.load(Location::Memory(slot), ty);
+                            self.write(dest, &values);
+                        }
+                    } else if let Some(machine) = scalar.and_then(keel_type) {
                         let address = self.operand(&args[0])[0];
                         let mut flags = aligned(machine);
                         flags.volatile = true;

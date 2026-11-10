@@ -99,7 +99,9 @@ pub unsafe fn write_unaligned<T>(dst: *mut T, value: T) {
 /// Reads without allowing the compiler to remove or merge the access. The
 /// pointer must be valid and aligned for an initialized value of T. This is
 /// not atomic and does not synchronize threads. The current backend supports
-/// scalar and same-layout single-field scalar wrapper types only.
+/// scalar types, same-layout scalar wrappers, and supported aggregate layouts
+/// up to 32 bytes. Aggregate accesses may use several
+/// volatile operations.
 pub unsafe fn read_volatile<T>(src:*const T)->T {
     // SAFETY: the caller guarantees aligned, initialized readable storage.
     unsafe { crate::intrinsics::read_volatile(src) }

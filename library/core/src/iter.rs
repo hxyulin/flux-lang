@@ -3140,3 +3140,17 @@ float_sum_product! { f32 f64 }
 pub fn zip<A: IntoIterator, B: IntoIterator>(a: A, b: B) -> Zip<A::IntoIter, B::IntoIter> {
     a.into_iter().zip(b)
 }
+
+impl<I: DoubleEndedIterator + ExactSizeIterator> DoubleEndedIterator for StepBy<I> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let len = self.iter.len();
+        if len == 0 { return None; }
+        let step = self.step + 1;
+        let offset = if self.first_take { (len - 1) % step } else {
+            let remainder = len % step;
+            if len < step { self.iter.nth_back(len - 1); return None; }
+            remainder
+        };
+        self.iter.nth_back(offset)
+    }
+}

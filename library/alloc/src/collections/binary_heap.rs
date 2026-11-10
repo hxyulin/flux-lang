@@ -45,6 +45,7 @@ impl<T> BinaryHeap<T> {
     pub fn into_vec(self) -> Vec<T> {
         self.data
     }
+    pub fn drain(&mut self) -> Drain<'_, T> { self.data.drain(..) }
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             inner: self.data.iter(),
@@ -270,5 +271,16 @@ impl<'a, T> IntoIterator for &'a BinaryHeap<T> {
     type IntoIter = Iter<'a, T>;
     fn into_iter(self) -> Iter<'a, T> {
         self.iter()
+    }
+}
+
+pub type Drain<'a,T> = vec::Drain<'a,T>;
+impl<T> From<BinaryHeap<T>> for Vec<T> {
+    fn from(heap: BinaryHeap<T>) -> Self { heap.into_vec() }
+}
+
+impl<'a, T: 'a + Copy + Ord> Extend<&'a T> for BinaryHeap<T> {
+    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        for &value in iter { self.push(value); }
     }
 }

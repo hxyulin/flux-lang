@@ -1117,6 +1117,9 @@ pub struct Path {
 /// The start of a qualified path: `<T as Tr>` or `<T>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct QSelf {
+    /// A projection synthesized from `Trait<Item: Bound>` can name an
+    /// inherited item. An explicitly qualified Rust path cannot.
+    pub associated_bound: bool,
     pub ty: TypeRef,
     pub ty_range: TextRange,
     pub trait_: Option<Path>,
@@ -1127,6 +1130,8 @@ pub struct QSelf {
 /// Generic arguments as written: `<'a, A, B>` or `::<A, B>`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GenericArgs {
+    /// Associated output bounds, expanded into predicates in generic declarations.
+    pub bounds: Box<[AssocBound]>,
     /// `'a` in `S<'a, T>`, which come before the types.
     pub lifetimes: Box<[LifetimeRef]>,
     pub types: Box<[TypeRef]>,
@@ -1142,6 +1147,15 @@ pub struct GenericArgs {
     pub parenthesized: bool,
     /// Named lifetimes bound by a parenthesized Fn-family argument list.
     pub bound_lifetimes: Box<[Symbol]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AssocBound {
+    pub name: Symbol,
+    pub args: Option<GenericArgs>,
+    pub bounds: Box<[Bound]>,
+    pub lifetimes: Box<[LifetimeRef]>,
+    pub range: TextRange,
 }
 
 /// `Out = i32` in a trait's generic arguments: what one of its associated
@@ -1170,6 +1184,9 @@ pub const MISPLACED_BINDING: &str = "associated item constraints are not allowed
 impl GenericArgs {
     /// Reports each of its bindings: they belong in trait bounds only.
     pub fn reject_bindings(&self, diagnostics: &mut Vec<Diagnostic>) {
+        for bound in &self.bounds {
+            diagnostics.push(Diagnostic::new(bound.range, MISPLACED_BINDING));
+        }
         for b in self.bindings.iter() {
             diagnostics.push(Diagnostic::new(b.range(), MISPLACED_BINDING));
         }
@@ -2143,6 +2160,7 @@ fn lower_path_with(
             None => None,
         };
         qself = Some(Box::new(QSelf {
+            associated_bound: false,
             ty,
             ty_range,
             trait_,
@@ -2278,11 +2296,12 @@ pub(crate) fn lower_generic_args(
     let mut lifetimes = Vec::new();
     let mut types = Vec::new();
     let mut ranges = Vec::new();
+    let mut associated_bounds = Vec::new();
     let mut bindings = Vec::new();
     let mut misordered = false;
     for arg in list.args() {
         let range = arg.syntax().text_range();
-        let what = match arg {
+        match arg {
             ast::GenericArg::LifetimeArg(arg) => {
                 let Some(lifetime) = arg.lifetime() else {
                     continue;
@@ -2331,13 +2350,36 @@ pub(crate) fn lower_generic_args(
                 ranges.push(range);
                 continue;
             }
-            ast::GenericArg::AssocTypeArg(_) => "associated type bounds",
+            ast::GenericArg::AssocTypeArg(arg) => {
+                let Some(name) = arg.name_ref() else {
+                    continue;
+                };
+                let mut bounds = Vec::new();
+                let mut lifetimes = Vec::new();
+                if let Some(list) = arg.type_bound_list() {
+                    lower_bounds(
+                        list,
+                        &mut bounds,
+                        Some(&mut lifetimes),
+                        Relaxed::Unsupported,
+                        diagnostics,
+                    );
+                }
+                associated_bounds.push(AssocBound {
+                    name: Symbol::intern(name.text()),
+                    args: arg
+                        .generic_arg_list()
+                        .map(|list| lower_generic_args(list, diagnostics)),
+                    bounds: bounds.into(),
+                    lifetimes: lifetimes.into(),
+                    range,
+                });
+                continue;
+            }
         };
-        unsupported(diagnostics, range, what);
-        types.push(TypeRef::Error);
-        ranges.push(range);
     }
     GenericArgs {
+        bounds: associated_bounds.into(),
         lifetimes: lifetimes.into(),
         types: types.into(),
         ranges: ranges.into(),
@@ -2371,6 +2413,7 @@ fn lower_parenthesized_args(
     };
     let end = ret.map_or(range, |r| r.syntax().text_range());
     GenericArgs {
+        bounds: Box::default(),
         lifetimes: Box::default(),
         types: Box::new([TypeRef::Tuple(params)]),
         ranges: Box::new([range]),

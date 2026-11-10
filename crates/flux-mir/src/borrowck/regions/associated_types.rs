@@ -65,8 +65,10 @@ impl Cx<'_> {
         for projection in
             flux_solve::traits::implied_projections(self.sigs, &self.header_predicates)
         {
-            if type_only(self.items, Ty::alias(projection.alias))
-                && type_only(self.items, projection.ty)
+            if type_only(
+                self.items,
+                Ty::alias(projection.alias.map_args(|ty| self.normalize(ty))),
+            ) && type_only(self.items, self.normalize(projection.ty))
                 && !self.env.iter().any(|known| known.alias == projection.alias)
             {
                 self.env.push(projection);
@@ -119,30 +121,23 @@ impl Cx<'_> {
         // Its proof may query universals, so close the original header facts
         // before adding any obligations from that selection.
         self.close_known();
-        let mut env = Vec::new();
-        for (k, &p) in self
+        let written = self
             .sigs
             .impl_predicates
             .get(imp)
-            .map_or(&[][..], |p| p)
-            .iter()
+            .into_iter()
+            .flatten()
+            .copied()
             .enumerate()
-        {
-            let Some(goal) = self.impl_region_goal(
-                p,
-                block.bound_selfs.get(k).map_or(&[], |t| t),
-                block
-                    .bound_traits
-                    .get(k)
-                    .unwrap_or(&TraitRefRegions::default()),
-                &lifetimes,
-                &[],
-                &[],
-            ) else {
-                continue;
-            };
-            self.impl_super_goals(goal, &mut env, 0);
-        }
+            .map(|(index, predicate)| {
+                (
+                    predicate,
+                    block.bound_selfs.get(index).cloned().unwrap_or_default(),
+                    block.bound_traits.get(index).cloned().unwrap_or_default(),
+                )
+            })
+            .collect();
+        let env = self.original_region_goals(written, &lifetimes);
         // Callable header binders can extend the universal region set.
         self.close_known();
         for (p, table) in self.env.clone().iter().zip(block.projections.iter()) {

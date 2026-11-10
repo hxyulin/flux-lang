@@ -67,3 +67,19 @@ impl core::fmt::Debug for OsString {
         f.write_str("\"")
     }
 }
+
+impl core::iter::Extend<OsString> for OsString {
+    fn extend<I: IntoIterator<Item = OsString>>(&mut self, iter: I) {
+        for value in iter { self.push(value); }
+    }
+}
+impl<'a> core::iter::Extend<&'a OsStr> for OsString {
+    fn extend<I: IntoIterator<Item = &'a OsStr>>(&mut self, iter: I) {
+        for value in iter { self.push(value); }
+    }
+}
+impl<'a> core::iter::Extend<Cow<'a, OsStr>> for OsString {
+    fn extend<I: IntoIterator<Item = Cow<'a, OsStr>>>(&mut self, iter: I) {
+        for value in iter { self.push(value); }
+    }
+}

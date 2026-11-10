@@ -182,6 +182,7 @@ pub(crate) struct Walker<'a> {
     /// The region of the reference whose pointee is being walked, if
     /// that is what is: a trait object's lifetime bound there.
     ref_region: Option<Region>,
+    inherited_projection_stack: Vec<crate::AliasTy>,
     /// A private candidate-counting view; never published as a signature row.
     elision_only: bool,
     /// In a body's written annotation, the owner lifetimes of a projection
@@ -215,6 +216,7 @@ impl<'a> Walker<'a> {
             projection_owners: Vec::new(),
             self_projection_owner: None,
             ref_region: None,
+            inherited_projection_stack: Vec::new(),
             elision_only: false,
             infer_unknown_owners: false,
         }
@@ -347,7 +349,7 @@ impl<'a> Walker<'a> {
                 if let Some(written) = d.bounds.iter().find(|bound| {
                     self.items.resolve_trait(self.module, bound).0 == Some(object.trait_)
                 }) {
-                    self.object_arguments(&written.path, object, out);
+                    self.object_arguments(&written.path, &written.bound_lifetimes, object, out);
                 }
             }
             (TypeRef::Ptr { pointee, .. }, TyKind::RawPtr(_, inner))
@@ -390,7 +392,7 @@ impl<'a> Walker<'a> {
                         Region::Static
                     })
                 });
-                self.object_arguments(path, object, out);
+                self.object_arguments(path, &[], object, out);
             }
             (TypeRef::Path(path), _) => self.path(path, ty, out),
             (TypeRef::Infer, _) => {
@@ -400,8 +402,30 @@ impl<'a> Walker<'a> {
         }
     }
 
-    fn object_arguments(&mut self, path: &Path, object: crate::DynTy, out: &mut Vec<Region>) {
+    fn object_arguments(
+        &mut self,
+        path: &Path,
+        names: &[Symbol],
+        object: crate::DynTy,
+        out: &mut Vec<Region>,
+    ) {
         if crate::fn_trait_kind(self.items, object.trait_).is_some() {
+            if let Some(signature) = object.callable_signature() {
+                if let Some(TypeRef::FnPtr {
+                    bound_lifetimes,
+                    params,
+                    ret,
+                    ..
+                }) = crate::objects::callable_type_ref(path, names)
+                {
+                    self.fn_ptr(&bound_lifetimes, &params, &ret, signature, out);
+                } else {
+                    out.extend(std::iter::repeat_n(
+                        Region::Erased,
+                        slots(self.items, Ty::new(TyKind::FnPtr(signature))),
+                    ));
+                }
+            }
             return;
         }
         let start = out.len();
@@ -791,7 +815,24 @@ impl<'a> Walker<'a> {
     /// Resolve a projection's inputs from this exact syntax occurrence. Never
     /// infer trait lifetimes by comparing only erased self/argument types.
     fn projection_inputs(&mut self, path: &Path, alias: crate::AliasTy, out: &mut Vec<Region>) {
-        let owner_path = path.qself.as_ref().and_then(|q| q.trait_.as_ref()).cloned();
+        let owner_path = path
+            .qself
+            .as_ref()
+            .and_then(|q| q.trait_.as_ref())
+            .filter(|owner| {
+                self.items
+                    .resolve_trait(
+                        self.module,
+                        &flux_hir::Bound {
+                            path: (*owner).clone(),
+                            bound_lifetimes: Box::default(),
+                            range: TextRange::default(),
+                        },
+                    )
+                    .0
+                    == Some(alias.trait_)
+            })
+            .cloned();
         let candidates: Vec<_> = self
             .projection_owners
             .iter()
@@ -805,8 +846,15 @@ impl<'a> Walker<'a> {
                 None
             }
         });
+        let inherited = if owner_path.is_none() {
+            self.inherited_projection_inputs(alias)
+        } else {
+            None
+        };
         if alias.owner_lifetimes != 0 {
-            if let Some(owner) = &owner_path {
+            if let Some((lifetimes, _)) = &inherited {
+                out.extend(lifetimes.iter().copied());
+            } else if let Some(owner) = &owner_path {
                 self.trait_lifetimes(owner, alias.trait_, false, out);
             } else if let Some((trait_, lifetimes)) = &self.self_projection_owner
                 && *trait_ == alias.trait_
@@ -857,6 +905,12 @@ impl<'a> Walker<'a> {
                 .and_then(|a| a.types.get(index))
             {
                 self.walk(written, ty, out);
+            } else if let Some(row) = inherited
+                .as_ref()
+                .and_then(|(_, arguments)| arguments.get(index))
+                .filter(|row| row.len() == slots(self.items, ty))
+            {
+                out.extend(row.iter().copied());
             } else {
                 out.extend(std::iter::repeat_n(Region::Erased, slots(self.items, ty)));
             }
@@ -875,6 +929,82 @@ impl<'a> Walker<'a> {
                 out.extend(std::iter::repeat_n(Region::Erased, slots(self.items, ty)));
             }
         }
+    }
+
+    fn inherited_projection_inputs(
+        &mut self,
+        alias: crate::AliasTy,
+    ) -> Option<object::ProjectionInputs> {
+        if self.inherited_projection_stack.contains(&alias)
+            || self.inherited_projection_stack.len() >= 64
+        {
+            return None;
+        }
+        self.inherited_projection_stack.push(alias);
+        let result = (|| {
+            let sources: Vec<_> = self
+                .projection_owners
+                .iter()
+                .filter(|(ty, trait_, bound)| {
+                    *ty == alias.args[0]
+                        && *trait_ != alias.trait_
+                        && bound.bound_lifetimes.is_empty()
+                })
+                .cloned()
+                .collect();
+            let target = crate::TraitRef {
+                trait_: alias.trait_,
+                name: alias.trait_name,
+                args: Ty::list(&alias.args[1..]),
+            };
+            let mut found = None;
+            for (self_ty, trait_, bound) in sources {
+                let mut errors = Vec::new();
+                let Some((principal, _)) = crate::traits::resolve_bound(
+                    self.items,
+                    self.module,
+                    &bound,
+                    self_ty,
+                    self.scope,
+                    &mut errors,
+                ) else {
+                    continue;
+                };
+                if !errors.is_empty() {
+                    continue;
+                }
+                let mut lifetimes = Vec::new();
+                self.trait_lifetimes(&bound.path, trait_, false, &mut lifetimes);
+                let written = bound.path.args(bound.path.segments.len().saturating_sub(1));
+                let mut rows = Vec::new();
+                let mut complete = true;
+                for (index, &ty) in principal.args.iter().enumerate() {
+                    if let Some(written) = written.and_then(|args| args.types.get(index)) {
+                        rows.push(self.regions(written, ty));
+                    } else if slots(self.items, ty) == 0 {
+                        rows.push(Box::default());
+                    } else {
+                        complete = false;
+                        break;
+                    }
+                }
+                if !complete {
+                    continue;
+                }
+                let Some(input) = object::inherited_inputs(
+                    self.items, self_ty, principal, &lifetimes, &rows, target,
+                ) else {
+                    continue;
+                };
+                if found.as_ref().is_some_and(|previous| previous != &input) {
+                    return None;
+                }
+                found = Some(input);
+            }
+            found
+        })();
+        self.inherited_projection_stack.pop();
+        result
     }
 
     /// The lifetime arguments of `path`, a `kind` with `want` lifetime

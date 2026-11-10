@@ -358,6 +358,7 @@ impl Decode for FnDefTy {
 }
 impl Encode for DynTy {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        self.callable.encode(e)?;
         self.auto_traits.encode(e)?;
         self.trait_.encode(e)?;
         self.name.encode(e)?;
@@ -369,7 +370,12 @@ impl Encode for DynTy {
 }
 impl Decode for DynTy {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        let callable = Option::<Ty>::decode(d)?;
+        if callable.is_some_and(|ty| !matches!(ty.kind(), TyKind::FnPtr(_))) {
+            return Err(Error::new("invalid callable object region recipe"));
+        }
         Ok(Self {
+            callable,
             auto_traits: crate::ty::object_auto_traits(&Vec::decode(d)?),
             trait_: Decode::decode(d)?,
             name: Decode::decode(d)?,
@@ -1109,6 +1115,11 @@ mod type_form_tests {
             Ty::slice(Ty::BOOL),
             Ty::new(TyKind::CStr),
             Ty::new(TyKind::Dynamic(DynTy {
+                callable: Some(Ty::new(TyKind::FnPtr(FnSigTy::new(
+                    &[Ty::BOOL],
+                    Ty::UNIT,
+                    false,
+                )))),
                 auto_traits: crate::ty::object_auto_traits(&[TraitRef {
                     trait_,
                     name,

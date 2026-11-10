@@ -681,15 +681,17 @@ fn collect_roots(
                         let ty = callee.args.first().copied().unwrap_or(Ty::ERROR);
                         let layouts =
                             crate::layout::Layouts::new(&hir.items, sigs, &mir.discriminants);
-                        let supported = volatile_scalar(sigs, ty).is_some_and(|scalar| {
-                            let layout = layouts.of(ty);
-                            let scalar_layout = layouts.of(scalar);
-                            layout.size == scalar_layout.size && layout.align == scalar_layout.align
-                        });
+                        let supported = (layouts.of(ty).exact && layouts.of(ty).size <= 32)
+                            || volatile_scalar(sigs, ty).is_some_and(|scalar| {
+                                let layout = layouts.of(ty);
+                                let scalar_layout = layouts.of(scalar);
+                                layout.size == scalar_layout.size
+                                    && layout.align == scalar_layout.align
+                            });
                         if !supported {
                             let mut d = Diagnostic::new(
                                 data.terminator.range,
-                                "volatile operations support only scalars and same-layout single-field scalar wrappers yet",
+                                "volatile operations support only scalars or aggregates up to 32 bytes yet",
                             );
                             d.file = hir.items.functions[caller.function].loc.file;
                             return Err(d);
@@ -972,7 +974,7 @@ fn is_builtin_shim(items: &ItemTree, instance: Instance) -> bool {
     {
         return true;
     }
-    // Functions and pointers clone by copying, as do `Copy` closures.
+    // Function values and closures have compiler-supplied Clone bodies.
     if matches!(
         instance.args.first().map(|t| t.kind()),
         Some(TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_))
@@ -983,9 +985,7 @@ fn is_builtin_shim(items: &ItemTree, instance: Instance) -> bool {
     false
 }
 
-/// `Clone::clone` for an array of `T`: a copy if `T` is `Copy`, else
-/// `T::clone` of each element in turn; or `PartialEq::eq`, which
-/// compares each element in turn, until one differs.
+/// Clone function values by copying and closures by cloning their captures.
 fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Option<Body> {
     if !is_builtin_shim(items, instance) {
         return None;
@@ -999,97 +999,74 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
     if is_pointer_address_shim(items, instance) {
         return Some(pointer_address_shim(items, sigs, instance));
     }
-    let array = instance.args[0];
-    let (elem, len) = match array.kind() {
-        // A function item, pointer or `Copy` closure: a copy of it.
-        TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_) => (array, 0),
-        _ => return None,
-    };
-    let usize = Ty::int(flux_ty::IntTy::Usize);
+    let ty = instance.args[0];
     let mut locals = flux_arena::Arena::new();
-    let local =
-        |locals: &mut flux_arena::Arena<LocalDecl>, ty, kind| locals.alloc(LocalDecl { ty, kind });
-    let ret = local(&mut locals, array, LocalKind::Return);
-    let this = local(
-        &mut locals,
-        Ty::new(TyKind::Ref(Mutability::Not, array)),
-        LocalKind::Param,
-    );
+    let ret = locals.alloc(LocalDecl {
+        ty,
+        kind: LocalKind::Return,
+    });
+    let this = locals.alloc(LocalDecl {
+        ty: Ty::new(TyKind::Ref(Mutability::Not, ty)),
+        kind: LocalKind::Param,
+    });
     let range = flux_syntax::TextRange::default();
-    let statement = |place: Local, rvalue| Statement {
-        kind: StatementKind::Assign(place.into(), rvalue),
-        range,
-    };
-    let terminator = |kind| Terminator { kind, range };
     let mut blocks = flux_arena::Arena::new();
-    if flux_solve::traits::is_copy(items, sigs, &[], elem) {
-        blocks.alloc(BasicBlockData {
-            statements: vec![statement(
-                ret,
-                Rvalue::Use(Operand::Copy(Place::from(this).deref())),
-            )],
-            terminator: terminator(TerminatorKind::Return),
-        });
-    } else {
-        let counter = local(&mut locals, usize, LocalKind::Temp);
-        let within = local(&mut locals, Ty::BOOL, LocalKind::Temp);
-        let element = local(
-            &mut locals,
-            Ty::new(TyKind::Ref(Mutability::Not, elem)),
-            LocalKind::Temp,
-        );
-        let int =
-            |value: u64| Operand::Const(Constant::int(i128::from(value), flux_ty::IntTy::Usize));
-        let (head, body, step, exit) = (
-            BasicBlock::from_raw(1),
-            BasicBlock::from_raw(2),
-            BasicBlock::from_raw(3),
-            BasicBlock::from_raw(4),
-        );
-        blocks.alloc(BasicBlockData {
-            statements: vec![statement(counter, Rvalue::Use(int(0)))],
-            terminator: terminator(TerminatorKind::Goto(head)),
-        });
-        blocks.alloc(BasicBlockData {
-            statements: vec![statement(
-                within,
-                Rvalue::BinaryOp(crate::BinOp::Lt, Operand::Copy(counter.into()), int(len)),
-            )],
-            terminator: terminator(TerminatorKind::SwitchInt {
-                discr: Operand::Copy(within.into()),
-                targets: vec![(0, exit)],
-                otherwise: body,
-                variants: None,
-            }),
-        });
-        blocks.alloc(BasicBlockData {
-            statements: vec![statement(
-                element,
-                Rvalue::Ref {
-                    raw: false,
-                    mutability: Mutability::Not,
-                    place: Place::from(this).deref().index(counter),
-                    two_phase: false,
+    if let TyKind::Closure(_, args) = ty.kind() {
+        // Even a Copy capture may have an observable Clone implementation.
+        for (index, &field) in flux_ty::ClosureArgs::split(args)
+            .upvar_types()
+            .iter()
+            .enumerate()
+        {
+            let reference = locals.alloc(LocalDecl {
+                ty: Ty::new(TyKind::Ref(Mutability::Not, field)),
+                kind: LocalKind::Temp,
+            });
+            blocks.alloc(BasicBlockData {
+                statements: vec![Statement {
+                    kind: StatementKind::Assign(
+                        reference.into(),
+                        Rvalue::Ref {
+                            raw: false,
+                            mutability: Mutability::Not,
+                            place: Place::from(this).deref().field(index as u32),
+                            two_phase: false,
+                        },
+                    ),
+                    range,
+                }],
+                terminator: Terminator {
+                    kind: TerminatorKind::Call {
+                        func: instance.function,
+                        generic_args: Ty::list(&[field]),
+                        args: vec![Operand::Move(reference.into())],
+                        dest: Place::from(ret).field(index as u32),
+                        target: Some(BasicBlock::from_raw(index as u32 + 1)),
+                    },
+                    range,
                 },
-            )],
-            terminator: terminator(TerminatorKind::Call {
-                func: instance.function,
-                generic_args: Ty::list(&[elem]),
-                args: vec![Operand::Move(element.into())],
-                dest: Place::from(ret).index(counter),
-                target: Some(step),
-            }),
-        });
-        blocks.alloc(BasicBlockData {
-            statements: vec![statement(
-                counter,
-                Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(counter.into()), int(1)),
-            )],
-            terminator: terminator(TerminatorKind::Goto(head)),
-        });
+            });
+        }
         blocks.alloc(BasicBlockData {
             statements: Vec::new(),
-            terminator: terminator(TerminatorKind::Return),
+            terminator: Terminator {
+                kind: TerminatorKind::Return,
+                range,
+            },
+        });
+    } else {
+        blocks.alloc(BasicBlockData {
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    ret.into(),
+                    Rvalue::Use(Operand::Copy(Place::from(this).deref())),
+                ),
+                range,
+            }],
+            terminator: Terminator {
+                kind: TerminatorKind::Return,
+                range,
+            },
         });
     }
     Some(Body {

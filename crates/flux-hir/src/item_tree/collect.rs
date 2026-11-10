@@ -2410,6 +2410,7 @@ impl Collector<'_> {
             let mut path = core_path("future", "Future", is_core);
             let mut args = vec![None; path.segments.len()];
             *args.last_mut().expect("Future path has a segment") = Some(GenericArgs {
+                bounds: Box::default(),
                 lifetimes: Box::default(),
                 types: Box::default(),
                 ranges: Box::default(),
@@ -4240,6 +4241,7 @@ impl Collector<'_> {
             self_path.ranges = Box::new([s.name_range]);
             if !generics.params.is_empty() || !generics.lifetimes.is_empty() {
                 self_path.args = Box::new([Some(GenericArgs {
+                    bounds: Box::default(),
                     lifetimes: generics
                         .lifetimes
                         .iter()
@@ -4441,6 +4443,7 @@ impl Collector<'_> {
         self_path.ranges = Box::new([s.name_range]);
         if !params.is_empty() || !s.generics.lifetimes.is_empty() {
             self_path.args = Box::new([Some(GenericArgs {
+                bounds: Box::default(),
                 lifetimes: s
                     .generics
                     .lifetimes
@@ -4557,6 +4560,7 @@ impl Collector<'_> {
                 let leading = std::iter::repeat_n(None, option.segments.len() - 1);
                 option.args = leading
                     .chain([Some(GenericArgs {
+                        bounds: Box::default(),
                         lifetimes: Box::default(),
                         types: Box::new([TypeRef::Path(core_path("cmp", "Ordering", in_core))]),
                         ranges: Box::new([range]),

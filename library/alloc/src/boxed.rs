@@ -400,3 +400,7 @@ impl<F: core::future::Future + core::marker::Unpin + ?Sized> core::future::Futur
         F::poll(core::pin::Pin::new(&mut **self), context)
     }
 }
+
+impl<T> From<Box<[T]>> for crate::vec::Vec<T> {
+    fn from(values: Box<[T]>) -> Self { values.into_vec() }
+}

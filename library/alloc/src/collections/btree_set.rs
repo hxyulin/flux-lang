@@ -90,3 +90,9 @@ impl<T> IntoIterator for BTreeSet<T> {
     type IntoIter = IntoIter<T>;
     fn into_iter(self) -> IntoIter<T> { IntoIter { inner: self.map.into_iter() } }
 }
+
+impl<'a, T: 'a + Copy + Ord> core::iter::Extend<&'a T> for BTreeSet<T> {
+    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        for &value in iter { self.insert(value); }
+    }
+}

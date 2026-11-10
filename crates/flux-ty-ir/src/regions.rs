@@ -341,12 +341,14 @@ pub fn object_region_types(items: &ItemTree, object: crate::DynTy) -> impl Itera
     } else {
         usize::MAX
     };
-    object
-        .args
-        .iter()
-        .chain(object.assoc_tys)
-        .copied()
-        .take(count)
+    object.callable.into_iter().chain(
+        object
+            .args
+            .iter()
+            .chain(object.assoc_tys)
+            .copied()
+            .take(count),
+    )
 }
 
 /// The object bound followed by its principal's explicit lifetime arguments.

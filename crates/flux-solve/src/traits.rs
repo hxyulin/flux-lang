@@ -220,7 +220,8 @@ pub fn signature_impl_evidence(
         .copied()
         .filter(|p| normalize_key(p.alias) != alias)
         .collect();
-    let proof = RigidSolver::new(items, sigs, env, &independent, unsized_params);
+    let proof = RigidSolver::new(items, sigs, env, &independent, unsized_params)
+        .original_memberships_only();
     let Some((imp, args)) = proof.select_impl(goal) else {
         return false;
     };
@@ -242,6 +243,10 @@ pub struct RigidSolver<'a> {
     projections: &'a [Projection],
     unsized_params: &'a [bool],
     depth: std::cell::Cell<u32>,
+    normalized_arguments: bool,
+    normalizations: std::cell::RefCell<rustc_hash::FxHashMap<(Ty, Option<AliasTy>), Ty>>,
+    proof_cuts: std::cell::Cell<u32>,
+    normalizing: std::cell::RefCell<rustc_hash::FxHashSet<(Ty, Option<AliasTy>)>>,
 }
 
 // Structural auto-trait proofs can cross several library containers per field.
@@ -270,7 +275,20 @@ impl<'a> RigidSolver<'a> {
             projections,
             unsized_params,
             depth: std::cell::Cell::new(0),
+            normalized_arguments: true,
+            normalizations: Default::default(),
+            proof_cuts: std::cell::Cell::new(0),
+            normalizing: Default::default(),
         }
+    }
+
+    /// Validate projection inputs written in a bound before using normalized
+    /// facts from other bounds. Value signatures and bodies use the ordinary
+    /// context, but these declaration inputs require original memberships.
+    pub fn original_memberships_only(mut self) -> Self {
+        self.normalized_arguments = false;
+        self.normalizations.get_mut().clear();
+        self
     }
 
     /// Infer a matching header's output-only parameters from caller evidence.
@@ -358,6 +376,15 @@ impl<'a> RigidSolver<'a> {
     }
 
     pub fn normalize_ty(&self, ty: Ty, guard: Option<AliasTy>) -> Ty {
+        let key = (ty, guard);
+        if let Some(&known) = self.normalizations.borrow().get(&key) {
+            return known;
+        }
+        if !self.normalizing.borrow_mut().insert(key) {
+            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
+            return ty;
+        }
+        let cuts = self.proof_cuts.get();
         let mut normalizer = Normalizer {
             items: self.items,
             sigs: self.sigs,
@@ -367,7 +394,14 @@ impl<'a> RigidSolver<'a> {
             done: rustc_hash::FxHashMap::default(),
             active: guard.map(Ty::alias).into_iter().collect(),
         };
-        normalizer.go(ty, 0)
+        let result = normalizer.go(ty, 0);
+        self.normalizing.borrow_mut().remove(&key);
+        // A cut answer depends on its recursive caller. Reuse only completed
+        // normalizations from this immutable proof context.
+        if self.proof_cuts.get() == cuts {
+            self.normalizations.borrow_mut().insert(key, result);
+        }
+        result
     }
 
     pub fn normalize_rhs(&self, p: Projection) -> Ty {
@@ -407,11 +441,50 @@ impl<'a> RigidSolver<'a> {
         {
             return true;
         }
+        if self.normalized_arguments
+            && self.memberships.iter().any(|predicate| {
+                predicate.self_ty == goal.self_ty
+                    && predicate.trait_ref.trait_ == goal.trait_ref.trait_
+                    && predicate.trait_ref.args.iter().any(|ty| ty.has_aliases())
+                    && crate::ty::map_list(predicate.trait_ref.args, |ty| {
+                        self.normalize_ty(ty, None)
+                    }) == goal.trait_ref.args
+            })
+        {
+            return true;
+        }
         if let Some((_, coinductive)) = auto_cycle(self.items, goal, stack) {
+            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
             return coinductive;
         }
         if stack.len() >= RIGID_RECURSION_LIMIT {
+            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
             return false;
+        }
+        if let TyKind::Closure(_, args) = goal.self_ty.kind() {
+            match closure_goal(self.items, goal.trait_ref.trait_, args) {
+                ClosureGoal::Fn(kind, params) => {
+                    return ClosureArgs::split(args)
+                        .closure_kind()
+                        .is_some_and(|actual| actual <= kind)
+                        && goal.trait_ref.args.first() == Some(&params);
+                }
+                ClosureGoal::Upvars(types) => {
+                    stack.push(goal);
+                    let proven = types.iter().all(|&self_ty| {
+                        self.holds(
+                            Predicate {
+                                self_ty,
+                                trait_ref: goal.trait_ref,
+                            },
+                            stack,
+                        )
+                    });
+                    stack.pop();
+                    return proven;
+                }
+                ClosureGoal::No => {}
+            }
         }
         if let Some(owner) = declared_alias_bound(self.sigs, goal) {
             stack.push(goal);
@@ -428,7 +501,16 @@ impl<'a> RigidSolver<'a> {
             return false;
         };
         stack.push(goal);
-        let proven = nested.into_iter().all(|p| self.holds(p, stack));
+        let proven = nested.into_iter().all(|p| {
+            let p = Predicate {
+                self_ty: self.normalize_ty(p.self_ty, None),
+                trait_ref: TraitRef {
+                    args: crate::ty::map_list(p.trait_ref.args, |ty| self.normalize_ty(ty, None)),
+                    ..p.trait_ref
+                },
+            };
+            self.holds(p, stack)
+        });
         stack.pop();
         proven
     }
@@ -438,6 +520,7 @@ impl<'a> RigidSolver<'a> {
         // fresh goal stack. Bound that path as well as membership recursion.
         let depth = self.depth.get();
         if depth as usize >= RIGID_RECURSION_LIMIT {
+            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
             return None;
         }
         self.depth.set(depth + 1);
@@ -448,6 +531,7 @@ impl<'a> RigidSolver<'a> {
 
     fn select_at(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
         if stack.len() >= RIGID_RECURSION_LIMIT || stack.contains(&goal) {
+            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
             return None;
         }
         stack.push(goal);
@@ -1153,6 +1237,23 @@ pub fn normalize_with_memberships(
                     seen,
                     depth + 1,
                 );
+            } else if let Some(projection) = match alias.args[0].kind() {
+                TyKind::Alias(owner) => alias_projections(sigs, owner),
+                TyKind::Opaque(owner) => opaque_projections(sigs, owner),
+                _ => Vec::new(),
+            }
+            .into_iter()
+            .find(|projection| projection.alias == alias)
+            {
+                protect(
+                    items,
+                    sigs,
+                    memberships,
+                    projection.ty,
+                    env,
+                    seen,
+                    depth + 1,
+                );
             } else if memberships.contains(&goal)
                 && select_definite_impl(items, sigs, goal).is_none()
             {
@@ -1173,6 +1274,8 @@ pub fn normalize_with_memberships(
     if !ty.has_aliases() || memberships.is_empty() {
         return normalize(items, sigs, projections, ty);
     }
+    let memberships = elaborate(sigs, memberships);
+    let memberships = memberships.as_slice();
     let mut env = projections.to_vec();
     let mut seen = rustc_hash::FxHashSet::default();
     protect(items, sigs, memberships, ty, &mut env, &mut seen, 0);
@@ -1190,7 +1293,17 @@ pub fn normalize_with_memberships(
             0,
         );
     }
-    normalize(items, sigs, &env, ty)
+    let proof = RigidSolver::new(items, sigs, memberships, &env, &[]);
+    let mut normalizer = Normalizer {
+        items,
+        sigs,
+        env: &env,
+        caller_only: false,
+        impl_proof: Some(&proof),
+        done: rustc_hash::FxHashMap::default(),
+        active: Vec::new(),
+    };
+    normalizer.go(ty, 0)
 }
 
 pub(crate) fn normalize_uncached(
@@ -1352,20 +1465,6 @@ impl Normalizer<'_> {
                 {
                     return self.go(p.ty, depth + 1);
                 }
-                if self.caller_only {
-                    if let Some(proof) = self.impl_proof
-                        // Conditional impls cannot specialize a caller-owned
-                        // output. Globally definite impls retain their RHS.
-                        && (!in_env(sigs, &proof.env, alias_predicate(alias))
-                            || select_definite_impl(items, sigs, alias_predicate(alias)).is_some())
-                        && let Some((imp, args)) =
-                            proof.select(alias_predicate(alias), &mut Vec::new())
-                        && let Some(ty) = instantiate_impl_type(sigs, imp, alias, &args)
-                    {
-                        return self.go(ty, depth + 1);
-                    }
-                    return Ty::alias(alias);
-                }
                 if let TyKind::Alias(outer) = args[0].kind()
                     && let Some(p) = alias_projections(sigs, outer)
                         .into_iter()
@@ -1380,8 +1479,25 @@ impl Normalizer<'_> {
                 {
                     return self.go(p.ty, depth + 1);
                 }
+                if self.caller_only {
+                    if let Some(proof) = self.impl_proof
+                        // Conditional impls cannot specialize a caller-owned
+                        // output. Globally definite impls retain their RHS.
+                        && (!in_env(sigs, &proof.env, alias_predicate(alias))
+                            || select_definite_impl(items, sigs, alias_predicate(alias)).is_some())
+                        && let Some((imp, args)) =
+                            proof.select(alias_predicate(alias), &mut Vec::new())
+                        && let Some(ty) = instantiate_impl_type(sigs, imp, alias, &args)
+                    {
+                        return self.go(ty, depth + 1);
+                    }
+                    return Ty::alias(alias);
+                }
                 let goal = alias_predicate(alias);
-                if let Some((imp, impl_args)) = select_impl(items, sigs, goal)
+                if let Some((imp, impl_args)) = self
+                    .impl_proof
+                    .and_then(|proof| proof.select_impl(goal))
+                    .or_else(|| select_impl(items, sigs, goal))
                     && let Some(t) = instantiate_impl_type(sigs, imp, alias, &impl_args)
                 {
                     return self.go(t, depth + 1);
@@ -1757,6 +1873,11 @@ fn match_impl_with_bindings(
         return None;
     }
     let self_ty = *sigs.impls.get(imp)?;
+    // An invalid declaration is diagnosed at its source. Its error types must
+    // not act as wildcards that determine unrelated associated outputs.
+    if self_ty.has_error() || trait_ref.args.iter().any(|ty| ty.has_error()) {
+        return None;
+    }
     // Most candidates are rejected. Do not allocate bindings just to reject
     // a short header; only successful matches need an owned argument list.
     let count = items.impls[imp].generics.len();
@@ -1932,6 +2053,28 @@ pub fn holds(items: &ItemTree, sigs: &Signatures, env: &[Predicate], goal: Predi
         stack: Vec::new(),
         memo: rustc_hash::FxHashMap::default(),
         cut: usize::MAX,
+        normalize_parameter_arguments: true,
+    }
+    .holds_at(goal)
+}
+
+/// Check a projection input written in a bound. Rust does not first rewrite
+/// a parameter's trait arguments using its other bounds in this position.
+/// Receiver projections still normalize, as required by nested type families.
+pub fn holds_declaration_input(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Predicate],
+    goal: Predicate,
+) -> bool {
+    Holds {
+        items,
+        sigs,
+        env,
+        stack: Vec::new(),
+        memo: Default::default(),
+        cut: usize::MAX,
+        normalize_parameter_arguments: false,
     }
     .holds_at(goal)
 }
@@ -1952,6 +2095,7 @@ fn auto_cycle(items: &ItemTree, goal: Predicate, stack: &[Predicate]) -> Option<
 /// proved. Types are DAGs (`struct A(B, B)`), so a nested goal recurs
 /// often; each is proved once.
 struct Holds<'a> {
+    normalize_parameter_arguments: bool,
     items: &'a ItemTree,
     sigs: &'a Signatures,
     env: &'a [Predicate],
@@ -2005,6 +2149,9 @@ impl Holds<'_> {
             let normalized = normalize_predicate(items, sigs, goal);
             if env.iter().any(|&predicate| {
                 predicate.trait_ref.trait_ == goal.trait_ref.trait_
+                    && (self.normalize_parameter_arguments
+                        || !matches!(predicate.self_ty.kind(), TyKind::Param(_))
+                        || predicate.trait_ref.args == goal.trait_ref.args)
                     && normalize_predicate(items, sigs, predicate) == normalized
             }) {
                 return true;
@@ -2045,7 +2192,7 @@ impl Holds<'_> {
                         && goal.trait_ref.args.first() == Some(&params);
                 }
                 ClosureGoal::Upvars(upvars) => {
-                    let trait_ref = copy_trait_ref(items).unwrap_or(goal.trait_ref);
+                    let trait_ref = goal.trait_ref;
                     return upvars.iter().all(|&ty| {
                         let upvar = Predicate {
                             self_ty: ty,
@@ -2129,6 +2276,16 @@ pub fn auto_trait_requirements(
         }
         TyKind::Dynamic(object) if object.auto_traits.iter().any(|bound| bound.trait_ == t) => {
             Vec::new()
+        }
+        TyKind::Opaque(opaque) if !items.functions[opaque.function].is_async => {
+            let hidden = sigs
+                .hidden
+                .get(&(opaque.function, opaque.index))?
+                .subst(opaque.args);
+            if hidden == goal.self_ty || hidden.has_error() {
+                return None;
+            }
+            vec![hidden]
         }
         TyKind::Tuple(types) => types.to_vec(),
         TyKind::Array(ty, _) | TyKind::Slice(ty) => vec![ty],
@@ -2305,7 +2462,7 @@ pub fn closure_goal(items: &ItemTree, t: TraitId, args: GenericArgs) -> ClosureG
     if let Some(kind) = crate::fn_trait_kind(items, t) {
         return ClosureGoal::Fn(kind, parts.params());
     }
-    // A closure is `Clone` only where it is `Copy`, cloned by a copy.
+    // Copy and Clone each propagate through the captured values.
     match items.traits[t].lang {
         Some(l) if l.as_str() == "copy" || l.as_str() == "clone" => {
             ClosureGoal::Upvars(parts.upvar_types())
@@ -2314,8 +2471,7 @@ pub fn closure_goal(items: &ItemTree, t: TraitId, args: GenericArgs) -> ClosureG
     }
 }
 
-/// `Copy`, which what a closure captures must be for it to be `Copy` or
-/// `Clone`.
+/// The built-in Copy trait reference.
 pub fn copy_trait_ref(items: &ItemTree) -> Option<TraitRef> {
     let copy = *items.lang_traits.get(&flux_intern::sym::copy)?;
     Some(TraitRef {

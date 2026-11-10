@@ -1268,7 +1268,7 @@ pub(crate) fn resolve_family_arguments(
         return None;
     }
     if let Some(written) = written {
-        if written.parenthesized || !written.bindings.is_empty() {
+        if written.parenthesized || !written.bindings.is_empty() || !written.bounds.is_empty() {
             errors.push((
                 written.range,
                 "associated type arguments must be types, constants or lifetimes".into(),
@@ -1351,11 +1351,23 @@ fn assoc_type_base(
             path: trait_path.clone(),
             range: qrange,
         };
-        let Some((trait_ref, _)) =
+        let Some((mut trait_ref, _)) =
             traits::resolve_bound(items, module, &bound, self_ty, scope, errors)
         else {
             return Ty::ERROR;
         };
+        if !has_type(trait_ref.trait_)
+            && path.qself.as_ref().is_some_and(|q| q.associated_bound)
+            && let Some(owner) = traits::supertrait_with_type(items, trait_ref.trait_, name)
+        {
+            trait_ref = TraitRef {
+                trait_: owner,
+                name: items.traits[owner].name,
+                args: Ty::list(
+                    &trait_ref.args[..items.traits[owner].generics.len().min(trait_ref.args.len())],
+                ),
+            };
+        }
         if !has_type(trait_ref.trait_) {
             errors.push((
                 at,
@@ -1442,11 +1454,9 @@ fn assoc_type_base(
                             .iter()
                             .any(|&t| regions::slots(items, t) != 0)
                     {
-                        errors.push((
-                            at,
-                            "lifetimes in inherited trait projections are not supported yet".into(),
+                        return Ty::alias(flux_solve::traits::alias_of(
+                            items, *inherited, self_ty, name,
                         ));
-                        return Ty::ERROR;
                     }
                     if captures_inputs(inherited.trait_) {
                         return Ty::alias(flux_solve::traits::alias_of(
@@ -1495,7 +1505,10 @@ fn assoc_type_base(
             return Ty::ERROR;
         }
     }
-    if !matches!(self_ty.kind(), TyKind::Param(_)) {
+    if !matches!(
+        self_ty.kind(),
+        TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
+    ) {
         errors.push((range, "ambiguous associated type".into()));
         return Ty::ERROR;
     }
@@ -1692,6 +1705,9 @@ pub fn struct_type(
     let at = path.range(last, range);
     let want = def.generics.len();
     for args in path.args.iter().flatten() {
+        for bound in &args.bounds {
+            errors.push((bound.range, flux_hir::MISPLACED_BINDING.into()));
+        }
         for b in args.bindings.iter() {
             errors.push((b.range(), flux_hir::MISPLACED_BINDING.into()));
         }
@@ -1703,6 +1719,7 @@ pub fn struct_type(
         // `S` for `struct S<T = i32>` is `S<i32>`.
         None if def.generics.params[0].default.is_some() => {
             none = flux_hir::GenericArgs {
+                bounds: Box::default(),
                 lifetimes: Box::new([]),
                 types: Box::new([]),
                 ranges: Box::new([]),
@@ -1826,6 +1843,9 @@ pub fn alias_type(
     let at = path.range(last, range);
     let want = def.generics.len();
     for args in path.args.iter().flatten() {
+        for bound in &args.bounds {
+            errors.push((bound.range, flux_hir::MISPLACED_BINDING.into()));
+        }
         for b in args.bindings.iter() {
             errors.push((b.range(), flux_hir::MISPLACED_BINDING.into()));
         }

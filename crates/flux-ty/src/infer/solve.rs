@@ -1043,6 +1043,19 @@ impl Ctx<'_> {
     /// it is one, as [`flux_solve::traits::alias_bounds`].
     fn alias_bounds(&mut self, ty: Ty) -> Vec<Predicate> {
         let ty = self.known(ty);
+        if let TyKind::Alias(alias) = ty.kind() {
+            let owner = flux_solve::traits::alias_predicate(alias);
+            let proof = flux_solve::traits::RigidSolver::new(
+                self.items,
+                self.sigs,
+                &self.param_env,
+                &self.env_projections,
+                &self.unsized_params,
+            );
+            if proof.holds(owner, &mut Vec::new()) {
+                return flux_solve::traits::alias_bounds(self.sigs, &[owner], ty);
+            }
+        }
         flux_solve::traits::alias_bounds(self.sigs, &self.param_env, ty)
     }
 

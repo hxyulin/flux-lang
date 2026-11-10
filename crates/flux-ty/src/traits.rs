@@ -134,6 +134,13 @@ pub fn trait_ref(
     let at = path.range(last, bound.range);
     let want = data.generics.len();
     let written = path.args(last);
+    if written.is_some_and(|args| !args.bounds.is_empty()) {
+        errors.push((
+            at,
+            "associated type bounds in this context are not supported yet".into(),
+        ));
+        return None;
+    }
     // `Fn(A) -> B` is how stable Rust names the `Fn`-family traits, and
     // the only traits it may name so.
     let is_fn = crate::fn_trait_kind(items, t).is_some();
@@ -300,7 +307,7 @@ fn resolve_binding_family(
 /// associated type `name`, if its parameters are `t`'s first ones in
 /// order (or none), so that a binding of `name` in a bound on `t` can
 /// name it with `t`'s arguments.
-fn supertrait_with_type(items: &ItemTree, t: TraitId, name: Symbol) -> Option<TraitId> {
+pub(super) fn supertrait_with_type(items: &ItemTree, t: TraitId, name: Symbol) -> Option<TraitId> {
     let mut stack = vec![t];
     let mut seen = vec![t];
     while let Some(current) = stack.pop() {
@@ -1126,6 +1133,20 @@ fn check_type_bounds(
         .impl_projections
         .get(imp)
         .map_or(Vec::new(), |projections| projections.to_vec());
+    // The impl's associated definitions are identities in its own generic
+    // namespace. Selecting this impl globally can lose parameters determined
+    // only by its where-clause outputs.
+    for definition in &items.impls[imp].types {
+        if definition.generics.params.is_empty()
+            && definition.generics.lifetimes.is_empty()
+            && let Some(value) = impl_type(sigs, imp, definition.name)
+        {
+            projections.push(Projection {
+                alias: alias_of(items, trait_ref, self_ty, definition.name),
+                ty: value,
+            });
+        }
+    }
     if let Some(family) = family {
         projections.extend(
             family
@@ -1194,7 +1215,8 @@ fn check_type_bounds(
             }
         }
     }
-    let t = normalize(items, sigs, projections, t);
+    let normalized = |ty| declaration_proof.normalize_ty(ty, None);
+    let t = normalized(t);
     let parameters = flux_solve::unsized_params(items, Some(Owner::Impl(imp)), &ty.generics);
     if declaration.is_some_and(|declaration| !declaration.maybe_unsized)
         && flux_solve::maybe_unsized(items, sigs, t, &parameters, &env)
@@ -1211,13 +1233,11 @@ fn check_type_bounds(
         let goal = Predicate {
             self_ty: goal.self_ty,
             trait_ref: TraitRef {
-                args: crate::ty::map_list(goal.trait_ref.args, |a| {
-                    normalize(items, sigs, projections, a)
-                }),
+                args: crate::ty::map_list(goal.trait_ref.args, &normalized),
                 ..goal.trait_ref
             },
         };
-        if !holds(items, sigs, &env, goal) {
+        if !declaration_proof.holds(goal, &mut Vec::new()) {
             error(ty.ty_range, unmet(items, goal));
             return;
         }
@@ -1232,9 +1252,9 @@ fn check_type_bounds(
             continue;
         }
         let q = q.subst(&args);
-        let alias = q.alias.map_args(|a| normalize(items, sigs, projections, a));
-        let found = normalize(items, sigs, projections, Ty::alias(alias));
-        let expected = normalize(items, sigs, projections, q.ty);
+        let alias = q.alias.map_args(&normalized);
+        let found = normalized(Ty::alias(alias));
+        let expected = normalized(q.ty);
         if found != expected && found != Ty::ERROR && expected != Ty::ERROR {
             error(
                 ty.ty_range,
@@ -2758,11 +2778,15 @@ impl<'a, 'd> WfCheck<'a, 'd> {
             }
             collect_aliases(q.ty, &mut aliases);
         }
-        let proof = self.solver();
+        let proof = self.solver().original_memberships_only();
         for alias in aliases {
             let goal = normalize_predicate(self.items, self.sigs, alias_predicate(alias));
-            if holds(self.items, self.sigs, self.scope.env, goal)
-                || proof.holds(goal, &mut Vec::new())
+            if flux_solve::traits::holds_declaration_input(
+                self.items,
+                self.sigs,
+                self.scope.env,
+                goal,
+            ) || proof.holds(goal, &mut Vec::new())
             {
                 continue;
             }
@@ -3275,7 +3299,13 @@ fn unify_headers_with_predicates(
             TyKind::Alias(alias) => {
                 Ty::alias(alias.map_args(|t| apply(bound, (side, t), depth + 1)))
             }
+            TyKind::FnPtr(signature) => Ty::new(TyKind::FnPtr(
+                signature.map(|ty| apply(bound, (side, ty), depth + 1)),
+            )),
             TyKind::Dynamic(object) => Ty::new(TyKind::Dynamic(crate::DynTy {
+                callable: object
+                    .callable
+                    .map(|ty| apply(bound, (side, ty), depth + 1)),
                 args: Ty::list(&apply_all(object.args)),
                 assoc_tys: Ty::list(&apply_all(object.assoc_tys)),
                 ..object

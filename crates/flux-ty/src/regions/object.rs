@@ -4,6 +4,10 @@ use flux_hir::{Generics, ItemTree, Owner};
 use super::{Elided, Region, Walker, instantiate};
 use crate::{Projection, TraitRef, Ty, TypeScope};
 
+pub(super) type ProjectionInputs = (Vec<Region>, Vec<Box<[Region]>>);
+type RegionGraph = (Vec<Principal>, Vec<(Projection, Box<[Region]>)>);
+
+#[derive(Clone, PartialEq, Eq)]
 struct Principal {
     trait_ref: TraitRef,
     lifetimes: Vec<Region>,
@@ -16,7 +20,38 @@ pub(super) fn object_equalities(
     lifetimes: &[Region],
     arguments: &[Box<[Region]>],
 ) -> Option<Vec<(Projection, Box<[Region]>)>> {
-    let self_ty = Ty::param(u32::MAX, flux_intern::kw::SelfUpper);
+    region_graph(
+        items,
+        Ty::param(u32::MAX, flux_intern::kw::SelfUpper),
+        principal,
+        lifetimes,
+        arguments,
+    )
+    .map(|(_, equalities)| equalities)
+}
+
+pub(super) fn inherited_inputs(
+    items: &ItemTree,
+    self_ty: Ty,
+    principal: TraitRef,
+    lifetimes: &[Region],
+    arguments: &[Box<[Region]>],
+    target: TraitRef,
+) -> Option<ProjectionInputs> {
+    let (principals, _) = region_graph(items, self_ty, principal, lifetimes, arguments)?;
+    let principal = principals
+        .into_iter()
+        .find(|principal| principal.trait_ref == target)?;
+    Some((principal.lifetimes, principal.arguments))
+}
+
+fn region_graph(
+    items: &ItemTree,
+    self_ty: Ty,
+    principal: TraitRef,
+    lifetimes: &[Region],
+    arguments: &[Box<[Region]>],
+) -> Option<RegionGraph> {
     let mut pending = vec![Principal {
         trait_ref: principal,
         lifetimes: lifetimes.to_vec(),
@@ -24,13 +59,15 @@ pub(super) fn object_equalities(
     }];
     let mut visited = std::collections::HashMap::new();
     let mut result = Vec::new();
+    let mut principals = Vec::new();
     while let Some(current) = pending.pop() {
-        if let Some(previous) = visited.insert(current.trait_ref.trait_, current.trait_ref) {
-            if previous != current.trait_ref {
+        if let Some(previous) = visited.insert(current.trait_ref.trait_, current.clone()) {
+            if previous != current {
                 return None;
             }
             continue;
         }
+        principals.push(current.clone());
         let data = &items.traits[current.trait_ref.trait_];
         if current.lifetimes.len() != data.generics.lifetimes.len()
             || current.arguments.len() != data.generics.params.len()
@@ -146,5 +183,5 @@ pub(super) fn object_equalities(
             });
         }
     }
-    Some(result)
+    Some((principals, result))
 }

@@ -474,3 +474,51 @@ impl<T> Drop for Drain<'_, T> {
         }
     }
 }
+
+impl<T> From<crate::vec::Vec<T>> for VecDeque<T> {
+    fn from(values: crate::vec::Vec<T>) -> Self {
+        let (pointer,len,capacity)=values.into_raw_parts();
+        // SAFETY: the vector transferred its allocation and initialized range.
+        Self { buf:unsafe{RawVec::from_raw_parts(pointer,capacity)},head:0,len }
+    }
+}
+impl<T> From<VecDeque<T>> for crate::vec::Vec<T> {
+    fn from(deque: VecDeque<T>) -> Self {
+        let len=deque.len;
+        let capacity=deque.capacity();
+        let first=len.min(capacity-deque.head);
+        // Allocate before suppressing the deque's destructor, so allocation
+        // failure leaves its initialized elements owned by the deque.
+        let mut temporary=crate::vec::Vec::with_capacity(if first<len { first.min(len-first) } else { 0 });
+        let values=core::mem::ManuallyDrop::new(deque);
+        let pointer=values.buf.ptr();
+        // SAFETY: only initialized spans are moved. ManuallyDrop transfers the
+        // allocation to the vector, whose single initialized range is rebuilt.
+        unsafe {
+            if core::mem::size_of::<T>()==0 {
+                return crate::vec::Vec::from_raw_parts(pointer,len,capacity);
+            }
+            if first==len {
+                ptr::copy(pointer.add(values.head),pointer,len);
+            } else {
+                let second=len-first;
+                if first<=second {
+                    for index in 0..first { temporary.push(ptr::read(pointer.add(values.head+index))); }
+                    ptr::copy(pointer,pointer.add(first),second);
+                    for (index,value) in temporary.into_iter().enumerate(){ptr::write(pointer.add(index),value);}
+                } else {
+                    for index in 0..second { temporary.push(ptr::read(pointer.add(index))); }
+                    ptr::copy(pointer.add(values.head),pointer,first);
+                    for (index,value) in temporary.into_iter().enumerate(){ptr::write(pointer.add(first+index),value);}
+                }
+            }
+            crate::vec::Vec::from_raw_parts(pointer,len,capacity)
+        }
+    }
+}
+
+impl<'a, T: 'a + Copy> Extend<&'a T> for VecDeque<T> {
+    fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
+        for &value in iter { self.push_back(value); }
+    }
+}

@@ -873,31 +873,22 @@ fn impl_header_match(
             }
         }
     }
-    let mut env = Vec::new();
-    for (k, &p) in sigs
+    let written = sigs
         .impl_predicates
         .get(imp)
-        .map_or(&[][..], |p| p)
-        .iter()
+        .into_iter()
+        .flatten()
+        .copied()
         .enumerate()
-    {
-        let Some(goal) = cx.impl_region_goal(
-            p,
-            block.bound_selfs.get(k).map_or(&[], |t| t),
-            block
-                .bound_traits
-                .get(k)
-                .unwrap_or(&TraitRefRegions::default()),
-            &lifetimes,
-            &[],
-            &[],
-        ) else {
-            // An unrelated higher-ranked callback bound need not be
-            // interpreted to prove this impl's supertraits.
-            continue;
-        };
-        cx.impl_super_goals(goal, &mut env, 0);
-    }
+        .map(|(index, predicate)| {
+            (
+                predicate,
+                block.bound_selfs.get(index).cloned().unwrap_or_default(),
+                block.bound_traits.get(index).cloned().unwrap_or_default(),
+            )
+        })
+        .collect();
+    let mut env = cx.original_region_goals(written, &lifetimes);
     // Projection instantiation in this declaration has no body owner from
     // which to recover assumptions. Retain only the original impl header.
     cx.family_goals = env.clone();
@@ -1075,6 +1066,8 @@ struct Cx<'a> {
     header_aliases: Vec<AliasTy>,
     family_depth: u32,
     family_goals: Vec<ImplRegionGoal>,
+    /// Original caller assumptions already reconstructed during projection re-entry.
+    caller_goals_in_progress: Option<Vec<ImplRegionGoal>>,
     /// Declaration proof cycles are coinductive only across Send/Sync goals
     /// with identical types and occurrence rows. Ordinary edges stay inductive.
     declaration_stack: Vec<(ImplRegionGoal, bool)>,
@@ -1234,6 +1227,7 @@ impl<'a> Cx<'a> {
             header_aliases: Vec::new(),
             family_depth: 0,
             family_goals: Vec::new(),
+            caller_goals_in_progress: None,
             declaration_stack: Vec::new(),
             header_predicates: body.owner.map_or(Vec::new(), |f| {
                 flux_solve::traits::elaborate(
@@ -1371,6 +1365,17 @@ impl<'a> Cx<'a> {
         if !self.impl_prove_super(&goal, env, 0) {
             return false;
         }
+        if self.normalize(ty) == ty
+            && env.iter().any(|known| {
+                known.predicate == predicate
+                    && known.lifetimes.is_empty()
+                    && known.vars.iter().all(Vec::is_empty)
+            })
+        {
+            // An original membership owns this abstract output. No selected
+            // concrete RHS exists whose prerequisites need to be invented.
+            return true;
+        }
         if self.declared_region_free_bound(&goal, env) {
             // A header's abstract output supplies membership and its declared
             // equalities; there is no concrete impl RHS to select here.
@@ -1385,6 +1390,56 @@ impl<'a> Cx<'a> {
             return false;
         };
         self.impl_aliases_proven(value, &impl_args, env, depth + 1)
+    }
+
+    /// An unchanged abstract projection stores its captured input row. Keep
+    /// that representation through a substituted container, while refusing to
+    /// reinterpret a selected concrete output's fields as projection inputs.
+    fn represented_value_aliases_proven(
+        &mut self,
+        ty: Ty,
+        row: &[Var],
+        env: &[ImplRegionGoal],
+        depth: u32,
+    ) -> bool {
+        if depth > DECLARATION_RECURSION_LIMIT
+            || row.len() != self.slots(ty) as usize
+            || self.normalize(ty) != ty
+        {
+            return false;
+        }
+        if !ty.has_aliases() {
+            return true;
+        }
+        if let TyKind::Alias(alias) = ty.kind() {
+            return self
+                .proven_family_output(alias, row, env, depth + 1)
+                .is_some();
+        }
+        let (prefix, children): (usize, Vec<Ty>) = match ty.kind() {
+            TyKind::Tuple(types) => (0, types.to_vec()),
+            TyKind::Adt(adt, args) => (
+                self.items.structs[adt.strukt].generics.lifetimes.len(),
+                args.to_vec(),
+            ),
+            TyKind::Ref(_, inner) => (1, vec![inner]),
+            TyKind::RawPtr(_, inner) | TyKind::Array(inner, _) | TyKind::Slice(inner) => {
+                (0, vec![inner])
+            }
+            _ => return false,
+        };
+        let mut offset = prefix;
+        for child in children {
+            let end = offset + self.slots(child) as usize;
+            let Some(child_row) = row.get(offset..end) else {
+                return false;
+            };
+            if !self.represented_value_aliases_proven(child, child_row, env, depth + 1) {
+                return false;
+            }
+            offset = end;
+        }
+        offset == row.len()
     }
 
     /// Prove legacy projection selections using only represented generic
@@ -1405,11 +1460,27 @@ impl<'a> Cx<'a> {
         }
         // A substituted parameter supplies only its value's output row. It
         // cannot also supply the original inputs of a hidden projection.
-        if matches!(ty.kind(), TyKind::Param(_)) {
+        if let TyKind::Param(parameter) = ty.kind() {
             if self.impl_aliases_proven(ty, args, env, depth) {
                 return true;
             }
             let instance = ty.subst(args);
+            // An original bound on this exact value occurrence already
+            // establishes its formation. Reuse that value's output row, not
+            // an invented set of inputs for its hidden projection.
+            if let Some(row) = arg_vars.get(parameter.index as usize)
+                && env.iter().any(|known| {
+                    known.predicate.self_ty == self.normalize(instance)
+                        && known.vars.first() == Some(row)
+                })
+            {
+                return true;
+            }
+            if let Some(row) = arg_vars.get(parameter.index as usize)
+                && self.represented_value_aliases_proven(instance, row, env, depth + 1)
+            {
+                return true;
+            }
             // A logical abstract output can itself be passed as a type
             // argument. Its selection inputs must still be reconstructible;
             // its supplied output row is not reused as an input row.
@@ -1502,6 +1573,32 @@ impl<'a> Cx<'a> {
                         .all(|(a, b)| a.len() == b.len())
             })
         {
+            return true;
+        }
+        if let TyKind::Alias(owner) = predicate.self_ty.kind()
+            && owner.family_lifetimes == 0
+            && owner.family_args.is_empty()
+            && let Some(equality) = flux_solve::traits::alias_projections(self.sigs, owner)
+                .into_iter()
+                .find(|equality| Ty::alias(equality.alias) == projection)
+            && let TyKind::Alias(sibling) = equality.ty.kind()
+            && sibling.trait_ == owner.trait_
+            && sibling.args == owner.args
+            && sibling.owner_lifetimes == owner.owner_lifetimes
+            && sibling.family_lifetimes == 0
+            && sibling.family_args.is_empty()
+            && self.normalize(equality.ty) == equality.ty
+            && let Some(row) = rows.first()
+            && self
+                .proven_family_output(owner, row, env, depth + 1)
+                .is_some()
+            && self
+                .proven_family_output(sibling, row, env, depth + 1)
+                .is_some()
+        {
+            // A declared equality forwards to another abstract output of the
+            // same represented owner. Both selections use the original inputs;
+            // neither needs a concrete impl for that caller-owned value.
             return true;
         }
         let Some((imp, impl_args)) = self.matching_impl(predicate) else {
@@ -1975,7 +2072,8 @@ impl<'a> Cx<'a> {
                 && !self.declared_region_free_bound(&alias_goal, env)
             {
                 let (imp, impl_args) =
-                    flux_solve::traits::select_impl(self.items, self.sigs, alias_goal.predicate)?;
+                    self.matching_impl(alias_goal.predicate).or_else(||flux_solve::traits::select_impl(self.items, self.sigs, alias_goal.predicate)
+                        .filter(|(_,args)|args.iter().all(|ty|!ty.has_error())))?;
                 let value = flux_solve::traits::impl_type(self.sigs, imp, alias.name)?;
                 // Proving the outer edge does not prove the selected RHS's
                 // nested projection requirements. Discharge those separately.
@@ -2194,6 +2292,35 @@ impl<'a> Cx<'a> {
                 flux_ty::fn_trait_kind(self.items, goal.predicate.trait_ref.trait_),
             )
         {
+            if source <= required
+                && object.args == goal.predicate.trait_ref.args
+                && let Some(signature) = object.callable_signature()
+            {
+                let TyKind::Tuple(types) = object.args.first().copied().unwrap_or(Ty::ERROR).kind()
+                else {
+                    return false;
+                };
+                let (Some(own), Some(input)) = (goal.vars.first(), goal.vars.get(1)) else {
+                    return false;
+                };
+                let Some(own) = own.get(1..) else {
+                    return false;
+                };
+                let mut offset = 0;
+                let mut rows = Vec::new();
+                for &ty in types {
+                    let count = self.slots(ty) as usize;
+                    let Some(row) = input.get(offset..offset + count) else {
+                        return false;
+                    };
+                    rows.push(row.to_vec());
+                    offset += count;
+                }
+                return offset == input.len()
+                    && self
+                        .pointer_inputs(signature, own, types, &rows, range)
+                        .is_some();
+            }
             // A callable object's principal supplies its callable membership.
             // Input lifetimes need a separate binder recipe; zero-slot inputs
             // have no relationship to the object's own lifetime bound.
@@ -3958,10 +4085,11 @@ impl<'a> Cx<'a> {
             .get(opaque.function)?
             .get(opaque.index as usize)?;
         let args = flux_solve::traits::opaque_args(opaque);
+        let alias = alias.map_args(|ty| self.normalize(ty));
         let j = sig
             .projections
             .iter()
-            .position(|p| p.subst(&args).alias == alias)?;
+            .position(|p| p.subst(&args).alias.map_args(|ty| self.normalize(ty)) == alias)?;
         self.opaque_projection_at(opaque, j, vars, inputs, None)
     }
 
@@ -5057,14 +5185,57 @@ impl<'a> Cx<'a> {
                     let caller_callable =
                         matches!(caller_source.kind(), TyKind::Param(_) | TyKind::Alias(_));
                     let universal_inputs = function_item || caller_callable;
-                    let inputs = if universal_inputs {
+                    let inputs = if let Some(signature) = d.callable_signature() {
+                        let Some(recipe) = signature.regions else {
+                            self.errors.push(Diagnostic::new(
+                                range,
+                                "callable object is missing its region recipe",
+                            ));
+                            return;
+                        };
+                        let offset =
+                            usize::from(matches!(to.kind(), TyKind::Ref(..) | TyKind::RawPtr(..)))
+                                + 1;
+                        let Some(own) = dest_vars.get(offset..) else {
+                            self.errors.push(Diagnostic::new(
+                                range,
+                                "callable object region recipe does not match its occurrence",
+                            ));
+                            return;
+                        };
+                        let bound: Vec<_> = (0..recipe.bound)
+                            .map(|i| {
+                                if universal_inputs {
+                                    self.new_universal(format!("'callable{i}"))
+                                } else {
+                                    let var = self.fresh();
+                                    self.holes.insert(var);
+                                    var
+                                }
+                            })
+                            .collect();
+                        let Some(rows) = flux_ty::regions::instantiate_fn_pointer(
+                            self.items, signature, own, &bound, STATIC,
+                        ) else {
+                            self.errors.push(Diagnostic::new(
+                                range,
+                                "callable object region recipe does not match its occurrence",
+                            ));
+                            return;
+                        };
+                        rows[..signature.params().len()]
+                            .iter()
+                            .flatten()
+                            .copied()
+                            .collect()
+                    } else if universal_inputs {
                         (0..count)
                             .map(|i| self.new_universal(format!("'callable{i}")))
                             .collect()
                     } else {
                         self.fresh_list(count)
                     };
-                    if !universal_inputs {
+                    if !universal_inputs && d.callable.is_none() {
                         for &input in &inputs {
                             self.holes.insert(input);
                         }
@@ -6937,7 +7108,6 @@ impl<'a> Cx<'a> {
         }
         if flux_ty::fn_trait_kind(self.items, goal.trait_ref.trait_).is_none() {
             let known = self.caller_region_goals();
-
             if let Some(equalities) =
                 self.caller_goal_equalities(&known, goal, vars, trait_lifetimes)
             {
@@ -7169,6 +7339,15 @@ impl<'a> Cx<'a> {
         if self.trait_has_ranked_super(goal.trait_ref.trait_, &mut FxHashSet::default()) {
             return true;
         }
+        if let Some(requirements) = self.structural_requirements(goal) {
+            return requirements.into_iter().any(|required| {
+                let required = flux_ty::Predicate {
+                    self_ty: self.normalize(required.self_ty),
+                    ..required
+                };
+                self.requires_lifetime_proof(required, seen, depth + 1)
+            });
+        }
         // An unresolved output must not hide a header's lifetime requirements.
         // Only consumers that bind rows require complete arguments.
         let selected = flux_solve::traits::RigidSolver::new(
@@ -7199,6 +7378,9 @@ impl<'a> Cx<'a> {
     /// Reconstruct original caller assumptions, including ordinary bounds
     /// needed by an impl that forwards a higher-ranked callback contract.
     fn caller_region_goals(&mut self) -> Vec<ImplRegionGoal> {
+        if let Some(goals) = &self.caller_goals_in_progress {
+            return goals.clone();
+        }
         if self.body.constant_owner.is_some() {
             return self.family_goals.clone();
         }
@@ -7259,18 +7441,51 @@ impl<'a> Cx<'a> {
                 written.push((p, row.clone(), tr.clone()));
             }
         }
-        let mut goals = Vec::new();
-        for (p, row, tr) in written {
-            // These are original declaration assumptions, not selected impl
-            // conclusions. Their abstract subject is already well formed;
-            // keep strict occurrence checks for every trait argument row.
-            if let Some(goal) =
-                self.impl_region_goal_with_proof(p, &row, &tr, &lifetimes, &[], &[], None, true)
-            {
-                let _ = self.impl_super_goals(goal, &mut goals, 0);
-            }
-        }
+        self.caller_goals_in_progress = Some(Vec::new());
+        let goals = self.original_region_goals(written, &lifetimes);
+        self.caller_goals_in_progress = None;
         self.close_known();
+        goals
+    }
+
+    /// Build only original assumptions, retrying projections whose input
+    /// memberships are written later in the declaration.
+    fn original_region_goals(
+        &mut self,
+        mut pending: Vec<(flux_ty::Predicate, Box<[Region]>, TraitRefRegions)>,
+        lifetimes: &[Var],
+    ) -> Vec<ImplRegionGoal> {
+        let caller = self.caller_goals_in_progress.is_some();
+        let mut goals = Vec::new();
+        while !pending.is_empty() {
+            let count = pending.len();
+            let mut remaining = Vec::new();
+            for (predicate, row, traits) in pending {
+                if let Some(goal) = self.impl_region_goal_with_inputs(
+                    predicate,
+                    &row,
+                    &traits,
+                    lifetimes,
+                    &[],
+                    &[],
+                    None,
+                    true,
+                    Some(&goals),
+                ) {
+                    let _ = self.impl_super_goals(goal, &mut goals, 0);
+                    self.family_goals = goals.clone();
+                    if caller {
+                        self.caller_goals_in_progress = Some(goals.clone());
+                    }
+                } else {
+                    remaining.push((predicate, row, traits));
+                }
+            }
+            if remaining.len() == count {
+                break;
+            }
+            pending = remaining;
+        }
         goals
     }
 
@@ -7474,6 +7689,24 @@ impl<'a> Cx<'a> {
         {
             return;
         }
+        if matches!(goal.self_ty.kind(), TyKind::Dynamic(object) if object.callable.is_some())
+            && flux_ty::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
+        {
+            let requested = ImplRegionGoal {
+                predicate: goal,
+                vars: vars.to_vec(),
+                lifetimes: trait_lifetimes.to_vec(),
+                bound: Vec::new(),
+            };
+            let env = self.caller_region_goals();
+            if !self.impl_prove_super(&requested, &env, depth) {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "callable object input region requirements cannot be proved",
+                ));
+            }
+            return;
+        }
         let dynamic_object = matches!(goal.self_ty.kind(), TyKind::Dynamic(object)
             if flux_ty::fn_trait_kind(items, object.trait_).is_none());
         let pointer_callback = flux_ty::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
@@ -7492,6 +7725,15 @@ impl<'a> Cx<'a> {
             return;
         }
         if let TyKind::Opaque(opaque) = goal.self_ty.kind() {
+            // Structural auto traits often depend only on captured types. A
+            // hidden reference's region matters only when a selected impl
+            // introduces an outlives requirement; retain the full proof then.
+            if flux_solve::traits::is_auto_trait(items, goal.trait_ref.trait_)
+                && !self.requires_lifetime_proof(goal, &mut FxHashSet::default(), 0)
+                && flux_solve::traits::holds(items, sigs, &self.header_predicates, goal)
+            {
+                return;
+            }
             let own = vars.first().map_or(&[][..], Vec::as_slice);
             let known = self.opaque_bound_goals(opaque, own);
             // Original callable bounds can introduce ranked universals. Their
@@ -7522,7 +7764,9 @@ impl<'a> Cx<'a> {
                     false
                 }
             } else {
-                self.impl_prove_super(&wanted, &known, depth)
+                let mut env = self.caller_region_goals();
+                env.extend(known.iter().cloned());
+                self.impl_prove_super(&wanted, &env, depth)
             };
             if !satisfied {
                 self.errors.push(Diagnostic::new(
@@ -7640,6 +7884,22 @@ impl<'a> Cx<'a> {
             }
             return;
         }
+        if self.structural_requirements(goal).is_some() {
+            let wanted = ImplRegionGoal {
+                predicate: goal,
+                vars: vars.to_vec(),
+                lifetimes: trait_lifetimes.to_vec(),
+                bound: Vec::new(),
+            };
+            let env = self.caller_region_goals();
+            if !self.impl_prove_super(&wanted, &env, depth) {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "structural auto-trait lifetime obligation cannot be proved",
+                ));
+            }
+            return;
+        }
         // Caller predicates may constrain compound self types too, such as
         // `&'a Q: Into<K>`. Selecting a blanket impl first would invent its
         // prerequisites instead of using the contract the caller supplied.
@@ -7655,8 +7915,13 @@ impl<'a> Cx<'a> {
         {
             return;
         }
-        let Some((imp, impl_args)) = flux_solve::traits::select_impl(items, sigs, goal)
+        let selected = flux_solve::traits::select_impl(items, sigs, goal);
+        let Some((imp, impl_args)) = selected
+            .as_ref()
+            .filter(|(_, args)| args.iter().all(|ty| !ty.has_error()))
+            .cloned()
             .or_else(|| self.matching_impl(goal))
+            .or(selected)
             .or_else(|| self.family_blanket_impl(goal))
             .or(caller_blanket)
         else {
@@ -8093,7 +8358,11 @@ impl<'a> Cx<'a> {
     fn is_callable_output(&self, alias: AliasTy) -> bool {
         matches!(
             alias.args[0].kind(),
-            TyKind::Closure(..) | TyKind::FnDef(_) | TyKind::FnPtr(_)
+            TyKind::Closure(..)
+                | TyKind::FnDef(_)
+                | TyKind::FnPtr(_)
+                | TyKind::Opaque(_)
+                | TyKind::Dynamic(_)
         ) && self.is_fn_output(alias)
     }
 

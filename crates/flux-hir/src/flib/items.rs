@@ -4,12 +4,12 @@ use super::{Decode, Decoder, Encode, Encoder, Error};
 use crate::def_map::{Binding, BindingKind, Def, Scope};
 use crate::item_tree::Uses;
 use crate::item_tree::{
-    Abi, AnonConst, ArrayLen, ArrayLenKind, AssocBinding, AssocItem, Block, Bound, Const, Derive,
-    Discriminant, DynRef, Field, Function, GenericArgs, GenericParam, Generics, Impl, ImplTarget,
-    ImplTraitRef, ImplType, InlineHint, ItemLoc, LifetimeParam, LifetimeRef, Module,
-    OutlivesPredicate, Owner, Param, ParamKind, Path, PathAnchor, QSelf, Struct, StructKind, Trait,
-    TraitType, TypeAlias, TypeOutlives, TypeRef, Use, UseCapture, UseKind, Variant, Visibility,
-    WherePredicate,
+    Abi, AnonConst, ArrayLen, ArrayLenKind, AssocBinding, AssocBound, AssocItem, Block, Bound,
+    Const, Derive, Discriminant, DynRef, Field, Function, GenericArgs, GenericParam, Generics,
+    Impl, ImplTarget, ImplTraitRef, ImplType, InlineHint, ItemLoc, LifetimeParam, LifetimeRef,
+    Module, OutlivesPredicate, Owner, Param, ParamKind, Path, PathAnchor, QSelf, Struct,
+    StructKind, Trait, TraitType, TypeAlias, TypeOutlives, TypeRef, Use, UseCapture, UseKind,
+    Variant, Visibility, WherePredicate,
 };
 
 // The index is derived from the original import sequence, never serialized.
@@ -274,12 +274,21 @@ record!(Path {
     args
 });
 record!(QSelf {
+    associated_bound,
     ty,
     ty_range,
     trait_,
     range
 });
+record!(AssocBound {
+    name,
+    args,
+    bounds,
+    lifetimes,
+    range
+});
 record!(GenericArgs {
+    bounds,
     lifetimes,
     types,
     ranges,
