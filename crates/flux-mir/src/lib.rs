@@ -99,7 +99,7 @@ pub fn discriminant_bits(
 
 pub use build::{
     build, build_file, build_file_from, build_file_from_owned, build_file_with_roots,
-    check_clean_bodies, check_clean_bodies_from,
+    build_with_panic_strategy, check_clean_bodies, check_clean_bodies_from,
 };
 pub use lens::{check_file, check_file_from};
 
@@ -833,6 +833,16 @@ pub struct Terminator {
     pub range: TextRange,
 }
 
+/// Panic behavior used while building MIR. Runtime unwind lowering is not enabled yet.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PanicStrategy {
+    /// Panics abort without running local cleanup.
+    #[default]
+    Abort,
+    /// Panics transfer ownership to cleanup before propagating to the caller.
+    Unwind,
+}
+
 /// The exceptional exit of a call, drop, or assertion.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum UnwindAction {
@@ -898,7 +908,7 @@ pub enum TerminatorKind {
         target: BasicBlock,
     },
     /// Continues at `target` if `cond` is `expected`; otherwise panics,
-    /// which aborts the program.
+    /// following the containing terminator's exceptional action.
     Assert {
         cond: Operand,
         expected: bool,

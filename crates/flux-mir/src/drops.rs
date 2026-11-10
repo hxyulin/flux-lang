@@ -53,10 +53,7 @@ pub(crate) fn elaborate(
     env: &[Predicate],
     precise: bool,
 ) {
-    assert!(
-        !body.has_unwind(),
-        "unwind drop elaboration is not implemented yet"
-    );
+    let unwinding = body.has_unwind();
     let mut roots = FxHashSet::default();
     for data in body.blocks.values() {
         if let TerminatorKind::Drop { place, .. } = &data.terminator.kind
@@ -149,6 +146,20 @@ pub(crate) fn elaborate(
     // Rewrite the drops.
     let mut dead = Vec::new();
     for (block, path, steps) in plans {
+        if unwinding {
+            if steps.is_empty() {
+                dead.push(block);
+            }
+            UnwindDrops {
+                body,
+                paths: &paths,
+                flagged: &flagged,
+                sigs,
+                items,
+            }
+            .rewrite(block, path, &steps);
+            continue;
+        }
         let data = &body.blocks[block];
         let range = data.terminator.range;
         let TerminatorKind::Drop { place, target } = data.terminator.kind.clone() else {
@@ -235,6 +246,139 @@ pub(crate) fn elaborate(
     entry_block.statements.splice(0..0, inits);
 
     merge_dead(body, &dead);
+}
+
+/// Transfers a source drop's ownership into a guarded normal/cleanup ladder.
+/// Snapshots keep a shared aggregate flag available to every remaining field
+/// after the original ownership flags have been cleared before the first drop.
+struct UnwindDrops<'a> {
+    body: &'a mut Body,
+    paths: &'a MovePaths,
+    flagged: &'a BTreeMap<usize, Local>,
+    sigs: &'a Signatures,
+    items: &'a ItemTree,
+}
+
+impl UnwindDrops<'_> {
+    fn rewrite(&mut self, block: BasicBlock, path: usize, steps: &[Step]) {
+        use crate::UnwindAction;
+        let term = self.body.blocks[block].terminator.clone();
+        let TerminatorKind::Drop { target, .. } = term.kind else {
+            unreachable!("planned drop")
+        };
+        let range = term.range;
+        let mut snapshots = BTreeMap::new();
+        for step in steps {
+            if let Some(flag) = step.flag {
+                snapshots.entry(flag).or_insert_with(|| {
+                    self.body.locals.alloc(LocalDecl {
+                        ty: Ty::BOOL,
+                        kind: LocalKind::Temp,
+                    })
+                });
+            }
+        }
+        let mut prefix: Vec<Statement> = snapshots
+            .iter()
+            .map(|(path, &snapshot)| Statement {
+                kind: StatementKind::Assign(
+                    snapshot.into(),
+                    Rvalue::Use(Operand::Copy(self.flagged[path].into())),
+                ),
+                range,
+            })
+            .collect();
+        prefix.extend(
+            self.paths
+                .subtree(path)
+                .filter_map(|p| self.flagged.get(&p))
+                .map(|&flag| set(flag, false, range)),
+        );
+        let mut cleanup = match term.unwind {
+            UnwindAction::Cleanup(block) => Some(block),
+            UnwindAction::Continue => Some(push(
+                self.body,
+                Vec::new(),
+                TerminatorKind::UnwindResume,
+                range,
+            )),
+            UnwindAction::Unreachable | UnwindAction::Terminate => None,
+        };
+        let mut normal = target;
+        for (index, step) in steps.iter().enumerate().rev() {
+            let unwind = cleanup.map(UnwindAction::Cleanup).unwrap_or(term.unwind);
+            normal = self.step(step, &snapshots, normal, unwind, range);
+            if index != 0
+                && let Some(next) = cleanup
+            {
+                cleanup = Some(self.step(step, &snapshots, next, UnwindAction::Terminate, range));
+            }
+        }
+        let data = &mut self.body.blocks[block];
+        data.statements.extend(prefix);
+        data.terminator.kind = TerminatorKind::Goto(normal);
+        data.terminator.unwind = UnwindAction::Unreachable;
+    }
+
+    fn step(
+        &mut self,
+        step: &Step,
+        snapshots: &BTreeMap<usize, Local>,
+        target: BasicBlock,
+        unwind: crate::UnwindAction,
+        range: flux_syntax::TextRange,
+    ) -> BasicBlock {
+        let mut next = push(
+            self.body,
+            Vec::new(),
+            TerminatorKind::Drop {
+                place: step.place.clone(),
+                target,
+            },
+            range,
+        );
+        self.body.blocks[next].terminator.unwind = unwind;
+        for (place, variant) in step.variants.iter().rev() {
+            let TyKind::Adt(adt, _) = self.body.place_ty(place, self.sigs).kind() else {
+                continue;
+            };
+            let discriminant = self.body.locals.alloc(LocalDecl {
+                ty: Ty::int(flux_ty::discriminant_ty(self.items, adt.strukt)),
+                kind: LocalKind::Temp,
+            });
+            next = push(
+                self.body,
+                vec![Statement {
+                    kind: StatementKind::Assign(
+                        discriminant.into(),
+                        Rvalue::DiscriminantForDrop(place.clone()),
+                    ),
+                    range,
+                }],
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(discriminant.into()),
+                    targets: vec![(u128::from(*variant), next)],
+                    otherwise: target,
+                    variants: Some(adt.strukt),
+                },
+                range,
+            );
+        }
+        if let Some(flag) = step.flag {
+            next = push(
+                self.body,
+                Vec::new(),
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(snapshots[&flag].into()),
+                    targets: vec![(0, target)],
+                    otherwise: next,
+                    variants: None,
+                },
+                range,
+            );
+        }
+        next
+    }
 }
 
 /// Decides how to drop a place from what may be initialized of it.

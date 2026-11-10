@@ -45,4 +45,14 @@ fn unwind_mir_is_rejected_before_monomorphization() {
             .iter()
             .any(|e| e.message == "unwind code generation is not supported yet")
     );
+    let built =
+        flux_mir::build_with_panic_strategy(&hir, &typed, owner, flux_mir::PanicStrategy::Unwind);
+    assert!(built.has_unwind());
+    mir.bodies.insert(owner, built);
+    let errors = flux_codegen::lower_module(&hir, &typed, &mir).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message == "unwind code generation is not supported yet")
+    );
 }

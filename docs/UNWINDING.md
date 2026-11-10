@@ -17,18 +17,29 @@ returns from cleanup, resuming outside cleanup, invalid exceptional targets, and
 cleanup that permits a second exception to escape. Fluxlib metadata round-trips
 these edges. The existing abort-mode encoding stays byte-identical.
 
-These are IR building blocks. The source builder still produces abort-mode MIR.
-Drop elaboration and instance expansion explicitly reject exceptional MIR until
-they can preserve cleanup semantics. Code generation reports an unsupported-feature
-diagnostic before transforming it. No panic runtime or emitted unwind path is
-enabled by this foundation.
+`build_with_panic_strategy(..., PanicStrategy::Unwind)` builds a function's
+lexical cleanup ladders before drop elaboration. Cleanup suffixes are shared.
+Moved values are removed. Conditional drop flags are captured before ownership
+is cleared, so the remaining split fields still get dropped if an earlier field
+panics. A second panic on a cleanup path terminates. The return slot is excluded
+from lexical cleanup, matching rustc's behavior when an epilogue panics.
+
+A test executes the generated MIR and compares drop events with native rustc
+under `panic=unwind` in 25 cases. These include direct and indirect calls,
+conditional initialization, partial tuple/array/enum moves, assignment, call
+arguments, failed aggregate construction, assertions, epilogue panics and double
+panics. The test also checks metadata round-trips of those graphs. This tests MIR
+cleanup behavior; it does not execute Flux-generated native unwind paths.
+
+Normal source compilation, closure builders and generated shims still use abort
+mode. Instance expansion and code generation reject exceptional MIR until drop
+glue and backend lowering can preserve it. No panic runtime is enabled.
 
 ## Next implementation steps
 
-1. Build cleanup ladders from lexical scopes before drop elaboration. Reuse move
-   paths and drop flags. Clear a value's ownership before its destructor runs,
-   preserve the remaining fields if that destructor panics, and abort on another
-   panic during cleanup. Cover partially initialized aggregates and indirect calls.
+1. Expand whole-value drop glue with exceptional continuations. Preserve fields
+   when a user `Drop::drop` panics, including enums, arrays, boxes and packed
+   fields. Extend the panic strategy through closure bodies and generated shims.
 2. Lower exceptional calls and cleanup to Keel invoke and landing-pad instructions.
    Preserve unwind metadata in ordinary forwarding frames. Distinguish `C` and
    `C-unwind` boundaries. The pinned Keel has no indirect invoke instruction.

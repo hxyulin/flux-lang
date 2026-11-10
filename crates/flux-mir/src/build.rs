@@ -974,6 +974,17 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
 /// Builds the MIR of `function`. Its body must have lowered and
 /// type-checked without errors; anything erroneous becomes unreachable.
 pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
+    build_with_panic_strategy(hir, typed, function, crate::PanicStrategy::Abort)
+}
+
+/// Builds a function's MIR with explicit panic behavior for cleanup analysis.
+/// Unwind MIR is not accepted by code generation yet.
+pub fn build_with_panic_strategy(
+    hir: &Hir,
+    typed: &TypedFile,
+    function: FunctionId,
+    strategy: crate::PanicStrategy,
+) -> Body {
     let (body, source_map) = hir.body(function).expect("functions built have bodies");
     // Its associated types as its bounds and `impl` blocks say.
     let env = flux_solve::traits::projections_of(&hir.items, &typed.sigs, function);
@@ -1005,7 +1016,7 @@ pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
         source_map,
         &typed.bodies[function],
         sig,
-        Item::Function(function),
+        Item::Function(function, strategy),
     );
     built.inherits_overflow_checks = data.inherits_overflow_checks;
     built
@@ -1014,7 +1025,7 @@ pub fn build(hir: &Hir, typed: &TypedFile, function: FunctionId) -> Body {
 /// What a body is of.
 #[derive(Clone, Copy)]
 enum Item {
-    Function(FunctionId),
+    Function(FunctionId, crate::PanicStrategy),
     Const(ConstId),
     /// The closure expression `expr` in `owner`'s body.
     Closure(ClosureOwner, ExprId),
@@ -1250,14 +1261,14 @@ fn build_body(
     item: Item,
 ) -> Body {
     let module = match item {
-        Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => {
+        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => {
             hir.items.functions[f].loc.module
         }
         Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => hir.items.consts[c].loc.module,
     };
     // The bounds in scope, for what is `Copy`.
     let env = match item {
-        Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => {
+        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => {
             flux_solve::traits::elaborate(
                 &typed.sigs,
                 &flux_solve::traits::predicates_of(&hir.items, &typed.sigs, f),
@@ -1273,7 +1284,7 @@ fn build_body(
         ),
     };
     let projections = match item {
-        Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => {
+        Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => {
             flux_solve::traits::projections_of(&hir.items, &typed.sigs, f)
         }
         Item::Const(c) | Item::Closure(ClosureOwner::Const(c), _) => {
@@ -1287,6 +1298,12 @@ fn build_body(
     let mut b = Builder {
         hir,
         typed,
+        panic_strategy: match item {
+            Item::Function(_, strategy) => strategy,
+            _ => crate::PanicStrategy::Abort,
+        },
+        cleanup_suffixes: Default::default(),
+        unwind_resume: None,
         items: &hir.items,
         body,
         source_map,
@@ -1531,7 +1548,7 @@ fn build_body(
         upvars,
         capture_uses: b.capture_uses,
         owner: match item {
-            Item::Function(f) | Item::Closure(ClosureOwner::Function(f), _) => Some(f),
+            Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _) => Some(f),
             Item::Const(_) | Item::Closure(ClosureOwner::Const(_), _) => None,
         },
         constant_owner: None,
@@ -1542,7 +1559,7 @@ fn build_body(
     built.init_errors = crate::init::check(&built, &hir.items, &typed.sigs);
     built.init_errors.extend(b.errors);
     let owner = match item {
-        Item::Function(f) => ClosureOwner::Function(f),
+        Item::Function(f, _) => ClosureOwner::Function(f),
         Item::Const(c) => ClosureOwner::Const(c),
         Item::Closure(owner, _) => owner,
     };
@@ -1555,7 +1572,7 @@ fn build_body(
         &crate::Discriminants::new(),
     ));
     let precise = match item {
-        Item::Function(f) => hir.items.functions[f].precise_live_drops,
+        Item::Function(f, _) => hir.items.functions[f].precise_live_drops,
         Item::Const(_) | Item::Closure(..) => false,
     };
     crate::drops::elaborate(&mut built, &hir.items, &typed.sigs, &b.env, precise);
@@ -1667,6 +1684,10 @@ struct LoopScope {
 }
 
 struct Builder<'a> {
+    panic_strategy: crate::PanicStrategy,
+    /// Shared lexical cleanup suffixes, keyed by the local and continuation.
+    cleanup_suffixes: rustc_hash::FxHashMap<(Local, BasicBlock), BasicBlock>,
+    unwind_resume: Option<BasicBlock>,
     hir: &'a Hir,
     typed: &'a TypedFile,
     items: &'a ItemTree,
@@ -2018,12 +2039,67 @@ impl Builder<'_> {
 
     fn terminate(&mut self, kind: TerminatorKind, range: TextRange) {
         let block = self.block();
+        let unwind = if self.panic_strategy == crate::PanicStrategy::Unwind
+            && matches!(
+                kind,
+                TerminatorKind::Call { .. }
+                    | TerminatorKind::CallIndirect { .. }
+                    | TerminatorKind::Drop { .. }
+                    | TerminatorKind::Assert { .. }
+            ) {
+            crate::UnwindAction::Cleanup(self.cleanup_ladder(range))
+        } else {
+            crate::UnwindAction::Unreachable
+        };
         self.blocks[block.index()].1 = Some(Terminator {
-            unwind: crate::UnwindAction::Unreachable,
+            unwind,
             kind,
             range,
         });
         self.current = None;
+    }
+
+    /// A panic owns every still-live local in reverse scope order. Drop
+    /// elaboration removes moved values and guards conditional initialization.
+    fn cleanup_ladder(&mut self, range: TextRange) -> BasicBlock {
+        let mut next = if let Some(resume) = self.unwind_resume {
+            resume
+        } else {
+            let resume = self.new_block();
+            self.blocks[resume.index()].1 = Some(Terminator {
+                kind: TerminatorKind::UnwindResume,
+                unwind: crate::UnwindAction::Unreachable,
+                range,
+            });
+            self.unwind_resume = Some(resume);
+            resume
+        };
+        // The return slot is not a lexical local. Like rustc, unwinding an
+        // epilogue cleans up the active scopes without dropping that slot.
+        let locals: Vec<(Local, TextRange)> = self
+            .scopes
+            .iter()
+            .flat_map(|scope| scope.locals.iter().copied())
+            .filter(|(local, _)| self.needs_drop(self.locals[*local].ty))
+            .collect();
+        for (local, at) in locals {
+            next = if let Some(&block) = self.cleanup_suffixes.get(&(local, next)) {
+                block
+            } else {
+                let block = self.new_block();
+                self.blocks[block.index()].1 = Some(Terminator {
+                    kind: TerminatorKind::Drop {
+                        place: local.into(),
+                        target: next,
+                    },
+                    unwind: crate::UnwindAction::Terminate,
+                    range: at,
+                });
+                self.cleanup_suffixes.insert((local, next), block);
+                block
+            };
+        }
+        next
     }
 
     fn goto(&mut self, target: BasicBlock, range: TextRange) {
