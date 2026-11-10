@@ -1,0 +1,33 @@
+{
+  "date": "2026-11-10",
+  "revision": "2ec3416dc878a3e30b13b6925c02f7e0991e36f8",
+  "host": "aarch64-apple-darwin",
+  "parser": {
+    "source": "local Cargo registry source cache",
+    "edition": "2024 for every file",
+    "files": 68236,
+    "rust_source_bytes": 1271843178,
+    "package_versions": 1890,
+    "without_syntax_diagnostics": 67909,
+    "with_syntax_diagnostics": 327,
+    "without_syntax_diagnostics_percent": 99.52,
+    "panics": 0,
+    "invalid_or_lossy_trees": 0,
+    "budget_failures": 0,
+    "command": "FLUX_CORPUS=\"$HOME/.cargo/registry/src\" cargo test -p flux-syntax --release --test corpus -- --ignored --nocapture",
+    "scope": "Raw source parsing, including invalid fixtures, other editions and nightly syntax. Not full compilation or overall Rust compatibility."
+  },
+  "rayon": {
+    "version": "1.12.0",
+    "cases": 115,
+    "match_rustc": 111,
+    "requires_unwinding": 4,
+    "failures": 0,
+    "compile_blocked": 0,
+    "mode": "fast-build",
+    "threads": 4,
+    "dependencies": "Original upstream sources and default rand 0.9.5 features, including zerocopy 0.8.63.",
+    "scope": "Standalone adapters for upstream integration functions. Original test bodies and assertions retained; libtest annotations removed. Each runnable function compared with a rustc-built adapter. Unit tests and doctests are not included.",
+    "evidence": "Recorded compiler qualification at revision 2ec3416d; original local reports in out/rand-zerocopy/."
+  }
+}

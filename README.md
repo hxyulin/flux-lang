@@ -1,5 +1,5 @@
 <h1 align="center">flux</h1>
-<p align="center">An experimental compiler for a subset of Rust, built on the Keel backend.</p>
+<p align="center">A Rust toolchain aiming for full rustc and Cargo compatibility, built on Keel.</p>
 <p align="center">
   <a href="rust-toolchain.toml"><img alt="Rust stable" src="https://img.shields.io/badge/Rust-stable-dea584?logo=rust"></a>
   <a href="Cargo.toml"><img alt="Rust edition 2024" src="https://img.shields.io/badge/edition-2024-dea584"></a>
@@ -18,27 +18,54 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-`fluxc` compiles Rust source files; `flux` manages package builds and dependencies.
-Install both binaries together. Flux compiles Rust source to native executables through
-[Keel](https://github.com/hxyulin/keel), its own compiler backend, without
-LLVM in its code-generation path. It accepts only programs that are also valid
-Rust, so `rustc` serves as the test oracle: every program flux compiles must
-produce the same output and exit status under both. flux exists to learn how
-Rust's toolchain works, to measure where its costs come from, and to
-stress-test Keel with Rust-shaped code.
+Flux aims to be a fully compatible alternative to **rustc and Cargo**: the same
+Rust language and library behavior, existing Cargo projects, and familiar command
+workflows. Compatibility is the goal; the implementation is still experimental
+and has [documented gaps](docs/LANGUAGE.md).
+
+`fluxc` compiles Rust source files; `flux` manages packages and dependencies.
+Use `flux build` where you would use `cargo build`, and `flux run` where you
+would use `cargo run`. Install both binaries together. Flux generates native
+code through [Keel](https://github.com/hxyulin/keel), without LLVM in its
+code-generation path. rustc is the correctness oracle: accepted programs must
+have the same behavior under both compilers.
 
 | Area | flux supports |
 | --- | --- |
-| Language | Edition 2024, with bounded 2015, 2018 and 2021 modes; generics, traits, trait objects, closures, `impl Trait`, unions and `macro_rules!` |
+| Language | Edition 2024, with bounded earlier-edition modes; generics, traits, closures, async functions, `impl Trait`, unions and macros |
 | Checking | Type inference, trait solving, a borrow checker, constant evaluation and rustc's overflow lints |
 | Libraries | Its own `core`, `alloc` and a bounded `std`, written in flux, including threads, atomics, `OnceLock` and collections |
-| Real crates | Unchanged sources of hashbrown, smallvec, typenum, bumpalo, memchr, crc32fast and more, matched against rustc on arm64 macOS |
-| Builds | One `.flib` artifact per crate, a prebuilt built-in library, local Cargo packages, native lockfile generation, dependency fetching and procedural macros |
+| Real crates | Unchanged sources of Rayon, rand, modern futures-util, regex, serde, hashbrown and more; selected API consumers compared with rustc on arm64 macOS |
+| Builds | Cargo workspaces, native resolution and fetching, Flux-built build scripts and procedural macro hosts, parallel crate builds and disk artifact reuse |
 | Backend | Native executables on arm64 macOS and x86-64 Linux, linked in-process with Keel |
 
 Not supported yet: unwinding (panics abort), alternate registries, dependency
 overrides and package-specific lockfile updates. The
 [language reference](docs/LANGUAGE.md) lists every restriction.
+
+## Compatibility
+
+Measured on 2026-11-10 at `2ec3416d`,
+on arm64 macOS. [Counts and measurement scope](docs/status/compatibility.json).
+
+![Rust source corpus: 67,909 of 68,236 files parse without syntax diagnostics, 99.5%; 1.27 GB across 1,890 package versions.](docs/status/rust-corpus.svg)
+
+The parser scan covers every `.rs` file in the local Cargo registry cache,
+using edition 2024. All 68,236 files produced valid, lossless syntax trees,
+with no panics or time-budget failures. The 327 files with syntax diagnostics
+include invalid test fixtures, older-edition code and nightly syntax.
+This measures parsing only. A current full-corpus compilation success rate has
+not been measured.
+
+![Rayon runtime comparisons: 111 of 115 integration cases match rustc; four require unwinding, with zero failures or compile blockers.](docs/status/rayon-runtime.svg)
+
+The Rayon 1.12.0 adapters retain upstream integration test bodies and assertions.
+All 111 runnable cases match rustc; four unwinding cases are skipped.
+The rand-dependent string cases build the default rand 0.9.5 dependency graph,
+including zerocopy 0.8.63, without upstream source or feature changes.
+These results cover the selected integration cases, not Rayon's unit tests or
+doctests. The separate maintained Rayon consumer also matches rustc in debug,
+fast-build and release modes.
 
 ## Self-hosting
 
@@ -78,7 +105,7 @@ Counted with `tokei` on 2026-10-30, Rust only, vendored code excluded.
 | flux tests | 134k |
 | Keel tests, suite and tools | 172k |
 
-`tests/run` holds 495 programs that both rustc and flux compile and run.
+As of 2026-11-10, `tests/run` holds 638 programs compiled and run against rustc.
 
 ## Compile time
 
@@ -95,9 +122,12 @@ flux runs as one process on one thread.
 | Unoptimized | 1.18 s | 1.01 s | 0.66 s |
 | Optimized | 1.64 s | 2.02 s | 0.91 s |
 
-A hello-world build takes 0.2 s, most of it loading the prebuilt built-in
-library. flux has no incremental cache inside a crate yet, so single-file
-edits are several times slower than Cargo's.
+These measurements predate the current package cache. Unchanged crates reuse
+disk artifacts; unchanged macro expansions can reuse checked results. An opt-in
+fast-build mode can reuse individual backend objects, keeping only their latest
+versions. Source edits still rerun frontend checking for the affected crate;
+per-function frontend incrementality remains future work. See the
+[cache contract](crates/flux-cli/README.md#native-source-builds).
 
 </details>
 
@@ -123,7 +153,7 @@ target/debug/fluxc build tests/run/fib.rs -O   # write an optimized executable
 target/debug/fluxc build tests/run/fib.rs --fast-build # shorter optimization pipeline
 target/debug/fluxc mir tests/run/fib.rs        # print its MIR
 target/debug/fluxc check examples/*.rs         # report syntax errors
-target/debug/flux package build --manifest-path path/to/Cargo.toml
+target/debug/flux build --manifest-path path/to/Cargo.toml
 ```
 
 Without `build-builtins`, each run compiles the built-in library from source
