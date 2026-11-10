@@ -384,7 +384,7 @@ pub(crate) fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool)
         changed = false;
         for (block, data) in body.blocks.iter().rev() {
             members.clear();
-            for successor in data.terminator.kind.successors() {
+            for successor in data.terminator.successors() {
                 for &local in &live_in[successor.index()] {
                     if !live.set(local as usize, true) {
                         members.push(local);

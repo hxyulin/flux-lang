@@ -18,6 +18,7 @@ fn block(body: &mut Body, statements: Vec<Statement>, kind: TerminatorKind) -> B
     body.blocks.alloc(BasicBlockData {
         statements,
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind,
             range: Default::default(),
         },
@@ -52,6 +53,10 @@ fn source(hir: &Hir, sigs: &Signatures, mir: &FileMir, capture: Ty) -> Source {
         panic!("coroutine capture is a closure");
     };
     let template = &mir.closures[&(id, ClosureKind::FnOnce)];
+    assert!(
+        !template.has_unwind(),
+        "unwind coroutine lowering is not implemented yet"
+    );
     let body = crate::mono::subst_body(hir, sigs, template, ClosureArgs::split(args).parent);
     let mut fields = vec![Ty::int(IntTy::Usize)];
     fields.extend(body.locals.values().map(|local| local.ty));
@@ -296,7 +301,10 @@ impl Rebase {
                     }
                 }
             }
-            TerminatorKind::Goto(_) | TerminatorKind::Return | TerminatorKind::Unreachable => {}
+            TerminatorKind::Goto(_)
+            | TerminatorKind::Return
+            | TerminatorKind::UnwindResume
+            | TerminatorKind::Unreachable => {}
         }
         targets(kind, |block| {
             BasicBlock::from_raw((block.index() as u32) + 1)
@@ -321,7 +329,7 @@ fn targets(kind: &mut TerminatorKind, map: impl Fn(BasicBlock) -> BasicBlock) {
             }
             *otherwise = map(*otherwise);
         }
-        TerminatorKind::Return | TerminatorKind::Unreachable => {}
+        TerminatorKind::Return | TerminatorKind::UnwindResume | TerminatorKind::Unreachable => {}
     }
 }
 
@@ -433,7 +441,7 @@ fn resume(
         {
             if matches!(
                 data.terminator.kind,
-                TerminatorKind::Return | TerminatorKind::Unreachable
+                TerminatorKind::Return | TerminatorKind::UnwindResume | TerminatorKind::Unreachable
             ) {
                 data.terminator.kind = go(free);
             }
@@ -561,7 +569,7 @@ fn resume(
         if std::mem::replace(&mut seen[block.index()], true) {
             continue;
         }
-        work.extend(body.blocks[block].terminator.kind.successors());
+        work.extend(body.blocks[block].terminator.successors());
     }
     for (index, data) in body.blocks.values_mut().enumerate() {
         if !seen[index] {

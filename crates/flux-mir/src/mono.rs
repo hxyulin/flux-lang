@@ -1036,6 +1036,7 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
                     range,
                 }],
                 terminator: Terminator {
+                    unwind: crate::UnwindAction::Unreachable,
                     kind: TerminatorKind::Call {
                         func: instance.function,
                         generic_args: Ty::list(&[field]),
@@ -1050,6 +1051,7 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
         blocks.alloc(BasicBlockData {
             statements: Vec::new(),
             terminator: Terminator {
+                unwind: crate::UnwindAction::Unreachable,
                 kind: TerminatorKind::Return,
                 range,
             },
@@ -1064,6 +1066,7 @@ fn builtin_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Opti
                 range,
             }],
             terminator: Terminator {
+                unwind: crate::UnwindAction::Unreachable,
                 kind: TerminatorKind::Return,
                 range,
             },
@@ -1122,6 +1125,7 @@ fn pointer_address_shim(items: &ItemTree, sigs: &Signatures, instance: Instance)
             range,
         }],
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind: TerminatorKind::Return,
             range,
         },
@@ -1201,6 +1205,7 @@ fn pointer_debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -
             range,
         }],
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind: TerminatorKind::Call {
                 func: helper,
                 generic_args: &[],
@@ -1217,6 +1222,7 @@ fn pointer_debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -
     blocks.alloc(BasicBlockData {
         statements: Vec::new(),
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind: TerminatorKind::Return,
             range,
         },
@@ -1314,11 +1320,16 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     let mut blocks = flux_arena::Arena::new();
     blocks.alloc(BasicBlockData {
         statements: Vec::new(),
-        terminator: Terminator { kind: call, range },
+        terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
+            kind: call,
+            range,
+        },
     });
     blocks.alloc(BasicBlockData {
         statements: Vec::new(),
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind: TerminatorKind::Return,
             range,
         },
@@ -1355,6 +1366,10 @@ pub fn instance_body<'b>(
     body: &'b Body,
     args: &[Ty],
 ) -> Cow<'b, Body> {
+    assert!(
+        !body.has_unwind(),
+        "unwind drop glue is not implemented yet"
+    );
     let mut body = if args.is_empty() && !mentions_opaques(body) {
         Cow::Borrowed(body)
     } else {
@@ -1397,6 +1412,10 @@ pub fn expand_intrinsics(
     discriminants: &crate::Discriminants,
     body: &mut Body,
 ) {
+    assert!(
+        !body.has_unwind(),
+        "unwind intrinsic expansion is not implemented yet"
+    );
     let layouts = crate::layout::Layouts::new(items, sigs, discriminants);
     let blocks: Vec<_> = body.blocks.iter().map(|(b, _)| b).collect();
     for block in blocks {
@@ -1869,6 +1888,7 @@ fn expand_drop_in_place(
     let head = body.blocks.alloc(BasicBlockData {
         statements: Vec::new(),
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind: TerminatorKind::Unreachable,
             range,
         },
@@ -1879,6 +1899,7 @@ fn expand_drop_in_place(
             Rvalue::BinaryOp(crate::BinOp::Add, Operand::Copy(i.into()), one),
         )],
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind: TerminatorKind::Goto(head),
             range,
         },
@@ -1886,6 +1907,7 @@ fn expand_drop_in_place(
     let drop = body.blocks.alloc(BasicBlockData {
         statements: Vec::new(),
         terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
             kind: TerminatorKind::Drop {
                 place: place.index(i),
                 target: step,
@@ -2053,6 +2075,10 @@ fn drop_glue(items: &ItemTree, sigs: &Signatures, place: Place, ty: Ty, out: &mu
 /// glue: `Drop::drop(&mut place)` for each part that has a `Drop` impl,
 /// and for enums, a test of the variant they hold.
 pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
+    assert!(
+        !body.has_unwind(),
+        "unwind drop glue is not implemented yet"
+    );
     let Some(drop) = drop_fn(items) else {
         return;
     };
@@ -2115,6 +2141,7 @@ impl Expand<'_> {
         self.body.blocks.alloc(BasicBlockData {
             statements,
             terminator: Terminator {
+                unwind: crate::UnwindAction::Unreachable,
                 kind,
                 range: self.range,
             },
@@ -2254,6 +2281,7 @@ impl Expand<'_> {
                         self.range,
                     )],
                     terminator: Terminator {
+                        unwind: crate::UnwindAction::Unreachable,
                         kind: TerminatorKind::SwitchInt {
                             discr: Operand::Copy(within.into()),
                             targets: vec![(0, target)],
@@ -2478,6 +2506,7 @@ fn map_body_types(body: &Body, args: &[Ty], subst: impl Fn(Ty) -> Ty) -> Body {
             TerminatorKind::Goto(_)
             | TerminatorKind::Drop { .. }
             | TerminatorKind::Return
+            | TerminatorKind::UnwindResume
             | TerminatorKind::Unreachable => {}
         }
     }

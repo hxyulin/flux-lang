@@ -1172,7 +1172,11 @@ pub fn closure_shims(
         };
         let mut blocks = Arena::new();
         let after = BasicBlock::from_raw(1);
-        let terminator = |kind| Terminator { kind, range };
+        let terminator = |kind| Terminator {
+            unwind: crate::UnwindAction::Unreachable,
+            kind,
+            range,
+        };
         blocks.alloc(BasicBlockData {
             statements: vec![Statement {
                 kind: StatementKind::Assign(
@@ -1489,6 +1493,7 @@ fn build_body(
         .map(|(statements, terminator)| BasicBlockData {
             statements,
             terminator: terminator.unwrap_or(Terminator {
+                unwind: crate::UnwindAction::Unreachable,
                 kind: TerminatorKind::Unreachable,
                 range: TextRange::default(),
             }),
@@ -2013,7 +2018,11 @@ impl Builder<'_> {
 
     fn terminate(&mut self, kind: TerminatorKind, range: TextRange) {
         let block = self.block();
-        self.blocks[block.index()].1 = Some(Terminator { kind, range });
+        self.blocks[block.index()].1 = Some(Terminator {
+            unwind: crate::UnwindAction::Unreachable,
+            kind,
+            range,
+        });
         self.current = None;
     }
 

@@ -43,7 +43,7 @@ record!(BasicBlockData {
     terminator
 });
 record!(Statement { kind, range });
-record!(Terminator { kind, range });
+
 impl Encode for ProjectionElem {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         e.nested(|e| match self {
@@ -673,6 +673,56 @@ impl Decode for UnOp {
         })
     }
 }
+// Tag 255 extends a terminator without changing abort-mode metadata bytes.
+const UNWIND_TERMINATOR: u8 = 255;
+
+impl Encode for Terminator {
+    fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        e.nested(|e| {
+            if self.unwind != UnwindAction::Unreachable {
+                UNWIND_TERMINATOR.encode(e)?;
+                match self.unwind {
+                    UnwindAction::Unreachable => unreachable!("handled above"),
+                    UnwindAction::Continue => 0u8.encode(e)?,
+                    UnwindAction::Cleanup(block) => {
+                        1u8.encode(e)?;
+                        block.encode(e)?;
+                    }
+                    UnwindAction::Terminate => 2u8.encode(e)?,
+                }
+            }
+            self.kind.encode(e)?;
+            self.range.encode(e)
+        })
+    }
+}
+impl Decode for Terminator {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        d.nested(|d| {
+            let tag = u8::decode(d)?;
+            let (unwind, kind) = if tag == UNWIND_TERMINATOR {
+                let unwind = match u8::decode(d)? {
+                    0 => UnwindAction::Continue,
+                    1 => UnwindAction::Cleanup(Decode::decode(d)?),
+                    2 => UnwindAction::Terminate,
+                    _ => return Err(Error::new("invalid MIR unwind action")),
+                };
+                (unwind, TerminatorKind::decode(d)?)
+            } else {
+                (
+                    UnwindAction::Unreachable,
+                    d.nested(|d| TerminatorKind::decode_tag(tag, d))?,
+                )
+            };
+            Ok(Self {
+                kind,
+                unwind,
+                range: Decode::decode(d)?,
+            })
+        })
+    }
+}
+
 impl Encode for TerminatorKind {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         e.nested(|e| match self {
@@ -749,12 +799,24 @@ impl Encode for TerminatorKind {
                 7u8.encode(e)?;
                 Ok(())
             }
+            Self::UnwindResume => {
+                8u8.encode(e)?;
+                Ok(())
+            }
         })
     }
 }
 impl Decode for TerminatorKind {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
-        d.nested(|d| match u8::decode(d)? {
+        d.nested(|d| {
+            let tag = u8::decode(d)?;
+            Self::decode_tag(tag, d)
+        })
+    }
+}
+impl TerminatorKind {
+    fn decode_tag(tag: u8, d: &mut Decoder<'_>) -> Result<Self, Error> {
+        match tag {
             0 => Ok(Self::Goto(Decode::decode(d)?)),
             1 => Ok(Self::SwitchInt {
                 discr: Decode::decode(d)?,
@@ -787,8 +849,9 @@ impl Decode for TerminatorKind {
             }),
             6 => Ok(Self::Return),
             7 => Ok(Self::Unreachable),
+            8 => Ok(Self::UnwindResume),
             _ => Err(Error::new("invalid MIR metadata tag")),
-        })
+        }
     }
 }
 impl Encode for AssertMessage {
@@ -1209,6 +1272,9 @@ impl Decode for Body {
 }
 
 fn validate_body_indices(body: &Body) -> Result<(), Error> {
+    if body.has_unwind() && !crate::validate::unwind_errors(body).is_empty() {
+        return Err(Error::new("invalid MIR unwind structure"));
+    }
     if body.locals.is_empty() || body.blocks.is_empty() || body.param_count >= body.locals.len() {
         return Err(Error::new("invalid MIR body shape"));
     }
@@ -1253,7 +1319,6 @@ fn validate_body_indices(body: &Body) -> Result<(), Error> {
     for block in body.blocks.values() {
         if block
             .terminator
-            .kind
             .successors()
             .any(|b| b.index() >= body.blocks.len())
         {
@@ -1622,6 +1687,7 @@ mod boundary_tests {
         body.blocks.alloc(BasicBlockData {
             statements: Vec::new(),
             terminator: Terminator {
+                unwind: crate::UnwindAction::Unreachable,
                 kind: TerminatorKind::Return,
                 range: TextRange::new(0, 0),
             },

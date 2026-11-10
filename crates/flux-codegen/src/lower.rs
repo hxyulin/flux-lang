@@ -260,6 +260,31 @@ fn lower_inner(
     mut timings: Option<&mut LoweringTimings>,
     identity: SymbolIdentity,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    // Until invoke/drop-glue lowering is implemented, reject exceptional MIR
+    // before monomorphization can transform away an exceptional successor.
+    if let Some(body) = mir
+        .bodies
+        .iter()
+        .map(|(_, body)| body)
+        .chain(mir.closures.values())
+        .chain(mir.consts.iter().map(|(_, body)| body))
+        .find(|body| body.has_unwind())
+    {
+        let range = body
+            .blocks
+            .values()
+            .find(|block| {
+                block.terminator.unwind != flux_mir::UnwindAction::Unreachable
+                    || matches!(block.terminator.kind, TerminatorKind::UnwindResume)
+            })
+            .expect("has_unwind found an exceptional terminator")
+            .terminator
+            .range;
+        return Err(vec![Diagnostic::new(
+            range,
+            "unwind code generation is not supported yet",
+        )]);
+    }
     let _shapes = shapes::scope(&typed.sigs);
     let _queries = flux_solve::remember_solver_queries(&hir.items, &typed.sigs);
     let _fields = flux_solve::remember_field_types(&typed.sigs);
@@ -2259,7 +2284,7 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
     };
     let mut incoming = vec![0; body.blocks.len()];
     for block in body.blocks.values() {
-        for next in block.terminator.kind.successors() {
+        for next in block.terminator.successors() {
             incoming[next.index()] += 1;
         }
         for statement in &block.statements {
@@ -2346,7 +2371,7 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
     while next < queue.len() {
         let block = flux_mir::BasicBlock::from_raw(queue[next] as u32);
         next += 1;
-        for successor in body.blocks[block].terminator.kind.successors() {
+        for successor in body.blocks[block].terminator.successors() {
             incoming[successor.index()] -= 1;
             if incoming[successor.index()] == 0 {
                 queue.push(successor.index());
@@ -4963,6 +4988,9 @@ impl Lower<'_, '_, '_> {
                         self.b.ins().return_(&values);
                     }
                 }
+            }
+            TerminatorKind::UnwindResume => {
+                unreachable!("exceptional MIR is rejected before lowering")
             }
             TerminatorKind::Unreachable => {
                 self.b.ins().trap();

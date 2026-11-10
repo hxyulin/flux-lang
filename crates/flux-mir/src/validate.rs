@@ -41,6 +41,7 @@ pub fn validate(
         }
         v.terminator(&data.terminator.kind, bb.index());
     }
+    v.errors.extend(unwind_errors(body));
     v.errors
 }
 
@@ -434,6 +435,7 @@ impl Validator<'_> {
             TerminatorKind::Goto(_)
             | TerminatorKind::Drop { .. }
             | TerminatorKind::Return
+            | TerminatorKind::UnwindResume
             | TerminatorKind::Unreachable => {}
         }
     }
@@ -515,4 +517,85 @@ fn has_error(ty: Ty) -> bool {
         }
         _ => false,
     }
+}
+
+/// Structural errors in exceptional edges and cleanup blocks.
+/// Cleanup may resume or terminate, but cannot return into ordinary control flow.
+pub fn unwind_errors(body: &Body) -> Vec<String> {
+    use crate::UnwindAction;
+    if !body.has_unwind() {
+        return Vec::new();
+    }
+    let mut errors = Vec::new();
+    let mut cleanup = vec![false; body.blocks.len()];
+    let mut normal = vec![false; body.blocks.len()];
+    let mut pending = Vec::new();
+    for (block, data) in body.blocks.iter() {
+        if data.terminator.unwind != UnwindAction::Unreachable
+            && !matches!(
+                data.terminator.kind,
+                TerminatorKind::Call { .. }
+                    | TerminatorKind::CallIndirect { .. }
+                    | TerminatorKind::Drop { .. }
+                    | TerminatorKind::Assert { .. }
+            )
+        {
+            errors.push(format!(
+                "bb{}: unwind action on a non-unwinding terminator",
+                block.index()
+            ));
+        }
+        for target in data.terminator.successors() {
+            if target.index() >= body.blocks.len() {
+                errors.push(format!(
+                    "bb{}: invalid successor bb{}",
+                    block.index(),
+                    target.index()
+                ));
+            }
+        }
+        if let UnwindAction::Cleanup(target) = data.terminator.unwind {
+            pending.push(target);
+        }
+    }
+    let walk = |pending: &mut Vec<crate::BasicBlock>, reached: &mut [bool]| {
+        while let Some(block) = pending.pop() {
+            let Some(visited) = reached.get_mut(block.index()) else {
+                continue;
+            };
+            if std::mem::replace(visited, true) {
+                continue;
+            }
+            pending.extend(body.blocks[block].terminator.kind.successors());
+        }
+    };
+    walk(&mut pending, &mut cleanup);
+    if !body.blocks.is_empty() {
+        pending.push(Body::entry());
+        walk(&mut pending, &mut normal);
+    }
+    for (block, data) in body.blocks.iter() {
+        let index = block.index();
+        if cleanup[index] && normal[index] {
+            errors.push(format!(
+                "bb{index}: cleanup is reachable from normal control flow"
+            ));
+        }
+        if cleanup[index] {
+            if matches!(data.terminator.kind, TerminatorKind::Return) {
+                errors.push(format!("bb{index}: cleanup returns normally"));
+            }
+            if matches!(
+                data.terminator.unwind,
+                UnwindAction::Continue | UnwindAction::Cleanup(_)
+            ) {
+                errors.push(format!(
+                    "bb{index}: cleanup can unwind instead of terminating"
+                ));
+            }
+        } else if matches!(data.terminator.kind, TerminatorKind::UnwindResume) {
+            errors.push(format!("bb{index}: resume outside cleanup"));
+        }
+    }
+    errors
 }

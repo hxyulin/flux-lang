@@ -53,6 +53,10 @@ pub(crate) fn elaborate(
     env: &[Predicate],
     precise: bool,
 ) {
+    assert!(
+        !body.has_unwind(),
+        "unwind drop elaboration is not implemented yet"
+    );
     let mut roots = FxHashSet::default();
     for data in body.blocks.values() {
         if let TerminatorKind::Drop { place, .. } = &data.terminator.kind
@@ -438,7 +442,11 @@ fn push(
 ) -> BasicBlock {
     body.blocks.alloc(BasicBlockData {
         statements,
-        terminator: Terminator { kind, range },
+        terminator: Terminator {
+            unwind: crate::UnwindAction::Unreachable,
+            kind,
+            range,
+        },
     })
 }
 
@@ -530,7 +538,7 @@ fn merge_dead(body: &mut Body, dead: &[BasicBlock]) {
     }
     let mut preds = vec![0u32; body.blocks.len()];
     for data in body.blocks.values() {
-        for successor in data.terminator.kind.successors() {
+        for successor in data.terminator.successors() {
             preds[successor.index()] += 1;
         }
     }
@@ -550,6 +558,7 @@ fn merge_dead(body: &mut Body, dead: &[BasicBlock]) {
                 BasicBlockData {
                     statements: Vec::new(),
                     terminator: Terminator {
+                        unwind: crate::UnwindAction::Unreachable,
                         kind: TerminatorKind::Unreachable,
                         range: Default::default(),
                     },
@@ -585,6 +594,9 @@ fn merge_dead(body: &mut Body, dead: &[BasicBlock]) {
     }
     for data in kept.values_mut() {
         retarget(&mut data.terminator.kind, &map);
+        if let crate::UnwindAction::Cleanup(target) = &mut data.terminator.unwind {
+            *target = map[target.index()];
+        }
     }
     body.blocks = kept;
     body.fn_spans = std::mem::take(&mut body.fn_spans)
@@ -615,7 +627,7 @@ fn retarget(kind: &mut TerminatorKind, map: &[BasicBlock]) {
         TerminatorKind::Call { target, .. } | TerminatorKind::CallIndirect { target, .. } => {
             target.iter_mut().for_each(new)
         }
-        TerminatorKind::Return | TerminatorKind::Unreachable => {}
+        TerminatorKind::Return | TerminatorKind::UnwindResume | TerminatorKind::Unreachable => {}
     }
 }
 

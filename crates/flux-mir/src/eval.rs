@@ -2555,7 +2555,7 @@ impl<'a> Evaluator<'a> {
                     self.initialized(&value, ty, range)?;
                     return Ok(value);
                 }
-                TerminatorKind::Unreachable => {
+                TerminatorKind::UnwindResume | TerminatorKind::Unreachable => {
                     return Err(error(range, "entering unreachable code".to_owned()));
                 }
             };

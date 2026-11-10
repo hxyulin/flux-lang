@@ -9618,7 +9618,6 @@ impl<'a> Cx<'a> {
                 if limit == end {
                     for succ in body.blocks[BasicBlock::from_raw(block as u32)]
                         .terminator
-                        .kind
                         .successors()
                     {
                         let succ = succ.index();

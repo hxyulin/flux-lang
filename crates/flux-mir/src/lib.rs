@@ -168,6 +168,16 @@ pub struct Body {
     pub fn_spans: rustc_hash::FxHashMap<BasicBlock, u32>,
 }
 
+impl Body {
+    /// Whether this body requires exceptional control-flow lowering.
+    pub fn has_unwind(&self) -> bool {
+        self.blocks.values().any(|block| {
+            block.terminator.unwind != UnwindAction::Unreachable
+                || matches!(block.terminator.kind, TerminatorKind::UnwindResume)
+        })
+    }
+}
+
 /// The source use that introduced a closure's capture borrow.
 #[derive(Debug, Clone, Copy)]
 pub struct CaptureUse {
@@ -818,7 +828,33 @@ pub enum UnOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Terminator {
     pub kind: TerminatorKind,
+    /// What happens if this operation unwinds. Normal successors belong to `kind`.
+    pub unwind: UnwindAction,
     pub range: TextRange,
+}
+
+/// The exceptional exit of a call, drop, or assertion.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum UnwindAction {
+    /// The operation cannot unwind, including calls compiled in abort mode.
+    #[default]
+    Unreachable,
+    /// Propagate directly to the caller without local cleanup.
+    Continue,
+    /// Run local cleanup before resuming the exception.
+    Cleanup(BasicBlock),
+    /// Abort if an exception escapes, including a second panic during cleanup.
+    Terminate,
+}
+
+impl Terminator {
+    /// All local successors, with normal edges before the exceptional edge.
+    pub fn successors(&self) -> impl Iterator<Item = BasicBlock> + '_ {
+        self.kind.successors().chain(match self.unwind {
+            UnwindAction::Cleanup(block) => Some(block),
+            _ => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -870,6 +906,8 @@ pub enum TerminatorKind {
         target: BasicBlock,
     },
     Return,
+    /// Resume the exception whose cleanup is running in this frame.
+    UnwindResume,
     /// Never reached: code after something that diverges.
     Unreachable,
 }
@@ -920,6 +958,7 @@ impl AssertMessage {
 }
 
 impl TerminatorKind {
+    /// Normal local successors. Use [`Terminator::successors`] for all CFG edges.
     pub fn successors(&self) -> impl Iterator<Item = BasicBlock> + '_ {
         let (targets, last): (&[(u128, BasicBlock)], Option<BasicBlock>) = match self {
             Self::SwitchInt {
@@ -929,7 +968,7 @@ impl TerminatorKind {
                 (&[], Some(*target))
             }
             Self::Call { target, .. } | Self::CallIndirect { target, .. } => (&[], *target),
-            Self::Return | Self::Unreachable => (&[], None),
+            Self::Return | Self::UnwindResume | Self::Unreachable => (&[], None),
         };
         targets.iter().map(|&(_, block)| block).chain(last)
     }
@@ -1143,8 +1182,15 @@ impl TerminatorKind {
             Self::Call { args, .. } => (None, args),
             Self::CallIndirect { callee, args, .. } => (Some(callee), args),
             Self::Assert { cond, .. } => (Some(cond), &[]),
-            Self::Goto(_) | Self::Drop { .. } | Self::Return | Self::Unreachable => (None, &[]),
+            Self::Goto(_)
+            | Self::Drop { .. }
+            | Self::Return
+            | Self::UnwindResume
+            | Self::Unreachable => (None, &[]),
         };
         first.into_iter().chain(rest)
     }
 }
+
+#[cfg(test)]
+mod unwind_tests;

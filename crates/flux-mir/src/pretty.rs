@@ -209,9 +209,16 @@ fn body_text(
                 format!("drop({}) -> bb{}", place(p), target.index())
             }
             TerminatorKind::Return => "return".to_owned(),
+            TerminatorKind::UnwindResume => "resume".to_owned(),
             TerminatorKind::Unreachable => "unreachable".to_owned(),
         };
-        writeln!(out, "        {terminator};\n    }}").unwrap();
+        let unwind = match data.terminator.unwind {
+            crate::UnwindAction::Unreachable => String::new(),
+            crate::UnwindAction::Continue => " unwind continue".to_owned(),
+            crate::UnwindAction::Cleanup(block) => format!(" unwind bb{}", block.index()),
+            crate::UnwindAction::Terminate => " unwind terminate".to_owned(),
+        };
+        writeln!(out, "        {terminator}{unwind};\n    }}").unwrap();
     }
     out.push_str("}\n");
 }

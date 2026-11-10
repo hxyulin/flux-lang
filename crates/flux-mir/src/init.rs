@@ -102,8 +102,26 @@ pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Entry
                 paths.apply(&mut state, &event, drop_moves);
             }
         }
-        for event in terminator_events(&data.terminator.kind) {
-            paths.apply(&mut state, &event, drop_moves);
+        if let crate::UnwindAction::Cleanup(successor) = data.terminator.unwind {
+            // Arguments move into the callee before either edge. Its result
+            // only becomes initialized if the call returns normally.
+            for event in terminator_events(&data.terminator.kind) {
+                if !matches!(event, Event::Assign(_)) {
+                    paths.apply(&mut state, &event, drop_moves);
+                }
+            }
+            if entry.join(successor.index(), &state) && !queued.set(successor.index(), true) {
+                worklist.push(successor);
+            }
+            for event in terminator_events(&data.terminator.kind) {
+                if matches!(event, Event::Assign(_)) {
+                    paths.apply(&mut state, &event, drop_moves);
+                }
+            }
+        } else {
+            for event in terminator_events(&data.terminator.kind) {
+                paths.apply(&mut state, &event, drop_moves);
+            }
         }
         for successor in data.terminator.kind.successors() {
             if entry.join(successor.index(), &state) && !queued.set(successor.index(), true) {

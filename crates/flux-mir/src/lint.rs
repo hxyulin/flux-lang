@@ -109,7 +109,7 @@ pub fn check(
         match taken {
             Some(target) => reachable[target.index()] = true,
             None => {
-                for successor in data.terminator.kind.successors() {
+                for successor in data.terminator.successors() {
                     reachable[successor.index()] = true;
                 }
             }
@@ -183,7 +183,7 @@ fn reverse_postorder(body: &Body) -> Vec<BasicBlock> {
     let mut stack = vec![(Body::entry(), 0usize)];
     visited[0] = true;
     while let Some((block, next)) = stack.pop() {
-        let mut successors = body.blocks[block].terminator.kind.successors();
+        let mut successors = body.blocks[block].terminator.successors();
         if let Some(successor) = successors.nth(next) {
             stack.push((block, next + 1));
             if !visited[successor.index()] {
