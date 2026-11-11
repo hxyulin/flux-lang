@@ -5442,6 +5442,10 @@ impl<'a> Ctx<'a> {
             },
             ast::Pat::RangePat(range_pat) => self.lower_range_pat(range_pat),
             ast::Pat::OrPat(or) => self.lower_or_pat(or, site),
+            ast::Pat::BoxPat(_) => {
+                self.error(range, "box patterns are not supported yet");
+                Pat::Missing
+            }
             ast::Pat::RefPat(r) => {
                 let inner = self.lower_pat(r.pat(), pat.syntax(), site);
                 Pat::Ref {

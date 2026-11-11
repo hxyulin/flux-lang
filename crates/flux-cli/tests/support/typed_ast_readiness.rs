@@ -57,10 +57,10 @@ pub fn comprehensive_consumer(generated: &str) -> String {
         }
     }
     // Review coverage explicitly if sourcegen changes its inventory. These are
-    // 405 trait interface calls, 538 accessors and 82 conversion call sites.
+    // 408 trait interface calls, 542 accessors and 83 conversion call sites.
     assert_eq!(
         (structs, enums, nodes, accessors, conversions),
-        (128, 7, 135, 538, 82)
+        (129, 7, 136, 542, 83)
     );
     let template = include_str!("../fixtures/typed_ast_readiness/consumer.rs.txt");
     assert_eq!(template.matches("// GENERATED_INTERFACES").count(), 1);

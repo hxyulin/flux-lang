@@ -35,6 +35,7 @@ pub(super) const PATTERN_FIRST: TokenSet =
             T![&],
             T!['('],
             T!['['],
+            T![box],
             T![ref],
             T![mut],
             T![|],
@@ -87,6 +88,12 @@ pub(super) fn pattern_single(p: &mut Parser<'_>) {
             let m = p.start();
             p.bump(T![..]);
             m.complete(p, REST_PAT);
+        }
+        T![box] => {
+            let m = p.start();
+            p.bump(T![box]);
+            pattern_single(p);
+            m.complete(p, BOX_PAT);
         }
         T![&] => {
             let m = p.start();

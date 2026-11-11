@@ -395,6 +395,36 @@ impl<'t> AstNode<'t> for BlockExpr<'t> {
 }
 
 /// ```text
+/// BoxPat =
+///   'box' Pat
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BoxPat<'t> {
+    pub(crate) syntax: SyntaxNode<'t>,
+}
+
+impl<'t> BoxPat<'t> {
+    pub fn box_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, BOX_KW)
+    }
+    pub fn pat(self) -> Option<Pat<'t>> {
+        support::child(self.syntax)
+    }
+}
+
+impl<'t> AstNode<'t> for BoxPat<'t> {
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == BOX_PAT
+    }
+    fn cast(syntax: SyntaxNode<'t>) -> Option<Self> {
+        Self::can_cast(syntax.kind()).then_some(BoxPat { syntax })
+    }
+    fn syntax(self) -> SyntaxNode<'t> {
+        self.syntax
+    }
+}
+
+/// ```text
 /// BreakExpr =
 ///   Attr* 'break' Lifetime? Expr?
 /// ```
@@ -964,7 +994,7 @@ impl<'t> AstNode<'t> for FieldExpr<'t> {
 /// ```text
 /// Fn =
 ///   Attr* Visibility?
-///   'safe'? 'const'? 'async'? 'unsafe'? Abi?
+///   'default'? 'safe'? 'const'? 'async'? 'unsafe'? Abi?
 ///   'fn' Name GenericParamList? ParamList RetType? WhereClause?
 ///   (body:BlockExpr | ';')
 /// ```
@@ -979,6 +1009,9 @@ impl<'t> Fn<'t> {
     }
     pub fn visibility(self) -> Option<Visibility<'t>> {
         support::child(self.syntax)
+    }
+    pub fn default_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, DEFAULT_KW)
     }
     pub fn safe_token(self) -> Option<SyntaxToken<'t>> {
         support::token(self.syntax, SAFE_KW)
@@ -1288,7 +1321,7 @@ impl<'t> AstNode<'t> for IfExpr<'t> {
 
 /// ```text
 /// Impl =
-///   Attr* Visibility? 'unsafe'? 'impl' GenericParamList? '!'?
+///   Attr* Visibility? 'default'? 'unsafe'? 'impl' GenericParamList? '!'?
 ///   (trait_ty:Type 'for')? self_ty:Type WhereClause? AssocItemList
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1302,6 +1335,9 @@ impl<'t> Impl<'t> {
     }
     pub fn visibility(self) -> Option<Visibility<'t>> {
         support::child(self.syntax)
+    }
+    pub fn default_token(self) -> Option<SyntaxToken<'t>> {
+        support::token(self.syntax, DEFAULT_KW)
     }
     pub fn unsafe_token(self) -> Option<SyntaxToken<'t>> {
         support::token(self.syntax, UNSAFE_KW)
@@ -5378,6 +5414,7 @@ impl<'t> From<Use<'t>> for Item<'t> {
 /// | PathPat
 /// | RangePat
 /// | RecordPat
+/// | BoxPat
 /// | RefPat
 /// | RestPat
 /// | SlicePat
@@ -5395,6 +5432,7 @@ pub enum Pat<'t> {
     PathPat(PathPat<'t>),
     RangePat(RangePat<'t>),
     RecordPat(RecordPat<'t>),
+    BoxPat(BoxPat<'t>),
     RefPat(RefPat<'t>),
     RestPat(RestPat<'t>),
     SlicePat(SlicePat<'t>),
@@ -5415,6 +5453,7 @@ impl<'t> AstNode<'t> for Pat<'t> {
                 | PATH_PAT
                 | RANGE_PAT
                 | RECORD_PAT
+                | BOX_PAT
                 | REF_PAT
                 | REST_PAT
                 | SLICE_PAT
@@ -5433,6 +5472,7 @@ impl<'t> AstNode<'t> for Pat<'t> {
             PATH_PAT => Pat::PathPat(PathPat { syntax }),
             RANGE_PAT => Pat::RangePat(RangePat { syntax }),
             RECORD_PAT => Pat::RecordPat(RecordPat { syntax }),
+            BOX_PAT => Pat::BoxPat(BoxPat { syntax }),
             REF_PAT => Pat::RefPat(RefPat { syntax }),
             REST_PAT => Pat::RestPat(RestPat { syntax }),
             SLICE_PAT => Pat::SlicePat(SlicePat { syntax }),
@@ -5453,6 +5493,7 @@ impl<'t> AstNode<'t> for Pat<'t> {
             Pat::PathPat(it) => it.syntax(),
             Pat::RangePat(it) => it.syntax(),
             Pat::RecordPat(it) => it.syntax(),
+            Pat::BoxPat(it) => it.syntax(),
             Pat::RefPat(it) => it.syntax(),
             Pat::RestPat(it) => it.syntax(),
             Pat::SlicePat(it) => it.syntax(),
@@ -5508,6 +5549,12 @@ impl<'t> From<RangePat<'t>> for Pat<'t> {
 impl<'t> From<RecordPat<'t>> for Pat<'t> {
     fn from(node: RecordPat<'t>) -> Self {
         Pat::RecordPat(node)
+    }
+}
+
+impl<'t> From<BoxPat<'t>> for Pat<'t> {
+    fn from(node: BoxPat<'t>) -> Self {
+        Pat::BoxPat(node)
     }
 }
 

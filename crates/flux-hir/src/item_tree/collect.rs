@@ -1770,6 +1770,12 @@ impl Collector<'_> {
     }
 
     fn collect_impl(&mut self, ctx: Ctx, imp: ast::Impl<'_>) {
+        if let Some(token) = imp.default_token() {
+            self.items.diagnostics.push(Diagnostic::new(
+                token.text_range(),
+                "specialization is not supported yet",
+            ));
+        }
         let root = self.items.crates[self.items.modules[ctx.module].krate.0 as usize].root;
         let file = self.items.modules[root].file;
         let trusted_drop =
@@ -2073,6 +2079,12 @@ impl Collector<'_> {
         extern_block: Option<Abi>,
         owner: Option<Owner>,
     ) -> Option<FunctionId> {
+        if let Some(token) = f.default_token() {
+            self.items.diagnostics.push(Diagnostic::new(
+                token.text_range(),
+                "specialization is not supported yet",
+            ));
+        }
         let in_extern_block = extern_block.is_some();
         let is_core = self.items.is_core(ctx.module);
         if let Some(safe) = f.safe_token() {

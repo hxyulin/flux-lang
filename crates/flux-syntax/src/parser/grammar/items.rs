@@ -82,6 +82,14 @@ pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
         return Ok(());
     }
     let has_visibility = opt_visibility(p);
+    let has_default = p.at_default()
+        && matches!(
+            p.nth(1),
+            T![fn] | T![const] | T![unsafe] | T![async] | T![extern] | T![impl]
+        );
+    if has_default {
+        p.bump_default();
+    }
     if p.at_safe() && matches!(p.nth(1), T![fn] | T![static]) {
         if !matches!(p.item_owner, EXTERN_BLOCK | MACRO_ITEMS) {
             p.error("`safe` items are only allowed in extern blocks");
@@ -131,6 +139,10 @@ pub(super) fn opt_item(p: &mut Parser<'_>, m: Marker) -> Result<(), Marker> {
         } else if has_const {
             p.error("const trait impls are experimental");
         }
+    }
+
+    if has_default && !matches!(p.current(), T![fn] | T![impl]) {
+        p.error("expected `fn` or `impl` after `default`");
     }
 
     match p.current() {

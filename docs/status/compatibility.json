@@ -34,32 +34,29 @@
   },
   "baseline_revision": "d2bad0208088dad0b09f4ef911a1f81a43f7f0c7",
   "edition_aware_parser": {
-    "files": 68236,
-    "without_syntax_diagnostics": 68183,
-    "with_syntax_diagnostics": 53,
-    "without_syntax_diagnostics_percent": 99.92,
+    "files": 68295,
+    "without_syntax_diagnostics": 68253,
+    "with_syntax_diagnostics": 42,
+    "without_syntax_diagnostics_percent": 99.9385,
     "previous_without_syntax_diagnostics": 68164,
     "new_failures": 0,
     "remaining_classifications": {
-      "nightly-only syntax": 13,
-      "include fragments containing a bare error string": 3,
-      "unexpanded code-generation templates": 31,
-      "intentional invalid syntax fixtures": 5,
-      "invalid inactive experimental source (missing semicolon)": 1
+      "rustc parse-only also rejects": 42
     },
     "edition_inference": "Nearest ancestor package Cargo.toml; all files scanned in the inferred edition. No unresolved inherited edition fields in this inventory.",
     "scope": "Raw source parsing, not full crate compilation. cfg, source-level fixture edition overrides and per-target edition overrides are not applied.",
-    "local_evidence": "out/corpus-syntax-20261110/{summary.json,baseline-full-census.json,final-census.json,inventory.json}"
+    "local_evidence": "out/nightly-parse/census.json",
+    "date": "2026-11-11"
   },
   "rustc_filtered_parser": {
-    "files": 68194,
-    "without_syntax_diagnostics": 68183,
-    "with_syntax_diagnostics": 11,
-    "without_syntax_diagnostics_percent": 99.9839,
+    "files": 68253,
+    "without_syntax_diagnostics": 68253,
+    "with_syntax_diagnostics": 0,
+    "without_syntax_diagnostics_percent": 100,
     "excluded_shared_failures": 42,
-    "scope": "Edition-aware file census excluding only files with Flux syntax diagnostics also rejected by rustc parse-only. Remaining clean files were not individually checked by rustc. No whole package exclusions. Not full compilation.",
+    "scope": "Edition-aware file census excluding 42 files also rejected by rustc parse-only. The remaining failure paths exactly match the recorded rustc rejection list. Clean files were not individually checked with rustc. Not full compilation.",
     "evidence": "rustc-parser-controls.json",
-    "census_date": "2026-11-10",
+    "census_date": "2026-11-11",
     "rustc_control_date": "2026-11-11"
   }
 }

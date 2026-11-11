@@ -203,6 +203,9 @@ pub fn parse_expansion_with_token_kinds(
             lexed.is_union_keyword(index),
             lexed.is_dyn_keyword(index),
         );
+        if lexed.is_default_keyword(index) {
+            input.set_last_default_keyword();
+        }
         if lexed.is_safe_keyword(index) {
             input.set_last_safe_keyword();
         }

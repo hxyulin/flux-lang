@@ -851,6 +851,9 @@ impl<'a> CallInput<'a> {
             if t.kind == SyntaxKind::IDENT && t.text.as_str() == "safe" {
                 parser_input.set_last_safe_keyword();
             }
+            if t.kind == SyntaxKind::IDENT && t.text.as_str() == "default" {
+                parser_input.set_last_default_keyword();
+            }
             if t.kind == T!['('] && t.origin.range.is_empty() {
                 parser_input.set_last_invisible_paren();
             }

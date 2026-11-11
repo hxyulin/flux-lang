@@ -281,6 +281,15 @@ impl<'i> Parser<'i> {
         self.do_bump(SAFE_KW, 1);
     }
 
+    pub(crate) fn at_default(&mut self) -> bool {
+        self.at(IDENT) && self.input.is_default_keyword(self.pos)
+    }
+
+    pub(crate) fn bump_default(&mut self) {
+        assert!(self.at_default());
+        self.do_bump(DEFAULT_KW, 1);
+    }
+
     /// Consumes the next raw token as-is.
     pub(crate) fn bump_any(&mut self) {
         let kind = self.current();

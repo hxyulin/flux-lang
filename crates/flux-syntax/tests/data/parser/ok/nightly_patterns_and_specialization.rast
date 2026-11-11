@@ -1,0 +1,355 @@
+SOURCE_FILE@0..422
+  ATTR@0..41
+    POUND@0..1 "#"
+    BANG@1..2 "!"
+    L_BRACK@2..3 "["
+    META@3..40
+      PATH@3..10
+        PATH_SEGMENT@3..10
+          NAME_REF@3..10
+            IDENT@3..10 "feature"
+      TOKEN_TREE@10..40
+        L_PAREN@10..11 "("
+        IDENT@11..25 "specialization"
+        COMMA@25..26 ","
+        WHITESPACE@26..27 " "
+        IDENT@27..39 "box_patterns"
+        R_PAREN@39..40 ")"
+    R_BRACK@40..41 "]"
+  WHITESPACE@41..42 "\n"
+  TRAIT@42..80
+    TRAIT_KW@42..47 "trait"
+    WHITESPACE@47..48 " "
+    NAME@48..53
+      IDENT@48..53 "Value"
+    WHITESPACE@53..54 " "
+    ASSOC_ITEM_LIST@54..80
+      L_CURLY@54..55 "{"
+      WHITESPACE@55..56 " "
+      FN@56..78
+        FN_KW@56..58 "fn"
+        WHITESPACE@58..59 " "
+        NAME@59..64
+          IDENT@59..64 "value"
+        PARAM_LIST@64..71
+          L_PAREN@64..65 "("
+          SELF_PARAM@65..70
+            AMP@65..66 "&"
+            SELF_KW@66..70 "self"
+          R_PAREN@70..71 ")"
+        WHITESPACE@71..72 " "
+        RET_TYPE@72..77
+          THIN_ARROW@72..74 "->"
+          WHITESPACE@74..75 " "
+          PATH_TYPE@75..77
+            PATH@75..77
+              PATH_SEGMENT@75..77
+                NAME_REF@75..77
+                  IDENT@75..77 "u8"
+        SEMICOLON@77..78 ";"
+      WHITESPACE@78..79 " "
+      R_CURLY@79..80 "}"
+  WHITESPACE@80..81 "\n"
+  IMPL@81..144
+    IMPL_KW@81..85 "impl"
+    GENERIC_PARAM_LIST@85..88
+      L_ANGLE@85..86 "<"
+      TYPE_PARAM@86..87
+        NAME@86..87
+          IDENT@86..87 "T"
+      R_ANGLE@87..88 ">"
+    WHITESPACE@88..89 " "
+    PATH_TYPE@89..94
+      PATH@89..94
+        PATH_SEGMENT@89..94
+          NAME_REF@89..94
+            IDENT@89..94 "Value"
+    WHITESPACE@94..95 " "
+    FOR_KW@95..98 "for"
+    WHITESPACE@98..99 " "
+    PATH_TYPE@99..100
+      PATH@99..100
+        PATH_SEGMENT@99..100
+          NAME_REF@99..100
+            IDENT@99..100 "T"
+    WHITESPACE@100..101 " "
+    ASSOC_ITEM_LIST@101..144
+      L_CURLY@101..102 "{"
+      WHITESPACE@102..107 "\n    "
+      FN@107..142
+        DEFAULT_KW@107..114 "default"
+        WHITESPACE@114..115 " "
+        FN_KW@115..117 "fn"
+        WHITESPACE@117..118 " "
+        NAME@118..123
+          IDENT@118..123 "value"
+        PARAM_LIST@123..130
+          L_PAREN@123..124 "("
+          SELF_PARAM@124..129
+            AMP@124..125 "&"
+            SELF_KW@125..129 "self"
+          R_PAREN@129..130 ")"
+        WHITESPACE@130..131 " "
+        RET_TYPE@131..136
+          THIN_ARROW@131..133 "->"
+          WHITESPACE@133..134 " "
+          PATH_TYPE@134..136
+            PATH@134..136
+              PATH_SEGMENT@134..136
+                NAME_REF@134..136
+                  IDENT@134..136 "u8"
+        WHITESPACE@136..137 " "
+        BLOCK_EXPR@137..142
+          L_CURLY@137..138 "{"
+          WHITESPACE@138..139 " "
+          LITERAL@139..140
+            INT_NUMBER@139..140 "0"
+          WHITESPACE@140..141 " "
+          R_CURLY@141..142 "}"
+      WHITESPACE@142..143 "\n"
+      R_CURLY@143..144 "}"
+  WHITESPACE@144..145 "\n"
+  IMPL@145..216
+    DEFAULT_KW@145..152 "default"
+    WHITESPACE@152..153 " "
+    IMPL_KW@153..157 "impl"
+    GENERIC_PARAM_LIST@157..160
+      L_ANGLE@157..158 "<"
+      TYPE_PARAM@158..159
+        NAME@158..159
+          IDENT@158..159 "T"
+      R_ANGLE@159..160 ">"
+    WHITESPACE@160..161 " "
+    PATH_TYPE@161..166
+      PATH@161..166
+        PATH_SEGMENT@161..166
+          NAME_REF@161..166
+            IDENT@161..166 "Value"
+    WHITESPACE@166..167 " "
+    FOR_KW@167..170 "for"
+    WHITESPACE@170..171 " "
+    PATH_TYPE@171..180
+      PATH@171..180
+        PATH_SEGMENT@171..180
+          NAME_REF@171..177
+            IDENT@171..177 "Option"
+          GENERIC_ARG_LIST@177..180
+            L_ANGLE@177..178 "<"
+            TYPE_ARG@178..179
+              PATH_TYPE@178..179
+                PATH@178..179
+                  PATH_SEGMENT@178..179
+                    NAME_REF@178..179
+                      IDENT@178..179 "T"
+            R_ANGLE@179..180 ">"
+    WHITESPACE@180..181 " "
+    ASSOC_ITEM_LIST@181..216
+      L_CURLY@181..182 "{"
+      WHITESPACE@182..187 "\n    "
+      FN@187..214
+        FN_KW@187..189 "fn"
+        WHITESPACE@189..190 " "
+        NAME@190..195
+          IDENT@190..195 "value"
+        PARAM_LIST@195..202
+          L_PAREN@195..196 "("
+          SELF_PARAM@196..201
+            AMP@196..197 "&"
+            SELF_KW@197..201 "self"
+          R_PAREN@201..202 ")"
+        WHITESPACE@202..203 " "
+        RET_TYPE@203..208
+          THIN_ARROW@203..205 "->"
+          WHITESPACE@205..206 " "
+          PATH_TYPE@206..208
+            PATH@206..208
+              PATH_SEGMENT@206..208
+                NAME_REF@206..208
+                  IDENT@206..208 "u8"
+        WHITESPACE@208..209 " "
+        BLOCK_EXPR@209..214
+          L_CURLY@209..210 "{"
+          WHITESPACE@210..211 " "
+          LITERAL@211..212
+            INT_NUMBER@211..212 "1"
+          WHITESPACE@212..213 " "
+          R_CURLY@213..214 "}"
+      WHITESPACE@214..215 "\n"
+      R_CURLY@215..216 "}"
+  WHITESPACE@216..217 "\n"
+  FN@217..272
+    FN_KW@217..219 "fn"
+    WHITESPACE@219..220 " "
+    NAME@220..227
+      IDENT@220..227 "pattern"
+    PARAM_LIST@227..243
+      L_PAREN@227..228 "("
+      PARAM@228..242
+        BOX_PAT@228..233
+          BOX_KW@228..231 "box"
+          WHITESPACE@231..232 " "
+          IDENT_PAT@232..233
+            NAME@232..233
+              IDENT@232..233 "x"
+        COLON@233..234 ":"
+        WHITESPACE@234..235 " "
+        PATH_TYPE@235..242
+          PATH@235..242
+            PATH_SEGMENT@235..242
+              NAME_REF@235..238
+                IDENT@235..238 "Box"
+              GENERIC_ARG_LIST@238..242
+                L_ANGLE@238..239 "<"
+                TYPE_ARG@239..241
+                  PATH_TYPE@239..241
+                    PATH@239..241
+                      PATH_SEGMENT@239..241
+                        NAME_REF@239..241
+                          IDENT@239..241 "u8"
+                R_ANGLE@241..242 ">"
+      R_PAREN@242..243 ")"
+    WHITESPACE@243..244 " "
+    BLOCK_EXPR@244..272
+      L_CURLY@244..245 "{"
+      WHITESPACE@245..246 " "
+      LET_STMT@246..270
+        LET_KW@246..249 "let"
+        WHITESPACE@249..250 " "
+        TUPLE_PAT@250..260
+          L_PAREN@250..251 "("
+          BOX_PAT@251..256
+            BOX_KW@251..254 "box"
+            WHITESPACE@254..255 " "
+            IDENT_PAT@255..256
+              NAME@255..256
+                IDENT@255..256 "y"
+          COMMA@256..257 ","
+          WHITESPACE@257..258 " "
+          WILDCARD_PAT@258..259
+            UNDERSCORE@258..259 "_"
+          R_PAREN@259..260 ")"
+        WHITESPACE@260..261 " "
+        EQ@261..262 "="
+        WHITESPACE@262..263 " "
+        TUPLE_EXPR@263..269
+          L_PAREN@263..264 "("
+          PATH_EXPR@264..265
+            PATH@264..265
+              PATH_SEGMENT@264..265
+                NAME_REF@264..265
+                  IDENT@264..265 "x"
+          COMMA@265..266 ","
+          WHITESPACE@266..267 " "
+          LITERAL@267..268
+            INT_NUMBER@267..268 "0"
+          R_PAREN@268..269 ")"
+        SEMICOLON@269..270 ";"
+      WHITESPACE@270..271 " "
+      R_CURLY@271..272 "}"
+  WHITESPACE@272..273 "\n"
+  FN@273..331
+    FN_KW@273..275 "fn"
+    WHITESPACE@275..276 " "
+    NAME@276..283
+      IDENT@276..283 "default"
+    PARAM_LIST@283..285
+      L_PAREN@283..284 "("
+      R_PAREN@284..285 ")"
+    WHITESPACE@285..286 " "
+    BLOCK_EXPR@286..331
+      L_CURLY@286..287 "{"
+      WHITESPACE@287..288 " "
+      LET_STMT@288..304
+        LET_KW@288..291 "let"
+        WHITESPACE@291..292 " "
+        IDENT_PAT@292..299
+          NAME@292..299
+            IDENT@292..299 "default"
+        WHITESPACE@299..300 " "
+        EQ@300..301 "="
+        WHITESPACE@301..302 " "
+        LITERAL@302..303
+          INT_NUMBER@302..303 "1"
+        SEMICOLON@303..304 ";"
+      WHITESPACE@304..305 " "
+      LET_STMT@305..329
+        LET_KW@305..308 "let"
+        WHITESPACE@308..309 " "
+        IDENT_PAT@309..318
+          NAME@309..318
+            IDENT@309..318 "r#default"
+        WHITESPACE@318..319 " "
+        EQ@319..320 "="
+        WHITESPACE@320..321 " "
+        PATH_EXPR@321..328
+          PATH@321..328
+            PATH_SEGMENT@321..328
+              NAME_REF@321..328
+                IDENT@321..328 "default"
+        SEMICOLON@328..329 ";"
+      WHITESPACE@329..330 " "
+      R_CURLY@330..331 "}"
+  WHITESPACE@331..332 "\n"
+  MACRO_CALL@332..421
+    PATH@332..343
+      PATH_SEGMENT@332..343
+        NAME_REF@332..343
+          IDENT@332..343 "macro_rules"
+    BANG@343..344 "!"
+    WHITESPACE@344..345 " "
+    NAME@345..349
+      IDENT@345..349 "make"
+    WHITESPACE@349..350 " "
+    TOKEN_TREE@350..421
+      L_CURLY@350..351 "{"
+      WHITESPACE@351..352 " "
+      TOKEN_TREE@352..354
+        L_PAREN@352..353 "("
+        R_PAREN@353..354 ")"
+      WHITESPACE@354..355 " "
+      EQ@355..356 "="
+      R_ANGLE@356..357 ">"
+      WHITESPACE@357..358 " "
+      TOKEN_TREE@358..419
+        L_CURLY@358..359 "{"
+        WHITESPACE@359..360 " "
+        IMPL_KW@360..364 "impl"
+        WHITESPACE@364..365 " "
+        IDENT@365..370 "Value"
+        WHITESPACE@370..371 " "
+        FOR_KW@371..374 "for"
+        WHITESPACE@374..375 " "
+        IDENT@375..377 "u8"
+        WHITESPACE@377..378 " "
+        TOKEN_TREE@378..417
+          L_CURLY@378..379 "{"
+          WHITESPACE@379..380 " "
+          IDENT@380..387 "default"
+          WHITESPACE@387..388 " "
+          FN_KW@388..390 "fn"
+          WHITESPACE@390..391 " "
+          IDENT@391..396 "value"
+          TOKEN_TREE@396..403
+            L_PAREN@396..397 "("
+            AMP@397..398 "&"
+            SELF_KW@398..402 "self"
+            R_PAREN@402..403 ")"
+          WHITESPACE@403..404 " "
+          MINUS@404..405 "-"
+          R_ANGLE@405..406 ">"
+          WHITESPACE@406..407 " "
+          IDENT@407..409 "u8"
+          WHITESPACE@409..410 " "
+          TOKEN_TREE@410..415
+            L_CURLY@410..411 "{"
+            WHITESPACE@411..412 " "
+            INT_NUMBER@412..413 "2"
+            WHITESPACE@413..414 " "
+            R_CURLY@414..415 "}"
+          WHITESPACE@415..416 " "
+          R_CURLY@416..417 "}"
+        WHITESPACE@417..418 " "
+        R_CURLY@418..419 "}"
+      WHITESPACE@419..420 " "
+      R_CURLY@420..421 "}"
+  WHITESPACE@421..422 "\n"

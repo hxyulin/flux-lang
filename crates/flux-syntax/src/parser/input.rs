@@ -16,6 +16,7 @@ pub struct Input {
     union_keywords: Vec<u64>,
     dyn_keywords: Vec<u64>,
     safe_keywords: Vec<u64>,
+    default_keywords: Vec<u64>,
     invisible_parens: Vec<u64>,
 }
 
@@ -36,6 +37,7 @@ impl Input {
             union_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             dyn_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             safe_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
+            default_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             invisible_parens: Vec::with_capacity(lexed.len() / 64 + 1),
         };
         let mut was_joint = false;
@@ -50,6 +52,9 @@ impl Input {
             input.push_contextual(kind, lexed.is_union_keyword(i), lexed.is_dyn_keyword(i));
             if lexed.is_safe_keyword(i) {
                 input.set_last_safe_keyword();
+            }
+            if lexed.is_default_keyword(i) {
+                input.set_last_default_keyword();
             }
             was_joint = i + 1 < lexed.len() && !lexed.kind(i + 1).is_trivia();
         }
@@ -69,6 +74,7 @@ impl Input {
             self.union_keywords.push(0);
             self.dyn_keywords.push(0);
             self.safe_keywords.push(0);
+            self.default_keywords.push(0);
             self.invisible_parens.push(0);
         }
         if kind == SyntaxKind::IDENT && is_union {
@@ -85,6 +91,13 @@ impl Input {
         let index = self.kinds.len() - 1;
         debug_assert_eq!(self.kinds[index], SyntaxKind::IDENT);
         self.safe_keywords[index / 64] |= 1 << (index % 64);
+    }
+
+    /// Classifies the last identifier as a contextual `default` qualifier.
+    pub fn set_last_default_keyword(&mut self) {
+        let index = self.kinds.len() - 1;
+        debug_assert_eq!(self.kinds[index], SyntaxKind::IDENT);
+        self.default_keywords[index / 64] |= 1 << (index % 64);
     }
 
     /// Marks expander-inserted grouping, which preserves expression precedence
@@ -138,6 +151,12 @@ impl Input {
 
     pub(crate) fn is_safe_keyword(&self, i: usize) -> bool {
         self.safe_keywords
+            .get(i / 64)
+            .is_some_and(|word| word & (1 << (i % 64)) != 0)
+    }
+
+    pub(crate) fn is_default_keyword(&self, i: usize) -> bool {
+        self.default_keywords
             .get(i / 64)
             .is_some_and(|word| word & (1 << (i % 64)) != 0)
     }

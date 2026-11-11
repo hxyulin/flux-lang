@@ -2180,3 +2180,11 @@ and vector/deque ownership transfers. A contiguous vector keeps its allocation
 when converted to a deque. Deques preserve capacity while moving wrapped spans
 into vector order. Mutable slices support reverse chunks, inclusive splitting
 and adjacent-group splitting with double-ended iteration.
+
+### Nightly syntax parsing
+
+The parser preserves specialization's `default fn` and `default impl`, and
+`box` patterns. This covers inactive specialization modules and nightly test
+files in the source corpus. Active specialization and box patterns report
+unsupported-feature diagnostics during HIR lowering; their semantics are not
+implemented. `default` remains an identifier outside its qualifier position.

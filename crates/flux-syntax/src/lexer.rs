@@ -136,6 +136,10 @@ impl<'a> LexedStr<'a> {
         self.kind(i) == SyntaxKind::IDENT && self.token_text(i) == "safe"
     }
 
+    pub(crate) fn is_default_keyword(&self, i: usize) -> bool {
+        self.kind(i) == SyntaxKind::IDENT && self.token_text(i) == "default"
+    }
+
     pub fn token_range(&self, i: usize) -> TextRange {
         TextRange::new(self.starts[i], self.starts[i + 1])
     }

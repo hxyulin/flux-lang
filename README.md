@@ -45,16 +45,16 @@ package-specific lockfile updates. The
 
 ## Compatibility
 
-Parser census recorded on 2026-11-10, with rustc exclusion checks on 2026-11-11,
+Parser census and rustc exclusion checks recorded on 2026-11-11,
 on arm64 macOS. [Counts and measurement scope](docs/status/compatibility.json).
 
-![Rust source corpus: 68,183 of 68,194 files parse without syntax diagnostics, 99.98%; 42 shared rustc failures excluded.](docs/status/rust-corpus.svg)
+![Rust source corpus: 68,253 of 68,253 files parse without syntax diagnostics, 100%; 42 shared rustc failures excluded.](docs/status/rust-corpus.svg)
 
-The corpus contains 68,236 Rust files, 1.27 GB across 1,890 package versions.
-Using each file's inferred package edition, Flux parses 68,183 files without
-syntax diagnostics. Rustc's parse-only check also rejects 42 of the 53 remaining
-files. Excluding those files gives **68,183 / 68,194 (99.98%)**, with 11
-Flux-only syntax failures. Whole packages are not excluded. The clean files
+The corpus contains 68,295 Rust files, 1.27 GB across 1,891 package versions.
+Using each file's inferred package edition, Flux parses 68,253 files without
+syntax diagnostics. Rustc's parse-only check also rejects all 42 remaining
+files. Excluding those files gives **68,253 / 68,253 (100%)**, with no
+Flux-only syntax failures in this census. Whole packages are not excluded. The clean files
 were not individually checked with rustc.
 
 All files produced valid, lossless syntax trees, with no panics or time-budget
