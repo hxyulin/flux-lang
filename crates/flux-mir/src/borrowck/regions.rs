@@ -1768,12 +1768,13 @@ impl<'a> Cx<'a> {
             } else {
                 trait_regions.args.get(k - 1).map_or(&[][..], |t| t)
             };
-            if !(k == 0 && known_self)
-                && !self.impl_aliases_known(ty, args)
-                && !proof.is_some_and(|(env, depth)| self.impl_aliases_proven(ty, args, env, depth))
-                && !projection_inputs
-                    .is_some_and(|env| self.instantiated_aliases_proven(ty, args, arg_vars, env, 0))
-            {
+            let mut aliases_proven = (k == 0 && known_self)
+                || self.impl_aliases_known(ty, args)
+                || proof.is_some_and(|(env, depth)| self.impl_aliases_proven(ty, args, env, depth))
+                || projection_inputs.is_some_and(|env| {
+                    self.instantiated_aliases_proven(ty, args, arg_vars, env, 0)
+                });
+            if !aliases_proven && projection_inputs.is_none() {
                 return None;
             }
             // Erased regions in the tuple of a parenthesized Fn bound are
@@ -1796,10 +1797,28 @@ impl<'a> Cx<'a> {
                 Region::Late(i) => named_bound.get(&i).copied(),
                 Region::Erased => fresh.next(),
             };
+            if !aliases_proven
+                && let TyKind::Alias(alias) = ty.kind()
+                && let Some(env) = projection_inputs
+            {
+                aliases_proven =
+                    self.written_family_alias_proven(alias, table, &mut map, args, arg_vars, env);
+            }
             let slots = self.instantiate_sig(ty, table, &mut map, args, arg_vars)?;
             // Proving a selected occurrence may resolve this associated type.
-            let instance = self.normalize(if args.is_empty() { ty } else { ty.subst(args) });
+            let original = if args.is_empty() { ty } else { ty.subst(args) };
+            let instance = self.normalize(original);
             if slots.len() != self.slots(instance) as usize {
+                return None;
+            }
+            // Written projection arguments carry occurrence rows too. Prove
+            // their owners after instantiating that row, rather than inventing
+            // inputs from their erased type or from generic arguments alone.
+            if !aliases_proven
+                && !projection_inputs.is_some_and(|env| {
+                    self.represented_value_aliases_proven(original, &slots, env, 0)
+                })
+            {
                 return None;
             }
             types.push(instance);
@@ -6207,14 +6226,22 @@ impl<'a> Cx<'a> {
                 }
                 Outlives::Type(t, b) => {
                     let Some(b) = map(b) else { continue };
+                    let instance = self.normalize(t.subst(generic_args));
                     if let TyKind::Param(p) = t.kind()
                         && let Some(vars) = type_vars.get(p.index as usize)
                     {
+                        if matches!(instance.kind(), TyKind::Alias(alias)
+                            if flux_ty::regions::has_projection_inputs(items, alias))
+                        {
+                            let env = self.caller_region_goals();
+                            if self.constrain_family_outlives(instance, vars, b, &env, range) {
+                                continue;
+                            }
+                        }
                         for &v in &vars.clone() {
                             self.outlives(v, b, Category::CallArgument, range);
                         }
                     }
-                    let instance = self.normalize(t.subst(generic_args));
                     self.type_outlives(instance, b, range);
                 }
             }

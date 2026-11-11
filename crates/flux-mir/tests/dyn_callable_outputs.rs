@@ -80,6 +80,31 @@ fn callable_object_outputs_match_rustc() {
             "trait Value{}impl Value for u8{}fn bad(){let value=1u8;let a=vec![&value as &dyn Value];let b=vec![&value];let _=[a,b];}",
             false,
         ),
+        (
+            "generic_object_output",
+            "fn forward<'a,F:?Sized+Fn(&str)->&str>(f:&F,x:&'a str)->&'a str{f(x)}fn apply<'a>(f:&dyn Fn(&str)->&str,x:&'a str)->&'a str{forward(f,x)}",
+            true,
+        ),
+        (
+            "generic_object_static_escape",
+            "fn forward<'a,F:?Sized+Fn(&str)->&str>(f:&F,x:&'a str)->&'a str{f(x)}fn bad(f:&dyn Fn(&str)->&str,x:&str)->&'static str{forward(f,x)}",
+            false,
+        ),
+        (
+            "generic_object_not_general",
+            "fn forward<'a,F:?Sized+Fn(&str)->&str>(f:&F,x:&'a str)->&'a str{f(x)}fn bad<'a>(f:&dyn Fn(&'a str)->&'a str,x:&'a str)->&'a str{forward(f,x)}",
+            false,
+        ),
+        (
+            "generic_object_wrong_output",
+            "fn forward<F:?Sized+Fn(&str)->&'static str>(f:&F,x:&str)->&'static str{f(x)}fn bad(f:&dyn Fn(&str)->&str,x:&str)->&'static str{forward(f,x)}",
+            false,
+        ),
+        (
+            "generic_pointer_output",
+            "fn forward<'a,F:Fn(&str)->&str>(f:F,x:&'a str)->&'a str{f(x)}fn apply<'a>(f:fn(&str)->&str,x:&'a str)->&'a str{forward(f,x)}",
+            true,
+        ),
     ] {
         let path = directory.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();

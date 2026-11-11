@@ -30,9 +30,11 @@ fn record_pointer_check(
     input_wf.dedup();
     implied.sort_unstable();
     implied.dedup();
+    // A diagnostic location observes a proof; it does not introduce a new
+    // binder. Reuse the first scope and input assumptions for this domain.
     if let Some(old) = checks
         .iter_mut()
-        .find(|old| old.bound == bound && old.input_wf == input_wf && old.range == range)
+        .find(|old| old.bound == bound && old.input_wf == input_wf)
     {
         old.before = old.before.min(before);
     } else {
@@ -608,6 +610,13 @@ mod tests {
             vec![(3, 1)],
             second,
         );
+        assert_eq!(
+            checks.len(),
+            1,
+            "one binder can be observed at several locations"
+        );
+        assert_eq!(checks[0].before, 9);
+        assert_eq!(checks[0].range, first);
         record_pointer_check(
             &mut checks,
             20,
@@ -624,7 +633,7 @@ mod tests {
             vec![(3, 2)],
             first,
         );
-        assert_eq!(checks.len(), 4);
+        assert_eq!(checks.len(), 3);
         assert!(checks[1..].iter().all(|check| check.before == 20));
     }
     #[test]

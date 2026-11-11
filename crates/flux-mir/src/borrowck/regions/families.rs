@@ -1,6 +1,14 @@
 //! Associated family occurrence inputs and selected impl template substitution.
 use super::*;
 
+struct FamilyInputs {
+    alias: AliasTy,
+    owner: Vec<Var>,
+    inputs: Vec<Vec<Var>>,
+    family: Vec<Var>,
+    family_inputs: Vec<Vec<Var>>,
+}
+
 impl Cx<'_> {
     /// An abstract output inherits bounds from its independently proven owner.
     /// Its row captures the owning trait occurrence, not the output's fields.
@@ -111,6 +119,66 @@ impl Cx<'_> {
         Some((lifetimes, bounds))
     }
 
+    /// Declared bounds belong to a proven projection occurrence, including its
+    /// owner and family prerequisites. They are not facts about an erased Ty.
+    fn family_outlives_sources(
+        &mut self,
+        value: Ty,
+        row: &[Var],
+        env: &[ImplRegionGoal],
+    ) -> Option<Vec<Var>> {
+        let TyKind::Alias(alias) = value.kind() else {
+            return None;
+        };
+        let (lifetimes, _) = self.proven_family_output(alias, row, env, 0)?;
+        let contract = &self
+            .sigs
+            .regions
+            .traits
+            .get(alias.trait_)?
+            .families
+            .iter()
+            .find(|(name, _)| *name == alias.name)?
+            .1;
+        Some(
+            contract
+                .output_outlives
+                .iter()
+                .filter_map(|bound| match *bound {
+                    Region::Static => Some(STATIC),
+                    Region::Param(index) => lifetimes.get(index as usize).copied(),
+                    Region::Erased | Region::Late(_) => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Constrain an inferred call lifetime from an exact associated output row.
+    /// Multiple independent bounds need a disjunctive proof; keep that case on
+    /// the existing conservative path rather than choose an arbitrary bound.
+    pub(super) fn constrain_family_outlives(
+        &mut self,
+        value: Ty,
+        row: &[Var],
+        target: Var,
+        env: &[ImplRegionGoal],
+        range: TextRange,
+    ) -> bool {
+        let Some(mut sources) = self.family_outlives_sources(value, row, env) else {
+            return false;
+        };
+        if sources.contains(&STATIC) {
+            return true;
+        }
+        sources.sort_unstable();
+        sources.dedup();
+        let [source] = sources.as_slice() else {
+            return false;
+        };
+        self.outlives(*source, target, Category::CallArgument, range);
+        true
+    }
+
     /// A declaration proof can use an output lifetime bound from this exact
     /// family occurrence. Captured owner inputs are not the output's fields,
     /// and an erased alias cannot supply a global type-outlives fact.
@@ -124,28 +192,10 @@ impl Cx<'_> {
         let TyKind::Alias(alias) = value.kind() else {
             return false;
         };
-        let Some((lifetimes, _)) = self.proven_family_output(alias, row, env, 0) else {
+        let Some(sources) = self.family_outlives_sources(value, row, env) else {
             return false;
         };
-        let Some(contract) = self
-            .sigs
-            .regions
-            .traits
-            .get(alias.trait_)
-            .and_then(|t| t.families.iter().find(|(name, _)| *name == alias.name))
-            .map(|(_, contract)| contract)
-        else {
-            return false;
-        };
-        let declared = contract.output_outlives.iter().any(|bound| {
-            let source = match *bound {
-                Region::Static => STATIC,
-                Region::Param(index) => match lifetimes.get(index as usize) {
-                    Some(&region) => region,
-                    None => return false,
-                },
-                Region::Erased | Region::Late(_) => return false,
-            };
+        let declared = sources.into_iter().any(|source| {
             source == STATIC
                 || source == target
                 || match (
@@ -233,6 +283,42 @@ impl Cx<'_> {
         args: &[Ty],
         arg_vars: &[A],
     ) -> Option<Vec<Var>> {
+        let FamilyInputs {
+            alias: instance,
+            owner,
+            inputs,
+            family,
+            family_inputs,
+        } = self.family_inputs(alias, own, next, map, args, arg_vars)?;
+        self.family_prerequisites(instance, &owner, &inputs, &family, &family_inputs)?;
+        if self.family_depth > 32 {
+            return None;
+        }
+        self.family_depth += 1;
+        let output = self.family_output(
+            instance,
+            &owner,
+            &inputs,
+            &family,
+            &family_inputs,
+            self.family_depth,
+        );
+        self.family_depth -= 1;
+        output
+    }
+
+    /// Preserve the owning inputs even when selecting the associated output
+    /// changes its region layout. Output fields cannot prove owner obligations.
+    #[allow(clippy::too_many_arguments)]
+    fn family_inputs<A: AsRef<[Var]>>(
+        &mut self,
+        alias: AliasTy,
+        own: &[Region],
+        next: &mut usize,
+        map: &mut dyn FnMut(Region) -> Option<Var>,
+        args: &[Ty],
+        arg_vars: &[A],
+    ) -> Option<FamilyInputs> {
         let mut owner = Vec::new();
         for _ in 0..alias.owner_lifetimes {
             owner.push(map(*own.get(*next)?)?);
@@ -267,21 +353,42 @@ impl Cx<'_> {
             };
             instance
         };
-        self.family_prerequisites(instance, &owner, &inputs, &family, &family_inputs)?;
-        if self.family_depth > 32 {
-            return None;
+        Some(FamilyInputs {
+            alias: instance,
+            owner,
+            inputs,
+            family,
+            family_inputs,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn written_family_alias_proven(
+        &mut self,
+        alias: AliasTy,
+        own: &[Region],
+        map: &mut dyn FnMut(Region) -> Option<Var>,
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+        env: &[ImplRegionGoal],
+    ) -> bool {
+        let mut next = 0;
+        let Some(inputs) = self.family_inputs(alias, own, &mut next, map, args, arg_vars) else {
+            return false;
+        };
+        if next != own.len() {
+            return false;
         }
-        self.family_depth += 1;
-        let output = self.family_output(
-            instance,
-            &owner,
-            &inputs,
-            &family,
-            &family_inputs,
-            self.family_depth,
-        );
-        self.family_depth -= 1;
-        output
+        let row = inputs
+            .owner
+            .iter()
+            .chain(inputs.inputs.iter().flatten())
+            .chain(inputs.family.iter())
+            .chain(inputs.family_inputs.iter().flatten())
+            .copied()
+            .collect::<Vec<_>>();
+        self.proven_family_output(inputs.alias, &row, env, 0)
+            .is_some()
     }
 
     #[allow(clippy::too_many_arguments)]

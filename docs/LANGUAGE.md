@@ -775,7 +775,7 @@ contain nested references or captured lifetimes. Bound input lifetimes stay
 separate from captures, including static aliases and repeated borrowed tuple
 inputs. Direct calls preserve borrowed output links to those inputs and captures.
 Function-item conversions check those output links against the object signature.
-Generic forwarding of borrowed callable-object outputs remains unsupported.
+Generic `Fn` bounds retain those output links when forwarding a callable object.
 Owned nested object inputs such as `Box<dyn Any + Send>` are represented.
 A trait's crate may
 write inherent `impl dyn Tr` blocks (E0116 elsewhere), whose methods
@@ -1547,6 +1547,10 @@ inputs remain invariant and contribute their well-formedness requirements even
 when the selected output erases them. This mapping requires a fully resolved
 output, represented header substitutions, and no additional lifetime-dependent
 impl or trait prerequisites. Other selections retain explicit rejection.
+A type argument that is an associated output can use its declaration's static
+or single lifetime outlives bound after proving the exact owning occurrence.
+Independent output occurrences keep separate lifetime rows. Calls that need to
+choose among multiple independent output bounds retain the conservative checks.
 Projection normalization underneath an outer reference remains outside this
 mapping because its additional output-outlives obligation must be proved first.
 A trait's `impl` block may be for

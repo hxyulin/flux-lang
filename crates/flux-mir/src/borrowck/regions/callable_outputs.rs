@@ -374,7 +374,14 @@ impl Cx<'_> {
                         FunctionUse::CallableEquality,
                         None,
                     ),
-                    TyKind::FnPtr(signature) => {
+                    TyKind::FnPtr(_) | TyKind::Dynamic(_) => {
+                        let (signature, own) = match source.kind() {
+                            TyKind::FnPtr(signature) => (signature, own),
+                            TyKind::Dynamic(object) => {
+                                (object.callable_signature()?, own.get(1..)?)
+                            }
+                            _ => unreachable!(),
+                        };
                         let mut at = 0;
                         let mut rows = Vec::new();
                         for &input in input_types {

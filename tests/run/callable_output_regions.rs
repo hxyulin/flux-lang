@@ -33,8 +33,16 @@ impl Value for &str {
         self.len() as u32
     }
 }
+fn forward<'a, F: ?Sized + Fn(&str) -> &str>(callback: &F, input: &'a str) -> &'a str {
+    callback(input)
+}
+fn identity(input: &str) -> &str {
+    input
+}
 fn main() {
     let text = String::from("borrowed");
+    let callback: &dyn Fn(&str) -> &str = &identity;
+    assert_eq!(forward(callback, &text), "borrowed");
     let result = encode(Some(&bytes), &text);
     assert_eq!(&*result, b"borrowed");
     let data = [37u8, 41];
