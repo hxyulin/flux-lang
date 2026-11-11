@@ -47,6 +47,8 @@ pub struct Body {
 /// construct they came from: the `loop` of a `while` maps to the `while`.
 #[derive(Debug, Default)]
 pub struct BodySourceMap {
+    /// Syntax identities for scoped lint lookup, including macro expansions.
+    pub lint_nodes: Vec<(ExprId, crate::FileId, flux_syntax::NodeId)>,
     /// Token editions survive expansion across crate boundaries.
     pub editions: ArenaMap<Expr, flux_syntax::Edition>,
     pub pat_editions: ArenaMap<Pat, flux_syntax::Edition>,
@@ -72,6 +74,18 @@ pub struct BodySourceMap {
     /// which `exprs` includes as rustc's spans do: for what rustc reports
     /// at the expression itself (an out-of-range literal).
     pub unparenthesized: ArenaMap<Expr, TextRange>,
+}
+
+impl BodySourceMap {
+    pub fn lint_node(&self, expr: ExprId) -> Option<(crate::FileId, flux_syntax::NodeId)> {
+        self.lint_nodes
+            .binary_search_by_key(&expr.index(), |(id, _, _)| id.index())
+            .ok()
+            .map(|index| {
+                let (_, file, node) = self.lint_nodes[index];
+                (file, node)
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

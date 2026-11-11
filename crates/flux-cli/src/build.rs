@@ -287,6 +287,7 @@ fn compile_inner(
     errors.extend(crate::identifiers::diagnostics(&db));
     errors.extend(hir.diagnostics.iter().cloned());
     errors.extend(typed.diagnostics.iter().cloned());
+    crate::driver::report_warnings(&db, &typed.warnings);
     if let Some(d) = flux_ty::check_main(&hir.items, &typed.sigs) {
         errors.push(d);
     }

@@ -222,6 +222,7 @@ pub(crate) fn compile_native(
     errors.extend(crate::identifiers::diagnostics(&state.db));
     errors.extend(hir.diagnostics.iter().cloned());
     errors.extend(typed.diagnostics.iter().cloned());
+    crate::driver::report_warnings(&state.db, &typed.warnings);
     if kind == CrateType::Bin
         && let Some(error) = flux_ty::check_main(&hir.items, &typed.sigs)
     {

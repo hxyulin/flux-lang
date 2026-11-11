@@ -85,6 +85,7 @@ impl ItemTree {
         collector.collect_body_expansion_consts();
         collector.collect_legacy_consts();
         self.resolve_sized_dispatch(from);
+        self.check_overflow_lint_overrides();
         // Early predecessor lookup must agree with completed scopes. A local
         // item/import declared later may shadow a dependency's import name.
         for call in macro_paths {
@@ -746,6 +747,9 @@ impl Collector<'_> {
             self.items.expansion_files.insert(file, real);
             file
         };
+        self.items
+            .expansion_sites
+            .insert(file, (ctx.file, node.id()));
         self.items.insert_file(file, self.db.shared(file));
         let shared = self.db.shared(file);
         let items: Vec<NodeId> = shared
@@ -1566,6 +1570,9 @@ impl Collector<'_> {
             def_range,
             block: None,
         });
+        self.items
+            .module_declarations
+            .insert(module, (ctx.file, m.syntax().id()));
         if let Some(list) = m.item_list() {
             *macro_use |= crate::cfg::Attrs::new(list.attrs()).iter().any(|attr| {
                 attr_name(attr) == Some("macro_use") && super::attributes::bare_attr(attr)
@@ -2781,6 +2788,9 @@ impl Collector<'_> {
                 self.items.expansion_files.insert(file, real);
                 file
             };
+            self.items
+                .expansion_sites
+                .insert(file, (ctx.file, node.id()));
             self.items.body_expansions.insert(
                 (ctx.file, node.id()),
                 BodyExpansion {
@@ -4042,6 +4052,45 @@ impl Collector<'_> {
             let name_range = v_name.syntax().text_range();
             let v_name = Symbol::intern(v_name.text());
             let v_range = TextRange::new(def_start(v.syntax()), v.syntax().text_range().end());
+            let overflow_literal = v
+                .expr()
+                .and_then(|expr| {
+                    discriminant_value(expr)
+                        .map(|(negative, magnitude, suffix)| (expr, negative, magnitude, suffix))
+                })
+                .filter(|(_, negative, magnitude, suffix)| {
+                    if *negative && repr_name.starts_with('u') {
+                        return false;
+                    }
+                    if suffix
+                        .as_ref()
+                        .is_some_and(|(name, _)| name.as_str() != repr_name)
+                    {
+                        return false;
+                    }
+                    let value = if *negative {
+                        0i128.checked_sub_unsigned(*magnitude)
+                    } else {
+                        i128::try_from(*magnitude).ok()
+                    };
+                    value.is_none_or(|value| !values.contains(&value))
+                        && !(value.is_none() && repr_name == "u128" && !negative)
+                });
+            let lint_level = overflow_literal.map_or(crate::LintLevel::Deny, |(expr, _, _, _)| {
+                self.items.lint_level(
+                    ctx.module,
+                    ctx.file,
+                    expr.syntax().id(),
+                    "overflowing_literals",
+                )
+            });
+            let mut lint_warning = None;
+            if lint_level == crate::LintLevel::Expect
+                && let Some((expr, _, _, _)) = overflow_literal
+            {
+                self.items
+                    .fulfill_overflow_expectation(ctx.module, ctx.file, expr.syntax().id());
+            }
             let diagnostics = &mut self.items.diagnostics;
             let placeholder = next.unwrap_or(Discriminant::Value(0));
             // An expression, which becomes an anonymous constant.
@@ -4063,6 +4112,7 @@ impl Collector<'_> {
                             placeholder
                         }
                         Some((negative, value, _)) => {
+                            let magnitude = value;
                             let value = if negative {
                                 0i128.checked_sub_unsigned(value)
                             } else {
@@ -4079,11 +4129,37 @@ impl Collector<'_> {
                                     0
                                 }
                                 _ => {
-                                    diagnostics.push(Diagnostic::new(
-                                        range,
-                                        format!("literal out of range for `{repr_name}`"),
-                                    ));
-                                    0
+                                    let message = format!("literal out of range for `{repr_name}`");
+                                    match lint_level {
+                                        crate::LintLevel::Deny | crate::LintLevel::Forbid => {
+                                            diagnostics.push(Diagnostic::new(range, message));
+                                            0
+                                        }
+                                        level => {
+                                            if level == crate::LintLevel::Warn {
+                                                lint_warning = Some(Diagnostic {
+                                                    file: ctx.file,
+                                                    range,
+                                                    message,
+                                                });
+                                            }
+                                            let bits = repr_name
+                                                .trim_start_matches(['i', 'u'])
+                                                .parse::<u32>()
+                                                .unwrap_or(usize::BITS);
+                                            let bits_value = if negative {
+                                                magnitude.wrapping_neg()
+                                            } else {
+                                                magnitude
+                                            };
+                                            let masked = bits_value & (u128::MAX >> (128 - bits));
+                                            if repr_name.starts_with('i') {
+                                                ((masked << (128 - bits)) as i128) >> (128 - bits)
+                                            } else {
+                                                masked as i128
+                                            }
+                                        }
+                                    }
                                 }
                             })
                         }
@@ -4122,6 +4198,9 @@ impl Collector<'_> {
                     format!("the name `{v_name}` is defined multiple times"),
                 ));
                 continue;
+            }
+            if let Some(warning) = lint_warning {
+                self.items.record_lint_warning(warning);
             }
             if let Some(range) = anonymous {
                 let konst = self.items.consts.alloc(Const {

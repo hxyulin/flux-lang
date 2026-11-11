@@ -58,6 +58,7 @@ impl LibraryMir {
         let hir = Core::get().hir();
         let types = LibraryTypes::get();
         let mut typed = TypedFile {
+            warnings: Vec::new(),
             sigs: types.sigs.clone(),
             bodies: ArenaMap::new(),
             consts: types.consts.clone(),

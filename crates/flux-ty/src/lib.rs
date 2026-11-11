@@ -569,6 +569,7 @@ pub struct TypedFile {
     pub consts: ArenaMap<Const, InferenceResult>,
     /// From signatures and every body, in source order.
     pub diagnostics: Vec<Diagnostic>,
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// Whether a trait path in a bound or an `impl` block did not resolve:
@@ -869,6 +870,7 @@ fn check(
             sigs,
             bodies,
             consts: ArenaMap::new(),
+            warnings: Vec::new(),
             diagnostics,
         };
     }
@@ -1126,11 +1128,42 @@ fn check(
         items.resolve_diagnostic(diagnostic);
     }
     Diagnostic::sort(&mut diagnostics);
+    let (expectation_errors, mut warnings) = items.overflow_expectation_diagnostics();
+    diagnostics.extend(expectation_errors.into_iter().map(|mut d| {
+        items.resolve_diagnostic(&mut d);
+        d
+    }));
+    Diagnostic::sort(&mut diagnostics);
+    warnings.extend(items.lint_warnings());
+    for (id, result) in bodies.iter() {
+        let file = items.functions[id].loc.file;
+        warnings.extend(
+            result
+                .warnings
+                .iter()
+                .map(|d| Diagnostic { file, ..d.clone() }),
+        );
+    }
+    for (id, result) in consts.iter() {
+        let file = items.consts[id].loc.file;
+        warnings.extend(
+            result
+                .warnings
+                .iter()
+                .map(|d| Diagnostic { file, ..d.clone() }),
+        );
+    }
+    for diagnostic in &mut warnings {
+        items.resolve_diagnostic(diagnostic);
+    }
+    Diagnostic::sort(&mut warnings);
+    warnings.dedup_by(|a, b| a.file == b.file && a.range == b.range && a.message == b.message);
     TypedFile {
         sigs,
         bodies,
         consts,
         diagnostics,
+        warnings,
     }
 }
 

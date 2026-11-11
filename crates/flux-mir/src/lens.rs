@@ -259,6 +259,7 @@ fn infer_consts(
         bodies.insert(id, result);
     }
     TypedFile {
+        warnings: Vec::new(),
         sigs,
         bodies,
         consts,

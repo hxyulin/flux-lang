@@ -385,5 +385,18 @@ when the compiler reports source diagnostics; internal compiler failures do not.
 This is a native runner, not an implementation of the unstable `test` crate API.
 Benchmarks, custom `harness = false` targets, and arbitrary documentation macros
 are not supported yet. Other targets still need backend unwind support.
-Rayon's complete unit-test build currently stops in libc on overflowing integer
-literals; the earlier adapted integration results do not qualify that unit suite.
+The libc literal-overflow blocker is fixed. Full upstream unit and doctest
+qualification remains separate from adapted integration results.
+
+## Overflowing literal attributes
+
+Flux honors scoped `allow`, `warn`, `deny`, `forbid`, and `expect` for
+`overflowing_literals`. Levels apply to modules, items, blocks, statements,
+patterns, and macro expansions. Allowed integer literals truncate to the target
+type, including enum discriminants and const generic arguments. `warn` produces
+a diagnostic without failing the build. `forbid` cannot be lowered in a child
+scope. Unfulfilled overflow expectations warn unless their lint level disables
+or denies that diagnostic.
+
+These levels do not suppress type errors, invalid unsigned negation, or errors
+from constant evaluation. This does not implement every rustc lint.

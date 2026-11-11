@@ -1041,6 +1041,31 @@ pub fn const_value(
         None
     };
     let value = |bits: u128| Some(Ty::value(want, bits));
+    let literal_overflow = |errors: &mut Vec<(TextRange, String)>| {
+        let file = scope.function.map_or(items.modules[module].file, |id| {
+            items.functions[id].loc.file
+        });
+        let message = format!("literal out of range for `{want}`");
+        match items.lint_level_at(module, file, range, "overflowing_literals") {
+            flux_hir::LintLevel::Allow => false,
+            flux_hir::LintLevel::Expect => {
+                items.fulfill_overflow_expectation_at(module, file, range);
+                false
+            }
+            flux_hir::LintLevel::Warn => {
+                items.record_lint_warning(Diagnostic {
+                    file,
+                    range,
+                    message,
+                });
+                false
+            }
+            flux_hir::LintLevel::Deny | flux_hir::LintLevel::Forbid => {
+                errors.push((range, message));
+                true
+            }
+        }
+    };
     let konst = match &len.kind {
         flux_hir::ArrayLenKind::Error => return None,
         flux_hir::ArrayLenKind::Const(konst) => *konst,
@@ -1056,8 +1081,14 @@ pub fn const_value(
             {
                 return mismatch(errors, &format!("`{suffix}`"));
             }
-            if !int.is_signed() || *magnitude > int.max() + 1 {
-                errors.push((range, format!("literal out of range for `{want}`")));
+            if !int.is_signed() {
+                errors.push((
+                    range,
+                    format!("cannot apply unary operator `-` to type `{want}`"),
+                ));
+                return None;
+            }
+            if *magnitude > int.max() + 1 && literal_overflow(errors) {
                 return None;
             }
             let mask = u128::MAX >> (128 - int.bits());
@@ -1084,11 +1115,8 @@ pub fn const_value(
             };
             return match suffix {
                 Some(suffix) if *suffix != int.name() => mismatch(errors, &format!("`{suffix}`")),
-                _ if *bits > int.max() => {
-                    errors.push((range, format!("literal out of range for `{want}`")));
-                    None
-                }
-                _ => value(*bits),
+                _ if *bits > int.max() && literal_overflow(errors) => None,
+                _ => value(*bits & (u128::MAX >> (128 - int.bits()))),
             };
         }
         flux_hir::ArrayLenKind::Bool(b) => {

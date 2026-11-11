@@ -2744,6 +2744,13 @@ impl<'a> Ctx<'a> {
     fn lower_expr(&mut self, expr: ast::Expr<'_>) -> ExprId {
         let edition = self.syntax_edition(expr.syntax());
         let id = self.lower_expr_inner(expr);
+        if matches!(expr, ast::Expr::Literal(_))
+            && let Some(file) = self.syntax_file(expr.syntax())
+        {
+            self.source_map
+                .lint_nodes
+                .push((id, file, expr.syntax().id()));
+        }
         if self.source_map.editions.get(id).is_none() {
             self.source_map.editions.insert(id, edition);
         }
@@ -5604,6 +5611,11 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let expr = self.alloc_expr(hir, lit_range);
+        if let Some(file) = self.syntax_file(literal.syntax()) {
+            self.source_map
+                .lint_nodes
+                .push((expr, file, literal.syntax().id()));
+        }
         if pat.minus_token().is_none() {
             return Some(expr);
         }

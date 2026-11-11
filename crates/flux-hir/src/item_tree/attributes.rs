@@ -398,6 +398,15 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         "allow", "warn", "deny", "forbid", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
+    if matches!(name, Some("allow" | "warn" | "deny" | "forbid" | "expect")) {
+        if !valid_lint_attribute(attr) {
+            diagnostics.push(Diagnostic::new(
+                attr.syntax().text_range(),
+                "malformed lint attribute input",
+            ));
+        }
+        return;
+    }
     if matches!(name, Some("test" | "ignore" | "should_panic")) {
         let meta = attr.meta().expect("named attribute");
         let mut tokens = Vec::new();
@@ -932,4 +941,64 @@ pub(super) fn enum_repr(
         ));
     }
     int
+}
+
+fn valid_lint_attribute(attr: ast::Attr<'_>) -> bool {
+    let Some(meta) = attr.meta() else {
+        return false;
+    };
+    if meta.unsafe_token().is_some() || meta.eq_token().is_some() {
+        return false;
+    }
+    let Some(tree) = meta.token_tree() else {
+        return false;
+    };
+    let mut tokens = Vec::new();
+    macros::tt::tokens_of(tree.syntax(), &mut tokens);
+    if tokens.first().is_none_or(|t| t.kind != T!['('])
+        || tokens.last().is_none_or(|t| t.kind != T![')'])
+    {
+        return false;
+    }
+    let inner = &tokens[1..tokens.len() - 1];
+    let mut i = 0;
+    while i < inner.len() {
+        if inner[i].kind != SyntaxKind::IDENT && !inner[i].kind.is_keyword() {
+            return false;
+        }
+        let reason = inner[i].text.as_str() == "reason";
+        i += 1;
+        if reason && inner.get(i).is_some_and(|t| t.kind == T![=]) {
+            i += 1;
+            if inner.get(i).is_none_or(|t| t.kind != SyntaxKind::STRING) {
+                return false;
+            }
+            i += 1;
+            if inner.get(i).is_some_and(|t| t.kind == T![,]) {
+                i += 1;
+            }
+            return i == inner.len();
+        }
+        while inner.get(i).is_some_and(|t| t.kind == T![::])
+            || (inner.get(i).is_some_and(|t| t.kind == T![:])
+                && inner.get(i + 1).is_some_and(|t| t.kind == T![:]))
+        {
+            i += if inner[i].kind == T![::] { 1 } else { 2 };
+            if inner
+                .get(i)
+                .is_none_or(|t| t.kind != SyntaxKind::IDENT && !t.kind.is_keyword())
+            {
+                return false;
+            }
+            i += 1;
+        }
+        if i == inner.len() {
+            break;
+        }
+        if inner[i].kind != T![,] {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }

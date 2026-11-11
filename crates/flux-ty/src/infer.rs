@@ -140,6 +140,7 @@ pub struct InferenceResult {
     /// Trait`s of its return type), by index: what its body returns.
     pub opaques: Vec<Ty>,
     pub diagnostics: Vec<Diagnostic>,
+    pub warnings: Vec<Diagnostic>,
 }
 
 /// A dereference through `Deref::deref`, or `DerefMut::deref_mut` if
@@ -491,6 +492,7 @@ impl<'a> Ctx<'a> {
             own_opaques: Vec::new(),
             own_opaque_args: &[],
             diagnostics: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -746,6 +748,7 @@ struct Ctx<'a> {
     own_opaques: Vec<Ty>,
     own_opaque_args: crate::GenericArgs,
     diagnostics: Vec<Diagnostic>,
+    warnings: Vec<Diagnostic>,
 }
 
 impl Ctx<'_> {
@@ -779,6 +782,27 @@ impl Ctx<'_> {
             range,
             message: message.into(),
         });
+    }
+
+    fn overflowing_literal(&mut self, expr: ExprId, range: TextRange, message: String) {
+        let level =
+            self.source_map
+                .lint_node(expr)
+                .map_or(flux_hir::LintLevel::Deny, |(file, node)| {
+                    self.items
+                        .lint_level(self.module, file, node, "overflowing_literals")
+                });
+        match level {
+            flux_hir::LintLevel::Allow => {}
+            flux_hir::LintLevel::Expect => {
+                if let Some((file, node)) = self.source_map.lint_node(expr) {
+                    self.items
+                        .fulfill_overflow_expectation(self.module, file, node);
+                }
+            }
+            flux_hir::LintLevel::Warn => self.warnings.push(Diagnostic::new(range, message)),
+            flux_hir::LintLevel::Deny | flux_hir::LintLevel::Forbid => self.error(range, message),
+        }
     }
 
     // Variables and unification.
@@ -7373,6 +7397,7 @@ impl Ctx<'_> {
             new_arg_tys: self.lens.new_arg_tys.into_inner(),
             const_params: self.const_param_uses,
             diagnostics: self.diagnostics,
+            warnings: self.warnings,
         }
     }
 
@@ -8045,7 +8070,8 @@ impl Ctx<'_> {
                             }
                         };
                         if overflow {
-                            self.error(
+                            self.overflowing_literal(
+                                expr,
                                 self.range(expr),
                                 format!("literal out of range for `{}`", float.name()),
                             );
@@ -8073,7 +8099,8 @@ impl Ctx<'_> {
                             .get(at)
                             .copied()
                             .unwrap_or_else(|| self.range(at));
-                        self.error(
+                        self.overflowing_literal(
+                            expr,
                             range,
                             format!("literal out of range for `{int}`", int = int.name()),
                         );

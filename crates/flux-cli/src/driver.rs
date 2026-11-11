@@ -567,6 +567,21 @@ fn load(file: &std::path::Path) -> Result<(SourceDb, Hir), String> {
     Ok((db, hir))
 }
 
+/// Warnings do not affect the compilation's success status.
+pub(crate) fn report_warnings(db: &SourceDb, warnings: &[Diagnostic]) {
+    for warning in warnings {
+        let mut warning = warning.clone();
+        db.resolve_diagnostic(&mut warning);
+        let file = db.file(warning.file);
+        let (line, column) = line_column(file.text(), warning.range.start());
+        eprintln!(
+            "{}:{line}:{column}: warning: {}",
+            file.path.display(),
+            warning.message
+        );
+    }
+}
+
 /// Reports `diagnostics` in order of file and position; whether there
 /// were none.
 pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool {

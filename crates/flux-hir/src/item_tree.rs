@@ -127,9 +127,12 @@ impl SpanIndex {
 /// in [`Core`](crate::Core)'s tree and shared by every program's.
 #[derive(Debug, Clone, Default)]
 pub struct ItemTree {
+    pub(crate) lint_warnings: crate::lints::LintWarnings,
     pub(crate) artifact_builtins: bool,
     pub crates: Vec<CrateData>,
     pub modules: LayeredArena<Module>,
+    /// Source declarations, including modules introduced by macros.
+    pub(crate) module_declarations: rustc_hash::FxHashMap<ModuleId, (FileId, NodeId)>,
     /// Free functions, functions in `extern` blocks, and the associated
     /// functions of `impl` blocks.
     pub functions: LayeredArena<Function>,
@@ -198,6 +201,8 @@ pub struct ItemTree {
     /// The file each expansion of a macro call in item position is part
     /// of, by the file its items are in.
     pub expansion_files: rustc_hash::FxHashMap<FileId, FileId>,
+    /// Exact invocation identities for source-level scope inheritance.
+    pub(crate) expansion_sites: rustc_hash::FxHashMap<FileId, (FileId, NodeId)>,
     /// Body expansions retained so collection and lowering share block identities.
     pub(crate) body_expansions: rustc_hash::FxHashMap<(FileId, NodeId), BodyExpansion>,
     /// Retained body definitions keep collection and lowering hygiene identical.
