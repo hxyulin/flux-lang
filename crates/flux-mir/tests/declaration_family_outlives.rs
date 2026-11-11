@@ -137,6 +137,126 @@ fn forwarded_family_outlives_matches_rustc() {
             "trait Family<'a>{type Output:'a;}struct Model<'p>(&'p str);impl<'a,'p:'a>Family<'a>for Model<'p>{type Output=&'a str;}fn need<Y:for<'a>Family<'a>>()where for<'a><Y as Family<'a>>::Output:PartialEq{}fn bad<'p>(_:Model<'p>){need::<Model<'p>>();}",
             false,
         ),
+        (
+            "abstract_owner_with_blanket_impl",
+            "trait R{type X;}trait P<X>{type A;}impl<T:'static,X>P<X>for T{type A=u8;}fn good<T,U>()where U:R<X=u8>,T:P<u8,A=u8>+P<U::X,A=<T as P<u8>>::A>{}",
+            true,
+        ),
+        (
+            "constant_bound",
+            "trait Mark<const N:usize>{}impl Mark<4>for (){}fn good()where ():Mark<{2+2}>{}",
+            true,
+        ),
+        (
+            "selected_argument_constant_owner_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R,const N:usize>{}impl Mark<u32,4>for (){}fn bad<T>()where ():Mark<<Owner<T>as Family<'static>>::Output,{2+2}>{}",
+            false,
+        ),
+        (
+            "selected_argument_constant_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R,const N:usize>{}impl Mark<u32,4>for (){}fn good<T:'static>()where ():Mark<<Owner<T>as Family<'static>>::Output,{2+2}>{}",
+            true,
+        ),
+        (
+            "selected_argument_owner_obligation",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn bad<T>()where u32:Mark<<Owner<T>as Family<'static>>::Output>{}",
+            false,
+        ),
+        (
+            "selected_argument_owner_static",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn good<T:'static>()where u32:Mark<<Owner<T>as Family<'static>>::Output>{}",
+            true,
+        ),
+        (
+            "selected_argument_clone_owner_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:Clone+'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn bad<T:Clone>()where u32:Mark<<Owner<T>as Family<'static>>::Output>{}",
+            false,
+        ),
+        (
+            "selected_argument_clone_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:Clone+'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn good<T:Clone+'static>()where u32:Mark<<Owner<T>as Family<'static>>::Output>{}",
+            true,
+        ),
+        (
+            "selected_argument_nested_owner_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn bad<T>()where u32:Mark<Option<(<Owner<T>as Family<'static>>::Output,u32)>>{}",
+            false,
+        ),
+        (
+            "selected_argument_quantified_owner_deferred",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn bad<T>()where for<'a>u32:Mark<<Owner<T>as Family<'a>>::Output>{}",
+            true,
+        ),
+        (
+            "selected_argument_quantified_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn good<T:'static>()where for<'a>u32:Mark<<Owner<T>as Family<'a>>::Output>{}",
+            true,
+        ),
+        (
+            "selected_argument_impl_owner_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}struct Wrap<T>(T);impl<T>Wrap<T>where u32:Mark<<Owner<T>as Family<'static>>::Output>{fn method(){}}",
+            false,
+        ),
+        (
+            "selected_argument_alias_owner_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}type Projected<T>=<Owner<T>as Family<'static>>::Output;fn bad<T>()where u32:Mark<Projected<T>>{}",
+            false,
+        ),
+        (
+            "selected_argument_alias_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}type Projected<T>=<Owner<T>as Family<'static>>::Output;fn good<T:'static>()where u32:Mark<Projected<T>>{}",
+            true,
+        ),
+        (
+            "selected_argument_explicit_owner_assumption",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn allowed<T>()where Owner<T>:Family<'static>,u32:Mark<<Owner<T>as Family<'static>>::Output>{}",
+            true,
+        ),
+        (
+            "selected_argument_header_short_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn test<'p,T>()where Owner<T>:Family<'p>,u32:Mark<<Owner<T>as Family<'static>>::Output>{}",
+            false,
+        ),
+        (
+            "selected_argument_header_short_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn test<'p,T:'static>()where Owner<T>:Family<'p>,u32:Mark<<Owner<T>as Family<'static>>::Output>{}",
+            false,
+        ),
+        (
+            "selected_argument_alias_lifetime",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}type Projected<'p,T>=<Owner<T>as Family<'p>>::Output;fn test<'p,T:'static>()where u32:Mark<Projected<'p,T>>{}",
+            true,
+        ),
+        (
+            "selected_argument_equality_owner_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark{type Value;}impl Mark for u32{type Value=u32;}fn bad<T>()where u32:Mark<Value=<Owner<T>as Family<'static>>::Output>{}",
+            false,
+        ),
+        (
+            "selected_argument_equality_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark{type Value;}impl Mark for u32{type Value=u32;}fn good<T:'static>()where u32:Mark<Value=<Owner<T>as Family<'static>>::Output>{}",
+            true,
+        ),
+        (
+            "selected_argument_nested_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}fn good<T:'static>()where u32:Mark<Option<(<Owner<T>as Family<'static>>::Output,u32)>>{}",
+            true,
+        ),
+        (
+            "selected_argument_impl_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}struct Wrap<T>(T);impl<T:'static>Wrap<T>where u32:Mark<<Owner<T>as Family<'static>>::Output>{fn method(){}}",
+            true,
+        ),
+        (
+            "selected_argument_trait_owner_missing",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}trait Host<T>where u32:Mark<<Owner<T>as Family<'static>>::Output>{fn method();}",
+            false,
+        ),
+        (
+            "selected_argument_trait_owner_present",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}trait Host<T:'static>where u32:Mark<<Owner<T>as Family<'static>>::Output>{fn method();}",
+            true,
+        ),
     ] {
         if !case_filter::selected(name) {
             continue;

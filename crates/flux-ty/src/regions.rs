@@ -73,7 +73,10 @@ pub use trait_profile::{
 };
 
 pub(crate) use resolve::resolve_regions;
-pub use resolve::{TraitBoundRegions, trait_bound_regions, trait_bound_schemes};
+pub use resolve::{
+    BoundProjectionSelections, TraitBoundRegions, function_bound_projection_selections,
+    trait_bound_regions, trait_bound_schemes,
+};
 
 fn has_projection_outlives_inputs(items: &ItemTree, ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Alias(alias) if has_projection_inputs(items, alias))
@@ -175,6 +178,8 @@ pub(crate) struct Walker<'a> {
     /// Method comparison captures only its supported qualified legacy inputs;
     /// declaration/header collectors keep all selection occurrences.
     pub qualified_legacy_selections: bool,
+    /// Written-bound proofs also collect inputs hidden behind type aliases.
+    pub expand_alias_selections: bool,
     /// Original trait bounds provide owner lifetime arguments for `T::Family`.
     pub projection_owners: Vec<(Ty, flux_hir::TraitId, flux_hir::Bound)>,
     /// An impl/trait's own trait arguments have already been resolved in its header.
@@ -213,6 +218,7 @@ impl<'a> Walker<'a> {
             errors: Vec::new(),
             selections: None,
             qualified_legacy_selections: false,
+            expand_alias_selections: false,
             projection_owners: Vec::new(),
             self_projection_owner: None,
             ref_region: None,
@@ -1227,6 +1233,78 @@ impl<'a> Walker<'a> {
             r => r,
         };
         let args = |j: u32| types.get(j as usize).cloned().unwrap_or_default();
+        if self.expand_alias_selections && self.selections.is_some() && self.errors.is_empty() {
+            // Alias expansion must forward the selected projection's inputs,
+            // even when its eventual concrete output has no lifetime slots.
+            let names: Vec<_> = def.generics.params.iter().map(|p| p.name).collect();
+            let mut nested = Walker::new(
+                self.items,
+                def.loc.module,
+                def.generics
+                    .lifetimes
+                    .iter()
+                    .map(|l| Some(l.name))
+                    .collect(),
+            );
+            nested.scope = TypeScope {
+                generics: &names,
+                signature_of: Some("type aliases"),
+                ..TypeScope::default()
+            };
+            nested.elided = Elided::Missing(None);
+            nested.selections = Some(Vec::new());
+            nested.qualified_legacy_selections = self.qualified_legacy_selections;
+            nested.expand_alias_selections = true;
+            nested.regions(&def.ty, alias_ty);
+            self.errors.append(&mut nested.errors);
+            let selections = nested.selections.take().unwrap_or_default();
+            if !selections.is_empty() {
+                let actual =
+                    if let Some(actual) = resolved.iter().copied().collect::<Option<Vec<_>>>() {
+                        actual
+                    } else {
+                        let mut actual = path.args(last).map_or_else(Vec::new, |written| {
+                            crate::resolve::resolve_generic_args(
+                                self.items,
+                                self.module,
+                                &def.generics.params,
+                                written,
+                                self.scope,
+                                &mut self.errors,
+                            )
+                        });
+                        crate::resolve::fill_type_defaults(
+                            self.items,
+                            Def::TypeAlias(id),
+                            &mut actual,
+                            self.scope,
+                            &mut self.errors,
+                        );
+                        for (index, known) in resolved.iter().enumerate() {
+                            if let (Some(known), Some(argument)) = (known, actual.get_mut(index)) {
+                                *argument = *known;
+                            }
+                        }
+                        actual
+                    };
+                for mut selection in selections {
+                    let mut rows = Vec::new();
+                    for (&ty, row) in selection.alias.args.iter().zip(selection.args.iter()) {
+                        let mut mapped = Vec::new();
+                        instantiate(self.items, ty, row, &mut map, &args, &mut mapped);
+                        rows.push(mapped.into_boxed_slice());
+                    }
+                    for lifetime in &mut selection.lifetimes {
+                        *lifetime = map(*lifetime);
+                    }
+                    selection.alias = selection.alias.map_args(|ty| ty.subst(&actual));
+                    selection.args = rows.into();
+                    if let Some(selections) = self.selections.as_mut() {
+                        selections.push(selection);
+                    }
+                }
+            }
+        }
         instantiate(self.items, alias_ty, &table.regions, &mut map, &args, out);
     }
 }

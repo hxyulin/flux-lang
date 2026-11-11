@@ -1547,6 +1547,11 @@ inputs remain invariant and contribute their well-formedness requirements even
 when the selected output erases them. This mapping requires a fully resolved
 output, represented header substitutions, and no additional lifetime-dependent
 impl or trait prerequisites. Other selections retain explicit rejection.
+Before relying on a normalized non-generic associated projection in a function
+or method's ordinary trait bound, flux checks the selected impl's lifetime prerequisites
+against the original declaration. This includes nested inputs, equality results
+and type aliases. This declaration check does not turn quantified or callable
+assumptions into global outlives requirements.
 A type argument that is an associated output can use its declaration's static
 or single lifetime outlives bound after proving the exact owning occurrence.
 Independent output occurrences keep separate lifetime rows. Calls that need to

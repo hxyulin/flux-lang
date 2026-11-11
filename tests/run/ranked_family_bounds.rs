@@ -41,7 +41,27 @@ fn keep<T: 'static>(value: T) -> T {
 fn static_output<'a, Y: StaticFamily<'a>>(value: Y::Output) -> Y::Output {
     keep(value)
 }
+struct SelectedOwner<T>(T);
+impl<'a, T: 'static> StaticFamily<'a> for SelectedOwner<T> {
+    type Output = u32;
+}
+type Selected<T> = <SelectedOwner<T> as StaticFamily<'static>>::Output;
+trait Mark<R> {
+    fn number() -> u32;
+}
+impl Mark<u32> for u8 {
+    fn number() -> u32 {
+        37
+    }
+}
+fn selected_bound<T: 'static>() -> u32
+where
+    u8: Mark<Selected<T>>,
+{
+    <u8 as Mark<u32>>::number()
+}
 fn main() {
+    assert_eq!(selected_bound::<String>(), 37);
     let a = Model(String::from("same"));
     let b = Model(String::from("same"));
     let c = Model(String::from("other"));

@@ -1566,6 +1566,220 @@ pub(super) fn safe_method_contract(
     Some((signature, regions, bounds))
 }
 
+/// Original projection occurrences in one trait bound. Normalized predicate
+/// types cannot recover these inputs after selection changes the output shape.
+pub struct BoundProjectionSelections {
+    /// The original bound, excluded while proving its input formation.
+    pub predicate: crate::Predicate,
+    /// Self, trait arguments and equality results in occurrence order.
+    pub types: Box<[Ty]>,
+    /// Selection inputs before normalizing any associated output.
+    pub selections: Box<[ProjectionSelection]>,
+}
+
+/// Reconstruct selected projections in a function's written trait bounds,
+/// including its owner's bounds, without adding the selected prerequisites as
+/// assumptions. This uses HIR and the existing region walker, independent of storage.
+pub fn function_bound_projection_selections(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::FunctionId,
+) -> Option<Vec<BoundProjectionSelections>> {
+    let data = &items.functions[id];
+    let groups: Vec<_> = items
+        .owner_generics(data.owner)
+        .into_iter()
+        .chain([&data.generics])
+        .collect();
+    if groups.iter().all(|g| g.predicates.is_empty()) {
+        return Some(Vec::new());
+    }
+    let metadata = sigs.regions.fns.get(id)?;
+    let names = crate::generic_names(items, data.owner, &data.generics);
+    let consts = crate::generic_consts(items, data.owner, &data.generics);
+    let lens = crate::ArrayLens::new(&sigs.array_lens, &sigs.arg_tys);
+    let memberships = flux_solve::traits::predicates_of(items, sigs, id);
+    let resolved_bounds = flux_solve::traits::elaborate(sigs, &memberships);
+    let self_trait = items
+        .impl_of(id)
+        .and_then(|imp| sigs.impl_traits.get(imp).copied());
+    let self_bounds = flux_solve::traits::associated_self_bounds(
+        sigs,
+        self_trait,
+        crate::self_ty(sigs, data.owner),
+    );
+    let scope = TypeScope {
+        self_ty: crate::self_ty(sigs, data.owner).or_else(|| {
+            data.ctor.map(|(strukt, _)| {
+                Ty::adt(
+                    strukt,
+                    items.structs[strukt].name,
+                    &crate::params_of(&data.generics, 0),
+                )
+            })
+        }),
+        self_trait,
+        self_types: items
+            .impl_of(id)
+            .and_then(|imp| sigs.impl_types.get(imp))
+            .map_or(&[], |t| t),
+        bounds: &resolved_bounds,
+        self_supertraits: self_bounds.get(1..).unwrap_or(&[]),
+        generics: &names,
+        consts: &consts,
+        lens: Some(&lens),
+        defaults: Some(&sigs.trait_defaults),
+        struct_fields: Some(&sigs.structs),
+        signature_of: Some("functions"),
+        ..TypeScope::default()
+    };
+    let mut walker = Walker::new(
+        items,
+        data.loc.module,
+        metadata.names.iter().map(|n| n.name).collect(),
+    );
+    walker.scope = scope;
+    walker.expand_alias_selections = true;
+    let constructor_regions: Vec<_> = (0..data.generics.lifetimes.len() as u32)
+        .map(Region::Param)
+        .collect();
+    if data.ctor.is_some() {
+        walker.self_regions = Some(&constructor_regions);
+    }
+    if let Some(flux_hir::Owner::Impl(owner)) = data.owner {
+        let rows = sigs.regions.impls.get(owner)?;
+        walker.self_regions = Some(&rows.self_ty);
+        walker.self_types = &rows.types;
+        walker.self_projection_owner = sigs
+            .impl_traits
+            .get(owner)
+            .map(|tr| (tr.trait_, rows.trait_lifetimes.clone()));
+    }
+    if let Some(flux_hir::Owner::Trait(owner)) = data.owner {
+        walker.self_projection_owner =
+            Some((owner, (0..metadata.owner).map(Region::Param).collect()));
+    }
+    for group in &groups {
+        walker.add_projection_bounds(group);
+    }
+    let mut out = Vec::new();
+    let mut errors = Vec::new();
+    for group in groups {
+        for written in &group.predicates {
+            // Quantified assumptions have a scoped well-formed input domain;
+            // their prerequisites are not global declaration requirements.
+            let args = written
+                .bound
+                .path
+                .args(written.bound.path.segments.len().saturating_sub(1));
+            if !written.bound.bound_lifetimes.is_empty() || args.is_some_and(|a| a.parenthesized) {
+                continue;
+            }
+            let single = Generics {
+                predicates: vec![written.clone()].into(),
+                ..Generics::default()
+            };
+            let raw = crate::traits::resolve_predicates(
+                items,
+                data.loc.module,
+                &single,
+                scope,
+                &mut errors,
+            );
+            if !errors.is_empty() || raw.predicates.len() != 1 {
+                return None;
+            }
+            let predicate = raw.predicates[0];
+            let types: Vec<_> = std::iter::once(predicate.self_ty)
+                .chain(predicate.trait_ref.args.iter().copied())
+                .chain(raw.projections.iter().map(|p| p.ty))
+                .collect();
+            if types.iter().all(|ty| !ty.has_aliases()) {
+                continue;
+            }
+            let equalities = flux_solve::traits::caller_projections_of(items, sigs, id);
+            let unsized_params = flux_solve::unsized_params(items, data.owner, &data.generics);
+            let proof = flux_solve::traits::RigidSolver::new(
+                items,
+                sigs,
+                &memberships,
+                &equalities,
+                &unsized_params,
+            );
+            fn has_selected_projection(
+                ty: Ty,
+                items: &ItemTree,
+                sigs: &Signatures,
+                memberships: &[crate::Predicate],
+                proof: &flux_solve::traits::RigidSolver<'_>,
+            ) -> bool {
+                if let TyKind::Alias(alias) = ty.kind() {
+                    let goal = crate::Predicate {
+                        self_ty: proof.normalize_ty(alias.self_ty(), None),
+                        trait_ref: crate::TraitRef {
+                            trait_: alias.trait_,
+                            name: alias.trait_name,
+                            args: Ty::list(
+                                &alias.args[1..]
+                                    .iter()
+                                    .map(|&t| proof.normalize_ty(t, None))
+                                    .collect::<Vec<_>>(),
+                            ),
+                        },
+                    };
+                    // A region-free caller membership owns its abstract
+                    // output even when a blanket impl could also match it.
+                    // Region-bearing owners need their exact occurrence rows.
+                    let assumed = alias.owner_lifetimes == 0
+                        && alias.args.iter().all(|&arg| slots(items, arg) == 0)
+                        && flux_solve::traits::in_env(sigs, memberships, goal);
+                    if !assumed
+                        && proof.normalize_ty(ty, None) != ty
+                        && proof.candidate(goal).is_some()
+                    {
+                        return true;
+                    }
+                }
+                ty.children()
+                    .any(|child| has_selected_projection(child, items, sigs, memberships, proof))
+            }
+            if !types
+                .iter()
+                .any(|ty| has_selected_projection(*ty, items, sigs, &memberships, &proof))
+            {
+                continue;
+            }
+            walker.selections = Some(Vec::new());
+            let _ = bound_regions_with_walker(
+                items,
+                &single,
+                &raw.predicates,
+                &raw.projections,
+                &mut errors,
+                &mut walker,
+                None,
+            );
+            let selections = walker.selections.take()?;
+            if !errors.is_empty() {
+                return None;
+            }
+            // Family-local parameters need their own occurrence recipes.
+            if selections
+                .iter()
+                .any(|s| s.alias.family_lifetimes != 0 || !s.alias.family_args.is_empty())
+            {
+                continue;
+            }
+            out.push(BoundProjectionSelections {
+                predicate,
+                types: types.into(),
+                selections: selections.into(),
+            });
+        }
+    }
+    Some(out)
+}
+
 /// Functions' parameters and return types, with elision, and their
 /// bounds.
 fn functions(

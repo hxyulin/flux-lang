@@ -1747,6 +1747,9 @@ impl<'a> Cx<'a> {
                 }
             }
         }
+        if !bound.is_empty() {
+            self.close_known();
+        }
         let trait_lifetimes = trait_regions
             .lifetimes
             .iter()
@@ -1789,6 +1792,11 @@ impl<'a> Cx<'a> {
             } else {
                 Vec::new()
             };
+            // Instantiating an associated input can compare caller bounds.
+            // Its relation table must include the new callback placeholders.
+            if !fresh.is_empty() {
+                self.close_known();
+            }
             bound.extend(fresh.iter().copied());
             let mut fresh = fresh.into_iter();
             let mut map = |r| match r {
@@ -7432,6 +7440,14 @@ impl<'a> Cx<'a> {
     /// Reconstruct original caller assumptions, including ordinary bounds
     /// needed by an impl that forwards a higher-ranked callback contract.
     fn caller_region_goals(&mut self) -> Vec<ImplRegionGoal> {
+        self.caller_region_goals_excluding(&[])
+    }
+
+    /// An input selection cannot use its own normalized bound as evidence.
+    fn caller_region_goals_excluding(
+        &mut self,
+        excluded: &[flux_ty::Predicate],
+    ) -> Vec<ImplRegionGoal> {
         if let Some(goals) = &self.caller_goals_in_progress {
             return goals.clone();
         }
@@ -7494,6 +7510,23 @@ impl<'a> Cx<'a> {
             {
                 written.push((p, row.clone(), tr.clone()));
             }
+        }
+        if !excluded.is_empty() {
+            let canonical = |p: flux_ty::Predicate| flux_ty::Predicate {
+                self_ty: self.normalize(p.self_ty),
+                trait_ref: flux_ty::TraitRef {
+                    args: Ty::list(
+                        &p.trait_ref
+                            .args
+                            .iter()
+                            .map(|&t| self.normalize(t))
+                            .collect::<Vec<_>>(),
+                    ),
+                    ..p.trait_ref
+                },
+            };
+            let excluded: Vec<_> = excluded.iter().copied().map(canonical).collect();
+            written.retain(|(predicate, _, _)| !excluded.contains(&canonical(*predicate)));
         }
         self.caller_goals_in_progress = Some(Vec::new());
         let goals = self.original_region_goals(written, &lifetimes);

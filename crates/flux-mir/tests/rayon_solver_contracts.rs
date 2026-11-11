@@ -475,3 +475,23 @@ impl<T> Value<T> { const Z:[u8; retained!(T)]=[]; }
         false,
     );
 }
+
+#[test]
+fn callback_projection_inputs_refresh_universals() {
+    compare(
+        "callback_projection_inputs_refresh_universals",
+        r#"trait Peek: Iterator {
+    fn inspect<F: FnOnce(&Self::Item) -> bool>(&mut self, f: F) -> Option<Self::Item>;
+}
+struct Adapt<'a, I: Iterator + 'a, F>(&'a mut I, F);
+impl<I: Peek, F: FnMut(&I::Item) -> bool> Iterator for Adapt<'_, I, F> {
+    type Item = I::Item;
+    fn next(&mut self) -> Option<Self::Item> { loop {} }
+}
+impl<I: Peek, F: FnMut(&I::Item) -> bool> Peek for Adapt<'_, I, F> {
+    fn inspect<G: FnOnce(&Self::Item) -> bool>(&mut self, _: G) -> Option<Self::Item> { loop {} }
+}
+"#,
+        true,
+    );
+}

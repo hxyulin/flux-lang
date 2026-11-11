@@ -11,6 +11,23 @@ pub(crate) fn check_signature_projection_requirements(
         let Some(regions) = sigs.regions.fns.get(function) else {
             continue;
         };
+        let Some(bound_selections) =
+            flux_ty::regions::function_bound_projection_selections(items, sigs, function)
+        else {
+            diagnostics.push(Diagnostic {
+                file: data.loc.file,
+                range: data.sig_range,
+                message: "cannot resolve projection inputs in trait bounds".into(),
+            });
+            continue;
+        };
+        if !bound_selections.is_empty()
+            && let Some(error) =
+                check_bound_projection_requirements(items, sigs, function, &bound_selections)
+        {
+            diagnostics.push(error);
+            continue;
+        }
         let signature = &sigs.fns[function];
         let selected_method = matches!(data.owner, Some(flux_hir::Owner::Impl(imp))
             if sigs.impl_traits.get(imp).is_some());
@@ -259,6 +276,75 @@ pub(crate) fn check_signature_projection_requirements(
         }
     }
     diagnostics
+}
+
+/// Prove bound inputs before their normalized predicates become assumptions.
+fn check_bound_projection_requirements(
+    items: &ItemTree,
+    sigs: &Signatures,
+    function: flux_hir::FunctionId,
+    bounds: &[flux_ty::regions::BoundProjectionSelections],
+) -> Option<Diagnostic> {
+    let data = &items.functions[function];
+    let regions = sigs.regions.fns.get(function)?;
+    let body = Body::empty(Some(function));
+    let requirements = Requirements::default();
+    let mut cx = Cx::new(&body, items, sigs, &requirements);
+    let memberships = flux_solve::traits::predicates_of(items, sigs, function);
+    cx.header_predicates = flux_solve::traits::elaborate(sigs, &memberships);
+    cx.new_universal("'static".into());
+    let lifetimes: Vec<_> = (0..regions.names.len())
+        .map(|i| cx.new_universal(format!("'{i}")))
+        .collect();
+    let map = |region| match region {
+        Region::Static => Some(STATIC),
+        Region::Param(i) => lifetimes.get(i as usize).copied(),
+        Region::Late(_) | Region::Erased => None,
+    };
+    for &bound in &regions.outlives {
+        match bound {
+            Outlives::Region(a, b) => {
+                if let (Some(a), Some(b)) = (map(a), map(b)) {
+                    cx.known_pairs.push((a, b));
+                }
+            }
+            Outlives::Type(ty, b) => {
+                if let Some(b) = map(b) {
+                    cx.known_types.push((ty, b));
+                }
+            }
+        }
+    }
+    cx.close_known();
+    let excluded: Vec<_> = bounds.iter().map(|b| b.predicate).collect();
+    let env = cx.caller_region_goals_excluding(&excluded);
+    let mut complete = true;
+    for bound in bounds {
+        let mut used = FxHashMap::default();
+        for &ty in &bound.types {
+            complete &= cx.associated_value_selections(
+                ty,
+                &bound.selections,
+                &lifetimes,
+                &env,
+                &mut used,
+                0,
+            );
+        }
+    }
+    cx.close_known();
+    let solution = cx.solve(&Points::new(&body), &[], &[]);
+    (!complete
+        || !cx.errors.is_empty()
+        || !cx.check_universal(&solution).is_empty()
+        || !cx.check_type_tests(&solution).is_empty())
+    .then(|| Diagnostic {
+        file: data.loc.file,
+        range: data.sig_range,
+        message:
+            "associated type projection requirements are not satisfied by the function declaration"
+                .into(),
+    })
 }
 
 #[cfg(test)]
