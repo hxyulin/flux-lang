@@ -1,14 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 400" role="img" aria-labelledby="title desc">
   <title id="title">Rayon runtime comparisons</title>
-  <desc id="desc">Rayon 1.12.0: 111 of 115 upstream integration cases match rustc. Four require unwinding. Zero failures and zero compile blockers.</desc>
-  <rect width="720" height="400" rx="20" fill="#f6f7fb"/>
-  <g fill="#162033" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+  <desc id="desc">Recorded Rayon 1.12.0 qualification: 115 of 115 adapted integration cases match rustc, including unwinding. Does not cover the full unit or doctest suites.</desc>
+  <style>
+    :root { color-scheme: light dark; --bg: #f6f7fb; --fg: #162033; --track: #cbd2df; --accent: #19776a; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #161b22; --fg: #e6edf3; --track: #394457; --accent: #68d5bf; }
+    }
+    .background { fill: var(--bg); }
+    .text { fill: var(--fg); }
+    .track { fill: var(--track); }
+    .bar { fill: var(--accent); }
+  </style>
+  <rect class="background" width="720" height="400" rx="20"/>
+  <g class="text" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
     <text x="32" y="58" font-size="36" font-weight="700">Rayon runtime comparisons</text>
     <text x="32" y="117" font-size="32" font-weight="400">Match rustc</text>
-<text x="32" y="199" font-size="76" font-weight="750">111 / 115</text>
-<text x="32" y="246" font-size="32" font-weight="400">0 failures · 0 compile blockers</text>
-<text x="32" y="347" font-size="34" font-weight="500">4 require unwinding</text>
+    <text x="32" y="199" font-size="76" font-weight="750">115 / 115</text>
+    <text x="32" y="246" font-size="32" font-weight="400">0 failures · 0 compile blockers</text>
+    <text x="32" y="347" font-size="34" font-weight="500">Including all 4 unwinding cases</text>
   </g>
-  <rect x="32" y="268" width="656" height="24" rx="8" fill="#cbd2df"/>
-  <path d="M32 268h633.18v24H32z" fill="#19776a"/>
+  <rect class="track" x="32" y="268" width="656" height="24" rx="8"/>
+  <rect class="bar" x="32" y="268" width="656.00" height="24" rx="8"/>
 </svg>

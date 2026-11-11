@@ -39,36 +39,42 @@ have the same behavior under both compilers.
 | Builds | Cargo workspaces, native resolution and fetching, Flux-built build scripts and procedural macro hosts, parallel crate builds and disk artifact reuse |
 | Backend | Native executables on arm64 macOS and x86-64 Linux, linked in-process with Keel |
 
-Not supported yet: unwinding (panics abort), alternate registries, dependency
-overrides and package-specific lockfile updates. The
+Not supported yet: alternate registries, dependency overrides and
+package-specific lockfile updates. The
 [language reference](docs/LANGUAGE.md) lists every restriction.
 
 ## Compatibility
 
-Snapshot recorded on 2026-11-10, on arm64 macOS. [Counts and measurement scope](docs/status/compatibility.json).
+Parser census recorded on 2026-11-10, with rustc exclusion checks on 2026-11-11,
+on arm64 macOS. [Counts and measurement scope](docs/status/compatibility.json).
 
-![Rust source corpus: 67,922 of 68,236 files parse without syntax diagnostics, 99.5%; 1.27 GB across 1,890 package versions.](docs/status/rust-corpus.svg)
+![Rust source corpus: 68,183 of 68,194 files parse without syntax diagnostics, 99.98%; 42 shared rustc failures excluded.](docs/status/rust-corpus.svg)
 
-The parser scan covers every `.rs` file in the local Cargo registry cache,
-using edition 2024. All 68,236 files produced valid, lossless syntax trees,
-with no panics or time-budget failures. The 314 files with syntax diagnostics
-include invalid test fixtures, older-edition code and nightly syntax.
-A second full scan using each file's inferred package edition parses
-68,183 of 68,236 files without diagnostics (99.92%). Its 53 remaining files are
-31 code-generation templates, 13 nightly-syntax files, five invalid fixtures,
-three bare-string include fragments and one inactive file missing a semicolon.
-The edition comes from the nearest package manifest; fixture overrides and cfg
-are not applied. These counts measure parsing only. A current full-corpus
-compilation success rate has not been measured.
+The corpus contains 68,236 Rust files, 1.27 GB across 1,890 package versions.
+Using each file's inferred package edition, Flux parses 68,183 files without
+syntax diagnostics. Rustc's parse-only check also rejects 42 of the 53 remaining
+files. Excluding those files gives **68,183 / 68,194 (99.98%)**, with 11
+Flux-only syntax failures. Whole packages are not excluded. The clean files
+were not individually checked with rustc.
 
-![Rayon runtime comparisons: 111 of 115 integration cases match rustc; four require unwinding, with zero failures or compile blockers.](docs/status/rayon-runtime.svg)
+All files produced valid, lossless syntax trees, with no panics or time-budget
+failures. Edition inference uses the nearest package manifest; fixture overrides
+and cfg are not applied. These counts measure parsing only. A current
+full-corpus compilation success rate has not been measured.
+[Per-file rustc controls](docs/status/rustc-parser-controls.json).
 
-The Rayon 1.12.0 adapters retain upstream integration test bodies and assertions.
-All 111 runnable cases match rustc; four unwinding cases are skipped.
+![Rayon runtime comparisons: 115 of 115 adapted integration cases match rustc, including unwinding.](docs/status/rayon-runtime.svg)
+
+The recorded Rayon 1.12.0 qualification passes all 115 adapted integration cases,
+including the four unwinding cases. The adapters retain upstream test bodies
+and assertions. Another 24 selected rayon-core panic cases passed in fast-build
+and release modes. The latest validation reran the ordinary consumer and core
+unwind tests successfully, but the collection-unwind rebuild timed out.
 The rand-dependent string cases build the default rand 0.9.5 dependency graph,
 including zerocopy 0.8.63, without upstream source or feature changes.
-These results cover the selected integration cases, not Rayon's unit tests or
-doctests. The separate maintained Rayon consumer also matches rustc in debug,
+These results cover the selected integration cases. The full 217-test unit
+suite and 246 doctests remain unqualified; the latest unit attempt stopped
+during zerocopy compilation. The separate maintained Rayon consumer also matches rustc in debug,
 fast-build and release modes.
 
 ## Self-hosting

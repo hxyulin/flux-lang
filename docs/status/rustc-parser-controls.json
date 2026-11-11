@@ -1,0 +1,327 @@
+{
+  "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "command": "RUSTC_BOOTSTRAP=1 rustc --edition=<inferred edition> -Zparse-crate-root-only <file>",
+  "scope": "Only the 53 files with Flux syntax diagnostics in the edition-aware census. Checks each as a crate root without expansion or type checking. Does not exclude whole packages.",
+  "files": [
+    {
+      "file": "ahash-0.8.12/src/specialize.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "buf_redux-0.8.4/src/nightly.rs",
+      "edition": "2015",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "const_soft_float-0.1.4/src/soft_f32/const_impl_trait.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: expected a trait, found type\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const_soft_float-0.1.4/src/soft_f32/const_impl_trait.rs:5:6\n  |\n5 | impl const From<f32> for F {\n  |      ^^^^^^^^^^^^^^^\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "const_soft_float-0.1.4/src/soft_f64/const_impl_trait.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: expected a trait, found type\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/const_soft_float-0.1.4/src/soft_f64/const_impl_trait.rs:5:6\n  |\n5 | impl const From<f64> for F {\n  |      ^^^^^^^^^^^^^^^\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "enum_dispatch-0.3.13/tests/arg_patterns.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "erased-serde-0.4.10/src/features_check/error.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `\"erased-serde requires that either `std` (default) or `alloc` feature is enabled\"`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/erased-serde-0.4.10/src/features_check/error.rs:1:1\n  |\n1 | \"erased-serde requires that either `std` (default) or `alloc` feature is enabled\"\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "erased-serde-0.4.11/src/features_check/error.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `\"erased-serde requires that either `std` (default) or `alloc` feature is enabled\"`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/erased-serde-0.4.11/src/features_check/error.rs:1:1\n  |\n1 | \"erased-serde requires that either `std` (default) or `alloc` feature is enabled\"\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-0.101.1/build/cond_macros/opencv_branch.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-0.101.1/build/cond_macros/opencv_branch.tpl.rs:30:42\n   |\n30 | macro_rules! opencv_branch_{{ feature }} {\n   |                                          ^ expected item\n   |\n   = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-0.101.1/build/cond_macros/opencv_inherent_feature.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-0.101.1/build/cond_macros/opencv_inherent_feature.tpl.rs:30:56\n   |\n30 | macro_rules! opencv_has_inherent_feature_{{ feature }} {\n   |                                                        ^ expected item\n   |\n   = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-0.101.1/build/cond_macros/opencv_module.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-0.101.1/build/cond_macros/opencv_module.tpl.rs:36:46\n   |\n36 | macro_rules! opencv_has_module_{{ feature }} {\n   |                                              ^ expected item\n   |\n   = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/abstract_ref_wrapper/rust.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/abstract_ref_wrapper/rust.tpl.rs:1:6\n  |\n1 | impl {{rust_trait_const}} for types::AbstractRefMut<'static, {{rust_full}}> {\n  |      ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/base.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/base.tpl.rs:1:6\n  |\n1 | impl {{base_rust_full_const}} for {{rust_local}}{{rust_elided_lt}} {\n  |      ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/boxed.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/boxed.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl.tpl.rs:1:5\n  |\n1 | impl{{rust_decl_lt}} {{rust_local}}{{rust_decl_lt}} {\n  |     ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_debug.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_debug.rs:1:21\n  |\n1 | impl fmt::Debug for {{rust_local}}{{rust_elided_lt}} {\n  |                     ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_default.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_default.tpl.rs:1:18\n  |\n1 | impl Default for {{rust_local}}{{rust_elided_lt}} {\n  |                  ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_explicit_clone.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_explicit_clone.tpl.rs:1:16\n  |\n1 | impl Clone for {{rust_local}}{{rust_elided_lt}} {\n  |                ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_implicit_clone.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/impl_implicit_clone.tpl.rs:1:16\n  |\n1 | impl Clone for {{rust_local}}{{rust_elided_lt}} {\n  |                ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/simple.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/simple.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/simple_field.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/simple_field.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/trait.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item after doc comment\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/class/trait.tpl.rs:1:1\n  |\n1 | /// Constant methods for [{{rust_name_ref}}]\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this doc comment doesn't document anything\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/const/rust.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/const/rust.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/const.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/const.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/const_bitfield.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/const_bitfield.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/const_ignored.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/const_ignored.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/enum.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/enum.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/enum_bitfield.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/enum/enum_bitfield.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/func/rust.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/func/rust.tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/func/rust_extern.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/func/rust_extern.tpl.rs:1:1\n  |\n1 | {{attributes}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/module/prelude.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/module/prelude.tpl.rs:2:2\n  |\n2 |     {{pub_use_traits}}\n  |     ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/smart_ptr/impl_debug.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/smart_ptr/impl_debug.rs:1:21\n  |\n1 | impl fmt::Debug for {{rust_full}} {\n  |                     ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/smart_ptr/rust.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/smart_ptr/rust.tpl.rs:5:1\n  |\n5 | {{ctor}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/smart_ptr/trait_raw.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/smart_ptr/trait_raw.tpl.rs:1:6\n  |\n1 | impl {{base_rust_full_const}} for {{rust_full}} {\n  |      ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/tuple/rust.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/tuple/rust.tpl.rs:1:6\n  |\n1 | impl {{rust_full}} {\n  |      ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/typedef/tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/typedef/tpl.rs:1:1\n  |\n1 | {{doc_comment}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/vector/rust.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected type, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/vector/rust.tpl.rs:1:6\n  |\n1 | impl {{rust_full}} {\n  |      ^ expected type\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/vector/rust_input_array.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/vector/rust_input_array.tpl.rs:2:1\n  |\n2 | {{cfg_attr}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/vector/rust_output_array.tpl.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `{`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/opencv-binding-generator-0.107.0/src/writer/rust_native/tpl/vector/rust_output_array.tpl.rs:4:1\n  |\n4 | {{cfg_attr}}\n  | ^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "pin-project-1.1.13/tests/ui/pinned_drop/invalid-self.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: expected identifier, found keyword `self`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-project-1.1.13/tests/ui/pinned_drop/invalid-self.rs:10:26\n   |\n10 |     fn take_ref_self(ref self: Pin<&mut Self>) {} //~ ERROR expected identifier, found keyword `self`\n   |                          ^^^^ expected identifier, found keyword\n\nerror: expected identifier, found keyword `self`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-project-1.1.13/tests/ui/pinned_drop/invalid-self.rs:11:34\n   |\n11 |     fn take_ref_mut_self(ref mut self: Pin<&mut Self>) {} //~ ERROR expected identifier, found keyword `self`\n   |                                  ^^^^ expected identifier, found keyword\n\nerror: expected parameter name, found `@`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-project-1.1.13/tests/ui/pinned_drop/invalid-self.rs:13:25\n   |\n13 |     fn self_subpat(self @ S {}: Self) {} //~ ERROR expected one of `)`, `,`, or `:`, found `@`\n   |                         ^ expected parameter name\n\nerror: expected one of `)`, `,`, or `:`, found `@`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pin-project-1.1.13/tests/ui/pinned_drop/invalid-self.rs:13:25\n   |\n13 |     fn self_subpat(self @ S {}: Self) {} //~ ERROR expected one of `)`, `,`, or `:`, found `@`\n   |                        -^ expected one of `)`, `,`, or `:`\n   |                        |\n   |                        help: missing `,`\n\nerror: aborting due to 4 previous errors\n\n"
+    },
+    {
+      "file": "serde_json-1.0.105/src/features_check/error.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: expected item, found `\"serde_json requires that either `std` (default) or `alloc` feature is enabled\"`\n --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.105/src/features_check/error.rs:1:1\n  |\n1 | \"serde_json requires that either `std` (default) or `alloc` feature is enabled\"\n  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected item\n  |\n  = note: for a full list of items that can appear in modules, see <https://doc.rust-lang.org/reference/items.html>\n\nerror: aborting due to 1 previous error\n\n"
+    },
+    {
+      "file": "smallvec-1.11.0/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "smallvec-1.13.2/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "smallvec-1.16.0/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "smallvec-1.16.1/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "smallvec-1.16.2/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "smallvec-1.16.3/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "smallvec-1.16.4/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "smallvec-1.16.5/src/specialization.rs",
+      "edition": "2018",
+      "rustc_exit": 0,
+      "stderr": ""
+    },
+    {
+      "file": "syn-1.0.109/tests/test_item.rs",
+      "edition": "2018",
+      "rustc_exit": 1,
+      "stderr": "error: inherent impls cannot be negative\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-1.0.109/tests/test_item.rs:65:11\n   |\n65 |     impl !Trait {}\n   |          -^^^^^ inherent impl for this type\n   |          |\n   |          negative because of this\n   |\n   = note: only trait implementations may be annotated with `!`\n\nerror: inherent impls cannot be negative\n   --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-1.0.109/tests/test_item.rs:110:11\n    |\n110 |     impl !! {}\n    |          -^ inherent impl for this type\n    |          |\n    |          negative because of this\n    |\n    = note: only trait implementations may be annotated with `!`\n\nerror: aborting due to 2 previous errors\n\n"
+    },
+    {
+      "file": "syn-2.0.100/tests/test_item.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: inherent impls cannot be negative\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.100/tests/test_item.rs:70:11\n   |\n70 |     impl !Trait {}\n   |          -^^^^^ inherent impl for this type\n   |          |\n   |          negative because of this\n   |\n   = note: only trait implementations may be annotated with `!`\n\nerror: inherent impls cannot be negative\n   --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.100/tests/test_item.rs:113:11\n    |\n113 |     impl !! {}\n    |          -^ inherent impl for this type\n    |          |\n    |          negative because of this\n    |\n    = note: only trait implementations may be annotated with `!`\n\nerror: aborting due to 2 previous errors\n\n"
+    },
+    {
+      "file": "syn-2.0.31/tests/test_item.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: inherent impls cannot be negative\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.31/tests/test_item.rs:64:11\n   |\n64 |     impl !Trait {}\n   |          -^^^^^ inherent impl for this type\n   |          |\n   |          negative because of this\n   |\n   = note: only trait implementations may be annotated with `!`\n\nerror: inherent impls cannot be negative\n   --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.31/tests/test_item.rs:107:11\n    |\n107 |     impl !! {}\n    |          -^ inherent impl for this type\n    |          |\n    |          negative because of this\n    |\n    = note: only trait implementations may be annotated with `!`\n\nerror: aborting due to 2 previous errors\n\n"
+    },
+    {
+      "file": "syn-2.0.98/tests/test_item.rs",
+      "edition": "2021",
+      "rustc_exit": 1,
+      "stderr": "error: inherent impls cannot be negative\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.98/tests/test_item.rs:66:11\n   |\n66 |     impl !Trait {}\n   |          -^^^^^ inherent impl for this type\n   |          |\n   |          negative because of this\n   |\n   = note: only trait implementations may be annotated with `!`\n\nerror: inherent impls cannot be negative\n   --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.98/tests/test_item.rs:109:11\n    |\n109 |     impl !! {}\n    |          -^ inherent impl for this type\n    |          |\n    |          negative because of this\n    |\n    = note: only trait implementations may be annotated with `!`\n\nerror: aborting due to 2 previous errors\n\n"
+    },
+    {
+      "file": "wesl-0.6.0/src/experimental/overload.rs",
+      "edition": "2024",
+      "rustc_exit": 1,
+      "stderr": "error: expected `;`, found keyword `let`\n  --> /Users/hxyulin/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wesl-0.6.0/src/experimental/overload.rs:38:80\n   |\n38 |                 .map(|p| normalize_ty(&p.ty, resource, &imports)).collect_vec()\n   |                                                                                ^ help: add `;` here\n39 |             let res = mangler.mangle_signature(decl.ident.name().as_str(), &sig);\n   |             --- unexpected token\n\nerror: aborting due to 1 previous error\n\n"
+    }
+  ],
+  "excluded_shared_failures": 42,
+  "retained_flux_failures": 11
+}

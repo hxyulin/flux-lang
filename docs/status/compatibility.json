@@ -1,5 +1,5 @@
 {
-  "date": "2026-11-10",
+  "date": "2026-11-11",
   "host": "aarch64-apple-darwin",
   "parser": {
     "source": "local Cargo registry source cache",
@@ -20,15 +20,17 @@
   "rayon": {
     "version": "1.12.0",
     "cases": 115,
-    "match_rustc": 111,
-    "requires_unwinding": 4,
+    "match_rustc": 115,
+    "requires_unwinding": 0,
     "failures": 0,
     "compile_blocked": 0,
-    "mode": "fast-build",
+    "mode": "fast-build, panic=unwind",
     "threads": 4,
     "dependencies": "Original upstream sources and default rand 0.9.5 features, including zerocopy 0.8.63.",
     "scope": "Standalone adapters for upstream integration functions. Original test bodies and assertions retained; libtest annotations removed. Each runnable function compared with a rustc-built adapter. Unit tests and doctests are not included.",
-    "evidence": "Recorded compiler qualification at revision 2ec3416d; original local reports in out/rand-zerocopy/."
+    "evidence": "Recorded unwind qualification: out/rayon-upstream/unwind-all/{summary.json,results.json}; not rerun by this documentation update.",
+    "core_selected_panic_cases_passed": 24,
+    "full_unit_and_doctest_suites": "Not qualified: latest unit attempt stopped during zerocopy compilation; doctests incomplete. Latest collection-unwind rebuild timed out; earlier 115-case qualification retained."
   },
   "baseline_revision": "d2bad0208088dad0b09f4ef911a1f81a43f7f0c7",
   "edition_aware_parser": {
@@ -48,5 +50,16 @@
     "edition_inference": "Nearest ancestor package Cargo.toml; all files scanned in the inferred edition. No unresolved inherited edition fields in this inventory.",
     "scope": "Raw source parsing, not full crate compilation. cfg, source-level fixture edition overrides and per-target edition overrides are not applied.",
     "local_evidence": "out/corpus-syntax-20261110/{summary.json,baseline-full-census.json,final-census.json,inventory.json}"
+  },
+  "rustc_filtered_parser": {
+    "files": 68194,
+    "without_syntax_diagnostics": 68183,
+    "with_syntax_diagnostics": 11,
+    "without_syntax_diagnostics_percent": 99.9839,
+    "excluded_shared_failures": 42,
+    "scope": "Edition-aware file census excluding only files with Flux syntax diagnostics also rejected by rustc parse-only. Remaining clean files were not individually checked by rustc. No whole package exclusions. Not full compilation.",
+    "evidence": "rustc-parser-controls.json",
+    "census_date": "2026-11-10",
+    "rustc_control_date": "2026-11-11"
   }
 }

@@ -1,15 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 400" role="img" aria-labelledby="title desc">
   <title id="title">Rust source corpus</title>
-  <desc id="desc">Without syntax errors 99.5% 67,922 / 68,236 files 314 with syntax diagnostics 1.27 GB · 1,890 package versions</desc>
-  <rect width="720" height="400" rx="20" fill="#f6f7fb"/>
-  <g fill="#162033" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
+  <desc id="desc">68,183 of 68,194 files parse without syntax diagnostics. 42 shared rustc parse failures excluded; 11 Flux-only failures remain.</desc>
+  <style>
+    :root { color-scheme: light dark; --bg: #f6f7fb; --fg: #162033; --track: #cbd2df; --accent: #6554d9; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #161b22; --fg: #e6edf3; --track: #394457; --accent: #b4a7ff; }
+    }
+    .background { fill: var(--bg); }
+    .text { fill: var(--fg); }
+    .track { fill: var(--track); }
+    .bar { fill: var(--accent); }
+  </style>
+  <rect class="background" width="720" height="400" rx="20"/>
+  <g class="text" font-family="system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif">
     <text x="32" y="58" font-size="36" font-weight="700">Rust source corpus</text>
     <text x="32" y="108" font-size="32" font-weight="400">Without syntax errors</text>
-<text x="32" y="193" font-size="76" font-weight="750">99.5%</text>
-<text x="32" y="242" font-size="38" font-weight="600">67,922 / 68,236 files</text>
-<text x="32" y="335" font-size="30" font-weight="400">314 with syntax diagnostics</text>
-<text x="32" y="380" font-size="30" font-weight="400">1.27 GB · 1,890 package versions</text>
+    <text x="32" y="193" font-size="76" font-weight="750">99.98%</text>
+    <text x="32" y="242" font-size="38" font-weight="600">68,183 / 68,194 files</text>
+    <text x="32" y="335" font-size="30" font-weight="400">42 shared rustc failures excluded</text>
+    <text x="32" y="380" font-size="30" font-weight="400">11 Flux-only syntax failures</text>
   </g>
-  <rect x="32" y="268" width="656" height="24" rx="8" fill="#cbd2df"/>
-  <path d="M32 268h652.98v24H32z" fill="#6554d9"/>
+  <rect class="track" x="32" y="268" width="656" height="24" rx="8"/>
+  <rect class="bar" x="32" y="268" width="655.89" height="24" rx="8"/>
 </svg>
