@@ -4894,6 +4894,28 @@ impl Lower<'_, '_, '_> {
                     }
                     return;
                 }
+                if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::PtrMetadataWord) {
+                    let parts = self.operand(&args[0]);
+                    let metadata = match self.sigs.metadata(generic_args[0]) {
+                        flux_ty::Metadata::Thin => self.b.ins().iconst(Type::I64, 0),
+                        flux_ty::Metadata::Length => parts[1],
+                        flux_ty::Metadata::VTable => {
+                            self.b
+                                .ins()
+                                .convert(ConvertOp::PtrToInt, Type::I64, parts[1])
+                        }
+                        flux_ty::Metadata::Generic(_) => {
+                            unreachable!("monomorphized pointer metadata")
+                        }
+                    };
+                    self.write(dest, &[metadata]);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
                 // Of a trait object: through its vtable.
                 if items.functions[*func]
                     .intrinsic

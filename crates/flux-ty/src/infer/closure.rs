@@ -472,7 +472,7 @@ impl Ctx<'_> {
         at: TextRange,
     ) {
         for (&arg, &param) in args.iter().zip(params) {
-            let mut closure = arg;
+            let mut closure = self.blame(arg);
             let mut shared = false;
             let mut borrowed = false;
             while let Expr::Ref { mutable, expr } = self.body.exprs[closure] {
@@ -528,7 +528,7 @@ impl Ctx<'_> {
             if self.shallow(param) != self.shallow(actual) {
                 continue;
             }
-            let mut closure = argument;
+            let mut closure = self.blame(argument);
             while let Expr::Ref { expr, .. } = self.body.exprs[closure] {
                 closure = expr;
             }
@@ -561,7 +561,7 @@ impl Ctx<'_> {
     /// Whether `expr` is a closure, which arguments infer after the
     /// others, as rustc does, so that it may know their types.
     pub(super) fn is_closure(&self, expr: ExprId) -> bool {
-        match self.body.exprs[expr] {
+        match self.body.exprs[self.blame(expr)] {
             Expr::Closure { .. } => true,
             Expr::Ref { expr, .. } => self.is_closure(expr),
             _ => false,

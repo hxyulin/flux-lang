@@ -1,0 +1,45 @@
+use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tracing::{Event, Metadata, Subscriber, span};
+static SPANS: AtomicUsize = AtomicUsize::new(0);
+static EVENTS: AtomicUsize = AtomicUsize::new(0);
+static HASH_WORDS: AtomicUsize = AtomicUsize::new(0);
+static ENTERS: AtomicUsize = AtomicUsize::new(0);
+static EXITS: AtomicUsize = AtomicUsize::new(0);
+struct Words(usize);
+impl Hasher for Words {
+    fn finish(&self) -> u64 { 0 }
+    fn write(&mut self, _: &[u8]) { panic!("unexpected pointer hash byte write") }
+    fn write_usize(&mut self, _: usize) { self.0 += 1; }
+}
+struct Counter;
+impl Subscriber for Counter {
+    fn enabled(&self, _: &Metadata<'_>) -> bool { true }
+    fn new_span(&self, attrs: &span::Attributes<'_>) -> span::Id {
+        let mut words = Words(0);
+        attrs.metadata().callsite().hash(&mut words);
+        assert_eq!(words.0, 2);
+        HASH_WORDS.fetch_add(words.0, Ordering::SeqCst);
+        SPANS.fetch_add(1, Ordering::SeqCst);
+        span::Id::from_u64(1)
+    }
+    fn record(&self, _: &span::Id, _: &span::Record<'_>) {}
+    fn record_follows_from(&self, _: &span::Id, _: &span::Id) {}
+    fn event(&self, _: &Event<'_>) { EVENTS.fetch_add(1, Ordering::SeqCst); }
+    fn enter(&self, _: &span::Id) { ENTERS.fetch_add(1, Ordering::SeqCst); }
+    fn exit(&self, _: &span::Id) { EXITS.fetch_add(1, Ordering::SeqCst); }
+}
+fn main() {
+    tracing::subscriber::with_default(Counter, || {
+        let scope = tracing::info_span!("scope", answer = 42u64);
+        let _entered = scope.enter();
+        tracing::info!(value = 7u64, "first event");
+        tracing::info!("second event");
+    });
+    assert_eq!(SPANS.load(Ordering::SeqCst), 1);
+    assert_eq!(EVENTS.load(Ordering::SeqCst), 2);
+    assert_eq!(HASH_WORDS.load(Ordering::SeqCst), 2);
+    assert_eq!(ENTERS.load(Ordering::SeqCst), 1);
+    assert_eq!(EXITS.load(Ordering::SeqCst), 1);
+    println!("{} {} {}", SPANS.load(Ordering::SeqCst), EVENTS.load(Ordering::SeqCst), HASH_WORDS.load(Ordering::SeqCst));
+}

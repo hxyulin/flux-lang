@@ -1,7 +1,6 @@
-//! The supported pointer hash API is deliberately restricted to thin
-//! pointers until metadata hashing is implemented.
+//! Pointer hashing accepts unsized pointees; native tests check metadata words.
 #[test]
-fn rejects_unsized_pointer_hashing() {
+fn accepts_unsized_pointer_hashing() {
     let (_, _, hir) = flux_hir::lower_text(
         "main.rs",
         "fn main() {\n\
@@ -17,12 +16,5 @@ fn rejects_unsized_pointer_hashing() {
     );
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let typed = flux_ty::check_file(&hir);
-    assert!(
-        typed
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("[u8]") && d.message.contains("size")),
-        "{:?}",
-        typed.diagnostics,
-    );
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
 }

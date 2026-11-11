@@ -61,10 +61,12 @@ pub fn eq<T: ?Sized>(a: *const T, b: *const T) -> bool {
     a == b
 }
 
-/// Hashes a thin pointer's address. Unsized pointees are not supported:
-/// their metadata must also participate in pointer hashing.
-pub fn hash<T, H: crate::hash::Hasher>(hashee: *const T, state: &mut H) {
-    state.write_usize(hashee as usize);
+/// Hashes a pointer's address and, for a wide pointer, its metadata.
+pub fn hash<T: ?Sized, H: crate::hash::Hasher>(hashee: *const T, state: &mut H) {
+    state.write_usize(hashee as *const () as usize);
+    if crate::mem::size_of::<*const T>() > crate::mem::size_of::<usize>() {
+        state.write_usize(crate::intrinsics::ptr_metadata_word(hashee));
+    }
 }
 
 /// Reads the value at `src` without moving it out: a bitwise copy,

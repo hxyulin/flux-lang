@@ -1,0 +1,7 @@
+fn apply<F>(F) -> u16
+    f@0: F
+fn wrong_type() -> ()
+    value@0: u8
+fn wrong_arity() -> ()
+error 93..98: type mismatch in closure arguments
+error 159..164: closure is expected to take 1 argument, but it takes 0 arguments

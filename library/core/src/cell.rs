@@ -407,6 +407,16 @@ impl<'b, T: ?Sized> Ref<'b, T> {
         Ref { value: orig.value, borrow: orig.borrow }
     }
 
+    /// Projects a shared loan without releasing the RefCell borrow.
+    pub fn map<U: ?Sized, F>(orig: Self, f: F) -> Ref<'b, U>
+    where F: FnOnce(&T) -> &U,
+    {
+        let value = f(orig.value);
+        let borrow = orig.borrow;
+        mem::forget(orig);
+        Ref { value, borrow }
+    }
+
     /// Splits one shared loan into two projected loans.
     pub fn map_split<U: ?Sized, V: ?Sized, F>(orig: Self, f: F) -> (Ref<'b, U>, Ref<'b, V>)
     where F: FnOnce(&T) -> (&U, &V),

@@ -328,7 +328,9 @@ the subset. Record-pattern fields may use `cfg` and `cfg_attr`; disabled fields
 are removed before binding and duplicate-field checks.
 
 `extern crate self as alias` names the current crate, including inside nested
-modules. Documentation comments become `doc` attributes before both declarative
+modules. `extern crate dependency as _` loads a dependency and honors
+`macro_use` without creating a lexical or extern-prelude name. Missing crates
+still report an error. Documentation comments become `doc` attributes before both declarative
 and procedural macro matching. Format macros, `panic!` and `unreachable!` can obtain their format string
 from nested macros such as `concat!` and `stringify!`, also through a
 forwarded `expr` fragment; remaining argument expressions retain ordinary
@@ -709,6 +711,10 @@ dynamic or opaque outputs.
 Represented inherited trait lifetimes and method-local associated-type bounds
 retain their original region rows. Method-local memberships keep their outputs
 abstract when comparing an implementation with its trait declaration.
+Lifetime-only methodless marker traits may carry borrowed type arguments through
+supertraits with region-free declarations and no associated items. Admission
+reconstructs the supertrait types and region rows; it does not bypass impl or
+caller lifetime obligations.
 
 `Sized` is, as a bound and implicitly: every type
 is sized but slices, `str` and trait objects, and a type parameter is
@@ -1009,7 +1015,9 @@ a conflicting `borrow` or `borrow_mut` panics with rustc's message, at
 its caller; `Ref<T>` and `RefMut<T>` implement `Deref`, and `RefMut<T>`
 also implements `DerefMut`, with references tied to the borrowed guard;
 slice and str guard targets are supported; guards implement Debug when their
-possibly unsized target does. `Ref::map_split` and `RefMut::map_split` keep the
+possibly unsized target does. `Ref::map` transfers a shared loan to a projected
+value without releasing it; a panicking projection releases the original loan.
+`Ref::map_split` and `RefMut::map_split` keep the
 cell borrowed until both projected guards are dropped. `Cell<T: ?Sized>` supports
 `get_mut`, `as_ptr` and `from_mut`. Cells with supported Debug payloads, `BorrowError`
 and `BorrowMutError` also implement Debug),
@@ -1221,8 +1229,9 @@ Boxed slices support `Clone` and `FromIterator`; boxed strings support
 `From<&str>` and `Clone`. `core::borrow::{Borrow, BorrowMut}` are also
 reexported through `alloc::borrow` and `std::borrow`; String borrows as
 `str`, and slices of `Borrow<str>` values support string `join`. String,
-Vec and Box implement `Hash` when their contents do. `core::ptr::hash`
-supports thin pointers only.
+Vec and Box implement `Hash` when their contents do. Raw-pointer `Hash` and
+`core::ptr::hash` include the address and, for wide pointers, the slice length
+or vtable address. Hashing does not read the pointee.
 
 `alloc::collections::BTreeMap`, also reexported through `std::collections`,
 supports const `new`, bound-free `Default`, `is_empty`, heterogeneous
@@ -1630,6 +1639,11 @@ for a parameter's). So must what a callee's bounds say its associated
 types are, and a type that is `Copy` for some lifetimes only where a
 value of it is copied. A borrowed constant expression (`&5`, `&[1, 2]`) lives
 forever, as rustc promotes it.
+Const and static initializers also retain shared temporaries built by direct
+const-function and const-method calls when their expression graph is immutable,
+drop-free and contains no interior-mutable storage. Calls still execute during
+constant evaluation, including their panics. This retention does not extend
+runtime temporaries or temporaries inside const-function bodies.
 Shared borrows of immutable, drop-free generic associated constants keep their
 instance arguments until monomorphization. Qualified aggregates can also hold
 generic function addresses with region-free arguments and no owner lifetimes.

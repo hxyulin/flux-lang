@@ -3485,18 +3485,14 @@ impl Collector<'_> {
         let name = Symbol::intern(name.text());
         let krate = self.items.modules[ctx.module].krate;
         let alias = match e.rename() {
-            Some(rename) => match rename.name() {
-                Some(alias) => Symbol::intern(alias.text()),
-                None => {
-                    unsupported(
-                        &mut self.items.diagnostics,
-                        range,
-                        "`extern crate` underscore aliases",
-                    );
+            Some(rename) if rename.underscore_token().is_some() => None,
+            Some(rename) => {
+                let Some(alias) = rename.name() else {
                     return;
-                }
-            },
-            None => name,
+                };
+                Some(Symbol::intern(alias.text()))
+            }
+            None => Some(name),
         };
         if name == kw::SelfLower && e.rename().is_none() {
             self.items.diagnostics.push(Diagnostic::new(
@@ -3589,8 +3585,13 @@ impl Collector<'_> {
                 check_attr(attr, &mut self.items.diagnostics);
             }
         }
-        let own = &self.items.crates[krate.0 as usize];
-        let root = own.root;
+        let vis = self.visibility(ctx, e.visibility());
+        // An underscore alias loads the crate (and any macro_use imports)
+        // without introducing a lexical or extern-prelude binding.
+        let Some(alias) = alias else {
+            return;
+        };
+        let root = self.items.crates[krate.0 as usize].root;
         if ctx.module == root && e.rename().is_some() {
             self.items.crates[krate.0 as usize]
                 .extern_aliases
@@ -3599,7 +3600,6 @@ impl Collector<'_> {
         if ctx.module == root && e.rename().is_none() && (name == sym::alloc || name == sym::std) {
             self.items.crates[krate.0 as usize].externs.push(name);
         }
-        let vis = self.visibility(ctx, e.visibility());
         self.items.uses.push(Use {
             module: ctx.module,
             file: ctx.file,

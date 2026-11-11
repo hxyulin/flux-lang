@@ -154,6 +154,11 @@ fn fail<T>(_:T){let _value=Cleanup;std::panic::panic_any(String::from("owned pan
 fn main(){
     assert!(cfg!(panic="unwind"));
     std::panic::set_hook(Box::new(|_|{}));
+    let cell=std::cell::RefCell::new(7u32);
+    let projected=std::panic::catch_unwind(std::panic::AssertUnwindSafe(||{
+        let _:std::cell::Ref<'_,u32>=std::cell::Ref::map(cell.borrow(),|_|panic!("projection"));
+    }));
+    assert!(projected.is_err());assert!(cell.try_borrow_mut().is_ok());
     let value=std::panic::catch_unwind(||fail(42u32)).unwrap_err();
     assert_eq!(*value.downcast::<String>().unwrap(),"owned panic");
     let result=std::thread::spawn(||std::panic::panic_any(19usize)).join().unwrap_err();

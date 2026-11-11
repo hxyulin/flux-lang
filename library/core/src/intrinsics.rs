@@ -517,3 +517,9 @@ pub(crate) unsafe fn __atomic_ptr_cas_seqcst<T>(p:*mut T,expected:T,new:T)->T {l
 /// Changes the data address without changing pointer metadata.
 #[rustc_intrinsic]
 pub(crate) fn ptr_with_addr<T:?Sized>(pointer:*const T,address:usize)->*const T {loop {}}
+
+/// The pointer metadata word, or zero for a thin pointer. This private
+/// operation preserves the compiler's pointer representation without reads
+/// from the pointee or assumptions about the in-memory layout of a fat pointer.
+#[rustc_intrinsic]
+pub(crate) fn ptr_metadata_word<T: ?Sized>(pointer: *const T) -> usize { loop {} }

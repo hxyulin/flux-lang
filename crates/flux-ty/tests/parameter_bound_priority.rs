@@ -11,6 +11,26 @@ fn parameter_bounds_precede_inferred_impls() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "object_principal_precedes_extension",
+            "trait A{fn f(&self)->u8{1}}trait B{fn f(&self)->u8{2}}impl B for dyn A+'_{}fn go(x:&dyn A)->u8{x.f()}fn main(){}",
+            true,
+        ),
+        (
+            "object_supertrait_precedes_extension",
+            "trait A{fn f(&self)->u8{1}}trait C:A{}trait B{fn f(&self)->u8{2}}impl B for dyn C+'_{}fn go(x:&dyn C)->u8{x.f()}fn main(){}",
+            true,
+        ),
+        (
+            "object_supertrait_ambiguity_is_retained",
+            "trait A{fn f(&self)->u8;}trait B{fn f(&self)->u8;}trait C:A+B{}fn go(x:&dyn C)->u8{x.f()}fn main(){}",
+            false,
+        ),
+        (
+            "concrete_receiver_stays_ambiguous",
+            "trait A{fn f(&self)->u8{1}}trait B{fn f(&self)->u8{2}}struct S;impl A for S{}impl B for S{}fn go(x:&S)->u8{x.f()}fn main(){}",
+            false,
+        ),
+        (
             "bound_path",
             "trait A{fn f(&self)->u8;}trait B{fn f(&self)->u8;}impl<T:A>B for T{fn f(&self)->u8{99}}fn go<T:A>(x:&T)->u8{T::f(x)}fn main(){}",
             true,

@@ -9,6 +9,36 @@ fn blanket_adapter_intersections_match_rustc() {
     std::fs::create_dir_all(&directory).unwrap();
     for (name, source, accepted) in [
         (
+            "generic_local_callable_absence",
+            "trait Flag<L,R>{}struct Wrap<F,T>(F,core::marker::PhantomData<T>);impl<L,R,F:FnMut(&L,&R)->bool>Flag<L,R>for Wrap<F,bool>{}impl<T,F:FnMut(&T,&T)->bool>Flag<T,T>for F{}",
+            true,
+        ),
+        (
+            "boxed_callable_overlap",
+            "trait Conv<T>{}impl<T>Conv<T>for T{}impl<T:Fn()>Conv<T>for Box<dyn Fn()>{}",
+            false,
+        ),
+        (
+            "generic_local_unconditional_overlap",
+            "trait Flag<L,R>{}struct Wrap<F,T>(F,core::marker::PhantomData<T>);impl<L,R,F>Flag<L,R>for Wrap<F,bool>{}impl<T>Flag<T,T>for T{}",
+            false,
+        ),
+        (
+            "generic_cow_blanket_conversion",
+            "use std::borrow::Cow;struct Paint<'a,S:ToOwned+?Sized>{text:Cow<'a,S>}impl<'a,I,S:'a+ToOwned+?Sized>From<I>for Paint<'a,S>where I:Into<Cow<'a,S>>,S::Owned:std::fmt::Debug{fn from(value:I)->Self{Self{text:value.into()}}}",
+            true,
+        ),
+        (
+            "generic_cow_specific_conversion_overlaps",
+            "use std::borrow::Cow;struct Paint<'a,S:ToOwned+?Sized>{text:Cow<'a,S>}impl<'a>From<Paint<'a,str>>for Cow<'a,str>{fn from(value:Paint<'a,str>)->Self{value.text}}impl<'a,I,S:'a+ToOwned+?Sized>From<I>for Paint<'a,S>where I:Into<Cow<'a,S>>,S::Owned:std::fmt::Debug{fn from(value:I)->Self{Self{text:value.into()}}}",
+            false,
+        ),
+        (
+            "generic_cow_existing_conversion_overlaps",
+            "use std::borrow::Cow;struct Paint<'a,S:ToOwned+?Sized>{text:Cow<'a,S>}impl<'a,S:ToOwned+?Sized>From<Paint<'a,S>>for Cow<'a,S>{fn from(value:Paint<'a,S>)->Self{value.text}}impl<'a,I,S:'a+ToOwned+?Sized>From<I>for Paint<'a,S>where I:Into<Cow<'a,S>>,S::Owned:std::fmt::Debug{fn from(value:I)->Self{Self{text:value.into()}}}",
+            false,
+        ),
+        (
             "generic_projection_locating_checkpoint",
             "trait Stream{type Checkpoint;}struct Checkpoint<I,S>(I,core::marker::PhantomData<S>);struct Locating<I>{initial:I,input:I}impl<I:Stream>Stream for Locating<I>{type Checkpoint=Checkpoint<I::Checkpoint,Self>;}trait Offset<Start=Self>{}impl<I>Offset for Locating<I>{}impl<I:Stream>Offset<<Locating<I>as Stream>::Checkpoint>for Locating<I>{}",
             true,

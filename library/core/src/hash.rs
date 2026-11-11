@@ -562,15 +562,15 @@ impl<T: ?Sized + Hash> Hash for &mut T {
     }
 }
 
-/// A pointer hashes its address.
-impl<T> Hash for *const T {
+/// A pointer hashes its address and metadata.
+impl<T: ?Sized> Hash for *const T {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_usize(*self as usize);
+        crate::ptr::hash(*self as *const T, state);
     }
 }
 
-impl<T> Hash for *mut T {
+impl<T: ?Sized> Hash for *mut T {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_usize(*self as usize);
+        crate::ptr::hash(*self as *const T, state);
     }
 }

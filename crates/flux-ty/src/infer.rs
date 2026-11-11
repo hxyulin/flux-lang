@@ -5465,7 +5465,7 @@ impl Ctx<'_> {
                     if let Some(hint) =
                         self.closure_hint_from(predicates, projections, args, field_ty)
                     {
-                        self.closure_hints.insert(value, hint);
+                        self.closure_hints.insert(self.blame(value), hint);
                     }
                 }
                 self.expect(value, field_ty);
@@ -6055,12 +6055,18 @@ impl Ctx<'_> {
                 })
             });
         }
-        // At the same receiver candidate, a type parameter's bound
-        // methods precede in-scope impl methods, including those with
-        // borrowed Self. Projection and reference bounds have no such
-        // priority. Keep all preferred methods to preserve ambiguity.
+        // Caller bounds on a type parameter and the principal/supertrait
+        // members of an object precede unrelated in-scope extension traits.
+        // Keep every preferred method so genuine ambiguity remains an error.
         let mut preferred = |&(_, t, target, _): &(_, Option<crate::TraitRef>, Ty, bool)| {
-            t.is_some() && matches!(self.shallow(target).kind(), TyKind::Param(_))
+            t.is_some_and(|bound| match self.shallow(target).kind() {
+                TyKind::Param(_) => true,
+                TyKind::Dynamic(object) => {
+                    flux_solve::objects::supertraits_of(items, object.trait_)
+                        .contains(&bound.trait_)
+                }
+                _ => false,
+            })
         };
         if found.iter().any(&mut preferred) {
             found.retain(preferred);

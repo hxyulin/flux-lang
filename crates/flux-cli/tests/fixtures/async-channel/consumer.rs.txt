@@ -1,0 +1,20 @@
+fn main() {
+    let (sender, receiver) = async_channel::bounded(1);
+    let worker = std::thread::spawn(move || {
+        sender.send_blocking(17u32).unwrap();
+        sender.send_blocking(23u32).unwrap();
+    });
+    assert_eq!(receiver.recv_blocking().unwrap(), 17);
+    assert_eq!(receiver.recv_blocking().unwrap(), 23);
+    worker.join().unwrap();
+    assert!(receiver.recv_blocking().is_err());
+    let (sender, receiver) = async_channel::unbounded();
+    sender.send_blocking(31u32).unwrap();
+    let other = receiver.clone();
+    assert_eq!(other.try_recv().unwrap(), 31);
+    assert!(receiver.try_recv().is_err());
+    sender.close();
+    assert!(sender.send_blocking(47).is_err());
+    assert!(receiver.is_closed());
+    println!("async-channel blocking and closure complete");
+}

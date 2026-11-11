@@ -1478,6 +1478,7 @@ fn build_body(
         source_map,
         types,
         in_const_closure: matches!(item, Item::Closure(ClosureOwner::Const(_), _, _)),
+        const_initializer: matches!(item, Item::Const(_)),
         locals: Arena::new(),
         call_regions: ArenaMap::new(),
         reification_regions: ArenaMap::new(),
@@ -1870,6 +1871,9 @@ struct Builder<'a> {
     // Function closures have parent region rows. Constant-owned closures
     // still lack an enclosing function namespace for written lifetime args.
     in_const_closure: bool,
+    /// Initializers may retain immutable constant-call temporaries. Const fn
+    /// bodies and closure bodies still follow ordinary temporary lifetimes.
+    const_initializer: bool,
     locals: Arena<LocalDecl>,
     call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
     reification_regions: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
@@ -3236,6 +3240,117 @@ impl Builder<'_> {
         self.read(local.into())
     }
 
+    /// Qualifies an immutable temporary for retention by a const/static
+    /// initializer. Keep evaluation in MIR: const calls still run and can fail.
+    /// User locals, mutation, destructors and interior-mutable stored fields
+    /// cannot acquire static storage through this path.
+    fn const_temporary(&self, expr: ExprId) -> bool {
+        let mut expressions = vec![expr];
+        let mut seen_exprs = rustc_hash::FxHashSet::default();
+        let mut seen_types = rustc_hash::FxHashSet::default();
+        while let Some(expr) = expressions.pop() {
+            if !seen_exprs.insert(expr) {
+                continue;
+            }
+            let ty = self
+                .types
+                .expr_types
+                .get(expr)
+                .copied()
+                .unwrap_or(Ty::ERROR);
+            let mut types = vec![ty];
+            while let Some(ty) = types.pop() {
+                if !seen_types.insert(ty) {
+                    continue;
+                }
+                if self.needs_drop(ty) {
+                    return false;
+                }
+                match ty.kind() {
+                    TyKind::Param(_)
+                    | TyKind::Infer(_)
+                    | TyKind::Alias(_)
+                    | TyKind::Opaque(_)
+                    | TyKind::Error => return false,
+                    TyKind::Adt(adt, _) => {
+                        if ["cell", "ref_cell", "unsafe_cell"]
+                            .iter()
+                            .any(|lang| flux_solve::is_lang_struct(self.items, adt.strukt, lang))
+                        {
+                            return false;
+                        }
+                        let Some(fields) = flux_solve::contents(&self.typed.sigs, ty) else {
+                            return false;
+                        };
+                        types.extend_from_slice(fields);
+                    }
+                    TyKind::Array(element, _) => types.push(element),
+                    TyKind::Tuple(fields) => types.extend_from_slice(fields),
+                    _ => {}
+                }
+            }
+            let args =
+                match &self.body.exprs[expr] {
+                    Expr::Literal(_) | Expr::Path(Res::Const(_) | Res::Assoc { .. }) => continue,
+                    Expr::Array(fields) | Expr::Tuple(fields) => *fields,
+                    Expr::Call { callee, args } => {
+                        let constructor = matches!(
+                            self.body.exprs[*callee],
+                            Expr::Path(Res::Struct(_) | Res::Variant(..))
+                        );
+                        if !constructor
+                            && !self.types.calls.get(*callee).is_some_and(|instance| {
+                                self.items.functions[instance.function].is_const
+                            })
+                        {
+                            return false;
+                        }
+                        *args
+                    }
+                    Expr::MethodCall { receiver, args, .. } => {
+                        if !self.types.calls.get(expr).is_some_and(|instance| {
+                            self.items.functions[instance.function].is_const
+                        }) {
+                            return false;
+                        }
+                        expressions.push(*receiver);
+                        *args
+                    }
+                    Expr::Block {
+                        stmts,
+                        tail: Some(tail),
+                        ..
+                    } if self.body.lists[*stmts].is_empty() => {
+                        expressions.push(*tail);
+                        continue;
+                    }
+                    Expr::Ref {
+                        mutable: false,
+                        expr,
+                    }
+                    | Expr::Cast { expr, .. } => {
+                        expressions.push(*expr);
+                        continue;
+                    }
+                    Expr::Repeat { value, .. } => {
+                        expressions.push(*value);
+                        continue;
+                    }
+                    Expr::Unary { operand, .. } if self.types.overloads.get(expr).is_none() => {
+                        expressions.push(*operand);
+                        continue;
+                    }
+                    Expr::Binary { lhs, rhs, .. } if self.types.overloads.get(expr).is_none() => {
+                        expressions.extend([*lhs, *rhs]);
+                        continue;
+                    }
+                    _ => return false,
+                };
+            expressions.extend(self.body.lists[args].iter().copied());
+        }
+        true
+    }
+
     /// The value of `expr` if rustc would promote a borrow of it to a
     /// constant: literals and aggregates built without executing user code.
     /// Every stored field and nested reference must itself be promotable;
@@ -4046,9 +4161,20 @@ impl Builder<'_> {
                 } else {
                     None
                 };
-                self.extending = self.extended_refs.contains(&expr);
+                let retain = self.const_initializer
+                    && !*mutable
+                    && promoted_place.is_none()
+                    && self.const_temporary(*inner);
+                let saved_extension = self.extend_at;
+                if retain {
+                    self.extend_at = Some((usize::MAX, 0));
+                }
+                self.extending = retain || self.extended_refs.contains(&expr);
                 let place = promoted_place.unwrap_or_else(|| self.lower_place(*inner));
                 self.extending = false;
+                if retain {
+                    self.extend_at = saved_extension;
+                }
                 let mutability = if *mutable {
                     Mutability::Mut
                 } else {

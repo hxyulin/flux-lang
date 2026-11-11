@@ -1,0 +1,170 @@
+fn shared<F>(_1: F) -> u8 {
+    let mut _0: u8;
+    let _2: &F;
+    let _3: (u8,);
+
+    bb0: {
+        _2 = &_1;
+        _3 = (const 1_u8,);
+        _0 = call::<F, (u8,)>(copy _2, move _3) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn repeat<F>(_1: F) -> () {
+    let mut _0: ();
+    let _2: ();
+    let _3: &mut F;
+    let _4: ();
+
+    bb0: {
+        _3 = &two_phase _1;
+        _4 = ();
+        _2 = call_mut::<F, ()>(move _3, move _4) -> bb1;
+    }
+
+    bb1: {
+        _0 = const ();
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn wrong_mutation() -> () {
+    let mut _0: ();
+    let mut _1: u8; // value
+    let _2: u8;
+    let _3: {closure};
+    let _4: &mut u8;
+
+    bb0: {
+        _1 = const 0_u8;
+        _4 = &mut _1;
+        _3 = {closure}(move _4);
+        _2 = shared::<{closure}>(move _3) -> bb1;
+    }
+
+    bb1: {
+        StorageDead(_2);
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn wrong_mutation::{closure#7} as Fn(_1: &{closure}, _2: (u8,)) -> u8 {
+    let mut _0: u8;
+    let _3: u8; // x
+    let _4: ();
+    let _5: u8;
+    let _6: u8;
+
+    bb0: {
+        _3 = copy _2.0;
+        _5 = copy _3;
+        _6 = copy (*(*_1).0);
+        (*(*_1).0) = Add(copy _6, copy _5);
+        _4 = const ();
+        _0 = copy (*(*_1).0);
+        return;
+    }
+}
+
+fn wrong_mutation::{closure#7} as FnMut(_1: &mut {closure}, _2: (u8,)) -> u8 {
+    let mut _0: u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &(*_1);
+        _0 = call::<{closure}, (u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn wrong_mutation::{closure#7} as FnOnce(_1: {closure}, _2: (u8,)) -> u8 {
+    let mut _0: u8;
+    let _3: &{closure};
+
+    bb0: {
+        _3 = &_1;
+        _0 = call::<{closure}, (u8,)>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+fn wrong_move() -> () {
+    let mut _0: ();
+    let _1: String; // value
+    let _2: ();
+    let _3: {closure};
+
+    bb0: {
+        _1 = from::<String, &str>(const &promoted[0]) -> bb1;
+    }
+
+    bb1: {
+        _3 = {closure}(move _1);
+        _2 = repeat::<{closure}>(move _3) -> bb2;
+    }
+
+    bb2: {
+        _0 = const ();
+        StorageDead(_1);
+        return;
+    }
+}
+
+fn wrong_move::{closure#7} as FnMut(_1: &mut {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: String;
+
+    bb0: {
+        _3 = move (*_1).0;
+        _0 = drop::<String>(move _3) -> bb1;
+    }
+
+    bb1: {
+        return;
+    }
+}
+
+fn wrong_move::{closure#7} as FnOnce(_1: {closure}, _2: ()) -> () {
+    let mut _0: ();
+    let _3: &mut {closure};
+
+    bb0: {
+        _3 = &mut _1;
+        _0 = call_mut::<{closure}, ()>(move _3, move _2) -> bb1;
+    }
+
+    bb1: {
+        drop(_1) -> bb2;
+    }
+
+    bb2: {
+        return;
+    }
+}
+
+error 163..173: cannot assign to `value`, as it is a captured variable in a `Fn` closure
+error 272..277: cannot move out of `value`, a captured variable in an `FnMut` closure

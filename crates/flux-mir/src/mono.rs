@@ -1587,6 +1587,7 @@ pub fn expand_intrinsics(
             intrinsic.name(),
             "__panic_catch"
                 | "caller_location"
+                | "ptr_metadata_word"
                 | "read_unaligned"
                 | "read_volatile"
                 | "write_volatile"

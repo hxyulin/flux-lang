@@ -1737,8 +1737,8 @@ fn intersection_excluded_by_bounds(
 }
 
 /// A negative proof for an orphan-knowable intersection goal. Generic inputs
-/// permit only a proof that no candidate header can match. Concrete inputs can
-/// follow impossible prerequisites through blanket adapters. Missing upstream
+/// follow blanket prerequisites only while every goal retains orphan-closed
+/// inputs. Missing upstream
 /// impls, unresolved projections and recursive bounds remain unknown.
 fn coherence_goal_impossible(
     items: &ItemTree,
@@ -1814,12 +1814,21 @@ fn coherence_goal_impossible(
     {
         // A nominal constructor containing rigid parameters cannot become a
         // downstream-owned type. Fundamental wrappers and bare parameters can.
-        // Only prove absence: any possibly matching candidate stays unknown,
-        // regardless of bounds that might fail for a particular substitution.
+        // Callable builtin proofs do not apply to a local nominal constructor.
+        // Its generic fields do not make the constructor a closure or function.
+        let local_callable = crate::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
+            && matches!(goal.self_ty.kind(), TyKind::Adt(adt, _)
+                if items.modules[items.structs[adt.strukt].loc.module].krate == own
+                    && !flux_solve::is_lang_struct(items, adt.strukt, "owned_box"));
+        // Conversion lang markers name ordinary indexed traits. They do not
+        // introduce additional compiler-provided structural candidates.
+        let implicit_trait = items.traits[goal.trait_ref.trait_]
+            .lang
+            .is_some_and(|lang| !matches!(lang.as_str(), "From" | "Into"));
         if !std::iter::once(goal.self_ty)
             .chain(goal.trait_ref.args.iter().copied())
             .all(|ty| closed_input(items, ty))
-            || items.traits[goal.trait_ref.trait_].lang.is_some()
+            || (implicit_trait && !local_callable)
             || matches!(goal.self_ty.kind(), TyKind::Dynamic(object)
                 if flux_solve::objects::supertraits_of(items, object.trait_)
                     .contains(&goal.trait_ref.trait_))
@@ -1829,7 +1838,8 @@ fn coherence_goal_impossible(
         let goal_header: Vec<Ty> = std::iter::once(goal.self_ty)
             .chain(goal.trait_ref.args.iter().copied())
             .collect();
-        return sigs
+        active.push(goal);
+        let impossible = sigs
             .impl_index
             .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
             .all(|imp| {
@@ -1842,8 +1852,25 @@ fn coherence_goal_impossible(
                     .chain(trait_ref.args.iter().copied())
                     .map(|ty| coherence_header_ty(items, sigs, own, ty))
                     .collect();
-                unify_headers(&header, &goal_header).is_none()
+                if unify_headers(&header, &goal_header).is_none() {
+                    return true;
+                }
+                if header.iter().copied().any(|ty| !represented(ty)) {
+                    return false;
+                }
+                // Matching an intersection variable against a narrower impl
+                // can fail without proving disjointness. Keep that unknown.
+                let Some(args) = match_impl(items, sigs, imp, goal) else {
+                    return false;
+                };
+                sigs.impl_predicates
+                    .get(imp)
+                    .into_iter()
+                    .flatten()
+                    .any(|p| coherence_goal_impossible(items, sigs, own, p.subst(&args), active))
             });
+        active.pop();
+        return impossible;
     }
     // Builtin structural candidates need their own prerequisites too. A failed
     // positive proof by itself never means that there is no builtin candidate.

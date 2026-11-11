@@ -1355,6 +1355,82 @@ pub(crate) fn family_method_profile(
     })
 }
 
+/// Reconstruct supertrait type-argument rows for a methodless marker. Targets
+/// retain ordinary region-free declarations; only their substituted arguments
+/// carry the marker's owner lifetimes.
+fn marker_supertrait_regions(items: &ItemTree, sigs: &Signatures, id: TraitId) -> bool {
+    let data = &items.traits[id];
+    let (Some(signature), Some(regions)) = (sigs.traits.get(id), sigs.regions.traits.get(id))
+    else {
+        return false;
+    };
+    if signature.supertraits.len() != data.supertraits.len()
+        || !signature.header_projections.is_empty()
+    {
+        return false;
+    }
+    let self_ty = Ty::param(0, flux_intern::kw::SelfUpper);
+    let names = crate::generic_names(items, Some(Owner::Trait(id)), &Generics::default());
+    let scope = TypeScope {
+        self_ty: Some(self_ty),
+        generics: &names,
+        defaults: Some(&sigs.trait_defaults),
+        struct_fields: Some(&sigs.structs),
+        ..TypeScope::default()
+    };
+    let mut errors = Vec::new();
+    for (written, edge) in data.supertraits.iter().zip(signature.supertraits.iter()) {
+        let target = &items.traits[edge.trait_];
+        let Some(target_regions) = sigs.regions.traits.get(edge.trait_) else {
+            return false;
+        };
+        if target.is_unsafe
+            || has_predicates(&target.generics)
+            || !target.generics.lifetimes.is_empty()
+            || !target.types.is_empty()
+            || !target.consts.is_empty()
+            || !target_regions.names.is_empty()
+            || !target_regions.outlives.is_empty()
+            || !target_regions.families.is_empty()
+        {
+            return false;
+        }
+        let Some((resolved, projections)) = crate::traits::resolve_bound(
+            items,
+            data.loc.module,
+            written,
+            self_ty,
+            scope,
+            &mut errors,
+        ) else {
+            return false;
+        };
+        if resolved != *edge || !projections.is_empty() {
+            return false;
+        }
+    }
+    if !errors.is_empty() {
+        return false;
+    }
+    let Some(contract) = super::trait_bound_schemes(items, sigs, id) else {
+        return false;
+    };
+    contract.predicates.len() == data.supertraits.len()
+        && contract.predicates.iter().all(|p| p.self_ty == self_ty)
+        && contract.subjects.iter().all(|row| row.is_empty())
+        && contract.projections.is_empty()
+        && contract.traits == regions.supertraits
+        && signature.supertraits.iter().zip(contract.traits.iter()).all(|(edge, row)| {
+            row.bound == 0 && row.lifetimes.is_empty() && row.args.len() == edge.args.len()
+                && edge.args.iter().zip(row.args.iter()).all(|(&ty, slots)| {
+                    !flux_solve::traits::has_error(ty) && !ty.has_aliases() && !ty.has_opaques()
+                        && type_slots(items, sigs, ty, names.len()) == Some(slots.len())
+                        && slots.iter().all(|r| matches!(r, Region::Static)
+                            || matches!(r, Region::Param(index) if (*index as usize) < regions.names.len()))
+                })
+        })
+}
+
 /// Marker declarations have no method, associated-value, or stored-field
 /// contracts. Their lifetime parameters remain independent trait arguments.
 pub(crate) fn lifetime_marker_profile(
@@ -1371,7 +1447,6 @@ pub(crate) fn lifetime_marker_profile(
         && data.functions.is_empty()
         && data.types.is_empty()
         && data.consts.is_empty()
-        && data.supertraits.is_empty()
         && data.generics.params.is_empty()
         && !has_predicates(&data.generics)
         && !diagnosed(diagnostics, data.loc.file, data.def_range)
@@ -1385,12 +1460,53 @@ pub(crate) fn lifetime_marker_profile(
             })
         && regions.outlives.is_empty()
         && regions.families.is_empty()
-        && regions.supertraits.is_empty()
+        && if data.supertraits.is_empty() {
+            regions.supertraits.is_empty()
+        } else {
+            marker_supertrait_regions(items, sigs, trait_)
+        }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marker_supertrait_metadata_is_reconstructed() {
+        let source = include_str!("../../../../tests/run/marker_supertrait_regions.rs");
+        let (_, file, hir) = flux_hir::lower_text("marker-contract.rs", source);
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let owner = hir
+            .items
+            .traits
+            .iter()
+            .find(|(_, t)| t.loc.file == file && t.name.as_str() == "Valid")
+            .unwrap()
+            .0;
+        assert!(lifetime_marker_profile(
+            &hir.items,
+            &hir.diagnostics,
+            &sigs,
+            owner
+        ));
+        for corruption in 0..4 {
+            let mut bad = sigs.clone();
+            match corruption {
+                0 => {
+                    bad.regions.traits.get_mut(owner).unwrap().supertraits[0].args[0][0] =
+                        Region::Static
+                }
+                1 => bad.regions.traits.get_mut(owner).unwrap().supertraits = Box::default(),
+                2 => bad.regions.traits.get_mut(owner).unwrap().supertraits[0].bound = 1,
+                _ => bad.traits.get_mut(owner).unwrap().supertraits[0].args = Ty::list(&[Ty::UNIT]),
+            }
+            assert!(
+                !lifetime_marker_profile(&hir.items, &hir.diagnostics, &bad, owner),
+                "corruption {corruption}"
+            );
+        }
+    }
 
     #[test]
     fn unsafe_object_callback_contracts() {

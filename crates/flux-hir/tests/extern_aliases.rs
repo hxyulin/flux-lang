@@ -6,6 +6,11 @@ fn extern_aliases_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-extern-aliases-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let accepted = [
+        "#![no_std] extern crate std as _;",
+        "extern crate alloc as _; extern crate alloc as _;",
+        "extern crate self as _;",
+        "mod inner { pub extern crate alloc as _; }",
+        "#[macro_use] extern crate core as _; fn f() { assert!(true); }",
         "extern crate alloc as heap; fn f() -> heap::vec::Vec<u8> { heap::vec::Vec::new() }",
         "#![no_std] extern crate alloc as heap; mod child { fn f() -> heap::vec::Vec<u8> { ::heap::vec::Vec::new() } }",
         "mod inner { extern crate alloc as heap; fn f() -> heap::vec::Vec<u8> { heap::vec::Vec::new() } }",
@@ -16,6 +21,8 @@ fn extern_aliases_match_rustc() {
         "mod control { mod tag { pub struct Tag(pub u8); } use self::{tag::{Tag}}; fn f() -> Tag { Tag(7) } }",
     ];
     let rejected = [
+        "extern crate missing as _;",
+        "#![no_std] extern crate alloc as _; fn f() { alloc::vec::Vec::<u8>::new(); }",
         "extern crate missing as heap;",
         "mod inner { extern crate alloc as heap; } fn f() { heap::vec::Vec::<u8>::new(); }",
         "mod inner { extern crate alloc as heap; } fn f() { inner::heap::vec::Vec::<u8>::new(); }",
