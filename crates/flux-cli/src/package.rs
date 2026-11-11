@@ -69,6 +69,12 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     // CLI parsing, final driver error formatting and process teardown are outside.
     let (plan, compiled) = {
         let mut timings = build::Timings::new(options.timings, "package compile scoped elapsed");
+        let panic_strategy = crate::cargo::profile_panic_strategy(
+            &options.manifest_path,
+            options.optimize || options.fast_build,
+        )?;
+        crate::builtins::initialize_for_strategy(panic_strategy)?;
+        let _strategy = crate::builtins::strategy_scope(panic_strategy)?;
         let plan = plan(options, &mut timings)?;
         if !cfg!(any(
             all(target_os = "macos", target_arch = "aarch64"),
@@ -79,7 +85,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         std::fs::create_dir_all(plan.output.parent().unwrap())
             .map_err(|e| format!("cannot create output directory: {e}"))?;
         let build_options = BuildOptions {
-            panic_strategy: flux_syntax::PanicStrategy::Abort,
+            panic_strategy,
             optimize: options.optimize,
             fast_build: options.fast_build,
             timings: options.timings,
@@ -619,12 +625,33 @@ fn validate_manifest(path: &Path, library: bool) -> Result<(), String> {
                 "target",
                 "dependencies",
                 "features",
+                "profile",
             ]
         } else {
-            &["package", "bin", "dependencies"]
+            &["package", "bin", "dependencies", "profile"]
         },
         "manifest declaration",
     )?;
+    if let Some(profiles) = table.get("profile") {
+        let profiles = profiles.as_table().ok_or("expected a profile table")?;
+        allowed_keys(profiles, &["dev", "release"], "profile")?;
+        for (name, profile) in profiles {
+            let profile = profile.as_table().ok_or("expected a profile table")?;
+            allowed_keys(profile, &["panic", "debug-assertions"], "profile option")?;
+            if let Some(value) = profile.get("panic") {
+                crate::cargo::parse_panic_strategy(
+                    value.as_str().ok_or_else(|| {
+                        format!("profile.{name}.panic must be `abort` or `unwind`")
+                    })?,
+                )?;
+            }
+            if let Some(value) = profile.get("debug-assertions") {
+                value
+                    .as_bool()
+                    .ok_or_else(|| format!("profile.{name}.debug-assertions must be a boolean"))?;
+            }
+        }
+    }
     let package = table
         .get("package")
         .and_then(toml::Value::as_table)

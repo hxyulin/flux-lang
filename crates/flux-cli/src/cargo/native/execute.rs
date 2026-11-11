@@ -70,12 +70,18 @@ pub(super) fn run(
             optimize,
         )?,
     };
+    let panic_strategy =
+        crate::cargo::profile_panic_strategy(&plan.workspace_root.join("Cargo.toml"), optimize)?;
+    if build.is_some() {
+        crate::builtins::initialize_for_strategy(panic_strategy)?;
+    }
+    let _strategy = crate::builtins::strategy_scope(panic_strategy)?;
     let build = build.map(|b| crate::BuildOptions {
-        panic_strategy: flux_syntax::PanicStrategy::Abort,
+        panic_strategy,
         debug_assertions: Some(debug_assertions),
         ..b
     });
-    let cfg = crate::target::cfg(debug_assertions)?
+    let cfg = crate::target::cfg_with_panic(debug_assertions, panic_strategy)?
         .into_iter()
         .collect::<Vec<_>>()
         .join("\n");

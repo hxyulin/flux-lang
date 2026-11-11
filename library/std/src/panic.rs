@@ -33,7 +33,12 @@ fn message(payload: &(dyn Any + Send)) -> &str {
     else { "Box<dyn Any>" }
 }
 fn default_hook(info: &PanicHookInfo<'_>) {
-    core::panicking::__panic_print(format_args!("{}", message(info.payload)), info.location);
+    let thread = crate::thread::try_current();
+    let name = match &thread {
+        Some(thread) => thread.name().unwrap_or("<unnamed>"),
+        None => if crate::thread::is_main_thread() { "main" } else { "<unnamed>" },
+    };
+    core::panicking::__panic_print(format_args!("{}", message(info.payload)), info.location, name);
 }
 
 pub fn set_hook(hook: Box<dyn Fn(&PanicHookInfo<'_>) + Send + Sync + 'static>) {
@@ -73,6 +78,10 @@ unsafe extern "C" {
 unsafe extern "C-unwind" { fn _Unwind_RaiseException(exception: *mut Exception) -> i32; }
 
 fn abort() -> ! { core::panicking::abort_now() }
+fn runtime_abort(message: &str) -> ! {
+    core::io::_eprint(format_args!("fatal runtime error: {message}, aborting\n"));
+    abort()
+}
 fn key() -> Key {
     let cached = KEY.load(Ordering::Acquire);
     if cached != 0 { return (cached - 1) as Key; }
@@ -121,14 +130,21 @@ struct Exception {
     counted: bool,
 }
 unsafe extern "C" fn cleanup(_: i32, pointer: *mut Exception) {
+    if core::panicking::__panic_unwind_enabled() {
     // SAFETY: the unwinder calls this once for our live exception allocation.
     let mut exception = unsafe { Box::from_raw(pointer) };
-    if exception.counted { exception.counted = false; leave(); }
+    // A Flux catch clears both flags before deleting its native header. A
+    // foreign handler deleting an active panic must not silently consume it.
+    // Keep the panic state active while destroying its payload, as rustc does.
+    let foreign = exception.owned || exception.counted;
     if exception.owned {
         exception.owned = false;
         // SAFETY: ownership was not transferred to a catch result.
         unsafe { ManuallyDrop::drop(&mut exception.payload); }
     }
+    drop(exception);
+    if foreign { runtime_abort("Rust panics must be rethrown"); }
+    } else { abort(); }
 }
 
 #[unsafe(no_mangle)]
@@ -141,6 +157,9 @@ unsafe extern "C" fn __flux_eh_personality(version:i32, actions:i32, class:u64, 
 }
 
 fn raise(payload: Box<dyn Any + Send>) -> ! {
+    // Staged builtins compile private helpers too. Abort variants must not
+    // retain references to the platform unwinder in those unused helpers.
+    if core::panicking::__panic_unwind_enabled() {
     let exception = Box::into_raw(Box::new(Exception {
         class: CLASS, cleanup, private: [0; 2], payload: ManuallyDrop::new(payload), owned: true, counted: true,
     }));
@@ -149,6 +168,7 @@ fn raise(payload: Box<dyn Any + Send>) -> ! {
     let _ = unsafe { _Unwind_RaiseException(exception) };
     // No handler, or an unwinder failure. Returning would violate the ! contract.
     abort()
+    } else { core::mem::forget(payload); abort() }
 }
 fn start(payload: Box<dyn Any + Send>, location: &'static Location<'static>) -> ! {
     enter();
@@ -223,8 +243,14 @@ pub fn catch_unwind<F: FnOnce() -> R + UnwindSafe, R>(f: F) -> crate::thread::Re
 }
 
 unsafe fn take_exception(exception: *mut Exception) -> Box<dyn Any + Send> {
+    if core::panicking::__panic_unwind_enabled() {
     // SAFETY: the caller supplies a live native exception header.
-    if unsafe { (*exception).class } != CLASS { abort(); }
+    if unsafe { (*exception).class } != CLASS {
+        // SAFETY: only the common unwinder header is inspected. Its cleanup
+        // callback owns the foreign object and must run before termination.
+        unsafe { _Unwind_DeleteException(exception); }
+        runtime_abort("Rust cannot catch foreign exceptions");
+    }
     // SAFETY: our class identifies the complete allocation; transfer its payload.
     let payload = unsafe {
         let payload = ManuallyDrop::take(&mut (*exception).payload);
@@ -236,6 +262,7 @@ unsafe fn take_exception(exception: *mut Exception) -> Box<dyn Any + Send> {
     // SAFETY: cleanup now frees only the header, without dropping the payload.
     unsafe { _Unwind_DeleteException(exception); }
     payload
+    } else { abort() }
 }
 
 #[unsafe(no_mangle)]

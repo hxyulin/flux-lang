@@ -460,6 +460,12 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         &metadata.workspace_root.join("Cargo.toml"),
         *optimize || *fast_build,
     )?;
+    let panic_strategy = profile_panic_strategy(
+        &metadata.workspace_root.join("Cargo.toml"),
+        *optimize || *fast_build,
+    )?;
+    crate::builtins::initialize_for_strategy(panic_strategy)?;
+    let _strategy = crate::builtins::strategy_scope(panic_strategy)?;
     drop(preparation);
     let ok = build::compile(CompileRequest {
         file: &main.file,
@@ -467,7 +473,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
         output: &executable,
         sources: &sources,
         options: crate::BuildOptions {
-            panic_strategy: flux_syntax::PanicStrategy::Abort,
+            panic_strategy,
             optimize: *optimize,
             fast_build: *fast_build,
             timings: *timings,
@@ -860,6 +866,42 @@ pub(crate) fn profile_debug_assertions(
     }
 }
 
+pub(crate) fn parse_panic_strategy(value: &str) -> Result<flux_syntax::PanicStrategy, String> {
+    match value {
+        "abort" => Ok(flux_syntax::PanicStrategy::Abort),
+        "unwind" => Ok(flux_syntax::PanicStrategy::Unwind),
+        _ => Err(format!(
+            "panic strategy must be `abort` or `unwind`, found `{value}`"
+        )),
+    }
+}
+
+/// Flux keeps abort as its default; an explicit Cargo profile opts into unwinding.
+pub(crate) fn profile_panic_strategy(
+    manifest: &std::path::Path,
+    optimize: bool,
+) -> Result<flux_syntax::PanicStrategy, String> {
+    let name = if optimize { "release" } else { "dev" };
+    let text = std::fs::read_to_string(manifest)
+        .map_err(|e| format!("cannot read {}: {e}", manifest.display()))?;
+    let table: toml::Table = text
+        .parse()
+        .map_err(|e| format!("invalid TOML in {}: {e}", manifest.display()))?;
+    let setting = table
+        .get("profile")
+        .and_then(|profiles| profiles.get(name))
+        .and_then(|profile| profile.get("panic"));
+    match setting {
+        None => Ok(flux_syntax::PanicStrategy::Abort),
+        Some(value) => {
+            let value = value
+                .as_str()
+                .ok_or_else(|| format!("profile.{name}.panic must be `abort` or `unwind`"))?;
+            parse_panic_strategy(value)
+        }
+    }
+}
+
 pub(crate) fn cfg(cfgs: &[String], features: &[String]) -> Result<flux_hir::CrateCfg, String> {
     use flux_intern::Symbol;
     let mut cfg = flux_hir::CrateCfg::default();
@@ -1017,6 +1059,27 @@ pub(crate) fn link_arguments(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn profile_panic_strategy_defaults_and_explicit_modes() {
+        use flux_syntax::PanicStrategy::{Abort, Unwind};
+        let directory =
+            std::env::temp_dir().join(format!("flux-panic-profile-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let manifest = directory.join("Cargo.toml");
+        let check = |text: &str, optimize: bool| {
+            std::fs::write(&manifest, text).unwrap();
+            super::profile_panic_strategy(&manifest, optimize)
+        };
+        assert_eq!(check("", false), Ok(Abort));
+        assert_eq!(check("", true), Ok(Abort));
+        let profiles = "[profile.dev]\npanic='unwind'\n[profile.release]\npanic='abort'\n";
+        assert_eq!(check(profiles, false), Ok(Unwind));
+        assert_eq!(check(profiles, true), Ok(Abort));
+        assert!(check("[profile.dev]\npanic=true\n", false).is_err());
+        assert!(check("[profile.release]\npanic='unknown'\n", true).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn profile_debug_assertions_follow_cargo_defaults_and_overrides() {
         let directory = std::env::temp_dir().join(format!("flux-profile-{}", std::process::id()));

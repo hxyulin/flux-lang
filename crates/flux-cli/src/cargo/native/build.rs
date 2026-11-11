@@ -54,6 +54,7 @@ struct Request {
     optimize: bool,
     fast_build: bool,
     debug_assertions: bool,
+    panic_strategy: String,
     timings: bool,
     native: crate::native_link::Request,
 }
@@ -113,6 +114,7 @@ impl Request {
             optimize: options.optimize,
             fast_build: options.fast_build,
             debug_assertions: options.debug_assertions(),
+            panic_strategy: options.panic_strategy.as_str().into(),
             timings: options.timings,
             native: Default::default(),
         })
@@ -167,14 +169,17 @@ impl Request {
 pub(crate) fn worker(path: &Path) -> Result<bool, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    let source = request.source()?;
     let options = BuildOptions {
-        panic_strategy: flux_syntax::PanicStrategy::Abort,
+        panic_strategy: crate::cargo::parse_panic_strategy(&request.panic_strategy)?,
         optimize: request.optimize,
         fast_build: request.fast_build,
         debug_assertions: Some(request.debug_assertions),
         timings: request.timings,
     };
+    options.validate()?;
+    crate::builtins::initialize_for_strategy(options.panic_strategy)?;
+    let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
+    let source = request.source()?;
     let native = request.native.link();
     let fresh = if request.library {
         crate::flib_build::is_fresh_with_capability(

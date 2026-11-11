@@ -17,6 +17,51 @@ fn memory(src:*const Owned,dst:*mut Owned){unsafe{let value=core::ptr::read(src)
 const REIFIED:fn()=||may_panic();
 "#;
 
+#[test]
+fn moved_cleanup_guards_end_borrows_without_hiding_live_or_partial_guards() {
+    for (name, source, rejected) in [
+        (
+            "moved",
+            "let guard=Guard(value);may_panic();drop(guard);let _second=Guard(value);may_panic();",
+            false,
+        ),
+        (
+            "live",
+            "let guard=Guard(value);may_panic();let second=Guard(value);may_panic();drop(second);drop(guard);",
+            true,
+        ),
+        (
+            "partial",
+            "let pair=(Guard(value),Guard(other));may_panic();drop(pair.1);let second=Guard(value);may_panic();drop(second);drop(pair.0);",
+            true,
+        ),
+    ] {
+        let text = format!(
+            "struct Guard<'a>(&'a mut u32);impl Drop for Guard<'_>{{fn drop(&mut self){{*self.0+=1;}}}}fn may_panic(){{}}fn probe(value:&mut u32,other:&mut u32){{{source}}}"
+        );
+        let (_, _, hir) = flux_hir::lower_text(format!("{name}.rs"), &text);
+        let typed = flux_mir::check_file(&hir);
+        assert!(
+            hir.diagnostics.is_empty() && typed.diagnostics.is_empty(),
+            "{name}: {:?} {:?}",
+            hir.diagnostics,
+            typed.diagnostics
+        );
+        for strategy in [PanicStrategy::Abort, PanicStrategy::Unwind] {
+            let mir = flux_mir::build_file_with_panic_strategy(&hir, &typed, strategy);
+            assert_eq!(
+                mir.diagnostics
+                    .iter()
+                    .any(|error| error.message.contains("cannot borrow")),
+                rejected,
+                "{name} {strategy:?}: {:?}",
+                mir.diagnostics
+            );
+            assert!(mir.bugs.is_empty(), "{:?}", mir.bugs);
+        }
+    }
+}
+
 fn source() -> (Hir, TypedFile) {
     let (_, _, hir) = flux_hir::lower_text("unwind_propagation.rs", SOURCE);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);

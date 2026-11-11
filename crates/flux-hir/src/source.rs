@@ -178,6 +178,10 @@ const STD_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/std/src/thread.rs"),
     ),
     (
+        "sync/barrier.rs",
+        include_str!("../../../library/std/src/sync/barrier.rs"),
+    ),
+    (
         "sync/once.rs",
         include_str!("../../../library/std/src/sync/once.rs"),
     ),

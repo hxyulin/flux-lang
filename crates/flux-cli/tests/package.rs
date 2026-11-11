@@ -5,6 +5,23 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Fixture(PathBuf);
 
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn explicit_panic_profiles_apply_to_standalone_package_artifacts() {
+    let f = Fixture::new();
+    f.write("Cargo.toml", "[package]\nname='probe-bin'\nversion='0.1.0'\nedition='2024'\n[profile.dev]\npanic='unwind'\n[profile.release]\npanic='unwind'\n");
+    f.write("src/main.rs", r#"fn main(){assert!(cfg!(panic="unwind"));std::panic::set_hook(Box::new(|_|{}));let error=std::panic::catch_unwind(||panic!("package panic")).unwrap_err();assert_eq!(*error.downcast_ref::<&str>().unwrap(),"package panic");println!("package unwind");}"#);
+    for flags in [&[][..], &["-O"][..], &["--fast-build"][..]] {
+        let output = f.run("run", flags);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"package unwind\n");
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -201,7 +218,7 @@ fn unsupported_declarations_fail_before_compilation() {
         ("[build-dependencies]\n", "build-dependencies"),
         ("[target.'cfg(unix)'.dependencies]\n", "target"),
         ("[features]\ndefault=[]\n", "features"),
-        ("[profile.dev]\npanic='abort'\n", "profile"),
+        ("[profile.dev]\ncodegen-units=2\n", "profile"),
         ("[workspace]\n", "workspace"),
         ("[lib]\nproc-macro=true\n", "lib"),
         ("[[test]]\nname='custom'\npath='src/main.rs'\n", "test"),

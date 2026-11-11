@@ -269,7 +269,7 @@ impl<T: ?Sized> Drop for Arc<T> {
             }
             fence(Acquire);
             // Retain the implicit weak through destruction, including reentrant
-            // weak drops. A guard also releases it if unwinding is added later.
+            // weak drops. The guard also releases it if destruction unwinds.
             let guard: Weak<T> = Weak {
                 ptr: Some(self.ptr),
                 data: Some(self.data),

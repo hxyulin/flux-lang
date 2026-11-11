@@ -442,6 +442,7 @@ fn configuration(
     aliases: &[(String, [u8; 32])],
     native: &flux_codegen::NativeLink,
 ) -> Result<Vec<u8>, String> {
+    let whole_program = kind == CrateType::Bin && *native != Default::default();
     let effective_native = options.native_link(native);
     let native = &effective_native;
     let mut e = Encoder::new();
@@ -485,7 +486,7 @@ fn configuration(
             .configuration()?
             .encode(&mut e),
     )?;
-    encode((kind == CrateType::Bin && *native != Default::default()).encode(&mut e))?;
+    encode(whole_program.encode(&mut e))?;
     encode(options.optimize.encode(&mut e))?;
     encode(options.fast_build.encode(&mut e))?;
     encode(
@@ -607,4 +608,34 @@ fn freshness_configuration(
         native,
     )?;
     Ok((config, dependencies))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn automatic_unwind_linking_does_not_hide_whole_program_configuration() {
+        let input = super::SourceInput::standalone(std::path::Path::new("input.rs"), "input");
+        let options = super::BuildOptions {
+            optimize: false,
+            fast_build: false,
+            timings: false,
+            debug_assertions: None,
+            panic_strategy: flux_syntax::PanicStrategy::Unwind,
+        };
+        let native = flux_codegen::NativeLink::default();
+        let explicit = options.native_link(&native);
+        assert_eq!(options.native_link(&native), options.native_link(&explicit));
+        let key = |native| {
+            super::configuration(
+                &input,
+                options,
+                super::CrateType::Bin,
+                super::Capability::Object,
+                &[],
+                native,
+            )
+            .unwrap()
+        };
+        assert_ne!(key(&native), key(&explicit));
+    }
 }

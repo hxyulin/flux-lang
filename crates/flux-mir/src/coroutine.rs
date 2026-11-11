@@ -763,7 +763,8 @@ pub(crate) fn check_recursive_layouts(
             types.extend(ClosureArgs::split(args).upvar_types().iter().copied());
         }
         if !awaits.is_empty() {
-            let live = crate::borrowck::liveness_where(body, &vec![true; body.locals.len()], true);
+            let live =
+                crate::borrowck::liveness_where(body, &vec![true; body.locals.len()], true, None);
             for block in awaits {
                 types.extend(
                     live[block.index()]

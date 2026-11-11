@@ -11,9 +11,8 @@ use core::sync::atomic::Ordering::{Acquire, Release};
 /// A value initialized by at most one caller at a time.
 ///
 /// `get` never waits. `get_or_init` spins while another caller initializes;
-/// reentrant initialization of the same cell deadlocks. Flux panics abort,
-/// so unwinding is not supported by its runtime. The reset guard also makes
-/// this implementation retryable when tested with a host unwinding runtime.
+/// reentrant initialization of the same cell deadlocks. If an initializer
+/// unwinds, the reset guard leaves the cell empty so another caller can retry.
 /// This bounded API does not implement all of std's OnceLock methods.
 pub struct OnceLock<T> {
     // 0 = empty, 1 = initializing, 2 = ready. Only 2 permits payload reads.

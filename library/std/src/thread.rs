@@ -164,7 +164,7 @@ impl core::fmt::Debug for Thread {
     }
 }
 
-fn is_main_thread() -> bool {
+pub(crate) fn is_main_thread() -> bool {
     #[cfg(target_os = "macos")]
     {
         unsafe extern "C" { fn pthread_main_np() -> i32; }
@@ -185,6 +185,10 @@ crate::thread_local! {
 /// Records the handle a spawned worker reports as current.
 pub(crate) fn set_current(thread: Thread) {
     CURRENT.with(|current| { let _ = current.set(thread); });
+}
+/// A hook must also work before a thread handle exists or after TLS destruction.
+pub(crate) fn try_current() -> Option<Thread> {
+    CURRENT.try_with(|current| current.get().cloned()).ok().flatten()
 }
 /// Returns a handle to the caller, including externally created threads.
 pub fn current() -> Thread {

@@ -360,22 +360,26 @@ impl<T> Vec<T> {
         if len <= 1 {
             return;
         }
-        let mut write = 1;
-        // SAFETY: indices stay below len; removed elements are dropped once
-        // and kept ones move down without overlap.
+        self.len = 0;
+        let mut guard = RetainGuard { vec: self, original: len, processed: 1, deleted: 0 };
+        // SAFETY: read is unvisited and write - 1 is the last kept element.
+        // The guard closes gaps and restores len if comparison or Drop unwinds.
         unsafe {
-            let base = self.as_mut_ptr();
-            for read in 1..len {
+            let base = guard.vec.as_mut_ptr();
+            while guard.processed < len {
+                let read = guard.processed;
+                let write = read - guard.deleted;
                 if same_bucket(&mut *base.add(read), &mut *base.add(write - 1)) {
+                    guard.processed += 1;
+                    guard.deleted += 1;
                     ptr::drop_in_place(base.add(read));
                 } else {
                     if read != write {
                         ptr::copy_nonoverlapping(base.add(read), base.add(write), 1);
                     }
-                    write += 1;
+                    guard.processed += 1;
                 }
             }
-            self.len = write;
         }
     }
 
@@ -406,25 +410,7 @@ impl<T> Vec<T> {
     where
         T: PartialEq,
     {
-        let len = self.len;
-        if len <= 1 {
-            return;
-        }
-        let mut write = 1;
-        unsafe {
-            let base = self.as_mut_ptr();
-            for read in 1..len {
-                if *base.add(read) == *base.add(write - 1) {
-                    ptr::drop_in_place(base.add(read));
-                } else {
-                    if read != write {
-                        ptr::copy_nonoverlapping(base.add(read), base.add(write), 1);
-                    }
-                    write += 1;
-                }
-            }
-        }
-        self.len = write;
+        self.dedup_by(|a, b| *a == *b);
     }
 
     /// Grows to `new_len` with clones of `value`, or truncates.
@@ -624,11 +610,9 @@ unsafe fn drop_range<T>(base: *mut T, start: usize, end: usize) {
     if !core::mem::needs_drop::<T>() {
         return;
     }
-    let mut i = start;
-    while i < end {
-        unsafe { ptr::drop_in_place(base.add(i)) };
-        i += 1;
-    }
+    // SAFETY: the caller supplies this initialized interval. Slice drop glue
+    // destroys its remaining elements even if an earlier destructor unwinds.
+    unsafe { ptr::drop_in_place(core::ptr::slice_from_raw_parts_mut(base.add(start), end - start)); }
 }
 
 /// `vec![elem; n]`: `n - 1` clones of `elem`, then `elem`, with room
@@ -946,16 +930,26 @@ impl<T> core::iter::FusedIterator for Drain<'_, T> {}
 impl<T> Drop for Drain<'_, T> {
     /// The elements not given, in order, then the tail moved back.
     fn drop(&mut self) {
-        unsafe {
-            drop_range(self.vec.as_mut_ptr(), self.start, self.end);
-            if self.tail_len > 0 {
-                let start = self.vec.len;
-                if self.tail_start != start {
+        let guard = DrainTail { vec: self.vec, start: self.tail_start, len: self.tail_len };
+        // SAFETY: the drain owns precisely its remaining initialized interval.
+        unsafe { drop_range(guard.vec.as_mut_ptr(), self.start, self.end); }
+    }
+}
+
+struct DrainTail<'a, T> { vec: &'a mut Vec<T>, start: usize, len: usize }
+impl<T> Drop for DrainTail<'_, T> {
+    fn drop(&mut self) {
+        if self.len != 0 {
+            let destination = self.vec.len;
+            if self.start != destination {
+                // SAFETY: the initialized tail remains owned by this drain.
+                // Moving it into the removed interval may overlap.
+                unsafe {
                     let base = self.vec.as_mut_ptr();
-                    ptr::copy(base.add(self.tail_start), base.add(start), self.tail_len);
+                    ptr::copy(base.add(self.start), base.add(destination), self.len);
                 }
-                self.vec.len = start + self.tail_len;
             }
+            self.vec.len = destination + self.len;
         }
     }
 }

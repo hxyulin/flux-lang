@@ -151,6 +151,8 @@ pub mod io;
 pub mod hash;
 
 pub mod sync {
+    mod barrier;
+    pub use self::barrier::{Barrier, BarrierWaitResult};
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     pub mod mpsc;
     mod once_lock;

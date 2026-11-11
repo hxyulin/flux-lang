@@ -79,6 +79,65 @@ impl Fixture {
 }
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn panic_profiles_rebuild_dependencies_and_preserve_target_cfg() {
+    let f = Fixture::new();
+    let manifest = "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nhelper={path='helper'}\n";
+    f.write(
+        "Cargo.toml",
+        &format!("{manifest}[profile.dev]\npanic='unwind'\n"),
+    );
+    f.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    f.write("Cargo.lock", "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['helper']\n[[package]]\nname='helper'\nversion='0.1.0'\n");
+    f.write("build.rs", r#"fn main(){println!("cargo:rustc-env=TARGET_PANIC={}",std::env::var("CARGO_CFG_PANIC").unwrap());}"#);
+    f.write("helper/src/lib.rs", r#"
+pub fn strategy()->bool{cfg!(panic="unwind")}
+pub fn fail(){struct Cleanup;impl Drop for Cleanup{fn drop(&mut self){println!("dependency cleanup");}} let _value=Cleanup;panic!("dependency payload");}
+"#);
+    f.write(
+        "src/main.rs",
+        r#"
+fn main(){
+    assert_eq!(helper::strategy(),cfg!(panic="unwind"));
+    #[cfg(panic="unwind")] {
+        assert_eq!(env!("TARGET_PANIC"),"unwind");
+        std::panic::set_hook(Box::new(|_|{}));
+        let error=std::panic::catch_unwind(helper::fail).unwrap_err();
+        assert_eq!(*error.downcast_ref::<&str>().unwrap(),"dependency payload");
+        println!("unwind");
+    }
+    #[cfg(panic="abort")] {assert_eq!(env!("TARGET_PANIC"),"abort");println!("abort");}
+}
+"#,
+    );
+    let first = f.success(&["-j", "2"], "unused");
+    assert!(first.contains("Compiling helper"), "{first}");
+    f.run(b"dependency cleanup\nunwind\n");
+    let fresh = f.success(&["-j", "2"], "unused");
+    assert!(
+        fresh.contains("Fresh helper") && fresh.contains("Fresh app"),
+        "{fresh}"
+    );
+    f.write(
+        "Cargo.toml",
+        &format!("{manifest}[profile.dev]\npanic='abort'\n"),
+    );
+    let abort = f.success(&["-j", "2"], "unused");
+    assert!(abort.contains("Compiling helper"), "{abort}");
+    f.run(b"abort\n");
+    f.write(
+        "Cargo.toml",
+        &format!("{manifest}[profile.dev]\npanic='unwind'\n"),
+    );
+    let unwind = f.success(&["-j", "2"], "unused");
+    assert!(unwind.contains("Compiling helper"), "{unwind}");
+    f.run(b"dependency cleanup\nunwind\n");
+}
+
+#[test]
 fn concurrent_crates_share_builtins_and_keep_type_identities_separate() {
     let f = Fixture::new();
     f.write(

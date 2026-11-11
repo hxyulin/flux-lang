@@ -372,7 +372,12 @@ fn terminator_transfer_with_drops(
 /// checking tracks lifetime-bearing types; coroutine layouts track all types.
 /// A block's are few, so
 /// they are listed rather than a bit each for every local.
-pub(crate) fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool) -> Vec<Vec<u32>> {
+pub(crate) fn liveness_where(
+    body: &Body,
+    tracked: &[bool],
+    include_drops: bool,
+    held: Option<&[(BitSet, BitSet)]>,
+) -> Vec<Vec<u32>> {
     let mut live_in = vec![Vec::new(); body.blocks.len()];
     let mut live_out = vec![Vec::new(); body.blocks.len()];
     // The locals live at a point, and a list of them that may also have
@@ -392,6 +397,16 @@ pub(crate) fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool)
                 }
             }
             members.sort_unstable();
+            if let Some(held) = held {
+                members.retain(|&local| {
+                    if held[block.index()].1.contains(local as usize) {
+                        true
+                    } else {
+                        live.remove(local as usize);
+                        false
+                    }
+                });
+            }
             live_out[block.index()].clone_from(&members);
             let mut set = |local: Local, value: bool| {
                 if tracked[local.index()] && !live.set(local.index(), value) && value {
@@ -402,12 +417,14 @@ pub(crate) fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool)
             for statement in data.statements.iter().rev() {
                 statement_transfer(&statement.kind, &mut set);
             }
-            members.retain(|&local| live.contains(local as usize));
+            members.retain(|&local| {
+                live.contains(local as usize)
+                    && held.is_none_or(|held| held[block.index()].0.contains(local as usize))
+            });
             members.sort_unstable();
             members.dedup();
-            for &local in &members {
-                live.remove(local as usize);
-            }
+            // Filtering initialization may remove a member while its bit was set.
+            live.words.fill(0);
             if members != live_in[block.index()] {
                 live_in[block.index()].clone_from(&members);
                 changed = true;
@@ -415,6 +432,50 @@ pub(crate) fn liveness_where(body: &Body, tracked: &[bool], include_drops: bool)
         }
     }
     live_out
+}
+
+/// Shared unwind ladders can test a drop flag for a value moved on one incoming
+/// path. That conditional drop must not extend the value's borrow along that
+/// path after the move. Keep liveness within the local's initialized storage.
+pub(crate) fn held_locals(
+    body: &Body,
+    sigs: &Signatures,
+    tracked: &[bool],
+) -> Vec<(BitSet, BitSet)> {
+    use crate::init::{MovePaths, State, analyze, statement_events, terminator_events};
+    let paths = MovePaths::new(body, sigs, |local| tracked[local.index()]);
+    let entries = analyze(body, &paths, true);
+    let mut state = State::new(paths.paths.len());
+    let held = |state: &State| {
+        let mut locals = BitSet::new_empty(body.locals.len());
+        for (index, path) in paths.paths.iter().enumerate() {
+            if state.maybe_held.contains(index) {
+                locals.insert(path.local.index());
+            }
+        }
+        locals
+    };
+    body.blocks
+        .iter()
+        .map(|(block, data)| {
+            if !entries.load(block.index(), &mut state) {
+                return (
+                    BitSet::new_empty(body.locals.len()),
+                    BitSet::new_empty(body.locals.len()),
+                );
+            }
+            let before = held(&state);
+            for statement in &data.statements {
+                for event in statement_events(&statement.kind) {
+                    paths.apply(&mut state, &event, true);
+                }
+            }
+            for event in terminator_events(&data.terminator.kind) {
+                paths.apply(&mut state, &event, true);
+            }
+            (before, held(&state))
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -1,0 +1,215 @@
+use std::panic::{AssertUnwindSafe, catch_unwind, panic_any, resume_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::future::Future;
+
+unsafe extern "C" {
+    fn probe_begin();
+    fn probe_end() -> i32;
+}
+
+// Instrument rustc's allocator through the same C wrappers used by the Flux
+// object's allocator imports. The test body and panic paths are identical.
+#[cfg(rust_control)]
+mod allocator {
+    use std::alloc::{GlobalAlloc, Layout};
+    unsafe extern "C" {
+        fn probe_layout_alloc(size: usize, align: usize, zero: i32) -> *mut u8;
+        fn probe_layout_realloc(pointer: *mut u8, old_size: usize, align: usize, size: usize) -> *mut u8;
+        fn flux_free_probe(pointer: *mut u8);
+    }
+    struct Tracked;
+    unsafe impl GlobalAlloc for Tracked {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            unsafe { probe_layout_alloc(layout.size(), layout.align(), 0) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            unsafe { probe_layout_alloc(layout.size(), layout.align(), 1) }
+        }
+        unsafe fn dealloc(&self, pointer: *mut u8, _: Layout) {
+            unsafe { flux_free_probe(pointer); }
+        }
+        unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            unsafe { probe_layout_realloc(pointer, layout.size(), layout.align(), size) }
+        }
+    }
+    #[global_allocator]
+    static ALLOCATOR: Tracked = Tracked;
+}
+
+static DROPS: AtomicUsize = AtomicUsize::new(0);
+struct Guard(bool);
+impl Drop for Guard {
+    fn drop(&mut self) {
+        DROPS.fetch_add(1, Ordering::SeqCst);
+        if self.0 { panic!("destructor panic"); }
+    }
+}
+trait Marker {}
+impl Marker for Guard {}
+
+fn direct_box() {
+    assert!(catch_unwind(|| {
+        let value = Box::new([7u64; 128]);
+        std::hint::black_box(&*value);
+        panic!("box scope");
+    }).is_err());
+}
+fn dynamic_box() {
+    assert!(catch_unwind(|| {
+        let value: Box<dyn Marker> = Box::new(Guard(false));
+        std::hint::black_box(&*value);
+        panic!("dynamic box scope");
+    }).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn dynamic_destructor() {
+    assert!(catch_unwind(|| {
+        let value: Box<dyn Marker> = Box::new(Guard(true));
+        drop(value);
+    }).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn boxed_once() {
+    assert!(catch_unwind(|| {
+        let guard = Box::new(Guard(false));
+        let callback: Box<dyn FnOnce()> = Box::new(move || {
+            let _guard = guard;
+            panic!("boxed callback");
+        });
+        callback();
+    }).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn cancellation() {
+    let mut future = Box::pin(async {
+        let _guard = Box::new(Guard(true));
+        std::future::pending::<()>().await;
+    });
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(future))).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn poisoned_frame() {
+    let mut future = Box::pin(async {
+        let _guard = Box::new(Guard(false));
+        panic!("poll panic");
+    });
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context))).is_err());
+    assert!(catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context))).is_err());
+    drop(future);
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+struct Payload([u64; 32]);
+impl Drop for Payload {
+    fn drop(&mut self) {
+        assert!(!std::thread::panicking());
+        assert_eq!(self.0[17], 19);
+        DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+fn payload_resume() {
+    let error = catch_unwind(|| panic_any(Payload([19; 32]))).unwrap_err();
+    let address = error.downcast_ref::<Payload>().unwrap() as *const Payload as usize;
+    let error = catch_unwind(AssertUnwindSafe(|| resume_unwind(error))).unwrap_err();
+    assert_eq!(error.downcast_ref::<Payload>().unwrap() as *const Payload as usize, address);
+    drop(error);
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn formatted_payload() {
+    let error = catch_unwind(|| {
+        let message = String::from("owned formatting input");
+        panic!("formatted {message}");
+    }).unwrap_err();
+    assert_eq!(error.downcast_ref::<String>().unwrap(), "formatted owned formatting input");
+    drop(error);
+}
+fn normal_return() {
+    let input = String::from("owned return value");
+    let value = catch_unwind(move || input).unwrap();
+    assert_eq!(value, "owned return value");
+    drop(value);
+}
+fn partial_array() {
+    fn make(fail: bool) -> Box<Guard> {
+        if fail { panic!("partial box array"); }
+        Box::new(Guard(false))
+    }
+    assert!(catch_unwind(|| {
+        let _values = [make(false), make(true)];
+    }).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn aligned_box() {
+    #[repr(align(64))]
+    struct Aligned([u8; 33]);
+    assert!(catch_unwind(|| {
+        let value = Box::new(Aligned([7; 33]));
+        assert_eq!(&*value as *const Aligned as usize % 64, 0);
+        std::hint::black_box(&value.0);
+        panic!("aligned box");
+    }).is_err());
+}
+fn slice_destructor() {
+    assert!(catch_unwind(|| {
+        let values = vec![Guard(true), Guard(false), Guard(false)].into_boxed_slice();
+        drop(values);
+    }).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 3);
+}
+fn vector_destructor() {
+    assert!(catch_unwind(|| drop(vec![Guard(true), Guard(false), Guard(false)])).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 3);
+}
+fn iterator_destructor() {
+    let mut values = vec![Guard(false), Guard(true), Guard(false)].into_iter();
+    drop(values.next());
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(values))).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 3);
+}
+fn arc_destructor() {
+    let value: std::sync::Arc<dyn Marker> = std::sync::Arc::new(Guard(true));
+    let weak = std::sync::Arc::downgrade(&value);
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(value))).is_err());
+    assert!(weak.upgrade().is_none());
+    drop(weak);
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn rc_destructor() {
+    let value: std::rc::Rc<dyn Marker> = std::rc::Rc::new(Guard(true));
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(value))).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 1);
+}
+fn queue_destructor() {
+    let mut values = std::collections::VecDeque::new();
+    values.push_back(Guard(true));
+    values.push_back(Guard(false));
+    values.push_back(Guard(false));
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(values))).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 3);
+}
+fn list_destructor() {
+    let mut values = std::collections::LinkedList::new();
+    values.push_back(Guard(true));
+    values.push_back(Guard(false));
+    values.push_back(Guard(false));
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(values))).is_err());
+    assert_eq!(DROPS.load(Ordering::SeqCst), 3);
+}
+fn main() {
+    std::panic::set_hook(Box::new(|_| {}));
+    // Initialize any persistent panic/TLS state before measuring live storage.
+    assert!(catch_unwind(|| panic!("warmup")).is_err());
+    for case in [direct_box as fn(), dynamic_box, dynamic_destructor, boxed_once,
+        cancellation, poisoned_frame, payload_resume, formatted_payload,
+        normal_return, partial_array, aligned_box, slice_destructor,
+        vector_destructor, iterator_destructor, arc_destructor,
+        rc_destructor, queue_destructor, list_destructor] {
+        DROPS.store(0, Ordering::SeqCst);
+        unsafe { probe_begin(); }
+        case();
+        assert_eq!(unsafe { probe_end() }, 1, "all measured allocations must be released exactly once");
+    }
+    println!("allocation release passed");
+}

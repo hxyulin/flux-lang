@@ -545,8 +545,10 @@ pub(crate) fn stage_with_strategy(
     {
         return Err("built-in suite contains source or type diagnostics".into());
     }
-    let mir = flux_mir::build_file_with_roots_and_panic_strategy(hir, &typed, &functions, strategy);
+    let mut mir =
+        flux_mir::build_file_with_roots_and_panic_strategy(hir, &typed, &functions, strategy);
     if !mir.diagnostics.is_empty() || !mir.bugs.is_empty() {
+        crate::report_all(&db, &mut mir.diagnostics);
         return Err(format!(
             "built-in suite contains MIR diagnostics: {:?} {:?}",
             mir.diagnostics, mir.bugs

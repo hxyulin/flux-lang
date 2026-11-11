@@ -139,6 +139,215 @@ fn trace(output: &Output, expected: &str) {
 }
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+fn unwind_suite_native_object_and_mir_match_sources() {
+    let staged = Staged::new(true);
+    let suite_path = staged
+        .executable
+        .with_file_name("flux-builtins-unwind.flib");
+    let file = staged.write(
+        "unwind.rs",
+        r#"
+struct Cleanup;
+impl Drop for Cleanup {fn drop(&mut self){assert!(std::thread::panicking());println!("cleanup");}}
+fn fail<T>(_:T){let _value=Cleanup;std::panic::panic_any(String::from("owned panic"));}
+fn main(){
+    assert!(cfg!(panic="unwind"));
+    std::panic::set_hook(Box::new(|_|{}));
+    let value=std::panic::catch_unwind(||fail(42u32)).unwrap_err();
+    assert_eq!(*value.downcast::<String>().unwrap(),"owned panic");
+    let result=std::thread::spawn(||std::panic::panic_any(19usize)).join().unwrap_err();
+    assert_eq!(*result.downcast::<usize>().unwrap(),19);
+    println!("caught");
+}
+"#,
+    );
+    for optimized in [false, true] {
+        let mut stage = staged.command();
+        stage.args(["build-builtins", "--native-object", "-C", "panic=unwind"]);
+        if optimized {
+            stage.arg("-O");
+        }
+        success(&flib_support::run(&mut stage, "stage-unwind-builtins"));
+        let (suite, _) = flux_cli::builtins::load(&suite_path, &staged.executable)
+            .unwrap()
+            .unwrap();
+        assert_eq!(suite.mir.panic_strategy, flux_mir::PanicStrategy::Unwind);
+        assert!(suite.object.is_some());
+        for (label, source, mir_only) in [
+            ("source", true, false),
+            ("suite", false, false),
+            ("mir", false, true),
+        ] {
+            let binary = staged
+                .scratch
+                .path()
+                .join(format!("unwind-{optimized}-{label}"));
+            let mut build = staged.command();
+            build
+                .arg("build")
+                .arg(&file)
+                .arg("-o")
+                .arg(&binary)
+                .args(["-C", "panic=unwind"]);
+            if optimized {
+                build.arg("-O");
+            }
+            if source {
+                build.env("FLUX_BUILTINS_SOURCE", "1");
+            }
+            if mir_only {
+                build.env("FLUX_BUILTINS_MIR_ONLY", "1");
+            }
+            let output = flib_support::run(&mut build, "build-unwind-suite");
+            success(&output);
+            trace(
+                &output,
+                if source {
+                    "source (forced)"
+                } else {
+                    "flux builtins: suite"
+                },
+            );
+            let output = flib_support::run(&mut Command::new(binary), "run-unwind-suite");
+            success(&output);
+            assert_eq!(output.stdout, b"cleanup\ncaught\n");
+            assert!(
+                output.stderr.is_empty(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+    let library = staged.write(
+        "dependency.rs",
+        r#"
+struct Cleanup;
+impl Drop for Cleanup {fn drop(&mut self){println!("artifact cleanup");}}
+#[inline(never)] fn fail_inner(){let _guard=Cleanup;panic!("artifact payload");}
+pub fn fail<T>(_:T){fail_inner();}
+"#,
+    );
+    for strategy in ["abort", "unwind"] {
+        let artifact = staged
+            .scratch
+            .path()
+            .join(format!("dependency-{strategy}.flib"));
+        let mut build = staged.command();
+        build
+            .arg("build")
+            .arg(&library)
+            .args([
+                "--crate-type",
+                "lib",
+                "--crate-name",
+                "dependency",
+                "-O",
+                "-C",
+            ])
+            .arg(format!("panic={strategy}"))
+            .arg("-o")
+            .arg(artifact);
+        success(&flib_support::run(&mut build, "build-strategy-artifact"));
+    }
+    std::fs::remove_file(&library).unwrap();
+    let consumer = staged.write(
+        "consumer.rs",
+        r#"
+fn main(){
+    #[cfg(panic="unwind")] {
+        std::panic::set_hook(Box::new(|_|{}));
+        let error=std::panic::catch_unwind(||dependency::fail(17u32)).unwrap_err();
+        assert_eq!(*error.downcast_ref::<&str>().unwrap(),"artifact payload");
+    }
+    println!("artifact passed");
+}
+"#,
+    );
+    for artifact_strategy in ["abort", "unwind"] {
+        for strategy in ["abort", "unwind"] {
+            let binary = staged
+                .scratch
+                .path()
+                .join(format!("artifact-{artifact_strategy}-{strategy}"));
+            let artifact = staged
+                .scratch
+                .path()
+                .join(format!("dependency-{artifact_strategy}.flib"));
+            let mut build = staged.command();
+            build
+                .arg("build")
+                .arg(&consumer)
+                .args(["-O", "--extern"])
+                .arg(format!("dependency={}", artifact.display()))
+                .args(["-C"])
+                .arg(format!("panic={strategy}"))
+                .arg("-o")
+                .arg(&binary);
+            let output = flib_support::run(&mut build, "load-strategy-artifact");
+            if artifact_strategy == strategy {
+                success(&output);
+                let output = flib_support::run(&mut Command::new(binary), "run-strategy-artifact");
+                success(&output);
+                assert_eq!(
+                    output.stdout,
+                    if strategy == "unwind" {
+                        &b"artifact cleanup\nartifact passed\n"[..]
+                    } else {
+                        &b"artifact passed\n"[..]
+                    }
+                );
+            } else {
+                assert!(!output.status.success());
+                assert!(!binary.exists());
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("panic strategy mismatch"),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+    }
+    // One driver process switches to abort for host compilation, then restores
+    // its unwind target suite before loading dependency state and checking cfg.
+    let manifest = staged.write("Cargo.toml", "[workspace]\n[package]\nname='staged-app'\nversion='0.1.0'\nedition='2024'\n[[bin]]\nname='staged-app'\npath='package.rs'\n[profile.dev]\npanic='unwind'\n");
+    staged.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='staged-app'\nversion='0.1.0'\n",
+    );
+    staged.write("build.rs", r#"fn main(){println!("cargo:rustc-env=TARGET_PANIC={}",std::env::var("CARGO_CFG_PANIC").unwrap());}"#);
+    staged.write("package.rs", r#"fn main(){assert!(cfg!(panic="unwind"));assert_eq!(env!("TARGET_PANIC"),"unwind");std::panic::set_hook(Box::new(|_|{}));assert!(std::panic::catch_unwind(||panic!("staged package")).is_err());println!("staged package passed");}"#);
+    let mut build = staged.command();
+    build
+        .args([
+            "package-driver",
+            "build",
+            "--offline",
+            "--macro-host-compiler",
+            "flux",
+            "-j2",
+            "--manifest-path",
+        ])
+        .arg(manifest);
+    let output = flib_support::run(&mut build, "build-staged-unwind-package");
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("flux-builtins-unwind.flib"));
+    let output = flib_support::run(
+        &mut Command::new(staged.scratch.path().join("target/flux/debug/staged-app")),
+        "run-staged-unwind-package",
+    );
+    success(&output);
+    assert_eq!(output.stdout, b"staged package passed\n");
+    // A valid abort suite stored at the unwind path must fail before compilation.
+    std::fs::copy(&staged.suite, &suite_path).unwrap();
+    let mut build = staged.command();
+    build.arg("build").arg(&file).args(["-C", "panic=unwind"]);
+    let output = flib_support::run(&mut build, "reject-wrong-strategy-suite");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("built-in panic strategy mismatch"));
+}
+
+#[test]
 fn staged_metadata_native_object_and_mir_match_source_compilation() {
     let staged = Staged::new(true);
     let (suite, method) = flux_cli::builtins::load(&staged.suite, &staged.executable)
@@ -146,6 +355,35 @@ fn staged_metadata_native_object_and_mir_match_source_compilation() {
         .unwrap();
     assert_eq!(method, CheckMethod::Stat);
     assert!(suite.items.has_artifact_builtins());
+    let unwinder: std::collections::HashSet<_> = suite
+        .items
+        .functions
+        .iter()
+        .filter(|(_, function)| {
+            matches!(
+                function.name.as_str(),
+                "_Unwind_RaiseException" | "_Unwind_DeleteException" | "__gxx_personality_v0"
+            )
+        })
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(unwinder.len(), 3);
+    for body in suite
+        .mir
+        .bodies
+        .iter()
+        .map(|(_, body)| body)
+        .chain(suite.mir.closures.values())
+    {
+        for block in body.blocks.values() {
+            if let flux_mir::TerminatorKind::Call { func, .. } = block.terminator.kind {
+                assert!(
+                    !unwinder.contains(&func),
+                    "abort builtins must not call the platform unwinder"
+                );
+            }
+        }
+    }
     assert!(
         suite
             .object

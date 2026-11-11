@@ -1,4 +1,4 @@
-//! One-time initialization. Reentrant initialization deadlocks; Flux panics abort.
+//! One-time initialization with poisoning after an initializer unwinds.
 use super::OnceLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 

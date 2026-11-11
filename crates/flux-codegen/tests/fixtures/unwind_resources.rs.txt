@@ -1,0 +1,213 @@
+mod resource_checks {
+    use std::future::Future;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Mutex;
+
+    static EVENTS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+    struct Event(i32, bool);
+    impl Drop for Event {
+        fn drop(&mut self) {
+            assert_eq!(self as *const Event as usize % std::mem::align_of::<Event>(), 0);
+            EVENTS.lock().unwrap().push(self.0);
+            if self.1 {
+                panic!("resource destructor");
+            }
+        }
+    }
+
+    fn events(expected: &[i32]) {
+        let actual = std::mem::take(&mut *EVENTS.lock().unwrap());
+        assert_eq!(actual.as_slice(), expected);
+    }
+
+    fn make(id: i32) -> Event {
+        if id < 0 {
+            panic!("partial initialization");
+        }
+        Event(id, false)
+    }
+
+    struct CloneEvent(Event, bool);
+    impl Clone for CloneEvent {
+        fn clone(&self) -> Self {
+            EVENTS.lock().unwrap().push(self.0.0 * 10);
+            if self.1 {
+                panic!("clone failure");
+            }
+            Self(Event(self.0.0, false), false)
+        }
+    }
+
+    struct Local;
+    impl Drop for Local {
+        fn drop(&mut self) {
+            assert!(!std::thread::panicking());
+            assert!(catch_unwind(|| panic!("caught in TLS destruction")).is_err());
+            assert!(!std::thread::panicking());
+            EVENTS.lock().unwrap().push(14);
+        }
+    }
+    std::thread_local! {
+        static LOCAL: Local = const { Local };
+    }
+
+    pub fn run() {
+        assert!(catch_unwind(|| {
+            let pair = (Event(1, false), Event(2, false));
+            drop(pair.0);
+            panic!("partial move");
+        }).is_err());
+        events(&[1, 2]);
+
+        assert!(catch_unwind(|| {
+            let _array = [make(3), make(-1), make(4)];
+        }).is_err());
+        events(&[3]);
+
+        assert!(catch_unwind(|| drop((Event(5, true), Event(6, false)))).is_err());
+        events(&[5, 6]);
+
+        trait Marker {}
+        impl Marker for Event {}
+        assert!(catch_unwind(|| {
+            let value: Box<dyn Marker> = Box::new(Event(7, true));
+            drop(value);
+        }).is_err());
+        events(&[7]);
+
+        let first = CloneEvent(Event(8, false), false);
+        let second = CloneEvent(Event(9, false), true);
+        let closure = move || { let _pair = (&first, &second); };
+        assert!(catch_unwind(AssertUnwindSafe(|| closure.clone())).is_err());
+        events(&[80, 90, 8]);
+        drop(closure);
+        events(&[8, 9]);
+
+        assert!(catch_unwind(|| {
+            let mut value = Event(10, true);
+            value = Event(11, false);
+            drop(value);
+        }).is_err());
+        events(&[10, 11]);
+
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut future = Box::pin(async {
+            let _guard = Event(12, true);
+            std::future::pending::<()>().await;
+        });
+        assert!(future.as_mut().poll(&mut context).is_pending());
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(future))).is_err());
+        events(&[12]);
+
+        let mut future = Box::pin(async {
+            let _guard = Event(13, false);
+            panic!("poll failure");
+        });
+        assert!(catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context))).is_err());
+        events(&[13]);
+        assert!(catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(&mut context))).is_err());
+        drop(future);
+        events(&[]);
+
+        let lock = std::sync::RwLock::new(0);
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let _guard = lock.read().unwrap();
+            panic!("read lock");
+        })).is_err());
+        assert!(!lock.is_poisoned());
+        assert!(catch_unwind(AssertUnwindSafe(|| {
+            let mut guard = lock.write().unwrap();
+            *guard = 7;
+            panic!("write lock");
+        })).is_err());
+        assert!(lock.is_poisoned());
+        assert_eq!(*lock.read().unwrap_err().into_inner(), 7);
+
+        let once = std::sync::Once::new();
+        assert!(catch_unwind(|| once.call_once(|| panic!("once"))).is_err());
+        assert!(!once.is_completed());
+        assert!(catch_unwind(|| once.call_once(|| {})).is_err());
+        once.call_once_force(|state| assert!(state.is_poisoned()));
+        assert!(once.is_completed());
+
+        let cell = std::sync::OnceLock::<usize>::new();
+        assert!(catch_unwind(|| cell.get_or_init(|| panic!("once initializer"))).is_err());
+        assert!(cell.get().is_none());
+        assert_eq!(*cell.get_or_init(|| 17), 17);
+        let lazy = std::sync::LazyLock::new(|| -> usize { panic!("lazy initializer"); });
+        assert!(catch_unwind(AssertUnwindSafe(|| std::sync::LazyLock::force(&lazy))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| std::sync::LazyLock::force(&lazy))).is_err());
+
+        std::thread::spawn(|| LOCAL.with(|_| {})).join().unwrap();
+        events(&[14]);
+
+        #[repr(packed)]
+        struct Packed(u8, Event);
+        assert!(catch_unwind(|| drop((Packed(0, Event(15, true)), Event(16, false)))).is_err());
+        events(&[15, 16]);
+
+        let slice = vec![Event(17, true), Event(18, false), Event(19, false)].into_boxed_slice();
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(slice))).is_err());
+        events(&[17, 18, 19]);
+
+        enum Choice { Pair(Event, Event), Empty }
+        assert!(catch_unwind(|| {
+            let value = Choice::Pair(Event(20, false), Event(21, false));
+            if let Choice::Pair(first, _) = value {
+                drop(first);
+                panic!("partial enum");
+            }
+        }).is_err());
+        events(&[20, 21]);
+
+        assert!(catch_unwind(|| {
+            let values = [Event(22, false), Event(23, false), Event(24, false)];
+            let [first, _, last] = values;
+            drop(first);
+            let _last = last;
+            panic!("partial array move");
+        }).is_err());
+        events(&[22, 24, 23]);
+        struct Dedup { key: i32, event: Event }
+        impl PartialEq for Dedup {
+            fn eq(&self, other: &Self) -> bool {
+                if self.key == 3 { panic!("comparison panic"); }
+                self.key == other.key
+            }
+        }
+        let mut values = vec![
+            Dedup {key:1,event:Event(25,false)}, Dedup {key:1,event:Event(26,false)},
+            Dedup {key:2,event:Event(27,false)}, Dedup {key:3,event:Event(28,false)},
+            Dedup {key:4,event:Event(29,false)},
+        ];
+        assert!(catch_unwind(AssertUnwindSafe(|| values.dedup())).is_err());
+        assert_eq!(values.iter().map(|value|value.event.0).collect::<Vec<_>>(), [25,27,28,29]);
+        drop(values);
+        events(&[26,25,27,28,29]);
+
+        let mut values = vec![(1,Event(30,false)),(1,Event(31,true)),(2,Event(32,false))];
+        assert!(catch_unwind(AssertUnwindSafe(|| values.dedup_by(|a,b|a.0==b.0))).is_err());
+        assert_eq!(values.iter().map(|value|value.1.0).collect::<Vec<_>>(), [30,32]);
+        drop(values);
+        events(&[31,30,32]);
+
+        let mut values=vec![Event(33,false),Event(34,true),Event(35,false),Event(36,false)];
+        assert!(catch_unwind(AssertUnwindSafe(||drop(values.drain(1..3)))).is_err());
+        assert_eq!(values.iter().map(|value|value.0).collect::<Vec<_>>(), [33,36]);
+        drop(values);
+        events(&[34,35,33,36]);
+
+        let mut values=vec![Event(37,false),Event(38,true),Event(39,false),Event(40,false)];
+        assert!(catch_unwind(AssertUnwindSafe(||values.truncate(1))).is_err());
+        assert_eq!(values.len(),1);
+        drop(values);
+        events(&[38,39,40,37]);
+
+        let mut values=vec![Event(41,false),Event(42,true),Event(43,false)].into_iter();
+        drop(values.next());
+        assert!(catch_unwind(AssertUnwindSafe(||drop(values))).is_err());
+        events(&[41,42,43]);
+        println!("partial values, clone failure, dynamic drop, futures and TLS passed");
+    }
+}

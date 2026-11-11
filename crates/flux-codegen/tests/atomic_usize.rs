@@ -23,11 +23,26 @@ fn native_atomic_ir_and_instructions_survive_optimization() {
         let mut operations = Vec::new();
         for function in &module.functions {
             for (_, inst) in function.layout_insts() {
-                // Entry-point argument capture may add unrelated pointer atomics.
+                // Entry-point argument capture adds pointer atomics, and the
+                // panic backtrace hint uses an AtomicBool. Neither belongs to
+                // the AtomicUsize operations checked below.
                 match function.inst_data(inst) {
-                    InstData::AtomicLoad { ty: Type::Ptr, .. } => continue,
+                    InstData::AtomicLoad {
+                        ty: Type::Ptr | Type::I8,
+                        ..
+                    } => continue,
                     InstData::AtomicStore { value, .. }
-                        if function.value_type(*value) == Type::Ptr =>
+                        if matches!(function.value_type(*value), Type::Ptr | Type::I8) =>
+                    {
+                        continue;
+                    }
+                    InstData::AtomicRmw { args, .. }
+                        if function.value_type(args[1]) == Type::I8 =>
+                    {
+                        continue;
+                    }
+                    InstData::AtomicCas { args, .. }
+                        if function.value_type(args[1]) == Type::I8 =>
                     {
                         continue;
                     }

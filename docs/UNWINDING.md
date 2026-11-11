@@ -92,7 +92,22 @@ panic strategy even when a source body has no exceptional edges. Unwind metadata
 carries a strategy tag; imports reject a different strategy before copying MIR.
 Abort MIR metadata retains its existing encoding. Target `cfg(panic)` follows the
 selected strategy. Separate builtin variants retain the corresponding MIR and
-object code; staging and loading the unwind variant still need qualification.
+object code. Fresh-process tests cover both variants, source-free dependency
+imports, native objects and MIR-only loading. Mixed-strategy imports are rejected.
+
+Cargo builds read explicit `panic = "abort"` or `panic = "unwind"` from the
+workspace's `[profile.dev]` and `[profile.release]` tables. The standalone package
+driver accepts the same settings. An omitted setting keeps Flux's abort default.
+Build-script `CARGO_CFG_PANIC` describes the target strategy. Host compilation
+selects its own abort suite and restores the target strategy afterward.
+Changing strategy invalidates cached dependency artifacts rather than keeping
+old versions. Package tests cover unwind, a fresh rebuild, abort, and unwind again.
+
+Stage an unwind builtin variant with
+`fluxc build-builtins --native-object -C panic=unwind`. It lives beside the
+default `flux-builtins.flib` as `flux-builtins-unwind.flib`. Builds that mix host
+and target strategies need both compatible variants, or source-mode builtins
+selected at process startup. A variant staged by another compiler is not reused.
 
 ## Native lowering
 
@@ -156,9 +171,56 @@ uncaught main panic, a hook panic, formatting failure and a double panic. A
 separate abort-mode comparison checks hooks and termination without linking the
 C++ personality library.
 
-The full goal is not complete. Cargo profiles, full artifact and builtin
-qualification, upstream Rayon unwind tests, and full native qualification of
-partial initialization, clone failures and suspended future cancellation remain.
+The own-runtime comparison also checks partial tuple moves and array
+initialization, destruction of remaining fields after a destructor panics,
+dynamic Box destruction, failed closure cloning and assignment, cancellation of
+a suspended future, repeated polling after a poll panic, read/write-lock and
+Once poisoning, and catching a panic inside a TLS destructor. Event assertions
+check order and exactly-once destruction. Exact allocation-release checks run in
+`unwind_allocations`: C allocator wrappers track live addresses and reject
+unknown or repeated frees. Eighteen scoped cases cover boxes, dynamic/closure
+destruction, suspended and poisoned frames, payload resume, exception headers,
+formatting, partial initialization, aligned storage, slices, vectors, iterators,
+Rc/Arc, linked lists and queues. A skipped-free negative control must fail. The
+Flux binaries link their own runtime and the C probe, with rustc-built programs
+as controls.
+
+`unwind_boundaries` compares five native programs and eleven cases with rustc:
+C and C-unwind boundaries, indirect aggregate/floating-point callbacks, normal
+Result/ExitCode entries, never-returning main, reporting failures, and payload
+destruction at the process root. `unwind_foreign` checks C++ rethrow, swallowed
+Rust panics and foreign exceptions. A swallowed panic destroys its payload while
+panic state remains active, then aborts. A foreign exception is deleted before
+the Rust catch aborts. Default hooks preserve named/unnamed thread labels and
+print the backtrace hint once.
+
+Vector element destruction uses slice cleanup glue so later elements are
+destroyed after an earlier destructor panics. Drain restores its tail on both
+exits. Deduplication shares retain's gap guard, preserving initialized elements
+when comparison or destruction panics.
+
+`rayon_unwinding` runs the pinned Rayon 1.12.0 integration bodies through direct
+dispatch adapters. It covers collection cleanup, zero-sized collection cleanup,
+panic-fuse, the complete sort panic-safety workload, and uncaught iterator panic
+propagation. Fast and optimized Flux builds use the Flux runtime; rustc builds
+run the same assertions as controls. Registry source bytes and the lockfile are
+checked afterward. A second maintained test extracts 24 panic-related unit
+bodies from Rayon-core 1.13.0. It covers join, nested scope/spawn, broadcasts,
+custom panic handlers, start/exit handler panics, and thread-name initialization
+failure. Signatures, bodies, helper functions and the unwind module stay
+unchanged; outer libtest attributes become standalone dispatch. These selected
+unit bodies also run in fast/optimized Flux builds and rustc controls. The
+complete upstream unit and doctest suites are not claimed.
+
+The arm64 macOS unwind milestone is qualified against the native comparisons
+above. The final project run covered 524 test targets. Its one failure was an
+AtomicUsize test that counted the panic hint's new byte atomic as a usize
+operation; all four tests in that target passed after the scan was corrected.
+Formatting, workspace Clippy with warnings denied, 44 test-runner unit tests,
+workspace source checking and documentation generation also passed. Rustdoc
+reported three existing links from public documentation to private items.
+This qualification covers the stated target and selected upstream tests; it
+does not establish compatibility with every Rust program or backend target.
 
 Isolated arm64 macOS probes on the pinned Keel revision exercise a direct-invoke
 forwarding function containing an indirect call. With unwind tables retained in
@@ -168,14 +230,19 @@ uses the platform C++ personality for cleanup/resume and a catch-all landing pad
 the original exception pointer and payload survive and deletion runs once. These
 probes qualify mechanisms, not Flux's runtime or its complete indirect-call ABI.
 
-## Next implementation steps
+## Qualification targets
 
-1. Carry the panic strategy through CLI/Cargo profiles, target cfg, builtin
-   selection and artifact identities. Preserve the current default abort mode.
-2. Qualify all partial-initialization, assertion, clone-failure and suspended
-   future paths with the Flux runtime, including exact deallocation checks.
-3. Enable and pass the upstream Rayon unwind/panic-safety tests, then run complete
-   validation on the final integration.
+| Test target | Coverage |
+| --- | --- |
+| `flux-mir::unwind_*` | Cleanup construction, propagation, shims, coroutines, ABI and validation. |
+| `flux-mir::panic_strategy_metadata` | Strategy/cfg round-trips and incompatible imports. |
+| `flux-codegen::unwind_native` | Native invokes, indirect calls, unwind tables and bridge oracles. |
+| `flux-codegen::unwind_runtime` | Own-runtime payloads, hooks, thread state and resource cleanup. |
+| `flux-codegen::unwind_allocations` | Exactly-once release with a leak negative control. |
+| `flux-codegen::unwind_boundaries` | Native ABI barriers and process entry/exit behavior. |
+| `flux-codegen::unwind_foreign` | C++ propagation and exception ownership. |
+| `flux-cli::native_build`, `package`, `builtins_suite` | Profiles, fresh rebuilds, staged objects and compatible artifacts. |
+| `flux-cli::rayon_unwinding` | Five integration cases and 24 extracted core panic cases. |
 
 The first backend target is arm64 macOS. The pinned Keel supports native exception
 cleanup there; its AArch64 Linux and x86-64 Linux backends reject exception-handling

@@ -6,9 +6,30 @@ use flux_intern::Symbol;
 use flux_mir::PanicStrategy;
 #[path = "../../flux-cli/tests/support/process.rs"]
 mod process;
+use std::process::Command;
 use std::time::Duration;
 
-const SOURCE: &str = r#"
+fn normalize_thread_ids(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(|line| {
+            if line.starts_with("thread '")
+                && let Some(start) = line.rfind(" (")
+            {
+                let start = start + 2;
+                let end = start + line[start..].find(')').unwrap();
+                assert!(line[start..end].bytes().all(|byte| byte.is_ascii_digit()));
+                format!("{}thread-id{}", &line[..start], &line[end..])
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+const SOURCE: &str = concat!(
+    r#"
 use std::panic::{catch_unwind,panic_any,resume_unwind,AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize,Ordering};
 static HOOKS:AtomicUsize=AtomicUsize::new(0);
@@ -25,6 +46,14 @@ impl Drop for Nested{fn drop(&mut self){
 struct Owned;
 impl Drop for Owned{fn drop(&mut self){assert!(std::thread::panicking());DROPS.fetch_add(1,Ordering::SeqCst);}}
 fn main(){
+    if std::env::args().nth(1).as_deref()==Some("names") {
+        let named=std::thread::Builder::new().name(String::from("worker π")).spawn(||catch_unwind(||panic!("named panic"))).unwrap();
+        assert!(named.join().unwrap().is_err());
+        assert!(std::thread::spawn(||catch_unwind(||panic!("unnamed panic"))).join().unwrap().is_err());
+        assert!(catch_unwind(||panic!("main panic")).is_err());
+        println!("hook names passed");
+        return;
+    }
     std::panic::set_hook(Box::new(|info|{
         assert!(std::thread::panicking());
         assert!(info.location().is_some());
@@ -130,9 +159,13 @@ fn main(){
     let outer=catch_unwind(||std::thread::scope(|scope|{scope.spawn(||panic!("child"));panic_any(101usize);})).unwrap_err();
     assert_eq!(*outer.downcast_ref::<usize>().unwrap(),101);
     assert!(!std::thread::panicking());
+    std::panic::set_hook(Box::new(|_|{}));
+    resource_checks::run();
     println!("owned payloads, resume, hooks, cleanup and poisoning passed");
 }
-"#;
+"#,
+    include_str!("fixtures/unwind_resources.rs.txt")
+);
 
 #[test]
 fn native_flux_runtime_matches_rustc() {
@@ -177,6 +210,14 @@ fn native_flux_runtime_matches_rustc() {
         Duration::from_secs(30),
     )
     .completed();
+    let expected_names = process::run(
+        Command::new(&rust).arg("names"),
+        &root,
+        "rust-names",
+        Duration::from_secs(30),
+    )
+    .completed();
+    assert!(expected_names.status.success());
     assert!(
         expected.status.success(),
         "{}",
@@ -243,6 +284,20 @@ fn native_flux_runtime_matches_rustc() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.stderr, expected.stderr, "{name}");
+        let actual_names = process::run(
+            Command::new(&binary).arg("names"),
+            &root,
+            &format!("{name}-names"),
+            Duration::from_secs(30),
+        )
+        .completed();
+        assert_eq!(actual_names.status, expected_names.status);
+        assert_eq!(actual_names.stdout, expected_names.stdout);
+        assert_eq!(
+            normalize_thread_ids(&actual_names.stderr),
+            normalize_thread_ids(&expected_names.stderr),
+            "{name}"
+        );
         for (mode, expected) in &expected_fatal {
             let output = process::run(
                 std::process::Command::new(&binary).arg(mode),

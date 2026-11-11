@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use crate::{build, builtins, cargo, flib_build};
+use crate::{build, cargo, flib_build};
 
 use clap::{Parser, Subcommand};
 use flux_hir::{Diagnostic, Hir, SourceDb};
@@ -590,15 +590,8 @@ pub fn package_main() -> ExitCode {
 }
 
 fn execute_package(command: &cargo::Command) -> ExitCode {
-    let initialize = matches!(
-        command,
-        cargo::Command::Build { .. } | cargo::Command::Package { .. }
-    );
-    let result = if initialize {
-        builtins::initialize().and_then(|()| cargo::execute(command))
-    } else {
-        cargo::execute(command)
-    };
+    // Select builtins after the workspace profile determines the target strategy.
+    let result = cargo::execute(command);
     match result {
         Ok(code) => code,
         Err(message) => {

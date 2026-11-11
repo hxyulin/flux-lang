@@ -1,0 +1,41 @@
+use std::panic::{catch_unwind, panic_any};
+unsafe extern "C-unwind" {
+    fn cpp_forward(callback: extern "C-unwind" fn(), swallow: i32) -> i32;
+    fn cpp_throw();
+}
+struct Frame(&'static str);
+impl Drop for Frame {
+    fn drop(&mut self) { eprintln!("event {} {}", self.0, std::thread::panicking()); }
+}
+struct Payload;
+impl Drop for Payload {
+    fn drop(&mut self) { eprintln!("event payload {}", std::thread::panicking()); }
+}
+extern "C-unwind" fn raise() {
+    let _guard = Frame("callback");
+    panic_any(Payload);
+}
+fn main() {
+    std::panic::set_hook(Box::new(|_| {}));
+    match std::env::args().nth(1).as_deref() {
+        Some("rethrow") => {
+            let error = catch_unwind(|| unsafe { cpp_forward(raise, 0) }).unwrap_err();
+            assert!(error.is::<Payload>());
+            assert!(!std::thread::panicking());
+            drop(error);
+            println!("rethrow passed");
+        }
+        Some("swallow") => {
+            let value = unsafe { cpp_forward(raise, 1) };
+            println!("swallow returned {value}");
+        }
+        Some("foreign") => {
+            let _ = catch_unwind(|| {
+                let _guard = Frame("foreign frame");
+                unsafe { cpp_throw(); }
+            });
+            println!("foreign catch returned");
+        }
+        _ => panic!("expected a test case"),
+    }
+}

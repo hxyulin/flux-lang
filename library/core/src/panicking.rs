@@ -31,8 +31,8 @@ unsafe extern "C-unwind" {
 
 /// Prints the default panic message without initiating another panic.
 #[doc(hidden)]
-pub fn __panic_print(args: Arguments<'_>, location: &Location<'_>) {
-    crate::io::print_panic(args, location);
+pub fn __panic_print(args: Arguments<'_>, location: &Location<'_>, name: &str) {
+    crate::io::print_panic(args, location, name);
 }
 
 /// Panics with `message`.

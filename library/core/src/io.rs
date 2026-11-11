@@ -8,7 +8,7 @@ use crate::marker::PhantomData;
 use crate::panic::Location;
 use crate::result::Result;
 use crate::result::Result::{Err, Ok};
-use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 unsafe extern "C" {
     fn write(fd: i32, buf: *const u8, count: usize) -> isize;
@@ -274,9 +274,10 @@ pub fn _eprint(args: Arguments<'_>) {
     let _ = fmt::write(&mut Stderr, args);
 }
 
-/// What std's default panic hook prints, for a panic at `location`
-/// with message `msg`: the thread is always `main`.
-pub(crate) fn print_panic(msg: Arguments<'_>, location: &Location<'_>) {
+static PANIC_NOTE: AtomicBool = AtomicBool::new(false);
+
+/// The default hook's message, serialized with the other stderr writers.
+pub(crate) fn print_panic(msg: Arguments<'_>, location: &Location<'_>, name: &str) {
     let _guard = lock_stderr();
     #[cfg(target_os = "macos")]
     let tid = {
@@ -290,9 +291,11 @@ pub(crate) fn print_panic(msg: Arguments<'_>, location: &Location<'_>) {
     let tid = unsafe { gettid() as u64 };
     let _ = fmt::write(
         &mut Stderr,
-        format_args!("\nthread 'main' ({tid}) panicked at {location}:\n{msg}\n"),
+        format_args!("\nthread '{name}' ({tid}) panicked at {location}:\n{msg}\n"),
     );
-    let _ = Stderr.write_str(
-        "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
-    );
+    if !PANIC_NOTE.swap(true, Ordering::Relaxed) {
+        let _ = Stderr.write_str(
+            "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+        );
+    }
 }

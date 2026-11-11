@@ -104,6 +104,7 @@ struct Reach<'a> {
     opaque_traits: FxHashMap<TraitId, Vec<Ty>>,
     callback_bounds: FxHashMap<TraitId, Vec<flux_ty::Predicate>>,
     callback_contexts: FxHashMap<TraitId, Vec<flux_ty::GenericArgs>>,
+    growing_unknowns: FxHashMap<Ty, Ty>,
     dropped: FxHashSet<StructId>,
     traits: FxHashSet<TraitId>,
     impls: FxHashSet<flux_hir::ImplId>,
@@ -146,6 +147,7 @@ impl<'a> Reach<'a> {
             opaque_traits: FxHashMap::default(),
             callback_bounds: FxHashMap::default(),
             callback_contexts: FxHashMap::default(),
+            growing_unknowns: FxHashMap::default(),
             dropped: FxHashSet::default(),
             traits: FxHashSet::default(),
             impls: FxHashSet::default(),
@@ -505,11 +507,9 @@ impl<'a> Reach<'a> {
         };
         // Recursive generic templates are legal before instantiation. Stop a
         // growing symbolic cycle; concrete mono still diagnoses invalid uses.
-        if self
-            .current
-            .iter()
-            .any(|&(old, previous)| old == owner && growing_args(previous, args))
-        {
+        if self.current.iter().any(|&(old, previous)| {
+            old == owner && growing_args_cached(previous, args, &mut self.growing_unknowns)
+        }) {
             return;
         }
         // Equivalent parameter renamings describe the same symbolic body.
@@ -653,10 +653,9 @@ impl<'a> Reach<'a> {
                 .callback_contexts
                 .entry(bound.trait_ref.trait_)
                 .or_default();
-            if contexts
-                .iter()
-                .any(|&old| old == wanted || growing_args(old, wanted))
-            {
+            if contexts.iter().any(|&old| {
+                old == wanted || growing_args_cached(old, wanted, &mut self.growing_unknowns)
+            }) {
                 continue;
             }
             contexts.push(wanted);
@@ -1349,7 +1348,16 @@ fn drop_parameters(
     }
 }
 
+#[cfg(test)]
 fn growing_args(previous: flux_ty::GenericArgs, next: flux_ty::GenericArgs) -> bool {
+    growing_args_cached(previous, next, &mut FxHashMap::default())
+}
+
+fn growing_args_cached(
+    previous: flux_ty::GenericArgs,
+    next: flux_ty::GenericArgs,
+    memo: &mut FxHashMap<Ty, Ty>,
+) -> bool {
     fn unknowns(ty: Ty, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
         if let Some(&known) = memo.get(&ty) {
             return known;
@@ -1365,9 +1373,10 @@ fn growing_args(previous: flux_ty::GenericArgs, next: flux_ty::GenericArgs) -> b
     if previous.len() != next.len() {
         return false;
     }
-    let mut memo = FxHashMap::default();
-    let previous: Vec<_> = previous.iter().map(|&ty| unknowns(ty, &mut memo)).collect();
-    let next: Vec<_> = next.iter().map(|&ty| unknowns(ty, &mut memo)).collect();
+    // Callback contexts repeatedly compare the same nested adapter types.
+    // Canonicalization depends only on Ty, so share its memo within this Reach.
+    let previous: Vec<_> = previous.iter().map(|&ty| unknowns(ty, memo)).collect();
+    let next: Vec<_> = next.iter().map(|&ty| unknowns(ty, memo)).collect();
     // Changing equality relationships between parameters is not growth. Such
     // contexts retain distinct canonical keys and must each be inspected.
     previous != next

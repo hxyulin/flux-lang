@@ -8819,7 +8819,9 @@ impl<'a> Cx<'a> {
         let tracked: Vec<bool> = (0..body.locals.len())
             .map(|i| self.local_base[i + 1] > self.local_base[i])
             .collect();
-        let live_out = super::liveness_where(body, &tracked, include_drops);
+        let held = (include_drops && body.has_unwind())
+            .then(|| super::held_locals(body, self.sigs, &tracked));
+        let live_out = super::liveness_where(body, &tracked, include_drops, held.as_deref());
         let mut live = vec![IntervalSet::new(); body.locals.len()];
         // Walking each block backwards: where each live local's current
         // run ends.
