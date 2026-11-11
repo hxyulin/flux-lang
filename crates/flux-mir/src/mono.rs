@@ -179,7 +179,9 @@ fn collect_roots(
     let root = items.module_of(items.main_crate());
     let main = mir.bodies.iter().map(|(id, _)| id).find(|&id| {
         let f = &items.functions[id];
-        f.name.as_str() == "main" && f.loc.module == root && f.owner.is_none()
+        f.name.as_str() == items.entry_function_name(items.main_crate())
+            && f.loc.module == root
+            && f.owner.is_none()
     });
     if let Some(roots) = roots {
         for &instance in roots {

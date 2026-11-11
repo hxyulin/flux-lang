@@ -1564,6 +1564,23 @@ impl std::fmt::Display for TypeRef {
 }
 
 impl ItemTree {
+    /// Entry selected by ordinary or compiler-generated test compilation.
+    pub fn entry_function_name(&self, krate: CrateId) -> &'static str {
+        if self.crates[krate.0 as usize]
+            .cfg
+            .as_ref()
+            .is_some_and(|cfg| {
+                cfg.names
+                    .iter()
+                    .any(|name| &**name == "__flux_test_harness")
+            })
+        {
+            "__flux_test_main"
+        } else {
+            "main"
+        }
+    }
+
     /// Whether the compiler library prefix was loaded from trusted metadata.
     pub fn has_artifact_builtins(&self) -> bool {
         self.artifact_builtins
@@ -2029,10 +2046,13 @@ fn item_enabled_with_test_context(
                     "the `test` attribute may only be used on a free function",
                 ));
             }
-            // Flux builds ordinary crates, not libtest harnesses. Like rustc
-            // without `--test`, it removes test functions before resolving their
-            // signatures, bodies, or body-local macros, even with `--cfg test`.
-            enabled = false;
+            // Ordinary compilation removes tests even with `--cfg test`.
+            // Only the explicit harness mode retains them.
+            enabled &= attrs.cfg.as_ref().is_some_and(|cfg| {
+                cfg.names
+                    .iter()
+                    .any(|name| &**name == "__flux_test_harness")
+            });
         }
     }
     // Inner attributes belong to the enclosing module, and can remove it

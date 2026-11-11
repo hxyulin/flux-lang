@@ -260,9 +260,25 @@ impl Write for Stderr {
     }
 }
 
+static CAPTURE_HOOK: AtomicUsize = AtomicUsize::new(0);
+/// Installs std's thread-local print capture bridge.
+#[doc(hidden)]
+pub fn __set_capture_hook(hook: fn(Arguments<'_>) -> bool) {
+    CAPTURE_HOOK.store(hook as usize, Ordering::Release);
+}
+fn captured(args: Arguments<'_>) -> bool {
+    let hook = CAPTURE_HOOK.load(Ordering::Acquire);
+    if hook == 0 { return false; }
+    // SAFETY: only __set_capture_hook writes a nonzero value, preserving this
+    // exact function-pointer type; the function has static code lifetime.
+    let hook: fn(Arguments<'_>) -> bool = unsafe { crate::mem::transmute(hook) };
+    hook(args)
+}
+
 /// `print!`
 #[doc(hidden)]
 pub fn _print(args: Arguments<'_>) {
+    if captured(args) {return;}
     let _guard = lock_stdout();
     let _ = fmt::write(&mut Stdout, args);
 }
@@ -270,6 +286,7 @@ pub fn _print(args: Arguments<'_>) {
 /// `eprint!`
 #[doc(hidden)]
 pub fn _eprint(args: Arguments<'_>) {
+    if captured(args) {return;}
     let _guard = lock_stderr();
     let _ = fmt::write(&mut Stderr, args);
 }
@@ -289,13 +306,8 @@ pub(crate) fn print_panic(msg: Arguments<'_>, location: &Location<'_>, name: &st
     #[cfg(target_os = "linux")]
     // SAFETY: gettid takes no arguments and returns the calling Linux thread ID.
     let tid = unsafe { gettid() as u64 };
-    let _ = fmt::write(
-        &mut Stderr,
-        format_args!("\nthread '{name}' ({tid}) panicked at {location}:\n{msg}\n"),
-    );
+    _eprint(format_args!("\nthread '{name}' ({tid}) panicked at {location}:\n{msg}\n"));
     if !PANIC_NOTE.swap(true, Ordering::Relaxed) {
-        let _ = Stderr.write_str(
-            "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
-        );
+        _eprint(format_args!("note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"));
     }
 }

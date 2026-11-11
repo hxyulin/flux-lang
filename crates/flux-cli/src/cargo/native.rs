@@ -36,6 +36,7 @@ struct Dependency {
     alias: String,
     spec: Table,
     build: bool,
+    dev: bool,
     condition: Option<String>,
 }
 struct Package {
@@ -112,6 +113,7 @@ struct ResolvedDependency {
     package: usize,
     domain: Domain,
     build: bool,
+    dev: bool,
 }
 
 struct Planner {
@@ -189,7 +191,7 @@ fn make_plan(options: &Options) -> Result<Plan> {
     }
     let mut roots = Vec::new();
     for path in members {
-        let package = load(&path)?;
+        let mut package = load(&path)?;
         let name = string(&package.fields, "name")?;
         if options.package.as_deref().is_some_and(|n| n != name)
             || defaults
@@ -197,6 +199,40 @@ fn make_plan(options: &Options) -> Result<Plan> {
                 .is_some_and(|paths| !paths.contains(&path))
         {
             continue;
+        }
+        if options.test_mode {
+            let mut tables = vec![(None, package.table.clone())];
+            if let Some(targets) = package.table.get("target").and_then(toml::Value::as_table) {
+                for (condition, table) in targets {
+                    tables.push((
+                        Some(condition.clone()),
+                        table
+                            .as_table()
+                            .ok_or("expected target dependency table")?
+                            .clone(),
+                    ));
+                }
+            }
+            for (condition, mut table) in tables {
+                table.remove("dependencies");
+                table.remove("build-dependencies");
+                if let Some(deps) = table.remove("dev-dependencies") {
+                    table.insert("dependencies".into(), deps);
+                }
+                let mut dev = Vec::new();
+                dependency_tables(
+                    &table,
+                    &workspace,
+                    &workspace_table,
+                    condition.as_deref(),
+                    &mut dev,
+                    string(&package.fields, "edition")? == "2024",
+                )?;
+                for dependency in &mut dev {
+                    dependency.dev = true;
+                }
+                package.dependencies.extend(dev);
+            }
         }
         let root = planner.identify(&package, None)?;
         roots.push(root);
@@ -266,7 +302,97 @@ fn make_plan(options: &Options) -> Result<Plan> {
                     .filter(|t| options.bin.as_ref().is_none_or(|name| *name == t.name)),
             );
         }
+        if options.doc_mode {
+            for target in &mut targets {
+                target.kind = "doctest".into();
+            }
+        }
+        if options.test_mode && !options.doc_mode {
+            if options.test_target.is_some() {
+                targets.clear();
+            }
+            for target in &mut targets {
+                target.kind = if target.kind == "bin" {
+                    "test-bin"
+                } else {
+                    "test-lib"
+                }
+                .into();
+            }
+            if !options.lib && options.bin.is_none() {
+                let base = package.manifest.parent().ok_or("manifest has no parent")?;
+                let mut explicit = Vec::new();
+                if let Some(entries) = package.table.get("test").and_then(toml::Value::as_array) {
+                    for entry in entries {
+                        let table = entry.as_table().ok_or("expected test target table")?;
+                        if !boolean(table, "harness", true)? {
+                            return Err("harness=false test targets are not supported yet".into());
+                        }
+                        let name = string(table, "name")?;
+                        let path = table.get("path").and_then(toml::Value::as_str).map_or_else(
+                            || base.join(format!("tests/{name}.rs")),
+                            |p| base.join(p),
+                        );
+                        explicit.push(path.clone());
+                        targets.push(Target {
+                            name: name.into(),
+                            root: path,
+                            edition: string(&package.fields, "edition")?.into(),
+                            kind: "test".into(),
+                            required_features: strings(table.get("required-features"))?,
+                        });
+                    }
+                }
+                if boolean(&package.fields, "autotests", true)? && base.join("tests").is_dir() {
+                    for entry in std::fs::read_dir(base.join("tests")).map_err(|e| e.to_string())? {
+                        let path = entry.map_err(|e| e.to_string())?.path();
+                        let root = if path.is_dir() {
+                            path.join("main.rs")
+                        } else {
+                            path.clone()
+                        };
+                        if root.extension().is_some_and(|s| s == "rs")
+                            && root.is_file()
+                            && !explicit.contains(&root)
+                        {
+                            let name = path
+                                .file_stem()
+                                .ok_or("test path has no name")?
+                                .to_string_lossy()
+                                .into_owned();
+                            targets.push(Target {
+                                name,
+                                root,
+                                edition: string(&package.fields, "edition")?.into(),
+                                kind: "test".into(),
+                                required_features: Vec::new(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if options.test_mode
+            && !options.doc_mode
+            && !options.test_no_run
+            && !options.tests_only
+            && !options.lib
+            && !options.bins
+            && options.bin.is_none()
+            && let Some(library) = &package.library
+        {
+            let mut target = library.clone();
+            target.kind = "doctest".into();
+            targets.push(target);
+        }
         for target in targets {
+            if options
+                .test_target
+                .as_ref()
+                .is_some_and(|name| name != &target.name)
+            {
+                continue;
+            }
             if target
                 .required_features
                 .iter()
@@ -277,8 +403,11 @@ fn make_plan(options: &Options) -> Result<Plan> {
                 }
                 continue;
             }
-            let kind = if target.kind == "bin" {
-                format!("bin:{}", target.name)
+            let kind = if matches!(
+                target.kind.as_str(),
+                "bin" | "test" | "test-lib" | "test-bin"
+            ) {
+                format!("{}:{}", target.kind, target.name)
             } else {
                 target.kind.clone()
             };
@@ -299,7 +428,7 @@ fn make_plan(options: &Options) -> Result<Plan> {
             )?);
         }
     }
-    if root_units.is_empty() && (options.bin.is_some() || options.lib) {
+    if root_units.is_empty() && (options.bin.is_some() || options.lib || options.test_mode) {
         return Err("no matching build targets selected".into());
     }
     let root_unit = root_units.first().copied();
@@ -562,10 +691,22 @@ impl Planner {
                         package: child,
                         domain: child_domain,
                         build: dep.build,
+                        dev: dep.dev,
                     });
                 }
                 edges.sort();
-                edges.dedup();
+                edges.dedup_by(|later, earlier| {
+                    if later.alias == earlier.alias
+                        && later.package == earlier.package
+                        && later.domain == earlier.domain
+                        && later.build == earlier.build
+                    {
+                        earlier.dev &= later.dev;
+                        true
+                    } else {
+                        false
+                    }
+                });
                 for (i, edge) in edges.iter().enumerate() {
                     if edges[..i]
                         .iter()
@@ -618,7 +759,9 @@ impl Planner {
         };
         let mut dependencies = Vec::new();
         for edge in &self.edges[&(key.package, key.domain)] {
-            if edge.build != script {
+            if edge.build != script
+                || (edge.dev && !key.kind.starts_with("test") && key.kind != "doctest")
+            {
                 continue;
             }
             let index = self.unit(
@@ -639,8 +782,13 @@ impl Planner {
             )?;
             dependencies.push((edge.alias.clone(), index));
         }
-        if key.kind.starts_with("bin:")
+        if (key.kind.starts_with("bin:")
+            || key.kind.starts_with("test:")
+            || key.kind.starts_with("test-lib:")
+            || key.kind.starts_with("test-bin:")
+            || key.kind == "doctest")
             && let Some(library) = &package.library
+            && (target.root != library.root || key.kind == "doctest")
         {
             let index = self.unit(
                 Key {
@@ -915,6 +1063,7 @@ fn dependency_tables(
                     alias: alias.clone(),
                     spec,
                     build,
+                    dev: false,
                     condition: condition.map(str::to_owned),
                 });
             }

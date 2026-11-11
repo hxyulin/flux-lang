@@ -98,6 +98,7 @@ pub(crate) struct CompileRequest<'a> {
     pub native: flux_codegen::NativeLink,
 }
 
+#[derive(Clone)]
 pub(crate) struct SourceInput {
     pub host_macros: Option<Vec<flux_hir::ProcMacro>>,
     pub compilation_dir: Option<std::path::PathBuf>,

@@ -1,5 +1,6 @@
 //! File and macro item collection, followed by derives and constructors.
 mod proc_macros;
+mod test_harness;
 use super::{
     Abi, AnonConst, Arc, AstNode, Block, BodyExpansion, Bound, Const, ConstId, CrateData, CrateId,
     Defaults, Derive, Diagnostic, Discriminant, FIELD_TYPES, Field, FileId, FsPath, Function,
@@ -78,6 +79,7 @@ impl ItemTree {
         collector.collect_pending_body_macros(from);
         collector.expand_derives();
         collector.make_ctors();
+        collector.make_test_harness(root);
         let macro_paths = std::mem::take(&mut collector.macro_paths);
         crate::def_map::resolve(collector.items, from);
         collector.collect_body_expansion_consts();

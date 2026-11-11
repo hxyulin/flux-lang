@@ -398,6 +398,38 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         "allow", "warn", "deny", "forbid", "expect", "inline", "cold", "must_use", "doc",
     ];
     let name = attr_name(attr);
+    if matches!(name, Some("test" | "ignore" | "should_panic")) {
+        let meta = attr.meta().expect("named attribute");
+        let mut tokens = Vec::new();
+        if let Some(tree) = meta.token_tree() {
+            macros::tt::tokens_of(tree.syntax(), &mut tokens);
+        }
+        if tokens.len() == 6 && tokens[4].kind == T![,] {
+            tokens.remove(4);
+        }
+        let valid = meta.unsafe_token().is_none()
+            && match name {
+                Some("test") => meta.eq_token().is_none() && meta.token_tree().is_none(),
+                Some("ignore") => {
+                    meta.token_tree().is_none()
+                        && (meta.eq_token().is_none()
+                            || matches!(meta.expr(), Some(ast::Expr::Literal(literal)) if literal.value().is_some_and(|token| token.kind() == SyntaxKind::STRING)))
+                }
+                _ => {
+                    meta.eq_token().is_none()
+                        && (meta.token_tree().is_none()
+                            || matches!(tokens.as_slice(),
+                [open, key, eq, value, close] if open.kind == T!['('] && key.text.as_str() == "expected" && eq.kind == T![=] && value.kind == SyntaxKind::STRING && close.kind == T![')']))
+                }
+            };
+        if !valid {
+            diagnostics.push(Diagnostic::new(
+                attr.syntax().text_range(),
+                format!("malformed `{}` attribute input", name.unwrap()),
+            ));
+        }
+        return;
+    }
     // Rust treats `macro_use` on an import as an unused attribute.
     if name == Some("macro_use")
         && bare_attr(attr)

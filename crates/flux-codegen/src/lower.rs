@@ -773,7 +773,7 @@ fn lower_inner(
     }
     let root = items.module_of(items.main_crate());
     let main = items.functions.iter().find(|(id, f)| {
-        f.name.as_str() == "main"
+        f.name.as_str() == items.entry_function_name(items.main_crate())
             && f.loc.module == root
             && !f.is_extern
             && f.owner.is_none()

@@ -168,7 +168,13 @@ type Result<T> = std::thread::Result<T>;
 pub use std::panic;
 pub use std::thread::panicking;
 mod sync {{ pub use std::sync::Mutex; }}
-use std::io;
+// This host oracle checks joining without installing Flux's print capture.
+mod io {{
+    pub use std::io::*;
+    type Capture = std::sync::Arc<std::sync::Mutex<Vec<u8>>>;
+    pub(crate) fn __output_capture() -> Option<Capture> {{ None }}
+    pub(crate) fn __set_output_capture(_: Option<Capture>) -> Option<Capture> {{ None }}
+}}
 // The worker's thread handle; this harness checks joining only.
 #[derive(Clone)]
 pub struct Thread;

@@ -220,7 +220,7 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
     })
 }
 
-pub(super) fn run(
+pub(crate) fn run(
     sources: &[SourceInput],
     root: usize,
     output: &Path,
@@ -294,9 +294,10 @@ pub(super) fn run(
     let mut done = BTreeSet::new();
     let mut running = 0;
     let mut failure = None;
+    let mut diagnosed = false;
     std::thread::scope(|scope| -> Result<(), String> {
         loop {
-            if failure.is_none() {
+            if failure.is_none() && !diagnosed {
                 for (&index, (path, _)) in &requests {
                     if running == jobs {
                         break;
@@ -341,7 +342,8 @@ pub(super) fn run(
                     done.insert(index);
                 }
                 Ok(false) => {
-                    failure.get_or_insert(format!("compilation of {} failed", sources[index].name));
+                    eprintln!("compilation of {} failed", sources[index].name);
+                    diagnosed = true;
                 }
                 Err(error) => {
                     failure.get_or_insert(error);
@@ -352,6 +354,9 @@ pub(super) fn run(
     })?;
     if let Some(error) = failure {
         return Err(error);
+    }
+    if diagnosed {
+        return Ok(ExitCode::FAILURE);
     }
     if done.len() != needed.len() {
         return Err("build units depend on each other in a cycle".into());

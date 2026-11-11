@@ -24,6 +24,26 @@ pub(crate) enum Command {
     GenerateLockfile(native::ResolveOptions),
     /// Prepare build scripts and host proc-macro artifacts.
     Prepare(Options),
+    /// Build and run native unit and integration test harnesses.
+    Test {
+        #[command(flatten)]
+        options: Options,
+        #[arg(short = 'r', long = "release")]
+        optimize: bool,
+        #[arg(long, conflicts_with = "optimize")]
+        fast_build: bool,
+        #[arg(long)]
+        no_run: bool,
+        #[arg(long, conflicts_with_all=["no_run","test_target","tests"])]
+        doc: bool,
+        #[arg(long = "test")]
+        test_target: Option<String>,
+        #[arg(long)]
+        tests: bool,
+        filter: Option<String>,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
     /// Build selected workspace libraries and binaries with Flux.
     Build {
         #[command(flatten)]
@@ -39,8 +59,20 @@ pub(crate) enum Command {
     },
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Clone)]
 pub(crate) struct Options {
+    #[arg(skip)]
+    pub(crate) test_mode: bool,
+    #[arg(skip)]
+    pub(crate) doc_mode: bool,
+    #[arg(skip)]
+    pub(crate) test_target: Option<String>,
+    #[arg(skip)]
+    pub(crate) tests_only: bool,
+    #[arg(skip)]
+    pub(crate) test_no_run: bool,
+    #[arg(skip)]
+    pub(crate) test_args: Vec<String>,
     #[arg(long, default_value = "Cargo.toml")]
     manifest_path: PathBuf,
     #[arg(short = 'p', long)]
@@ -198,6 +230,46 @@ struct Plan {
 }
 
 pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
+    if let Command::Test {
+        options,
+        optimize,
+        fast_build,
+        no_run,
+        doc,
+        test_target,
+        tests,
+        filter,
+        args,
+    } = command
+    {
+        let mut options = options.clone();
+        options.test_mode = true;
+        options.doc_mode = *doc;
+        if *doc {
+            options.lib = true;
+        }
+        options.test_no_run = *no_run;
+        options.test_args = args.clone();
+        options.test_target = test_target.clone();
+        options.tests_only = *tests || test_target.is_some();
+        if let Some(filter) = filter {
+            options.test_args.insert(0, filter.clone());
+        }
+        if options.cargo {
+            return Err("test targets currently require the native package pipeline".into());
+        }
+        return native::prepare(
+            &options,
+            Some(crate::BuildOptions {
+                panic_strategy: flux_syntax::PanicStrategy::Unwind,
+                optimize: *optimize,
+                fast_build: *fast_build,
+                timings: false,
+                debug_assertions: None,
+            }),
+        );
+    }
+
     if let Command::Package { command } = command {
         return crate::package::execute(command);
     }

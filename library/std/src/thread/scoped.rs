@@ -136,6 +136,7 @@ unsafe impl<T: Send> Send for Packet<T> {}
 unsafe impl<T: Send> Sync for Packet<T> {}
 
 struct Job<F, T> {
+    capture: Option<Arc<Mutex<Vec<u8>>>>,
     function: F,
     packet: Arc<Packet<T>>,
     thread: super::Thread,
@@ -145,6 +146,7 @@ extern "C" fn run<F: FnOnce() -> T, T>(argument: *mut u8) -> *mut u8 {
     // SAFETY: spawn transferred precisely one Box<Job<F, T>> to this callback.
     let job = unsafe { *Box::from_raw(argument as *mut Job<F, T>) };
     super::set_current(job.thread);
+    if job.capture.is_some() {crate::io::__set_output_capture(job.capture);}
     // No exception may cross pthread's C entry point. The catch consumes the
     // function once and restores this worker's panic state before publication.
     let value = crate::panic::catch_unwind(core::panic::AssertUnwindSafe(job.function));
@@ -230,6 +232,7 @@ fn start<F: FnOnce() -> T, T>(
         join: join.clone(),
     });
     let job = Box::new(Job {
+        capture: crate::io::__output_capture(),
         function: f,
         packet: packet.clone(),
         thread: thread.clone(),

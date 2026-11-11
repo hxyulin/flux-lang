@@ -354,3 +354,36 @@ with it, and what flux does.
 
 Describe the problem and the resulting behavior in your pull request, and
 list the checks you ran.
+
+## Native test harnesses
+
+On arm64 macOS, `flux test` builds unit and integration tests with Flux's own
+unwind runtime, then runs documentation examples. Test mode retains `#[test]`
+functions after macro expansion and enables `cfg(test)` only for the tested
+crate. Dependencies keep their ordinary configuration.
+
+```sh
+flux test --offline
+flux test --lib -- --test-threads 1
+flux test --test integration_name -- --list
+flux test --doc
+fluxc test path/to/source.rs --no-run -o test-program
+```
+
+The runner supports name filters, `--exact`, `--skip`, `--ignored`,
+`--include-ignored`, `--nocapture`, `--show-output`, and `--test-threads`.
+It captures print output per test, including output from spawned threads.
+`#[should_panic(expected = "text")]` checks the payload text. `Result` test
+returns use `Termination`. Test failures return status 101.
+
+Documentation tests support Rust fences, hidden setup lines, explicit main
+functions, `no_run`, `compile_fail`, `should_panic`, `ignore`, and edition flags.
+Discovery respects item configuration and reads literal `doc` attributes and
+`include_str!` documentation. Compilation failures satisfy `compile_fail` only
+when the compiler reports source diagnostics; internal compiler failures do not.
+
+This is a native runner, not an implementation of the unstable `test` crate API.
+Benchmarks, custom `harness = false` targets, and arbitrary documentation macros
+are not supported yet. Other targets still need backend unwind support.
+Rayon's complete unit-test build currently stops in libc on overflowing integer
+literals; the earlier adapted integration results do not qualify that unit suite.

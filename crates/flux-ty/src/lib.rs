@@ -505,7 +505,10 @@ pub fn check_main(items: &ItemTree, sigs: &Signatures) -> Option<Diagnostic> {
         });
     }
     let main = items.functions.iter().find(|(_, f)| {
-        f.name == sym::main && !f.is_extern && f.owner.is_none() && f.loc.module == root
+        f.name.as_str() == items.entry_function_name(krate)
+            && !f.is_extern
+            && f.owner.is_none()
+            && f.loc.module == root
     });
     let Some((id, function)) = main else {
         let name = items.crates[krate.0 as usize].name;

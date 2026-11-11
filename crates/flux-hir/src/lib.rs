@@ -22,8 +22,10 @@
 mod body;
 mod cfg;
 pub mod def_map;
+mod documentation;
 pub mod flib;
 mod inputs;
+pub use documentation::{Documentation, documentation};
 mod intrinsic;
 pub use inputs::TrackedInputs;
 pub use intrinsic::Intrinsic;

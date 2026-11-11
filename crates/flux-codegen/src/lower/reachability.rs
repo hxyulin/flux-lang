@@ -60,7 +60,7 @@ pub(super) fn executable(
     let krate = hir.items.main_crate();
     let mut reach = Reach::new(hir, sigs, mir, krate);
     for (id, f) in hir.items.functions.iter() {
-        if (f.name.as_str() == "main"
+        if (f.name.as_str() == hir.items.entry_function_name(hir.items.main_crate())
             && f.loc.module == hir.items.module_of(krate)
             && f.owner.is_none())
             || (!f.is_extern
@@ -105,6 +105,7 @@ struct Reach<'a> {
     callback_bounds: FxHashMap<TraitId, Vec<flux_ty::Predicate>>,
     callback_contexts: FxHashMap<TraitId, Vec<flux_ty::GenericArgs>>,
     growing_unknowns: FxHashMap<Ty, Ty>,
+    growing_embeddings: FxHashMap<(Ty, Ty), bool>,
     dropped: FxHashSet<StructId>,
     traits: FxHashSet<TraitId>,
     impls: FxHashSet<flux_hir::ImplId>,
@@ -148,6 +149,7 @@ impl<'a> Reach<'a> {
             callback_bounds: FxHashMap::default(),
             callback_contexts: FxHashMap::default(),
             growing_unknowns: FxHashMap::default(),
+            growing_embeddings: FxHashMap::default(),
             dropped: FxHashSet::default(),
             traits: FxHashSet::default(),
             impls: FxHashSet::default(),
@@ -508,7 +510,13 @@ impl<'a> Reach<'a> {
         // Recursive generic templates are legal before instantiation. Stop a
         // growing symbolic cycle; concrete mono still diagnoses invalid uses.
         if self.current.iter().any(|&(old, previous)| {
-            old == owner && growing_args_cached(previous, args, &mut self.growing_unknowns)
+            old == owner
+                && growing_args_cached(
+                    previous,
+                    args,
+                    &mut self.growing_unknowns,
+                    &mut self.growing_embeddings,
+                )
         }) {
             return;
         }
@@ -654,7 +662,13 @@ impl<'a> Reach<'a> {
                 .entry(bound.trait_ref.trait_)
                 .or_default();
             if contexts.iter().any(|&old| {
-                old == wanted || growing_args_cached(old, wanted, &mut self.growing_unknowns)
+                old == wanted
+                    || growing_args_cached(
+                        old,
+                        wanted,
+                        &mut self.growing_unknowns,
+                        &mut self.growing_embeddings,
+                    )
             }) {
                 continue;
             }
@@ -1350,13 +1364,19 @@ fn drop_parameters(
 
 #[cfg(test)]
 fn growing_args(previous: flux_ty::GenericArgs, next: flux_ty::GenericArgs) -> bool {
-    growing_args_cached(previous, next, &mut FxHashMap::default())
+    growing_args_cached(
+        previous,
+        next,
+        &mut FxHashMap::default(),
+        &mut FxHashMap::default(),
+    )
 }
 
 fn growing_args_cached(
     previous: flux_ty::GenericArgs,
     next: flux_ty::GenericArgs,
     memo: &mut FxHashMap<Ty, Ty>,
+    embeddings: &mut FxHashMap<(Ty, Ty), bool>,
 ) -> bool {
     fn unknowns(ty: Ty, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
         if let Some(&known) = memo.get(&ty) {
@@ -1374,7 +1394,8 @@ fn growing_args_cached(
         return false;
     }
     // Callback contexts repeatedly compare the same nested adapter types.
-    // Canonicalization depends only on Ty, so share its memo within this Reach.
+    // Canonicalization and embedding depend only on interned types. Reuse both
+    // caches within this Reach, including comparisons between different calls.
     let previous: Vec<_> = previous.iter().map(|&ty| unknowns(ty, memo)).collect();
     let next: Vec<_> = next.iter().map(|&ty| unknowns(ty, memo)).collect();
     // Changing equality relationships between parameters is not growth. Such
@@ -1383,12 +1404,16 @@ fn growing_args_cached(
         && previous
             .into_iter()
             .zip(next)
-            .all(|(left, right)| embeds(left, right))
+            .all(|(left, right)| embeds_cached(left, right, embeddings))
 }
 
 // Homeomorphic embedding detects growing template cycles without imposing a
 // monomorphization limit on a library's uninstantiated generic interfaces.
+#[cfg(test)]
 fn embeds(previous: Ty, next: Ty) -> bool {
+    embeds_cached(previous, next, &mut FxHashMap::default())
+}
+fn embeds_cached(previous: Ty, next: Ty, cache: &mut FxHashMap<(Ty, Ty), bool>) -> bool {
     fn visit(previous: Ty, next: Ty, cache: &mut FxHashMap<(Ty, Ty), bool>) -> bool {
         if previous == next {
             return true;
@@ -1435,7 +1460,7 @@ fn embeds(previous: Ty, next: Ty) -> bool {
         cache.insert((previous, next), result);
         result
     }
-    visit(previous, next, &mut FxHashMap::default())
+    visit(previous, next, cache)
 }
 
 #[cfg(test)]

@@ -10,6 +10,7 @@ mod backend_units;
 mod backend_workers;
 mod build;
 mod cargo;
+mod doctest;
 mod driver;
 mod flib_build;
 mod host_cache;

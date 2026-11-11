@@ -1,0 +1,85 @@
+mod __flux_test_runtime {
+    pub struct Test {
+        pub name: &'static str,
+        pub run: fn(),
+        pub ignored: bool,
+        pub expected: Option<Option<&'static str>>,
+    }
+    pub fn check_result<T: ::std::process::Termination>(result: T) {
+        ::core::assert!(result.report() == ::std::process::ExitCode::SUCCESS, "test returned a failure exit code");
+    }
+    fn execute(test: Test, nocapture: bool) -> (Test,bool,::std::string::String) {
+        let capture = ::std::sync::Arc::new(::std::sync::Mutex::new(::std::vec::Vec::new()));
+        let previous = if nocapture {None} else {::std::io::__set_output_capture(Some(capture.clone()))};
+        let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(||(test.run)()));
+        if !nocapture {::std::io::__set_output_capture(previous);}
+        let okay = match (result,test.expected) {
+            (Ok(()),None) => true,
+            (Err(_),Some(None)) => true,
+            (Err(payload),Some(Some(expected))) => {
+                if let Some(message)=payload.downcast_ref::<&str>() {message.contains(expected)}
+                else if let Some(message)=payload.downcast_ref::<::std::string::String>() {message.contains(expected)}
+                else {false}
+            }
+            _ => false,
+        };
+        let text = ::std::string::String::from_utf8_lossy(&capture.lock().unwrap()).into_owned();
+        (test,okay,text)
+    }
+    pub fn run(mut tests: ::std::vec::Vec<Test>) -> ::std::process::ExitCode {
+        tests.sort_by(|a,b| a.name.cmp(b.name));
+        let mut filters = ::std::vec::Vec::new();let mut skips = ::std::vec::Vec::new();
+        let mut exact = false; let mut list = false; let mut ignored_only = false; let mut include_ignored = false;
+        let mut nocapture = ::std::env::var("RUST_TEST_NOCAPTURE").is_ok_and(|v|v!="0"); let mut show_output = false;
+        let mut threads = ::std::env::var("RUST_TEST_THREADS").ok().and_then(|s|s.parse::<usize>().ok()).unwrap_or_else(||::std::thread::available_parallelism().map_or(1,|n|n.get()));
+        let mut args = ::std::env::args().skip(1);
+        while let Some(arg) = args.next() {
+            if let Some(value)=arg.strip_prefix("--test-threads=") {
+                threads=match value.parse::<usize>().ok().filter(|n|*n>0) {Some(n)=>n,None=>{::std::eprintln!("error: --test-threads requires a positive integer");return ::std::process::ExitCode::from(2);}};continue;
+            }
+            match arg.as_str() {
+                "--list" => list = true,
+                "--exact" => exact = true,
+                "--ignored" => ignored_only = true,
+                "--include-ignored" => include_ignored = true,
+                "--skip" => match args.next() { Some(value) => skips.push(value), None => {::std::eprintln!("error: --skip requires a value"); return ::std::process::ExitCode::from(2);} },
+                "--test-threads" => {threads=match args.next().and_then(|v|v.parse::<usize>().ok()).filter(|n|*n>0) {Some(n)=>n,None=>{::std::eprintln!("error: --test-threads requires a positive integer");return ::std::process::ExitCode::from(2);}};},
+                "--nocapture" | "--no-capture" => nocapture=true,
+                "--show-output" => show_output=true,
+                "--quiet" | "-q" => {},
+                value if value.starts_with('-') => {::std::eprintln!("error: unsupported test option: {value}");return ::std::process::ExitCode::from(2);},
+                _ => filters.push(arg),
+            }
+        }
+        if threads==0 {::std::eprintln!("error: RUST_TEST_THREADS must be positive");return ::std::process::ExitCode::from(2);}
+        let total = tests.len();
+        tests.retain(|test| (filters.is_empty() || filters.iter().any(|filter| if exact {test.name == filter.as_str()} else {test.name.contains(filter.as_str())})) && !skips.iter().any(|skip| if exact {test.name == skip.as_str()} else {test.name.contains(skip.as_str())}) && (!ignored_only || test.ignored));
+        if list {for test in &tests {::std::println!("{}: test",test.name);} ::std::println!("\n{} tests, 0 benchmarks",tests.len());return ::std::process::ExitCode::SUCCESS;}
+        ::std::println!("\nrunning {} tests",tests.len());
+        let filtered = total-tests.len();let mut passed=0;let mut failed=0;let mut ignored=0;let mut successes=::std::vec::Vec::new();let mut failures=::std::vec::Vec::new();
+        let mut tests=tests.into_iter();
+        loop {
+            let mut workers=::std::vec::Vec::new();
+            for _ in 0..threads {
+                let Some(test)=tests.next() else {break;};
+                if test.ignored && !include_ignored && !ignored_only {ignored+=1;::std::println!("test {} ... ignored",test.name);continue;}
+                workers.push(::std::thread::Builder::new().name(::std::string::String::from(test.name)).spawn(move||execute(test,nocapture)).expect("could not spawn test thread"));
+            }
+            if workers.is_empty() {
+                // A window can contain only ignored cases. Keep draining it.
+                if tests.len()==0 {break;} else {continue;}
+            }
+            for worker in workers {
+                let (test,okay,text)=worker.join().expect("test runner panicked");
+                if okay {passed+=1;::std::println!("test {} ... ok",test.name);if show_output {successes.push((test.name,text));}} else {failed+=1;::std::println!("test {} ... FAILED",test.name);failures.push((test.name,text));}
+            }
+        }
+        if !successes.is_empty() {::std::println!("\nsuccesses:");for (name,text) in successes {::std::println!("---- {name} stdout ----\n{text}");}}
+        if !failures.is_empty() {::std::println!("\nfailures:");for (name,text) in &failures {::std::println!("---- {name} stdout ----\n{text}");}::std::println!("failures:");for (name,_) in &failures {::std::println!("    {name}");}}
+        ::std::println!("\ntest result: {}. {} passed; {} failed; {} ignored; 0 measured; {} filtered out",if failed==0 {"ok"} else {"FAILED"},passed,failed,ignored,filtered);
+        if failed==0 {::std::process::ExitCode::SUCCESS} else {::std::process::ExitCode::from(101)}
+    }
+}
+fn __flux_test_main() -> ::std::process::ExitCode {
+    let mut tests=::std::vec::Vec::new();__flux_collect_tests(&mut tests);__flux_test_runtime::run(tests)
+}

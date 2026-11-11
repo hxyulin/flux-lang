@@ -62,6 +62,7 @@ pub(super) fn run(
     };
     // Build scripts and the target graph follow the Cargo profile: `release`
     // with `--release`, `dev` otherwise. An explicit setting overrides it.
+    let command_options = options;
     let optimize = build.is_some_and(|b| b.optimized());
     let debug_assertions = match build.and_then(|b| b.debug_assertions) {
         Some(enabled) => enabled,
@@ -70,8 +71,11 @@ pub(super) fn run(
             optimize,
         )?,
     };
-    let panic_strategy =
-        crate::cargo::profile_panic_strategy(&plan.workspace_root.join("Cargo.toml"), optimize)?;
+    let panic_strategy = if options.test_mode {
+        flux_syntax::PanicStrategy::Unwind
+    } else {
+        crate::cargo::profile_panic_strategy(&plan.workspace_root.join("Cargo.toml"), optimize)?
+    };
     if build.is_some() {
         crate::builtins::initialize_for_strategy(panic_strategy)?;
     }
@@ -227,7 +231,7 @@ pub(super) fn run(
                     start.elapsed()
                 );
             }
-            compile_plan(&prepared, options, jobs)
+            compile_plan(&prepared, options, jobs, command_options)
         }
         None => Ok(ExitCode::SUCCESS),
     }
@@ -879,7 +883,7 @@ fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<Str
         "CARGO_PKG_AUTHORS".into(),
         super::strings(manifest.fields.get("authors"))?.join(":"),
     );
-    if target.kind == "bin" {
+    if matches!(target.kind.as_str(), "bin" | "test-bin") {
         env.insert("CARGO_BIN_NAME".into(), target.name.clone());
     }
     Ok(env)
@@ -1059,14 +1063,40 @@ fn compile_plan(
     prepared: &Prepared,
     options: crate::BuildOptions,
     jobs: usize,
+    cli: &super::Options,
 ) -> Result<ExitCode> {
+    let mut failed = false;
     for &root in &prepared.plan.root_units {
         let status = compile_root(prepared, root, options, jobs)?;
         if status != ExitCode::SUCCESS {
             return Ok(status);
         }
+        if cli.test_mode
+            && prepared.plan.units[root].target.kind.starts_with("test")
+            && !cli.test_no_run
+        {
+            let output = prepared
+                .plan
+                .workspace_root
+                .join("target/flux")
+                .join(options.profile_name())
+                .join(format!(
+                    "{}-{}",
+                    prepared.plan.units[root].target.kind, prepared.plan.units[root].target.name
+                ));
+            let status = Command::new(output)
+                .args(&cli.test_args)
+                .current_dir(package_directory(&prepared.plan, root)?)
+                .status()
+                .map_err(|e| e.to_string())?;
+            failed |= !status.success();
+        }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(if failed {
+        ExitCode::from(101)
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 fn compile_root(
@@ -1090,6 +1120,7 @@ fn compile_root(
     let mut indices = BTreeMap::new();
     let mut native = flux_codegen::NativeLink::default();
     let mut macro_server = None;
+    let mut doc_dependencies = None;
     for (id, unit) in plan.units.iter().enumerate() {
         if !needed.contains(&id) {
             continue;
@@ -1154,6 +1185,10 @@ fn compile_root(
                 })
                 .collect::<Result<Vec<_>>>()?
         };
+        if unit.target.kind == "doctest" {
+            doc_dependencies = Some(dependencies);
+            continue;
+        }
         let file = if macros.is_some() {
             prepared.outputs[id]
                 .artifact
@@ -1175,10 +1210,60 @@ fn compile_root(
             environment: Some(env),
         });
     }
+    if let Some(dependencies) = doc_dependencies {
+        let binary = &plan.units[root_unit];
+        let root = dependencies
+            .iter()
+            .find_map(|(_, index)| (sources[*index].file == binary.target.root).then_some(*index))
+            .ok_or("missing doctest library")?;
+        let output = plan
+            .workspace_root
+            .join("target/flux")
+            .join(options.profile_name())
+            .join(format!("lib{}.flib", sources[root].name));
+        std::fs::create_dir_all(output.parent().ok_or("doctest output has no parent")?)
+            .map_err(|e| e.to_string())?;
+        let status = super::build::run(&sources, root, &output, options, jobs, true, &native)?;
+        if status != ExitCode::SUCCESS {
+            return Ok(status);
+        }
+        // A dependency error must never satisfy an example's compile_fail flag.
+        // Check every direct doctest dependency before interpreting examples.
+        for (alias, index) in &dependencies {
+            if *index == root {
+                continue;
+            }
+            let checked = output.with_file_name(format!("lib{alias}-doctest-dependency.flib"));
+            let status =
+                super::build::run(&sources, *index, &checked, options, jobs, true, &native)?;
+            if status != ExitCode::SUCCESS {
+                return Ok(status);
+            }
+        }
+        return crate::doctest::run(
+            &sources,
+            root,
+            &dependencies,
+            &output,
+            options,
+            jobs,
+            &native,
+        );
+    }
     let root = *indices.get(&root_unit).ok_or("missing root unit")?;
     // Link arguments apply to the package's own binaries only.
     let binary = &plan.units[root_unit];
-    let library = binary.target.kind != "bin";
+    let test = binary.target.kind.starts_with("test");
+    if test {
+        sources[root].cfg.names.extend([
+            flux_intern::Symbol::intern("test"),
+            flux_intern::Symbol::intern("__flux_test_harness"),
+        ]);
+    }
+    let library = !matches!(
+        binary.target.kind.as_str(),
+        "bin" | "test" | "test-lib" | "test-bin"
+    );
     if let Some(script) = (binary.build_script).and_then(|i| prepared.outputs[i].script.as_ref()) {
         let arguments: Vec<String> = (script.link_args.iter())
             .filter(|(name, _)| name.as_ref().is_none_or(|n| *n == binary.target.name))
@@ -1192,6 +1277,8 @@ fn compile_root(
         .join(options.profile_name())
         .join(if library {
             format!("lib{}.flib", binary.target.name.replace('-', "_"))
+        } else if test {
+            format!("{}-{}", binary.target.kind, binary.target.name)
         } else {
             binary.target.name.clone()
         });

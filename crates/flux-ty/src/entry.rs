@@ -22,10 +22,11 @@ pub fn termination_trait(items: &ItemTree) -> Option<TraitId> {
 /// The ordinary generic std adapter responsible for reporting a main result.
 pub fn main_runner(items: &ItemTree, sigs: &crate::Signatures) -> Option<FunctionId> {
     let root = items.module_of(items.main_crate());
-    let (id, _) = items
-        .functions
-        .iter()
-        .find(|(_, f)| f.name.as_str() == "main" && f.loc.module == root && f.owner.is_none())?;
+    let (id, _) = items.functions.iter().find(|(_, f)| {
+        f.name.as_str() == items.entry_function_name(items.main_crate())
+            && f.loc.module == root
+            && f.owner.is_none()
+    })?;
     if [crate::Ty::UNIT, crate::Ty::NEVER, crate::Ty::ERROR].contains(&sigs[id].ret) {
         return None;
     }

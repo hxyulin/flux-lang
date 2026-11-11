@@ -754,3 +754,27 @@ pub fn read_to_string<R: Read>(mut reader: R) -> Result<String> {
 pub mod prelude {
     pub use super::{BufRead, Read, Seek, Write};
 }
+
+// Test capture stays in std; core's print macros call a typed bridge only when
+// it is installed. Ordinary printing never allocates thread-local capture state.
+static CAPTURE_USED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+crate::thread_local! {
+    static OUTPUT_CAPTURE: core::cell::RefCell<Option<crate::sync::Arc<crate::sync::Mutex<Vec<u8>>>>> = core::cell::RefCell::new(None);
+}
+#[doc(hidden)]
+pub fn __output_capture() -> Option<crate::sync::Arc<crate::sync::Mutex<Vec<u8>>>> {
+    if !CAPTURE_USED.load(core::sync::atomic::Ordering::Relaxed) {return None;}
+    OUTPUT_CAPTURE.try_with(|cell| cell.try_borrow().ok().and_then(|capture| capture.clone())).ok().flatten()
+}
+fn capture_print(args: core::fmt::Arguments<'_>) -> bool {
+    let Some(capture) = __output_capture() else {return false;};
+    let text = crate::fmt::format(args);
+    capture.lock().unwrap_or_else(|error|error.into_inner()).extend_from_slice(text.as_bytes());
+    true
+}
+#[doc(hidden)]
+pub fn __set_output_capture(capture: Option<crate::sync::Arc<crate::sync::Mutex<Vec<u8>>>>) -> Option<crate::sync::Arc<crate::sync::Mutex<Vec<u8>>>> {
+    CAPTURE_USED.store(true,core::sync::atomic::Ordering::Relaxed);
+    core::io::__set_capture_hook(capture_print);
+    OUTPUT_CAPTURE.with(|cell| cell.replace(capture))
+}

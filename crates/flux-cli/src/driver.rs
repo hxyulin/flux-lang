@@ -23,6 +23,18 @@ enum Command {
         #[command(subcommand)]
         command: cargo::Command,
     },
+    /// Compile and run a native test harness.
+    Test {
+        file: PathBuf,
+        #[arg(long)]
+        no_run: bool,
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        #[command(flatten)]
+        options: BuildArgs,
+        #[arg(last = true)]
+        args: Vec<String>,
+    },
     /// Print native compiler configuration.
     Print {
         #[arg(value_enum)]
@@ -276,6 +288,63 @@ pub fn compiler_main() -> ExitCode {
             }
         };
     }
+    if let Command::Test {
+        file,
+        no_run,
+        output,
+        options,
+        args,
+    } = &cli.command
+    {
+        if options
+            .codegen
+            .options
+            .iter()
+            .any(|option| matches!(option, CodegenOption::Panic(PanicStrategy::Abort)))
+        {
+            eprintln!("error: native test harnesses require panic=unwind");
+            return ExitCode::from(2);
+        }
+        let mut options = options.resolve();
+        options.panic_strategy = PanicStrategy::Unwind;
+        let result = (|| {
+            crate::builtins::initialize_for_strategy(options.panic_strategy)?;
+            let output = output
+                .clone()
+                .unwrap_or_else(|| file.with_extension("test"));
+            let mut source = build::SourceInput::standalone(file, &build::crate_name(file));
+            source.cfg.names.extend([
+                flux_intern::Symbol::intern("test"),
+                flux_intern::Symbol::intern("__flux_test_harness"),
+            ]);
+            if !build::compile(build::CompileRequest {
+                file,
+                crate_name: &source.name.clone(),
+                output: &output,
+                options,
+                sources: &[source],
+                native: Default::default(),
+            })? {
+                return Ok(ExitCode::FAILURE);
+            }
+            if *no_run {
+                return Ok(ExitCode::SUCCESS);
+            }
+            let output = std::fs::canonicalize(output).map_err(|e| e.to_string())?;
+            let status = std::process::Command::new(output)
+                .args(args)
+                .status()
+                .map_err(|e| e.to_string())?;
+            Ok::<_, String>(ExitCode::from(build::exit_code(status)))
+        })();
+        return match result {
+            Ok(code) => code,
+            Err(message) => {
+                eprintln!("error: {message}");
+                ExitCode::from(2)
+            }
+        };
+    }
     if let Command::PackageDriver { command } = &cli.command {
         return execute_package(command);
     }
@@ -462,7 +531,10 @@ fn run(command: Command) -> Result<bool, String> {
                 })
             }
         }
-        Command::Print { .. } | Command::PackageDriver { .. } | Command::Run { .. } => {
+        Command::Test { .. }
+        | Command::Print { .. }
+        | Command::PackageDriver { .. }
+        | Command::Run { .. } => {
             unreachable!("handled in main")
         }
         Command::Check { files } => {
