@@ -5268,7 +5268,23 @@ impl<'a> Cx<'a> {
                         TyKind::FnDef(def) => {
                             callable_principal_checked = true;
                             let regions = self.sigs.regions.fns.get(def.function);
-                            if !regions.is_some_and(|r| {
+                            if let Some(signature) = d.callable_signature()
+                                && d.assoc_tys.iter().any(|&t| self.slots(t) != 0)
+                            {
+                                let offset = usize::from(matches!(
+                                    to.kind(),
+                                    TyKind::Ref(..) | TyKind::RawPtr(..)
+                                )) + 1;
+                                let own = &dest_vars[offset..];
+                                self.pointer_from_item(
+                                    def.function,
+                                    def.args,
+                                    signature,
+                                    own,
+                                    None,
+                                    range,
+                                );
+                            } else if !regions.is_some_and(|r| {
                                 r.owner == 0
                                     && r.callback_binder
                                         == flux_ty::regions::CallbackBinder::Independent
@@ -5802,8 +5818,11 @@ impl<'a> Cx<'a> {
         let (items, sigs) = (self.items, self.sigs);
         if crate::fn_method_kind(items, func).is_some()
             && let Some(&self_ty) = generic_args.first()
-            && let TyKind::FnPtr(sig) = self_ty.kind()
-            && sig.regions.is_some()
+            && let Some((sig, object)) = match self_ty.kind() {
+                TyKind::FnPtr(sig) if sig.regions.is_some() => Some((sig, false)),
+                TyKind::Dynamic(object) => object.callable_signature().map(|sig| (sig, true)),
+                _ => None,
+            }
         {
             let Some(receiver) = args.first() else {
                 return;
@@ -5815,6 +5834,14 @@ impl<'a> Cx<'a> {
                 }
                 own.remove(0);
                 ty = inner;
+            }
+            if object {
+                // The payload lifetime belongs to the object, not its callable
+                // signature's free region captures.
+                if own.is_empty() {
+                    return;
+                }
+                own.remove(0);
             }
             let (tuple, flat) = args
                 .get(1)

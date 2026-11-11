@@ -773,7 +773,10 @@ supported with represented auto-trait bounds.
 Callable objects retain a relative input/output region recipe when their inputs
 contain nested references or captured lifetimes. Bound input lifetimes stay
 separate from captures, including static aliases and repeated borrowed tuple
-inputs. Owned nested object inputs such as `Box<dyn Any + Send>` are represented.
+inputs. Direct calls preserve borrowed output links to those inputs and captures.
+Function-item conversions check those output links against the object signature.
+Generic forwarding of borrowed callable-object outputs remains unsupported.
+Owned nested object inputs such as `Box<dyn Any + Send>` are represented.
 A trait's crate may
 write inherent `impl dyn Tr` blocks (E0116 elsewhere), whose methods
 trait objects of it have.
@@ -1530,6 +1533,8 @@ they fix the trait's lifetimes in the callee for that call. A wrong count
 of lifetime arguments is E0107. Lifetime arguments on functions and methods
 themselves (`f::<'a>()`), on associated constants' types, in patterns, in
 function item values, and named ones in constant-owned closures are not supported yet.
+Function-pointer casts retain named enclosing lifetimes through their input and
+output rows, including casts inside function-owned closures.
 Raw-pointer casts retain written nested reference lifetimes. A raw-to-raw cast
 may change them, while a reference-to-raw conversion still owes its pointee's
 outlives constraints, including when both erased pointer types are equal.

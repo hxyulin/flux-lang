@@ -3397,10 +3397,15 @@ impl Ctx<'_> {
                     None => {
                         // Function items of different functions coerce to
                         // their pointer type, as in rustc.
-                        let types: Vec<(ExprId, Ty)> = self.body.lists[*elements]
-                            .iter()
-                            .map(|&e| (e, self.infer_expr(e)))
-                            .collect();
+                        let mut types: Vec<(ExprId, Ty)> = Vec::new();
+                        for &element in self.body.lists[*elements].iter() {
+                            // Earlier elements supply coercion context to later
+                            // constructors, including tuple fields like Some(&T).
+                            if let Some(&(_, first)) = types.first() {
+                                self.expect(element, first);
+                            }
+                            types.push((element, self.infer_expr(element)));
+                        }
                         if let Some(ptr) = self.fn_lub(&types) {
                             return Ty::array(ptr, elements.len() as u64);
                         }
@@ -3718,8 +3723,11 @@ impl Ctx<'_> {
                 *is_move,
             ),
             Expr::Cast { expr, ty } => {
-                let raw = matches!(body.types[*ty], flux_hir::TypeRef::Ptr { .. });
-                let to = self.resolve_body_type(*ty, raw, false);
+                let annotated = matches!(
+                    body.types[*ty],
+                    flux_hir::TypeRef::Ptr { .. } | flux_hir::TypeRef::FnPtr { .. }
+                );
+                let to = self.resolve_body_type(*ty, annotated, false);
                 let from = self.infer_expr(*expr);
                 // As in rustc, an unsuffixed literal cast to an integer type
                 // has that type: `300 as u8` is out of range, not 44.
@@ -7185,7 +7193,10 @@ impl Ctx<'_> {
         let mut expr_regions = self.constructor_regions(&calls);
         for (expr, data) in self.body.exprs.iter() {
             if let Expr::Cast { ty: written, .. } = data
-                && matches!(self.body.types[*written], flux_hir::TypeRef::Ptr { .. })
+                && matches!(
+                    self.body.types[*written],
+                    flux_hir::TypeRef::Ptr { .. } | flux_hir::TypeRef::FnPtr { .. }
+                )
                 && let Some(&ty) = self.expr_types.get(expr)
                 && let Some(regions) = self.written_type_regions(*written, ty)
                 && regions.iter().any(|r| *r != crate::regions::Region::Erased)
