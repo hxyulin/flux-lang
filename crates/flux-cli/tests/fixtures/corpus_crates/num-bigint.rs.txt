@@ -1,0 +1,16 @@
+use num_bigint::{BigInt,BigUint};
+fn main(){
+ let one=BigUint::from(1u32);
+ let root=(&one<<600usize)+17u32;
+ let cube=root.pow(3);assert_eq!(cube.cbrt(),root);
+ assert_eq!(root.pow(2).sqrt(),root);assert_eq!(root.pow(5).nth_root(5),root);
+ let scale=&one<<20000usize;let offset=BigUint::from(12345u32);
+ let product=(&scale+&offset)*(&scale-&offset);
+ assert_eq!(product,(&one<<40000usize)-offset.pow(2));
+ let n=BigInt::from(-123456789i64);let x=(&n+31)*2-&n;
+ assert_eq!(x,BigInt::from(-123456727i64));
+ assert_eq!(BigUint::from(7u32).modpow(&BigUint::from(20u32),&BigUint::from(13u32)),BigUint::from(3u32));
+ let parsed=BigUint::parse_bytes(b"123456789012345678901234567890",10).unwrap();
+ assert_eq!(parsed.to_string(),"123456789012345678901234567890");
+ println!("{} {} {}",cube.bits(),product.bits(),x);
+}

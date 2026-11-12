@@ -263,3 +263,21 @@ fn time_default_graph_matches_rustc() {
         include_str!("fixtures/corpus_crates/time.rs.txt"),
     );
 }
+
+#[test]
+fn num_bigint_default_graph_matches_rustc() {
+    compare_registry(
+        "num-bigint",
+        "0.4.8",
+        include_str!("fixtures/corpus_crates/num-bigint.rs.txt"),
+    );
+}
+#[test]
+fn num_rational_default_graph_matches_rustc() {
+    compare_registry_dependencies(
+        "num-rational",
+        "0.4.2",
+        include_str!("fixtures/corpus_crates/num-rational.rs.txt"),
+        &[("num-bigint", "0.4.8")],
+    );
+}

@@ -1254,3 +1254,28 @@ struct Timestamp{seconds:Seconds}
         false,
     );
 }
+
+#[test]
+fn deferred_operator_inputs_remain_constrained() {
+    compare(
+        "operator_unknown_input",
+        "fn f(){let x=Default::default();let _=x+1;}",
+        false,
+    );
+    compare("operator_missing_bound", "fn f<T>(x:T){let _=x+1;}", false);
+    compare(
+        "operator_wrong_rhs",
+        "struct S;impl std::ops::Add for S{type Output=S;fn add(self,_:S)->S{S}}fn f(){let _=S+1u32;}",
+        false,
+    );
+    compare(
+        "operator_wrong_result",
+        "fn f(){let x=Default::default();let y=x+1;let _:u8=x;let _:u16=y;}",
+        false,
+    );
+    compare(
+        "operator_later_primitive",
+        "fn f(){let x=Default::default();let y=x+1;let _:i32=x;let _:i32=y;}",
+        true,
+    );
+}

@@ -6464,7 +6464,9 @@ impl Ctx<'_> {
     ) -> Option<Ty> {
         let operand = self.shallow(lhs);
         // Tuples compare through `core`'s impls (`()` built in), and
-        // have no others, reported as for structs.
+        // have no others, reported as for structs. An unresolved associated
+        // output also needs a trait goal: builtin operand coercion would bind
+        // it before the producing operator has selected its implementation.
         let overloadable = matches!(
             operand.kind(),
             TyKind::Adt(..)
@@ -6477,7 +6479,7 @@ impl Ctx<'_> {
                 | TyKind::Str
                 | TyKind::CStr
                 | TyKind::Tuple([_, ..])
-        );
+        ) || matches!(operand.kind(), TyKind::Infer(var) if !self.unknown(var).0 && !self.float_var(var));
         let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
         if let BinaryOp::Cmp(_) = op
             && let Some(message) = self.cmp_ref_error(op, operand, rhs_ty)
