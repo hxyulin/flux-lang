@@ -138,6 +138,9 @@ impl<K, V, S> HashMap<K, V, S> {
     fn rehash(&mut self, size: usize) {
         let mut next = Vec::with_capacity(size);
         next.resize_with(size, || Bucket::Empty);
+        self.replace_buckets(next);
+    }
+    fn replace_buckets(&mut self, next: Vec<Bucket<K, V>>) {
         let old = core::mem::replace(&mut self.buckets, next);
         self.deleted = 0;
         for bucket in old {
@@ -146,6 +149,33 @@ impl<K, V, S> HashMap<K, V, S> {
                 self.buckets[index] = Bucket::Full(hash, key, value);
             }
         }
+    }
+    pub fn try_reserve(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), crate::alloc_crate::collections::TryReserveError> {
+        fn overflow() -> crate::alloc_crate::collections::TryReserveError {
+            // Obtain the standard capacity error without exposing alloc's private constructors.
+            Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err()
+        }
+        let required = self.len.checked_add(additional).ok_or_else(overflow)?;
+        let mut size = self.buckets.len().max(8);
+        while size / 4 * 3 < required {
+            size = size.checked_mul(2).ok_or_else(overflow)?;
+        }
+        if size != self.buckets.len()
+            || self
+                .len
+                .saturating_add(self.deleted)
+                .saturating_add(additional)
+                > size / 4 * 3
+        {
+            let mut next = Vec::new();
+            next.try_reserve_exact(size)?;
+            next.resize_with(size, || Bucket::Empty);
+            self.replace_buckets(next);
+        }
+        Ok(())
     }
     pub fn reserve(&mut self, additional: usize) {
         let required = self.len.checked_add(additional).expect("capacity overflow");
@@ -158,15 +188,12 @@ impl<K, V, S> HashMap<K, V, S> {
         }
     }
     fn insert_vacant(&mut self, index: usize, hash: u64, key: K, value: V) -> &mut V {
-        if matches!(self.buckets[index], Bucket::Deleted) {
-            self.deleted -= 1;
+        EntryTable {
+            buckets: &mut self.buckets,
+            len: &mut self.len,
+            deleted: &mut self.deleted,
         }
-        self.buckets[index] = Bucket::Full(hash, key, value);
-        self.len += 1;
-        match &mut self.buckets[index] {
-            Bucket::Full(_, _, value) => value,
-            _ => unreachable!(),
-        }
+        .insert(index, hash, key, value)
     }
 }
 
@@ -263,15 +290,26 @@ impl<K: Eq + Hash, V, S: BuildHasher> HashMap<K, V, S> {
             _ => unreachable!(),
         }
     }
-    pub fn entry(&mut self, key: K) -> Entry<'_, K, V, S> {
+    pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
         let hash = self.hash_builder.hash_one(&key);
         if let Some(index) = self.find(hash, &key) {
-            Entry::Occupied(OccupiedEntry { map: self, index })
+            Entry::Occupied(OccupiedEntry {
+                table: EntryTable {
+                    buckets: &mut self.buckets,
+                    len: &mut self.len,
+                    deleted: &mut self.deleted,
+                },
+                index,
+            })
         } else {
             self.reserve(1);
             let index = self.vacant(hash);
             Entry::Vacant(VacantEntry {
-                map: self,
+                table: EntryTable {
+                    buckets: &mut self.buckets,
+                    len: &mut self.len,
+                    deleted: &mut self.deleted,
+                },
                 index,
                 hash,
                 key,
@@ -317,21 +355,41 @@ impl<K: Eq + Hash + Borrow<Q>, V, S: BuildHasher, Q: ?Sized + Eq + Hash> Index<&
     }
 }
 
-pub enum Entry<'a, K, V, S> {
-    Occupied(OccupiedEntry<'a, K, V, S>),
-    Vacant(VacantEntry<'a, K, V, S>),
+// Entry operations do not use the hasher. Borrow only table storage and
+// counters so the public entry types are independent of HashMap's S.
+struct EntryTable<'a, K, V> {
+    buckets: &'a mut Vec<Bucket<K, V>>,
+    len: &'a mut usize,
+    deleted: &'a mut usize,
 }
-pub struct OccupiedEntry<'a, K, V, S> {
-    map: &'a mut HashMap<K, V, S>,
+impl<'a, K, V> EntryTable<'a, K, V> {
+    fn insert(self, index: usize, hash: u64, key: K, value: V) -> &'a mut V {
+        if matches!(self.buckets[index], Bucket::Deleted) {
+            *self.deleted -= 1;
+        }
+        self.buckets[index] = Bucket::Full(hash, key, value);
+        *self.len += 1;
+        match &mut self.buckets[index] {
+            Bucket::Full(_, _, value) => value,
+            _ => unreachable!(),
+        }
+    }
+}
+pub enum Entry<'a, K, V> {
+    Occupied(OccupiedEntry<'a, K, V>),
+    Vacant(VacantEntry<'a, K, V>),
+}
+pub struct OccupiedEntry<'a, K, V> {
+    table: EntryTable<'a, K, V>,
     index: usize,
 }
-pub struct VacantEntry<'a, K, V, S> {
-    map: &'a mut HashMap<K, V, S>,
+pub struct VacantEntry<'a, K, V> {
+    table: EntryTable<'a, K, V>,
     index: usize,
     hash: u64,
     key: K,
 }
-impl<'a, K, V, S> Entry<'a, K, V, S> {
+impl<'a, K, V> Entry<'a, K, V> {
     pub fn or_insert(self, default: V) -> &'a mut V {
         match self {
             Self::Occupied(entry) => entry.into_mut(),
@@ -363,27 +421,27 @@ impl<'a, K, V, S> Entry<'a, K, V, S> {
         }
     }
 }
-impl<'a, K, V, S> OccupiedEntry<'a, K, V, S> {
+impl<'a, K, V> OccupiedEntry<'a, K, V> {
     pub fn key(&self) -> &K {
-        match &self.map.buckets[self.index] {
+        match &self.table.buckets[self.index] {
             Bucket::Full(_, key, _) => key,
             _ => unreachable!(),
         }
     }
     pub fn get(&self) -> &V {
-        match &self.map.buckets[self.index] {
+        match &self.table.buckets[self.index] {
             Bucket::Full(_, _, value) => value,
             _ => unreachable!(),
         }
     }
     pub fn get_mut(&mut self) -> &mut V {
-        match &mut self.map.buckets[self.index] {
+        match &mut self.table.buckets[self.index] {
             Bucket::Full(_, _, value) => value,
             _ => unreachable!(),
         }
     }
     pub fn into_mut(self) -> &'a mut V {
-        match &mut self.map.buckets[self.index] {
+        match &mut self.table.buckets[self.index] {
             Bucket::Full(_, _, value) => value,
             _ => unreachable!(),
         }
@@ -392,9 +450,9 @@ impl<'a, K, V, S> OccupiedEntry<'a, K, V, S> {
         core::mem::replace(self.get_mut(), value)
     }
     pub fn remove_entry(self) -> (K, V) {
-        self.map.len -= 1;
-        self.map.deleted += 1;
-        match core::mem::replace(&mut self.map.buckets[self.index], Bucket::Deleted) {
+        *self.table.len -= 1;
+        *self.table.deleted += 1;
+        match core::mem::replace(&mut self.table.buckets[self.index], Bucket::Deleted) {
             Bucket::Full(_, key, value) => (key, value),
             _ => unreachable!(),
         }
@@ -403,7 +461,7 @@ impl<'a, K, V, S> OccupiedEntry<'a, K, V, S> {
         self.remove_entry().1
     }
 }
-impl<'a, K, V, S> VacantEntry<'a, K, V, S> {
+impl<'a, K, V> VacantEntry<'a, K, V> {
     pub fn key(&self) -> &K {
         &self.key
     }
@@ -411,8 +469,7 @@ impl<'a, K, V, S> VacantEntry<'a, K, V, S> {
         self.key
     }
     pub fn insert(self, value: V) -> &'a mut V {
-        self.map
-            .insert_vacant(self.index, self.hash, self.key, value)
+        self.table.insert(self.index, self.hash, self.key, value)
     }
 }
 
@@ -619,5 +676,57 @@ impl<'a, K: 'a + Copy + Eq + Hash, V: 'a + Copy, S: BuildHasher> Extend<(&'a K, 
         for (&key, &value) in iter {
             self.insert(key, value);
         }
+    }
+}
+
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for Entry<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Occupied(entry) => f.debug_tuple("Entry").field(entry).finish(),
+            Self::Vacant(entry) => f.debug_tuple("Entry").field(entry).finish(),
+        }
+    }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for OccupiedEntry<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OccupiedEntry")
+            .field("key", self.key())
+            .field("value", self.get())
+            .finish_non_exhaustive()
+    }
+}
+impl<K: core::fmt::Debug, V> core::fmt::Debug for VacantEntry<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("VacantEntry").field(self.key()).finish()
+    }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for Iter<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.clone()).finish()
+    }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for IterMut<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list()
+            .entries(self.inner.as_slice().iter().filter_map(|b| match b {
+                Bucket::Full(_, k, v) => Some((k, v)),
+                _ => None,
+            }))
+            .finish()
+    }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for IntoIter<K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list()
+            .entries(self.inner.as_slice().iter().filter_map(|b| match b {
+                Bucket::Full(_, k, v) => Some((k, v)),
+                _ => None,
+            }))
+            .finish()
+    }
+}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for Drain<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&self.inner, f)
     }
 }

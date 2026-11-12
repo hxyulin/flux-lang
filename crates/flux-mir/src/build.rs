@@ -4747,24 +4747,28 @@ impl Builder<'_> {
                 // A unit variant's path is its discriminant, as in rustc,
                 // which needs the value of that variant's discriminant only;
                 // other values of a fieldless enum are cast through it.
-                let operand =
-                    if let Expr::Path(Res::Variant(strukt, variant)) = self.body.exprs[*inner] {
-                        self.variant_discriminant(strukt, variant, range)
-                    } else if matches!(self.expr_ty(*inner).kind(), TyKind::Adt(..)) {
-                        // The cast takes the value: moves it unless it is `Copy`.
-                        let mut place = self.lower_place(*inner);
-                        if let Operand::Move(_) = self.read(place.clone()) {
-                            let value = self.temp(self.expr_ty(*inner));
-                            self.assign(&value.into(), Rvalue::Use(Operand::Move(place)), range);
-                            place = value.into();
-                        }
-                        let int = self.typed.sigs.discriminant_ty(self.expr_ty(*inner));
-                        let discriminant = self.temp(Ty::int(int.unwrap_or(IntTy::Isize)));
-                        self.assign(&discriminant.into(), Rvalue::Discriminant(place), range);
-                        Operand::Copy(discriminant.into())
-                    } else {
-                        self.lower_operand(*inner)
-                    };
+                let operand = if let Expr::Path(Res::Variant(strukt, variant)) =
+                    self.body.exprs[*inner]
+                {
+                    self.variant_discriminant(strukt, variant, range)
+                } else if matches!(self.normalize(self.expr_ty(*inner)).kind(), TyKind::Adt(..)) {
+                    // The cast takes the value: moves it unless it is `Copy`.
+                    let mut place = self.lower_place(*inner);
+                    if let Operand::Move(_) = self.read(place.clone()) {
+                        let value = self.temp(self.expr_ty(*inner));
+                        self.assign(&value.into(), Rvalue::Use(Operand::Move(place)), range);
+                        place = value.into();
+                    }
+                    let int = self
+                        .typed
+                        .sigs
+                        .discriminant_ty(self.normalize(self.expr_ty(*inner)));
+                    let discriminant = self.temp(Ty::int(int.unwrap_or(IntTy::Isize)));
+                    self.assign(&discriminant.into(), Rvalue::Discriminant(place), range);
+                    Operand::Copy(discriminant.into())
+                } else {
+                    self.lower_operand(*inner)
+                };
                 self.assign(dest, Rvalue::Cast(operand, ty), range);
             }
         }

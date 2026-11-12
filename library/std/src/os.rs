@@ -266,6 +266,26 @@ pub mod unix {
             }
         }
     }
+    pub mod net {
+        #[derive(Clone)]
+        pub struct SocketAddr{path:Option<crate::path::PathBuf>}
+        impl SocketAddr{
+            pub fn from_pathname<P:AsRef<crate::path::Path>>(path:P)->crate::io::Result<Self>{
+                let path=path.as_ref();let bytes=path.as_os_str().as_encoded_bytes();
+                #[cfg(target_os="macos")]let capacity=104;
+                #[cfg(not(target_os="macos"))]let capacity=108;
+                if bytes.contains(&0)||bytes.len()>=capacity{return Err(crate::io::Error::new(crate::io::ErrorKind::InvalidInput,"invalid Unix socket path"));}
+                Ok(Self{path:if bytes.is_empty(){None}else{Some(path.to_path_buf())}})
+            }
+            pub fn as_pathname(&self)->Option<&crate::path::Path>{self.path.as_ref().map(|path|path.as_path())}
+            pub fn is_unnamed(&self)->bool{self.path.is_none()}
+        }
+        impl core::fmt::Debug for SocketAddr{
+            fn fmt(&self,f:&mut core::fmt::Formatter<'_>)->core::fmt::Result{
+                match self.as_pathname(){Some(path)=>write!(f,"{:?} (pathname)",path),None=>f.write_str("(unnamed)")}
+            }
+        }
+    }
     pub mod io {
         pub use crate::os::fd::{AsFd, BorrowedFd, OwnedFd};
         pub type RawFd = i32;

@@ -543,6 +543,8 @@ pub(crate) fn stage_with_strategy(
         || !hir.diagnostics.is_empty()
         || !db.syntax_errors().is_empty()
     {
+        crate::report_all(&db, &mut typed.diagnostics.clone());
+        crate::report_all(&db, &mut hir.diagnostics.clone());
         return Err("built-in suite contains source or type diagnostics".into());
     }
     let mut mir =

@@ -56,7 +56,12 @@ static STATIC_REF:&Data=&Data{field:43};
 const STATIC_REBORROW:&Data=&*STATIC_REF;
 fn size<const N:usize>()->usize{N}
 macro_rules! sized_call {()=>{size::<{2+3}>()}}
+trait EnumSource{type Output;const VALUE:Self::Output;}
+struct EnumValue;
+impl EnumSource for EnumValue{type Output=Signed;const VALUE:Self::Output=Signed::Negative;}
+const ENUM_ALIAS_CAST:i16=EnumValue::VALUE as i16;
 fn main() {
+    assert_eq!(ENUM_ALIAS_CAST,-7);println!("{}",EnumValue::VALUE as i16);
     println!("{} {}",size::<{1+2}>(),sized_call!());
     println!("{}",STATIC_REBORROW.field);
     println!("{}",STATIC_FIELD);

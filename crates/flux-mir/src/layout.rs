@@ -435,6 +435,12 @@ impl<'a> Layouts<'a> {
                 // its represented field's layout, including scalar validity.
                 layout.uninhabited |= field_layouts.iter().any(|field| field.uninhabited);
                 layout.shape = Shape::Struct(vec![0; fields.len()].into());
+                if lang("nonzero")
+                    && let Some(field) = fields.first()
+                    && let TyKind::Int(integer) = field.kind()
+                {
+                    layout.niche = Some(nonzero_niche(integer.bits()));
+                }
                 return layout;
             }
             // Potentially unsized tails retain their position even in sized
@@ -500,20 +506,9 @@ impl<'a> Layouts<'a> {
                 });
             }
             if let Some(integer) = flux_ty::nonzero_integer(self.items, strukt) {
-                // Every bit pattern except zero is valid, including signed
-                // negative values. Preserve the complete representation range.
-                let bits = integer.bits();
-                layout.niche = Some(Niche {
-                    offset: 0,
-                    bytes: (bits / 8) as u8,
-                    start: 1,
-                    end: if bits == 128 {
-                        u128::MAX
-                    } else {
-                        (1u128 << bits) - 1
-                    },
-                });
+                layout.niche = Some(nonzero_niche(integer.bits()));
             }
+
             if lang("alignment") {
                 // rustc's `AlignmentEnum`: the powers of two.
                 layout.niche = Some(Niche {
@@ -982,5 +977,18 @@ fn univariant_biased(
         align,
         niche,
         uninhabited: fields.iter().any(|f| f.uninhabited),
+    }
+}
+
+fn nonzero_niche(bits: u32) -> Niche {
+    Niche {
+        offset: 0,
+        bytes: (bits / 8) as u8,
+        start: 1,
+        end: if bits == 128 {
+            u128::MAX
+        } else {
+            (1u128 << bits) - 1
+        },
     }
 }

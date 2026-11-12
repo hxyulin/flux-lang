@@ -1083,3 +1083,110 @@ fn test<'a,'b,T:Child<'a,'b,Out=u8>>(){}
         false,
     );
 }
+
+#[test]
+fn nonzero_and_unchecked_const_validity() {
+    compare(
+        "zero_nonzero_transmute",
+        "const N:std::num::NonZero<u32>=unsafe{std::mem::transmute(0u32)};",
+        false,
+    );
+    compare(
+        "unchecked_shift",
+        "const N:u32=unsafe{1u32.unchecked_shl(32)};",
+        false,
+    );
+    compare(
+        "zero_nonzero",
+        "const N:std::num::NonZero<u32>=unsafe{std::num::NonZero::new_unchecked(0)};",
+        false,
+    );
+    compare(
+        "unchecked_overflow",
+        "const N:u8=unsafe{255u8.unchecked_add(1)};",
+        false,
+    );
+    compare(
+        "unchecked_false",
+        "const N:()=unsafe{std::hint::assert_unchecked(false)};",
+        false,
+    );
+    compare(
+        "noninteger_nonzero",
+        "fn f(x:std::num::NonZero<bool>){}",
+        false,
+    );
+}
+
+#[test]
+fn const_pointer_copy_validity() {
+    for (name, source, accepted) in [
+        (
+            "copy_overlap",
+            "const N:[u8;3]={let mut a=[1,2,3];unsafe{std::ptr::copy_nonoverlapping(a.as_ptr(),a.as_mut_ptr().add(1),2);}a};",
+            false,
+        ),
+        (
+            "copy_projected_overlap",
+            "const N:[[u8;2];2]={let mut a=[[1,2],[3,4]];let p=a[1].as_ptr();unsafe{std::ptr::copy_nonoverlapping(p,a.as_mut_ptr().cast::<u8>().add(2),2);}a};",
+            false,
+        ),
+        (
+            "copy_source_bounds",
+            "const N:[u8;3]={let a=[1u8];let mut b=[0;3];unsafe{std::ptr::copy_nonoverlapping(a.as_ptr(),b.as_mut_ptr(),3);}b};",
+            false,
+        ),
+        (
+            "copy_destination_bounds",
+            "const N:u8={let a=[1u8,2,3];let mut b=0;unsafe{std::ptr::copy_nonoverlapping(a.as_ptr(),&raw mut b,3);}b};",
+            false,
+        ),
+        (
+            "copy_null_empty",
+            "const N:()=unsafe{std::ptr::copy_nonoverlapping(std::ptr::null::<u8>(),1usize as *mut u8,0)};",
+            false,
+        ),
+        (
+            "copy_unaligned_empty",
+            "const N:()=unsafe{std::ptr::copy(1usize as *const u32,4usize as *mut u32,0)};",
+            false,
+        ),
+        (
+            "copy_readonly",
+            "const N:u8={let a=1u8;unsafe{std::ptr::copy_nonoverlapping(&2u8,&a as *const u8 as *mut u8,1);}a};",
+            false,
+        ),
+        (
+            "copy_uninit_read",
+            "const N:u32={let a=std::mem::MaybeUninit::<u32>::uninit();let mut b=0;unsafe{std::ptr::copy_nonoverlapping(a.as_ptr(),&raw mut b,1);}b};",
+            false,
+        ),
+        (
+            "copy_uninit_erases_value",
+            "const N:u32={let a=std::mem::MaybeUninit::<u32>::uninit();let mut b=std::mem::MaybeUninit::new(7u32);unsafe{std::ptr::copy_nonoverlapping(&a,&raw mut b,1);b.assume_init()}};",
+            false,
+        ),
+        (
+            "copy_invalid_bool",
+            "const N:bool={let a=2u8;let mut b=false;unsafe{std::ptr::copy_nonoverlapping(&a,(&raw mut b).cast::<u8>(),1);}b};",
+            false,
+        ),
+        (
+            "copy_size_overflow",
+            "const N:()=unsafe{std::ptr::copy_nonoverlapping(4usize as *const u32,8usize as *mut u32,usize::MAX)};",
+            false,
+        ),
+        (
+            "copy_empty_same_pointer",
+            "const N:()={let mut a=7u32;unsafe{std::ptr::copy_nonoverlapping(&raw const a,&raw mut a,0);}};",
+            true,
+        ),
+        (
+            "copy_uninit_without_read",
+            "const N:std::mem::MaybeUninit<u32>={let a=std::mem::MaybeUninit::<u32>::uninit();let mut b=std::mem::MaybeUninit::new(7);unsafe{std::ptr::copy_nonoverlapping(&a,&raw mut b,1);}b};",
+            true,
+        ),
+    ] {
+        compare(name, source, accepted);
+    }
+}

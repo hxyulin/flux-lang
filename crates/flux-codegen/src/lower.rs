@@ -4752,6 +4752,34 @@ impl Lower<'_, '_, '_> {
                     self.neon_intrinsic(*func, generic_args, args, dest, *target);
                     return;
                 }
+                if let Some(
+                    intrinsic @ (flux_hir::Intrinsic::Copy
+                    | flux_hir::Intrinsic::CopyNonoverlapping),
+                ) = items.functions[*func].intrinsic
+                {
+                    let source = self.scalar(&args[0]).expect("copy source pointer");
+                    let destination = self.scalar(&args[1]).expect("copy destination pointer");
+                    let count = self.scalar(&args[2]).expect("copy count");
+                    let size = self.ctx.layouts.of(generic_args[0]).size;
+                    if size != 0 {
+                        let stride = self.b.ins().iconst(Type::I64, size as i64);
+                        let bytes = self.b.ins().imul(count, stride);
+                        let operation = if intrinsic == flux_hir::Intrinsic::Copy {
+                            Intrinsic::Memmove
+                        } else {
+                            Intrinsic::Memcpy
+                        };
+                        self.b
+                            .ins()
+                            .intrinsic(operation, &[destination, source, bytes]);
+                    }
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
                 if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::Transmute) {
                     let from = generic_args[0];
                     let to = generic_args[1];

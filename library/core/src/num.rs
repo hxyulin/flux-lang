@@ -7,32 +7,46 @@
 //! are `Ord`'s, as in Rust.
 
 pub use crate::float::ParseFloatError;
-/// Nonzero integer wrappers preserve zero as an enum niche.
+// Only library integer implementations may supply initialized, padding-free
+// storage. Keeping this bound private prevents arbitrary payloads.
+pub(crate) trait NonZeroPrimitive: Copy {}
+macro_rules! nonzero_primitives {($($t:ty),*)=>{$(impl NonZeroPrimitive for $t {})*};}
+nonzero_primitives!(u8,u16,u32,u64,u128,usize,i8,i16,i32,i64,i128,isize);
+
+/// An integer whose value is not zero.
+#[lang="nonzero"]
+#[repr(transparent)]
+#[derive(Clone,Copy,PartialEq,Eq,PartialOrd,Ord,Hash)]
+pub struct NonZero<T:NonZeroPrimitive>(T);
+impl<T:NonZeroPrimitive> NonZero<T>{
+    pub const fn new(value:T)->Option<Self>{
+        let bytes=&value as *const T as *const u8;
+        let mut i=0;
+        while i<crate::mem::size_of::<T>(){
+            // SAFETY: the sealed integer bound excludes padding and every byte
+            // of the initialized input lies within this borrowed allocation.
+            if unsafe{*bytes.add(i)}!=0{return Some(Self(value));}
+            i+=1;
+        }
+        None
+    }
+    /// # Safety
+    /// value must not be zero.
+    pub const unsafe fn new_unchecked(value:T)->Self{Self(value)}
+    pub const fn get(self)->T{self.0}
+}
+impl<T:NonZeroPrimitive+crate::fmt::Debug> crate::fmt::Debug for NonZero<T>{
+ fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result{crate::fmt::Debug::fmt(&self.0,f)}
+}
+impl<T:NonZeroPrimitive+crate::fmt::Display> crate::fmt::Display for NonZero<T>{
+ fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result{crate::fmt::Display::fmt(&self.0,f)}
+}
 macro_rules! nonzero_impl {
     ($name:ident, $t:ty, $lang:literal) => {
-        #[lang = $lang]
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub struct $name($t);
+        pub type $name=NonZero<$t>;
         impl $name {
-            pub const fn new(value: $t) -> Option<Self> {
-                if value == 0 { None } else { Some(Self(value)) }
-            }
-            /// # Safety
-            /// `value` must not be zero.
-            pub const unsafe fn new_unchecked(value: $t) -> Self { Self(value) }
-            pub const fn get(self) -> $t { self.0 }
             pub const fn leading_zeros(self) -> u32 { self.0.leading_zeros() }
             pub const fn trailing_zeros(self) -> u32 { self.0.trailing_zeros() }
-        }
-        impl crate::fmt::Debug for $name {
-            fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-                crate::fmt::Debug::fmt(&self.0, f)
-            }
-        }
-        impl crate::fmt::Display for $name {
-            fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-                crate::fmt::Display::fmt(&self.0, f)
-            }
         }
         impl crate::ops::BitOr<$t> for $name {
             type Output = Self;
@@ -6912,3 +6926,43 @@ pub enum FpCategory { Nan, Infinite, Zero, Subnormal, Normal }
 
 mod wrapping;
 pub use self::wrapping::Wrapping;
+
+macro_rules! unchecked_integer {
+ ($($t:ty),*)=>{$(
+  impl $t{
+   /// # Safety
+   /// The mathematical result must be representable by this integer type.
+   pub const unsafe fn unchecked_add(self,rhs:Self)->Self{match self.checked_add(rhs){Some(value)=>value,None=>{
+    // SAFETY: overflow is excluded by the caller's contract.
+    unsafe{crate::hint::unreachable_unchecked()}
+   }}}
+   /// # Safety
+   /// The mathematical result must be representable by this integer type.
+   pub const unsafe fn unchecked_sub(self,rhs:Self)->Self{match self.checked_sub(rhs){Some(value)=>value,None=>{
+    // SAFETY: overflow is excluded by the caller's contract.
+    unsafe{crate::hint::unreachable_unchecked()}
+   }}}
+   /// # Safety
+   /// The mathematical result must be representable by this integer type.
+   pub const unsafe fn unchecked_mul(self,rhs:Self)->Self{match self.checked_mul(rhs){Some(value)=>value,None=>{
+    // SAFETY: overflow is excluded by the caller's contract.
+    unsafe{crate::hint::unreachable_unchecked()}
+   }}}
+   /// # Safety
+   /// rhs must be less than Self::BITS.
+   pub const unsafe fn unchecked_shl(self,rhs:u32)->Self{
+    // SAFETY: the caller guarantees this shift is in range.
+    unsafe{crate::hint::assert_unchecked(rhs<Self::BITS);}
+    self.wrapping_shl(rhs)
+   }
+   /// # Safety
+   /// rhs must be less than Self::BITS.
+   pub const unsafe fn unchecked_shr(self,rhs:u32)->Self{
+    // SAFETY: the caller guarantees this shift is in range.
+    unsafe{crate::hint::assert_unchecked(rhs<Self::BITS);}
+    self.wrapping_shr(rhs)
+   }
+  }
+ )*};
+}
+unchecked_integer!(u8,u16,u32,u64,u128,usize,i8,i16,i32,i64,i128,isize);

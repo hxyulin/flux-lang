@@ -1637,6 +1637,8 @@ pub fn expand_intrinsics(
                 | "read_volatile"
                 | "write_volatile"
                 | "transmute"
+                | "copy"
+                | "copy_nonoverlapping"
                 | "fmaf32"
                 | "fmaf64"
         ) || intrinsic.is_neon()

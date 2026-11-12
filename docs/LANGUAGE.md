@@ -2268,3 +2268,34 @@ current-directory components without resolving symlinks or parent components.
 `char::UNICODE_VERSION` exposes the same version as `core::char::UNICODE_VERSION`
 and the compiler's Unicode tables. `u8::escape_ascii` returns the existing
 ASCII escape iterator, including double-ended iteration and display.
+
+The corpus API pass adds `Vec: AsMut<[T]>`, vector drain debug formatting,
+`VecDeque::{retain, retain_mut, swap}`, `HashMap::try_reserve`, borrowed HashSet
+union/intersection/difference/symmetric-difference operators, and RefCell
+ordering. Deque retention preserves unvisited values if a predicate unwinds.
+`Ref` and `RefMut` implement Display through their guarded values.
+`Iterator::{is_sorted, is_sorted_by, is_sorted_by_key}` stop at the first
+violating pair, and unordered comparisons return false.
+Generic `NonZero<T>` supports the primitive integer types; the named integer
+wrappers are aliases. Constants reject zero payloads and Option preserves the
+integer-sized niche. Integer unchecked arithmetic and shifts, `assert_unchecked`,
+and const Option unwrapping retain their unsafe preconditions.
+Duration provides subsecond microsecond and millisecond queries.
+`TcpStream`, `TcpListener` and `UdpSocket` support owned/borrowed Unix descriptor
+interoperation and duplication. Connection, binding and stream I/O through these
+standard types remain unsupported. Socket libraries can transfer descriptors
+without transferring or closing them twice. Unix socket addresses support
+pathname construction, validation, pathname queries and unnamed addresses.
+`ptr::copy`, `ptr::copy_nonoverlapping`, and raw-pointer `copy_to`/`copy_from`
+methods (including their nonoverlapping forms) are const. Constant evaluation
+checks bounds, alignment, destination mutability and nonoverlap. Typed copies
+preserve symbolic pointers, uninitialized slots and aggregate storage; overlapping
+copies snapshot their source before writing. Copies through byte views support
+represented integer bytes and fields. Partial writes into uninitialized scalar
+storage, partial pointer representations, byte reads across padding, and proving
+nonoverlap between a projected local snapshot and its root allocation remain
+unsupported. Runtime copies lower to memory-copy operations.
+
+Hash-map entry views retain table storage and counters independently of the
+hasher type, matching the public Entry, OccupiedEntry and VacantEntry arities.
+Entries and map iterators provide standard debug formatting.

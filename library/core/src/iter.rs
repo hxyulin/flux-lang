@@ -59,6 +59,22 @@ pub trait Iterator {
         crate::panicking::panic("internal error: entered unreachable code")
     }
 
+    /// Whether adjacent elements are nondecreasing. Incomparable elements fail.
+    fn is_sorted(self)->bool where Self:Sized,Self::Item:PartialOrd{
+        self.is_sorted_by(|left,right|left<=right)
+    }
+    fn is_sorted_by<F>(mut self,mut compare:F)->bool where Self:Sized,F:FnMut(&Self::Item,&Self::Item)->bool{
+        let Some(mut previous)=self.next()else{return true;};
+        while let Some(next)=self.next(){if !compare(&previous,&next){return false;}previous=next;}
+        true
+    }
+    fn is_sorted_by_key<K,F>(mut self,mut key:F)->bool where Self:Sized,K:PartialOrd,F:FnMut(Self::Item)->K{
+        let Some(first)=self.next()else{return true;};
+        let mut previous=key(first);
+        while let Some(next)=self.next(){let next=key(next);if !(previous<=next){return false;}previous=next;}
+        true
+    }
+
     /// How many items are left, going through them.
     fn count(self) -> usize
     where

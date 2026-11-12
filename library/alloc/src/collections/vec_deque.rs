@@ -32,6 +32,35 @@ impl<T> VecDeque<T> {
             len: 0,
         }
     }
+    pub fn swap(&mut self,a:usize,b:usize){
+        assert!(a<self.len && b<self.len,"index out of bounds");
+        // SAFETY: both logical indices identify initialized elements of this
+        // exclusively borrowed buffer. swap also permits identical pointers.
+        unsafe{ptr::swap(self.buf.ptr().add(self.index(a)),self.buf.ptr().add(self.index(b)));}
+    }
+    pub fn retain<F:FnMut(&T)->bool>(&mut self,mut keep:F){self.retain_mut(|value|keep(value));}
+    pub fn retain_mut<F:FnMut(&mut T)->bool>(&mut self,mut keep:F){
+        let original=self.len;self.len=0;
+        let mut guard=RetainGuard{deque:self,original,processed:0,deleted:0};
+        while guard.processed<original{
+            // SAFETY: processed identifies an initialized unvisited slot.
+            let current=unsafe{guard.deque.buf.ptr().add(guard.deque.index(guard.processed))};
+            // SAFETY: the deque is exclusively borrowed and this reference
+            // ends before transferring or destroying its element.
+            if !keep(unsafe{&mut *current}){
+                guard.processed+=1;guard.deleted+=1;
+                // SAFETY: remove ownership before user Drop can unwind.
+                unsafe{ptr::drop_in_place(current);}
+            }else{
+                if guard.deleted!=0{
+                    // SAFETY: the earlier logical destination is a hole. Both
+                    // slots are aligned and distinct for non-zero-sized T.
+                    unsafe{ptr::copy_nonoverlapping(current,guard.deque.buf.ptr().add(guard.deque.index(guard.processed-guard.deleted)),1);}
+                }
+                guard.processed+=1;
+            }
+        }
+    }
     pub fn len(&self) -> usize {
         self.len
     }
@@ -546,5 +575,19 @@ impl<T> From<VecDeque<T>> for crate::vec::Vec<T> {
 impl<'a, T: 'a + Copy> Extend<&'a T> for VecDeque<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         for &value in iter { self.push_back(value); }
+    }
+}
+
+struct RetainGuard<'a,T>{deque:&'a mut VecDeque<T>,original:usize,processed:usize,deleted:usize}
+impl<T> Drop for RetainGuard<'_,T>{
+    fn drop(&mut self){
+        if self.deleted!=0{
+            for read in self.processed..self.original{
+                // SAFETY: unvisited elements still own their slots; each moves
+                // once into an earlier hole, including across the ring boundary.
+                unsafe{ptr::copy_nonoverlapping(self.deque.buf.ptr().add(self.deque.index(read)),self.deque.buf.ptr().add(self.deque.index(read-self.deleted)),1);}
+            }
+        }
+        self.deque.len=self.original-self.deleted;
     }
 }

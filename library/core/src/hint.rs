@@ -24,3 +24,12 @@ pub const unsafe fn unreachable_unchecked() -> ! {
 pub fn select_unpredictable<T>(condition: bool, if_true: T, if_false: T) -> T {
     if condition { if_true } else { if_false }
 }
+
+/// # Safety
+/// condition must be true whenever this function is called.
+pub const unsafe fn assert_unchecked(condition:bool){
+ if !condition{
+  // SAFETY: the caller guarantees this branch is unreachable.
+  unsafe{unreachable_unchecked()}
+ }
+}

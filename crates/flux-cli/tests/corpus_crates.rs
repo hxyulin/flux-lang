@@ -236,3 +236,21 @@ fn unicode_segmentation_default_graph_matches_rustc() {
         include_str!("fixtures/corpus_crates/unicode-segmentation.rs.txt"),
     );
 }
+
+#[test]
+fn socket2_default_graph_matches_rustc() {
+    compare_registry(
+        "socket2",
+        "0.6.5",
+        include_str!("fixtures/corpus_crates/socket2.rs.txt"),
+    );
+}
+
+#[test]
+fn slotmap_default_graph_matches_rustc() {
+    compare_registry(
+        "slotmap",
+        "1.1.1",
+        include_str!("fixtures/corpus_crates/slotmap.rs.txt"),
+    );
+}

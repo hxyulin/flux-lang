@@ -2,8 +2,8 @@
 //! `addr_of_mut!`, as `&raw const` and `&raw mut` do), the methods of `*const
 //! T` and `*mut T`, and reading, writing, copying and dropping what they
 //! point to. As in rustc, these are `unsafe` where the caller must make
-//! sure the pointer is valid. Copies of many values go through C's
-//! `memmove` and `memcpy`.
+//! sure the pointer is valid. Copies preserve raw storage at compile time
+//! and lower to memory-copy operations at run time.
 
 use crate::clone::Clone;
 use crate::cmp::{Eq, PartialEq};
@@ -12,8 +12,6 @@ use crate::mem::{ManuallyDrop, align_of, size_of};
 use crate::option::Option::{self, None, Some};
 
 unsafe extern "C" {
-    fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8;
-    fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8;
     fn memset(dst: *mut u8, c: i32, n: usize) -> *mut u8;
 }
 
@@ -119,16 +117,16 @@ pub unsafe fn write_volatile<T>(dst:*mut T,value:T) {
 }
 
 /// Copies `count` values from `src` to `dst`, which may overlap.
-pub unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) {
+pub const unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) {
     unsafe {
-        memmove(dst as *mut u8, src as *const u8, count * size_of::<T>());
+        crate::intrinsics::copy(src, dst, count);
     }
 }
 
 /// Copies `count` values from `src` to `dst`, which must not overlap.
-pub unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
+pub const unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
     unsafe {
-        memcpy(dst as *mut u8, src as *const u8, count * size_of::<T>());
+        crate::intrinsics::copy_nonoverlapping(src, dst, count);
     }
 }
 
@@ -329,13 +327,13 @@ impl<T> *const T {
     }
 
     /// Copies `count` values from the pointer to `dest`.
-    pub unsafe fn copy_to(self, dest: *mut T, count: usize) {
+    pub const unsafe fn copy_to(self, dest: *mut T, count: usize) {
         unsafe { copy(self, dest, count) }
     }
 
     /// Copies `count` values from the pointer to `dest`, which must not
     /// overlap.
-    pub unsafe fn copy_to_nonoverlapping(self, dest: *mut T, count: usize) {
+    pub const unsafe fn copy_to_nonoverlapping(self, dest: *mut T, count: usize) {
         unsafe { copy_nonoverlapping(self, dest, count) }
     }
 
@@ -541,24 +539,24 @@ impl<T> *mut T {
     }
 
     /// Copies `count` values from the pointer to `dest`.
-    pub unsafe fn copy_to(self, dest: *mut T, count: usize) {
+    pub const unsafe fn copy_to(self, dest: *mut T, count: usize) {
         unsafe { copy(self, dest, count) }
     }
 
     /// Copies `count` values from the pointer to `dest`, which must not
     /// overlap.
-    pub unsafe fn copy_to_nonoverlapping(self, dest: *mut T, count: usize) {
+    pub const unsafe fn copy_to_nonoverlapping(self, dest: *mut T, count: usize) {
         unsafe { copy_nonoverlapping(self, dest, count) }
     }
 
     /// Copies `count` values from `src` to the pointer.
-    pub unsafe fn copy_from(self, src: *const T, count: usize) {
+    pub const unsafe fn copy_from(self, src: *const T, count: usize) {
         unsafe { copy(src, self, count) }
     }
 
     /// Copies `count` values from `src` to the pointer, which must not
     /// overlap.
-    pub unsafe fn copy_from_nonoverlapping(self, src: *const T, count: usize) {
+    pub const unsafe fn copy_from_nonoverlapping(self, src: *const T, count: usize) {
         unsafe { copy_nonoverlapping(src, self, count) }
     }
 
@@ -700,14 +698,14 @@ impl<T> NonNull<T> {
     /// Copies count elements, permitting overlap.
     /// # Safety
     /// Both ranges must be valid and aligned for count elements.
-    pub unsafe fn copy_to(self,dest:Self,count:usize) {
+    pub const unsafe fn copy_to(self,dest:Self,count:usize) {
         // SAFETY: forwarded caller guarantees.
         unsafe {copy(self.pointer,dest.as_ptr(),count);}
     }
     /// Copies count elements between disjoint ranges.
     /// # Safety
     /// Both ranges must be valid, aligned and disjoint for count elements.
-    pub unsafe fn copy_to_nonoverlapping(self,dest:Self,count:usize) {
+    pub const unsafe fn copy_to_nonoverlapping(self,dest:Self,count:usize) {
         // SAFETY: forwarded caller guarantees.
         unsafe {copy_nonoverlapping(self.pointer,dest.as_ptr(),count);}
     }

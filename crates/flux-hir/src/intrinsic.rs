@@ -135,6 +135,8 @@ intrinsics! {
     UnreachableUnchecked => "unreachable_unchecked",
     Read => "read",
     Write => "write",
+    Copy => "copy",
+    CopyNonoverlapping => "copy_nonoverlapping",
     Uninit => "uninit",
     IsCopy => "is_copy",
     SizeOf => "size_of",

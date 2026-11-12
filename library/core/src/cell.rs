@@ -377,7 +377,7 @@ impl<T: Default> Default for RefCell<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for RefCell<T> {
+impl<T: ?Sized + PartialEq> PartialEq for RefCell<T> {
     /// Panics if either value is lent mutably.
     #[track_caller]
     fn eq(&self, other: &RefCell<T>) -> bool {
@@ -386,13 +386,32 @@ impl<T: PartialEq> PartialEq for RefCell<T> {
     }
 }
 
-impl<T: Eq> Eq for RefCell<T> {}
+impl<T: ?Sized + Eq> Eq for RefCell<T> {}
 
 impl<T> From<T> for RefCell<T> {
     fn from(t: T) -> RefCell<T> {
         RefCell::new(t)
     }
 }
+
+impl<T:?Sized+PartialOrd> PartialOrd for RefCell<T>{
+ #[track_caller]
+ fn partial_cmp(&self,other:&Self)->Option<crate::cmp::Ordering>{let a=self.borrow();let b=other.borrow();(*a).partial_cmp(&*b)}
+}
+impl<T:?Sized+Ord> Ord for RefCell<T>{
+ #[track_caller]
+ fn cmp(&self,other:&Self)->crate::cmp::Ordering{let a=self.borrow();let b=other.borrow();(*a).cmp(&*b)}
+}
+
+
+impl<T:?Sized+crate::fmt::Display> crate::fmt::Display for Ref<'_,T>{
+   fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result{crate::fmt::Display::fmt(&**self,f)}
+  }
+
+
+impl<T:?Sized+crate::fmt::Display> crate::fmt::Display for RefMut<'_,T>{
+   fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result{crate::fmt::Display::fmt(&**self,f)}
+  }
 
 /// A shared loan of a `RefCell`'s value, given back when dropped.
 pub struct Ref<'b, T: ?Sized> {

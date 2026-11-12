@@ -528,7 +528,7 @@ impl Evaluator<'_> {
         Ok(Value::Aggregate(fields))
     }
     #[allow(clippy::too_many_arguments)]
-    fn write_memory(
+    pub(super) fn write_memory(
         &mut self,
         stored: &mut Value,
         ty: Ty,
@@ -543,6 +543,20 @@ impl Evaluator<'_> {
         }
         if offset == 0 && ty == target {
             *stored = value;
+            return Ok(());
+        }
+        if target == Ty::int(IntTy::U8)
+            && let (
+                Value::Int {
+                    bits: stored_bits, ..
+                },
+                Value::Int { bits: byte, .. },
+            ) = (&mut *stored, &value)
+            && ty.as_int().is_some()
+            && offset < self.view_layout(ty, range)?.size
+        {
+            let shift = offset * 8;
+            *stored_bits = (*stored_bits & !(0xffu128 << shift)) | ((byte & 0xff) << shift);
             return Ok(());
         }
         if matches!(stored, Value::Uninit(_)) {

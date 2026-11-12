@@ -1,32 +1,32 @@
 fn check(_1: u32) -> u32 {
     let mut _0: u32;
-    let _2: Option<NonZeroU32>; // nz
+    let _2: Option<NonZero<u32>>; // nz
     let _3: u32;
-    let _4: Option<Option<NonZeroU32>>; // nested
-    let _5: Option<NonZeroU32>;
+    let _4: Option<Option<NonZero<u32>>>; // nested
+    let _5: Option<NonZero<u32>>;
     let _6: Payload; // payload
-    let _7: NonZeroU32; // n
+    let _7: NonZero<u32>; // n
     let _8: isize;
-    let _9: NonZeroU32;
+    let _9: NonZero<u32>;
     let _10: isize;
     let _11: u32; // result
     let _12: isize;
     let _13: isize;
     let _14: isize;
-    let _15: NonZeroU32; // n
+    let _15: NonZero<u32>; // n
     let _16: isize;
     let _17: isize;
-    let _18: NonZeroU32;
+    let _18: NonZero<u32>;
     let _19: isize;
-    let _20: NonZeroU32; // n
+    let _20: NonZero<u32>; // n
     let _21: isize;
     let _22: Wrapped;
-    let _23: NonZeroU32;
-    let _24: NonZeroU32;
+    let _23: NonZero<u32>;
+    let _24: NonZero<u32>;
 
     bb0: {
         _3 = copy _1;
-        _2 = new(copy _3) -> bb1;
+        _2 = new::<u32>(copy _3) -> bb1;
     }
 
     bb1: {
@@ -125,7 +125,7 @@ fn check(_1: u32) -> u32 {
 
     bb20: {
         _18 = copy _15;
-        _11 = get(copy _18) -> bb21;
+        _11 = get::<u32>(copy _18) -> bb21;
     }
 
     bb21: {
@@ -168,7 +168,7 @@ fn check(_1: u32) -> u32 {
         _23 = copy _20;
         _22 = Wrapped(copy _23);
         _24 = copy _22.0;
-        _0 = get(copy _24) -> bb29;
+        _0 = get::<u32>(copy _24) -> bb29;
     }
 
     bb29: {
@@ -183,17 +183,17 @@ fn main() -> () {
     let _1: ();
     let _2: bool;
     let _3: bool;
-    let mut _4: &Option<NonZeroU32>;
-    let _5: &Option<NonZeroU32>;
+    let mut _4: &Option<NonZero<u32>>;
+    let _5: &Option<NonZero<u32>>;
     let _6: !;
     let _7: ();
     let _8: bool;
     let _9: bool;
     let _10: u32;
-    let _11: NonZeroU32;
-    let _12: Option<NonZeroU32>;
-    let _13: Option<NonZeroU32>;
-    let _14: NonZeroU32;
+    let _11: NonZero<u32>;
+    let _12: Option<NonZero<u32>>;
+    let _13: Option<NonZero<u32>>;
+    let _14: NonZero<u32>;
     let _15: !;
     let _16: IntoIter<u32, 4>;
     let _17: [u32; 4];
@@ -218,7 +218,7 @@ fn main() -> () {
     bb0: {
         _4 = const &ZERO;
         _5 = &(*_4);
-        _3 = is_none::<NonZeroU32>(copy _5) -> bb1;
+        _3 = is_none::<NonZero<u32>>(copy _5) -> bb1;
     }
 
     bb1: {
@@ -238,12 +238,12 @@ fn main() -> () {
     bb4: {
         _12 = const MAX;
         _13 = copy _12;
-        _11 = unwrap::<NonZeroU32>(copy _13) -> bb5;
+        _11 = unwrap::<NonZero<u32>>(copy _13) -> bb5;
     }
 
     bb5: {
         _14 = copy _11;
-        _10 = get(copy _14) -> bb6;
+        _10 = get::<u32>(copy _14) -> bb6;
     }
 
     bb6: {

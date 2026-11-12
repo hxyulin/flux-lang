@@ -30,6 +30,7 @@ use crate::{
     StatementKind, TerminatorKind, UnOp,
 };
 
+mod copy;
 mod frame_memory;
 use frame_memory::FrameAllocation;
 
@@ -1548,7 +1549,7 @@ impl<'a> Evaluator<'a> {
         if lang("non_null") && matches!(fields.first(), Some(Value::RawAddr(0))) {
             return Err(error(range, "null pointer in `NonNull` constant".into()));
         }
-        if flux_ty::nonzero_integer(self.items, strukt).is_some()
+        if (flux_ty::nonzero_integer(self.items, strukt).is_some() || lang("nonzero"))
             && matches!(fields.first(), Some(Value::Int { bits: 0, .. }))
         {
             let name = self.items.structs[strukt].name;
@@ -2705,6 +2706,31 @@ impl<'a> Evaluator<'a> {
                             }
                             None => return Err(error(range, "entering unreachable code".into())),
                         }
+                    }
+                    if let Some(
+                        intrinsic @ (flux_hir::Intrinsic::Copy
+                        | flux_hir::Intrinsic::CopyNonoverlapping),
+                    ) = self.items.functions[*func].intrinsic
+                    {
+                        let source = self.operand(locals, generics, &args[0], range)?;
+                        let destination = self.operand(locals, generics, &args[1], range)?;
+                        let Value::Int { bits: count, .. } =
+                            self.operand(locals, generics, &args[2], range)?
+                        else {
+                            return Err(unsupported_view(range));
+                        };
+                        let ty = flux_solve::traits::normalize(
+                            self.items,
+                            self.sigs,
+                            &[],
+                            subst_list(generic_args, generics)[0],
+                        );
+                        self.release_frame(locals);
+                        self.copy_storage(source, destination, ty, count as u64, intrinsic, range)?;
+                        self.frame_assign(body, locals, generics, dest, Value::unit(), range)?;
+                        block = target
+                            .ok_or_else(|| error(range, "entering unreachable code".into()))?;
+                        continue;
                     }
                     if matches!(
                         self.items.functions[*func].intrinsic,
@@ -3992,7 +4018,10 @@ impl<'a> Evaluator<'a> {
                     | Value::PointerView { .. }
                     | Value::FramePointer { .. }
                     | Value::LocalRef { .. } => {
-                        unreachable!("casts are of scalars")
+                        return Err(error(
+                            range,
+                            "this constant value cannot be cast to a scalar".into(),
+                        ));
                     }
                 };
                 let to = to.scalar_int().expect("casts are to integers or `char`");

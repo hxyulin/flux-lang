@@ -50,9 +50,9 @@ impl<T> Option<T> {
 
     /// # Safety
     /// `self` must be `Some`. Calling this on `None` is undefined behavior.
-    #[rustc_const_unstable]
+    #[rustc_allow_const_fn_unstable(const_precise_live_drops)]
     #[inline(always)]
-    pub unsafe fn unwrap_unchecked(self) -> T {
+    pub const unsafe fn unwrap_unchecked(self) -> T {
         match self {
             Some(value) => value,
             // SAFETY: the caller guarantees the option is present.

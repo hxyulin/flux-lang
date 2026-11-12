@@ -1,0 +1,19 @@
+use socket2::{Socket,Domain,Type,Protocol,SockRef};
+use std::os::fd::{AsFd,AsRawFd,OwnedFd};
+fn main(){
+ let socket=Socket::new(Domain::IPV4,Type::DGRAM,Some(Protocol::UDP)).unwrap();
+ socket.bind(&std::net::SocketAddr::from(([127,0,0,1],0)).into()).unwrap();
+ let udp:std::net::UdpSocket=socket.into();
+ let port=SockRef::from(&udp).local_addr().unwrap().as_socket().unwrap().port();assert!(port>0);
+ assert_eq!(udp.as_fd().as_raw_fd(),udp.as_raw_fd());
+ let cloned=udp.try_clone().unwrap();assert_ne!(cloned.as_raw_fd(),udp.as_raw_fd());
+ assert_eq!(SockRef::from(&cloned).local_addr().unwrap().as_socket().unwrap().port(),port);
+ let owned:OwnedFd=udp.into();let udp:std::net::UdpSocket=owned.into();let socket:Socket=udp.into();
+ assert_eq!(socket.local_addr().unwrap().as_socket().unwrap().port(),port);
+ let address=std::os::unix::net::SocketAddr::from_pathname("/tmp/flux.sock").unwrap();
+ assert_eq!(address.as_pathname(),Some(std::path::Path::new("/tmp/flux.sock")));assert!(!address.is_unnamed());println!("{:?}",address);
+ let unnamed=std::os::unix::net::SocketAddr::from_pathname("").unwrap();assert!(unnamed.is_unnamed());println!("{:?}",unnamed);
+ assert!(std::os::unix::net::SocketAddr::from_pathname("bad\0path").is_err());
+ assert!(std::os::unix::net::SocketAddr::from_pathname("a".repeat(108)).is_err());
+ println!("socket ownership ok");
+}

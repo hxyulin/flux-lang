@@ -1063,3 +1063,8 @@ impl<T: core::panic::UnwindSafe> core::panic::UnwindSafe for Vec<T> {}
 impl<T: core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Vec<T> {}
 impl<T: core::panic::UnwindSafe> core::panic::UnwindSafe for IntoIter<T> {}
 impl<T: core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for IntoIter<T> {}
+
+impl<T> AsMut<[T]> for Vec<T> {fn as_mut(&mut self)->&mut [T]{self.as_mut_slice()}}
+impl<T:core::fmt::Debug> core::fmt::Debug for Drain<'_,T>{
+ fn fmt(&self,f:&mut core::fmt::Formatter<'_>)->core::fmt::Result{f.debug_tuple("Drain").field(&self.as_slice()).finish()}
+}

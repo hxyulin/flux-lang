@@ -103,3 +103,23 @@ impl<'a,T: 'a+Copy+Eq+Hash,S:BuildHasher> Extend<&'a T> for HashSet<T,S> {
 impl<T:Eq+Hash,const N:usize> From<[T;N]> for HashSet<T> {
     fn from(values:[T;N])->Self {values.into_iter().collect()}
 }
+
+impl<T:Eq+Hash+Clone,S:BuildHasher+Default> core::ops::BitOr<&HashSet<T,S>> for &HashSet<T,S>{
+ type Output=HashSet<T,S>;
+ fn bitor(self,other:&HashSet<T,S>)->Self::Output{let mut result=HashSet::default();for value in self{if true{result.insert(value.clone());}}for value in other {result.insert(value.clone());}result}
+}
+
+impl<T:Eq+Hash+Clone,S:BuildHasher+Default> core::ops::BitAnd<&HashSet<T,S>> for &HashSet<T,S>{
+ type Output=HashSet<T,S>;
+ fn bitand(self,other:&HashSet<T,S>)->Self::Output{let mut result=HashSet::default();for value in self{if other.contains(value){result.insert(value.clone());}}result}
+}
+
+impl<T:Eq+Hash+Clone,S:BuildHasher+Default> core::ops::Sub<&HashSet<T,S>> for &HashSet<T,S>{
+ type Output=HashSet<T,S>;
+ fn sub(self,other:&HashSet<T,S>)->Self::Output{let mut result=HashSet::default();for value in self{if !other.contains(value){result.insert(value.clone());}}result}
+}
+
+impl<T:Eq+Hash+Clone,S:BuildHasher+Default> core::ops::BitXor<&HashSet<T,S>> for &HashSet<T,S>{
+ type Output=HashSet<T,S>;
+ fn bitxor(self,other:&HashSet<T,S>)->Self::Output{let mut result=HashSet::default();for value in self{if !other.contains(value){result.insert(value.clone());}}for value in other {if !self.contains(value){result.insert(value.clone());}}result}
+}

@@ -1,0 +1,9 @@
+use slotmap::{SlotMap,SparseSecondaryMap};
+fn main(){
+ let mut primary:SlotMap<slotmap::DefaultKey,u32>=SlotMap::with_key();let a=primary.insert(7u32);let b=primary.insert(11u32);
+ let mut secondary=SparseSecondaryMap::new();secondary.entry(a).unwrap().or_insert(1u32);
+ secondary.insert(b,2);for (_,value)in secondary.iter_mut(){*value+=10;}
+ assert_eq!(secondary.get(a),Some(&11));assert_eq!(secondary.get(b),Some(&12));
+ let mut values:Vec<_>=secondary.drain().map(|(_,v)|v).collect();values.sort();assert_eq!(values,vec![11,12]);assert!(secondary.is_empty());
+ assert_eq!(primary.remove(a),Some(7));assert!(primary.get(a).is_none());println!("{:?} {}",values,primary[b]);
+}

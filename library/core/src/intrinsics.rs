@@ -34,6 +34,17 @@ pub(crate) const unsafe fn write<T>(dst: *mut T, value: T) {
     loop {}
 }
 
+/// Copies raw storage, including uninitialized bytes and pointer provenance.
+#[rustc_intrinsic]
+pub(crate) const unsafe fn copy<T>(src: *const T, dst: *mut T, count: usize) {
+    loop {}
+}
+
+#[rustc_intrinsic]
+pub(crate) const unsafe fn copy_nonoverlapping<T>(src: *const T, dst: *mut T, count: usize) {
+    loop {}
+}
+
 /// A value of type `T` that is not there: memory to write each part of
 /// before it is used (`array::from_fn`'s array).
 #[rustc_intrinsic]
