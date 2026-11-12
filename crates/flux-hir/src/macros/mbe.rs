@@ -894,6 +894,34 @@ impl<'a> CallInput<'a> {
     /// an error with what was expected if they do not make one.
     fn fragment(&self, pos: usize, kind: FragKind) -> Result<usize, (TextRange, String)> {
         let at = |k: SyntaxKind| self.glued.get(pos).is_some_and(|g| g.kind == k);
+        if kind == FragKind::Path && at(T!['(']) && self.toks[pos].origin.range.is_empty() {
+            let mut start = pos;
+            let mut ends = Vec::new();
+            while self
+                .glued
+                .get(start)
+                .is_some_and(|token| token.kind == T!['('])
+                && self.toks[start].origin.range.is_empty()
+            {
+                let close = self.closes[start];
+                if close == u32::MAX {
+                    return Err((self.range(start), "unclosed delimiter".into()));
+                }
+                ends.push(close as usize);
+                start += 1;
+            }
+            let mut end = start + self.fragment(start, kind)?;
+            for close in ends.into_iter().rev() {
+                if end != close {
+                    return Err((
+                        self.range(end.min(self.toks.len() - 1)),
+                        "expected a path".into(),
+                    ));
+                }
+                end += 1;
+            }
+            return Ok(end - pos);
+        }
         match kind {
             FragKind::Tt => {
                 if is_open(self.glued[pos].kind) {
@@ -1215,7 +1243,10 @@ impl Rules {
                     }
                     &Loc::MetaVarDecl { kind, .. } => {
                         if let Some(token) = token
-                            && may_begin(kind, token.kind)
+                            && (may_begin(kind, token.kind)
+                                || kind == FragKind::Path
+                                    && token.kind == T!['(']
+                                    && input.toks[token.raw as usize].origin.range.is_empty())
                             && !(kind == FragKind::Ident
                                 && token.kind == T![crate]
                                 && super::definition_crate(

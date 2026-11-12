@@ -37,6 +37,8 @@ pub struct InferenceResult {
     pub binding_types: ArenaMap<Binding, Ty>,
     /// The field each `Field` expression reads, by index.
     pub field_indices: ArenaMap<Expr, u32>,
+    /// Unit variants named through a normalized associated type.
+    pub unit_variants: ArenaMap<Expr, (StructId, u32)>,
     pub offsets: ArenaMap<Expr, (Ty, Box<[u32]>)>,
     /// How many references a `Field` or `Index` expression's base is
     /// dereferenced through first: one for `r.a` with `r: &S`, or `r[0]`
@@ -431,6 +433,7 @@ impl<'a> Ctx<'a> {
             never_coercions: ArenaMap::new(),
             binding_types: ArenaMap::new(),
             field_indices: ArenaMap::new(),
+            unit_variants: ArenaMap::new(),
             offsets: ArenaMap::new(),
             field_derefs: ArenaMap::new(),
             unsized_indices: ArenaMap::new(),
@@ -639,6 +642,7 @@ struct Ctx<'a> {
     never_coercions: ArenaMap<Expr, Ty>,
     binding_types: ArenaMap<Binding, Ty>,
     field_indices: ArenaMap<Expr, u32>,
+    unit_variants: ArenaMap<Expr, (StructId, u32)>,
     offsets: ArenaMap<Expr, (Ty, Box<[u32]>)>,
     field_derefs: ArenaMap<Expr, u32>,
     unsized_indices: ArenaMap<Expr, ()>,
@@ -1529,7 +1533,8 @@ impl Ctx<'_> {
                 .map(|name| name.name)
                 .collect();
         }
-        let mut walker = crate::regions::Walker::new(self.items, self.module, names);
+        let mut walker = self.body_walker();
+        walker.names = names;
         walker.body = local || argument;
         walker.infer_objects = local || argument;
         walker.scope = TypeScope {
@@ -1632,6 +1637,19 @@ impl Ctx<'_> {
                     }
                     (item.is_some(), item.is_none())
                 }
+                Expr::Path(Res::Function(_))
+                    if call_of.contains_key(&expr)
+                        && calls.get(expr).is_some_and(|instance| {
+                            crate::regions::named_call_lifetimes(
+                                self.items,
+                                self.sigs,
+                                instance.function,
+                            )
+                            .is_some()
+                        }) =>
+                {
+                    (true, false)
+                }
                 // The self type's are in `call_regions`.
                 Expr::Path(Res::Function(_))
                     if calls
@@ -1730,6 +1748,16 @@ impl Ctx<'_> {
             .and_then(|f| self.items.impl_of(f))
             .and_then(|imp| self.sigs.regions.impls.get(imp))
             .map(|r| &*r.self_ty);
+        if let Some(imp) = self.owner_fn.and_then(|f| self.items.impl_of(f))
+            && let Some(regions) = self.sigs.regions.impls.get(imp)
+        {
+            walker.self_types = &regions.types;
+            walker.self_projection_owner = self
+                .sigs
+                .impl_traits
+                .get(imp)
+                .map(|tr| (tr.trait_, regions.trait_lifetimes.clone()));
+        }
         walker.scope = TypeScope {
             self_ty: self.self_ty,
             generics: &self.generics,
@@ -1916,9 +1944,22 @@ impl Ctx<'_> {
             ty: Ty,
             recipe: (&[crate::FnRegion], &mut usize),
             captures: (&[Ty], &[Ty]),
+            projections: (
+                &[crate::FnProjection],
+                &[(crate::AliasTy, Vec<crate::FnRegion>)],
+            ),
             origin: TextRange,
         ) -> Ty {
             let (row, next) = recipe;
+            if let Some(crate::FnRegion::Projection(index)) = row.get(*next)
+                && projections
+                    .0
+                    .get(*index as usize)
+                    .is_some_and(|p| Ty::alias(p.alias) == ty)
+            {
+                *next += 1;
+                return Ty::alias(projections.1[*index as usize].0);
+            }
             if let Some(crate::FnRegion::Type(index)) = row.get(*next)
                 && captures.0.get(*index as usize) == Some(&ty)
             {
@@ -1930,7 +1971,7 @@ impl Ctx<'_> {
                     *next += 1;
                     Ty::new(TyKind::Ref(
                         mutable,
-                        rebuild(cx, inner, (row, next), captures, origin),
+                        rebuild(cx, inner, (row, next), captures, projections, origin),
                     ))
                 }
                 TyKind::Adt(adt, args) => {
@@ -1938,21 +1979,22 @@ impl Ctx<'_> {
                     Ty::new(TyKind::Adt(
                         adt,
                         crate::ty::map_list(args, |ty| {
-                            rebuild(cx, ty, (row, next), captures, origin)
+                            rebuild(cx, ty, (row, next), captures, projections, origin)
                         }),
                     ))
                 }
                 TyKind::Array(inner, length) => Ty::array_of(
-                    rebuild(cx, inner, (row, next), captures, origin),
+                    rebuild(cx, inner, (row, next), captures, projections, origin),
                     cx.fill_placeholders(length, origin),
                 ),
                 TyKind::Dynamic(object) => {
                     *next += crate::regions::object_own_slots(cx.items, object);
-                    Ty::new(TyKind::Dynamic(
-                        object.map(|ty| rebuild(cx, ty, (row, next), captures, origin)),
-                    ))
+                    Ty::new(TyKind::Dynamic(object.map(|ty| {
+                        rebuild(cx, ty, (row, next), captures, projections, origin)
+                    })))
                 }
-                _ => ty.map_children(|ty| rebuild(cx, ty, (row, next), captures, origin)),
+                _ => ty
+                    .map_children(|ty| rebuild(cx, ty, (row, next), captures, projections, origin)),
             }
         }
         let recipe = signature
@@ -1963,11 +2005,38 @@ impl Ctx<'_> {
             .iter()
             .map(|&ty| self.fill_placeholders(ty, origin))
             .collect();
+        fn replace_captured(ty: Ty, before: &[Ty], after: &[Ty]) -> Ty {
+            if let Some(index) = before.iter().position(|&old| old == ty) {
+                after[index]
+            } else {
+                ty.map_children(|child| replace_captured(child, before, after))
+            }
+        }
+        let projections: Vec<_> = recipe
+            .projections
+            .iter()
+            .map(|p| {
+                (
+                    p.alias
+                        .map_args(|arg| replace_captured(arg, recipe.types, &captures)),
+                    p.inputs.to_vec(),
+                )
+            })
+            .collect();
         let types: Vec<_> = signature
             .inputs_output
             .iter()
             .zip(recipe.inputs_output)
-            .map(|(&ty, row)| rebuild(self, ty, (row, &mut 0), (recipe.types, &captures), origin))
+            .map(|(&ty, row)| {
+                rebuild(
+                    self,
+                    ty,
+                    (row, &mut 0),
+                    (recipe.types, &captures),
+                    (recipe.projections, &projections),
+                    origin,
+                )
+            })
             .collect();
         let rows: Vec<_> = recipe
             .inputs_output
@@ -1976,11 +2045,12 @@ impl Ctx<'_> {
             .collect();
         Ty::new(TyKind::FnPtr(crate::FnSigTy {
             inputs_output: Ty::list(&types),
-            regions: Some(crate::FnPtrRegions::intern(
+            regions: Some(crate::FnPtrRegions::intern_with_projections(
                 recipe.bound,
                 recipe.free,
                 &rows,
                 &captures,
+                &projections,
             )),
             ..signature
         }))
@@ -2040,7 +2110,7 @@ impl Ctx<'_> {
     /// The generic argument `ty_ref` of the body, for `param`: a type, or
     /// for a const parameter, a constant.
     fn resolve_generic_arg_ref(&mut self, ty_ref: TypeRefId, param: &flux_hir::GenericParam) -> Ty {
-        self.resolve_generic_arg_ref_in(ty_ref, param, false)
+        self.resolve_generic_arg_ref_in(ty_ref, param, true)
     }
 
     fn resolve_generic_arg_ref_in(
@@ -2243,10 +2313,12 @@ impl Ctx<'_> {
     fn path_const(&mut self, expr: ExprId, konst: ConstId) -> Ty {
         let items = self.items;
         let Some(owner) = items.consts[konst].owner.and_then(flux_hir::Owner::as_impl) else {
-            return self.sigs.consts.get(konst).copied().unwrap_or(Ty::ERROR);
+            let ty = self.sigs.consts.get(konst).copied().unwrap_or(Ty::ERROR);
+            return self.normalize(ty, self.range(expr));
         };
         if items.impls[owner].generics.is_empty() {
-            return self.sigs.consts.get(konst).copied().unwrap_or(Ty::ERROR);
+            let ty = self.sigs.consts.get(konst).copied().unwrap_or(Ty::ERROR);
+            return self.normalize(ty, self.range(expr));
         }
         let target = self.impl_path_target(expr, owner);
         // Of blocks for different instances of a struct with a constant
@@ -2633,6 +2705,11 @@ impl Ctx<'_> {
             _ => None,
         };
         let string_constant = path_ty == Some(Ty::new(TyKind::Ref(Mutability::Not, Ty::STR)));
+        let byte_constant = path_ty
+            == Some(Ty::new(TyKind::Ref(
+                Mutability::Not,
+                Ty::slice(Ty::int(IntTy::U8)),
+            )));
         // Reference literals (`"a"`, `b"a"`) also match without peeling.
         let reference_literal = |e: ExprId| {
             matches!(
@@ -2641,7 +2718,7 @@ impl Ctx<'_> {
             )
         };
         let sees_through = match body.pats[pat] {
-            Pat::Expr(e) => !reference_literal(e) && !string_constant,
+            Pat::Expr(e) => !reference_literal(e) && !string_constant && !byte_constant,
             Pat::Tuple { .. }
             | Pat::Slice { .. }
             | Pat::TupleStruct { .. }
@@ -2760,6 +2837,10 @@ impl Ctx<'_> {
                     && let Some((_, eq)) = self.lang_fn(BinaryOp::Cmp(CmpOp::Eq))
                 {
                     self.overloads.insert(*expr, (eq, vec![Ty::STR, Ty::STR]));
+                }
+                if byte_constant && let Some((_, eq)) = self.lang_fn(BinaryOp::Cmp(CmpOp::Eq)) {
+                    let slice = Ty::slice(Ty::int(IntTy::U8));
+                    self.overloads.insert(*expr, (eq, vec![slice, slice]));
                 }
                 if let Expr::Path(_) = body.exprs[*expr] {
                     self.deferred.push(Deferred::ConstPat {
@@ -3264,6 +3345,20 @@ impl Ctx<'_> {
                 .copied()
                 .unwrap_or(Ty::ERROR),
             Expr::Path(Res::Assoc { ty, trait_, name }) => {
+                if trait_.is_none()
+                    && let Some(written) = *ty
+                {
+                    let target = self.resolve_path_type(written, true);
+                    let target = self.normalize(target, self.range(id));
+                    if let TyKind::Adt(adt, _) = target.kind()
+                        && let Some(variant) = self.items.structs[adt.strukt].variant_named(*name)
+                        && self.items.structs[adt.strukt].variant(variant).kind == StructKind::Unit
+                    {
+                        self.unit_variants.insert(id, (adt.strukt, variant));
+                        self.meet_expectation(id, target);
+                        return target;
+                    }
+                }
                 match self.resolve_assoc(id, *ty, *trait_, *name) {
                     Some((AssocItem::Const(c), target, trait_args)) => {
                         self.instantiate_const(id, c, target, trait_args.as_deref())
@@ -3364,7 +3459,8 @@ impl Ctx<'_> {
                         },
                     );
                 }
-                self.sigs.consts.get(*c).copied().unwrap_or(Ty::ERROR)
+                let ty = self.sigs.consts.get(*c).copied().unwrap_or(Ty::ERROR);
+                self.normalize(ty, self.range(id))
             }
             Expr::Path(Res::Err) => Ty::ERROR,
             Expr::Tuple(fields) => {
@@ -3723,11 +3819,7 @@ impl Ctx<'_> {
                 *is_move,
             ),
             Expr::Cast { expr, ty } => {
-                let annotated = matches!(
-                    body.types[*ty],
-                    flux_hir::TypeRef::Ptr { .. } | flux_hir::TypeRef::FnPtr { .. }
-                );
-                let to = self.resolve_body_type(*ty, annotated, false);
+                let to = self.resolve_body_type(*ty, true, false);
                 let from = self.infer_expr(*expr);
                 // As in rustc, an unsuffixed literal cast to an integer type
                 // has that type: `300 as u8` is out of range, not 44.
@@ -3753,6 +3845,10 @@ impl Ctx<'_> {
                 // cast. Mark the operand so MIR moves the owner through its
                 // unsizing rather than treating it as a scalar enum cast.
                 if crate::shared_pointees(self.items, self.shallow(from), self.shallow(to))
+                    .or_else(|| {
+                        flux_solve::box_pointee(self.shallow(from))
+                            .zip(flux_solve::box_pointee(self.shallow(to)))
+                    })
                     .is_some()
                     && self.can_coerce(from, to, *expr)
                 {
@@ -4417,8 +4513,30 @@ impl Ctx<'_> {
         // arguments may tell their parameters' types.
         for closures in [false, true] {
             // What can be selected first, as for method calls.
-            if closures && args.iter().any(|&arg| self.is_closure(arg)) {
-                self.select_obligations();
+            if closures {
+                let segment = self.source_map.segments.get(callee).copied();
+                let site = CallSite {
+                    callee: segment.unwrap_or_else(|| self.range(callee)),
+                    whole: self.range(id),
+                    receiver: None,
+                    args,
+                    qself: self.qself_range(callee),
+                    expr: callee,
+                };
+                let known = match self.body.exprs[callee] {
+                    // `S::f`, `<S>::f`: found on a type written in the path.
+                    Expr::Path(Res::Assoc { ty: Some(_), .. }) => target,
+                    _ => target.filter(|_| {
+                        self.body
+                            .generic_args
+                            .get(callee)
+                            .is_some_and(|g| g.ty.is_some())
+                    }),
+                };
+                self.register_call_bounds(function, &generic_args, site, known);
+                if args.iter().any(|&arg| self.is_closure(arg)) {
+                    self.select_obligations();
+                }
             }
             for (i, &arg) in args.iter().enumerate() {
                 if self.is_closure(arg) != closures {
@@ -4449,26 +4567,6 @@ impl Ctx<'_> {
                 }
             }
         }
-        let segment = self.source_map.segments.get(callee).copied();
-        let site = CallSite {
-            callee: segment.unwrap_or_else(|| self.range(callee)),
-            whole: self.range(id),
-            receiver: None,
-            args,
-            qself: self.qself_range(callee),
-            expr: callee,
-        };
-        let known = match self.body.exprs[callee] {
-            // `S::f`, `<S>::f`: found on a type written in the path.
-            Expr::Path(Res::Assoc { ty: Some(_), .. }) => target,
-            _ => target.filter(|_| {
-                self.body
-                    .generic_args
-                    .get(callee)
-                    .is_some_and(|g| g.ty.is_some())
-            }),
-        };
-        self.register_call_bounds(function, &generic_args, site, known);
         if self.function_needs_unsafe(function) && self.unsafe_depth == 0 {
             self.error(
                 self.range(id),
@@ -7126,6 +7224,30 @@ impl Ctx<'_> {
                 }
             }
             let mut tables = Vec::new();
+            if let Some(written) = written.filter(|written| !written.lifetimes.is_empty())
+                && direct.contains(&expr)
+                && let Some(want) =
+                    crate::regions::named_call_lifetimes(self.items, self.sigs, instance.function)
+            {
+                if written.lifetimes.len() != want as usize {
+                    self.error(
+                        written.segment,
+                        format!(
+                            "function takes {want} lifetime arguments but {} were supplied",
+                            written.lifetimes.len()
+                        ),
+                    );
+                } else {
+                    let mut walker = self.body_walker();
+                    let row = written
+                        .lifetimes
+                        .iter()
+                        .map(|&lifetime| walker.named(lifetime))
+                        .collect();
+                    self.report_walker_errors(walker.errors);
+                    tables.push((crate::regions::FUNCTION_LIFETIMES_ARG, row));
+                }
+            }
             for (index, written) in written_types {
                 let Some(&ty) = instance.args.get(index as usize) else {
                     continue;
@@ -7193,10 +7315,6 @@ impl Ctx<'_> {
         let mut expr_regions = self.constructor_regions(&calls);
         for (expr, data) in self.body.exprs.iter() {
             if let Expr::Cast { ty: written, .. } = data
-                && matches!(
-                    self.body.types[*written],
-                    flux_hir::TypeRef::Ptr { .. } | flux_hir::TypeRef::FnPtr { .. }
-                )
                 && let Some(&ty) = self.expr_types.get(expr)
                 && let Some(regions) = self.written_type_regions(*written, ty)
                 && regions.iter().any(|r| *r != crate::regions::Region::Erased)
@@ -7386,6 +7504,7 @@ impl Ctx<'_> {
             expr_types: self.expr_types,
             binding_types: self.binding_types,
             field_indices: self.field_indices,
+            unit_variants: self.unit_variants,
             offsets: self.offsets,
             field_derefs: self.field_derefs,
             unsized_indices: self.unsized_indices,
@@ -7689,6 +7808,16 @@ impl Ctx<'_> {
                         || self.methods.get(id).is_some_and(|m| m.autoref.is_some()) =>
                 {
                     places.insert(receiver);
+                }
+                // Fn and FnMut calls borrow their callee just as methods
+                // borrow their receiver. FnOnce still consumes the value.
+                Expr::Call { callee, .. }
+                    if self
+                        .methods
+                        .get(id)
+                        .is_some_and(|method| method.autoref.is_some()) =>
+                {
+                    places.insert(callee);
                 }
                 // An unsized `self` passed on is reported with the
                 // parameter it came from, as rustc does.
@@ -7997,8 +8126,11 @@ impl Ctx<'_> {
                     let ty = self.resolve(ty, reported);
                     // A range reports its other types itself.
                     let string = ty == Ty::new(TyKind::Ref(Mutability::Not, Ty::STR));
+                    let bytes =
+                        ty == Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(Ty::int(IntTy::U8))));
                     if !in_range
                         && !string
+                        && !bytes
                         && !crate::structural_pattern_type(self.items, self.sigs, ty)
                     {
                         self.error(

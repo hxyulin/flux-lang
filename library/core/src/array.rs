@@ -163,6 +163,12 @@ impl<T, const N: usize> IntoIter<T, N> {
     }
 }
 
+impl<T: Debug, const N: usize> Debug for IntoIter<T, N> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        f.debug_tuple("IntoIter").field(&self.as_slice()).finish()
+    }
+}
+
 impl<T, const N: usize> IntoIterator for [T; N] {
     type Item = T;
     type IntoIter = IntoIter<T, N>;

@@ -1,4 +1,4 @@
-//! IP and socket-address values. This module does not open network sockets.
+//! IP and socket-address values and host-name resolution.
 use crate::alloc_crate::string::String;
 use core::fmt::{self, Write};
 use core::hash::{Hash, Hasher};
@@ -740,3 +740,7 @@ pub enum Shutdown {
     Write,
     Both,
 }
+
+#[path = "net/lookup.rs"]
+mod lookup;
+pub use lookup::ToSocketAddrs;

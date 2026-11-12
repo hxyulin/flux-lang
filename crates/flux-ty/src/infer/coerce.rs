@@ -712,8 +712,15 @@ impl Ctx<'_> {
                 (TyKind::Array(elem, _), TyKind::Slice(wanted)) => {
                     return self.can_unify(elem, wanted);
                 }
-                (_, TyKind::Dynamic(_)) if !self.can_unify(p, q) => {
-                    return !self.sigs.is_unsized(p);
+                (_, TyKind::Dynamic(target)) if !self.can_unify(p, q) => {
+                    return match p.kind() {
+                        TyKind::Dynamic(source) => {
+                            flux_solve::objects::supertraits_of(self.items, source.trait_)
+                                .contains(&target.trait_)
+                                && crate::objects::retains_auto_traits(self.sigs, p, q)
+                        }
+                        _ => !self.sigs.is_unsized(p),
+                    };
                 }
                 _ => {}
             }

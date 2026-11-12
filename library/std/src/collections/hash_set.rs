@@ -61,6 +61,9 @@ impl<T: Eq + Hash, S: BuildHasher> Extend<T> for HashSet<T, S> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) { for value in iter { self.insert(value); } }
 }
 pub struct Iter<'a, T> { inner: hash_map::Keys<'a, T, ()> }
+impl<T> Clone for Iter<'_, T> {
+    fn clone(&self) -> Self { Self { inner: self.inner.clone() } }
+}
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
     fn next(&mut self) -> Option<Self::Item> { self.inner.next() }

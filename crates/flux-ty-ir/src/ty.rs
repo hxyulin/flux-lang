@@ -253,6 +253,9 @@ pub struct OpaqueTy {
 pub struct DynTy {
     /// Represented callable inputs, including bound and captured regions.
     pub callable: Option<Ty>,
+    /// Quantified non-callable principal and equality rows. The function
+    /// signature is a region schema only and has no runtime callable meaning.
+    pub quantified: Option<Ty>,
     /// Canonically ordered, trusted auto-trait bounds of this object.
     pub auto_traits: &'static [crate::TraitRef],
     pub trait_: TraitId,
@@ -264,6 +267,51 @@ pub struct DynTy {
 }
 
 impl DynTy {
+    pub fn quantified_signature(self) -> Option<FnSigTy> {
+        match self.quantified?.kind() {
+            TyKind::FnPtr(signature) => Some(signature),
+            _ => None,
+        }
+    }
+    /// Validate the parameter layout used by a quantified ordinary object.
+    pub fn valid_quantified(self, owners: usize) -> bool {
+        let Some(signature) = self.quantified_signature() else {
+            return self.quantified.is_none();
+        };
+        let Some(recipe) = signature.regions else {
+            return false;
+        };
+        let Some(principal) = signature.params().get(..owners) else {
+            return false;
+        };
+        self.callable.is_none()
+            && !signature.is_unsafe
+            && signature.abi == flux_hir::Abi::Rust
+            && signature.ret() == Ty::UNIT
+            && signature.params().len() == owners + self.args.len() + self.assoc_tys.len()
+            && principal.iter().all(
+                |ty| matches!(ty.kind(), TyKind::Ref(Mutability::Not, inner) if inner == Ty::UNIT),
+            )
+            && signature.params()[owners..].iter().copied().eq(self
+                .args
+                .iter()
+                .chain(self.assoc_tys)
+                .copied())
+            && recipe.inputs_output.len() == signature.params().len() + 1
+            && recipe.projections.is_empty()
+            && recipe.inputs_output[..owners]
+                .iter()
+                .all(|row| matches!(&**row, [FnRegion::Bound(index)] if *index < recipe.bound))
+            && (0..recipe.bound).all(|index| {
+                recipe.inputs_output[..owners]
+                    .iter()
+                    .any(|row| **row == [FnRegion::Bound(index)])
+            })
+            && recipe
+                .inputs_output
+                .last()
+                .is_some_and(|row| row.is_empty())
+    }
     pub fn callable_signature(self) -> Option<FnSigTy> {
         match self.callable?.kind() {
             TyKind::FnPtr(signature) => Some(signature),
@@ -281,8 +329,10 @@ impl DynTy {
         let args = map_list(self.args, &mut f);
         let assoc = map_list(self.assoc_tys, &mut f);
         let callable = self.callable.map(&mut f);
+        let quantified = self.quantified.map(&mut f);
         DynTy {
             callable,
+            quantified,
             args,
             assoc_tys: assoc,
             ..self
@@ -344,6 +394,15 @@ pub enum FnRegion {
     Static,
     /// Splice the region slots of this captured type after substitution.
     Type(u32),
+    /// Materialize a bound-dependent associated output from its input recipe.
+    Projection(u32),
+}
+
+/// One associated output's template and original occurrence input recipe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FnProjection {
+    pub alias: AliasTy,
+    pub inputs: &'static [FnRegion],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -353,16 +412,28 @@ pub struct FnPtrRegions {
     /// One recipe per parameter, then the result.
     pub inputs_output: &'static [&'static [FnRegion]],
     pub types: &'static [Ty],
+    pub projections: &'static [FnProjection],
 }
 
 impl FnPtrRegions {
     pub fn intern(bound: u32, free: u32, rows: &[Vec<FnRegion>], types: &[Ty]) -> &'static Self {
+        Self::intern_with_projections(bound, free, rows, types, &[])
+    }
+
+    pub fn intern_with_projections(
+        bound: u32,
+        free: u32,
+        rows: &[Vec<FnRegion>],
+        types: &[Ty],
+        projections: &[(AliasTy, Vec<FnRegion>)],
+    ) -> &'static Self {
         use std::sync::Mutex;
         type Regions = (
             HashTable<(u64, &'static FnPtrRegions)>,
             StaticSliceArena<FnRegion>,
             StaticSliceArena<&'static [FnRegion]>,
             StaticSliceArena<FnPtrRegions>,
+            StaticSliceArena<FnProjection>,
         );
         static REGIONS: LazyLock<Mutex<Regions>> = LazyLock::new(|| {
             Mutex::new((
@@ -370,14 +441,22 @@ impl FnPtrRegions {
                 StaticSliceArena::default(),
                 StaticSliceArena::default(),
                 StaticSliceArena::default(),
+                StaticSliceArena::default(),
             ))
         });
-        let hash = FxBuildHasher.hash_one((bound, free, rows, types));
+        let hash = FxBuildHasher.hash_one((bound, free, rows, types, projections));
         let mut arena = REGIONS.lock().unwrap();
         if let Some(&(_, found)) = arena.0.find(hash, |&(h, r)| {
             h == hash
                 && r.bound == bound
                 && r.free == free
+                && r.projections.len() == projections.len()
+                && r.projections
+                    .iter()
+                    .zip(projections)
+                    .all(|(stored, (alias, inputs))| {
+                        stored.alias == *alias && stored.inputs == inputs.as_slice()
+                    })
                 && r.types == types
                 && r.inputs_output.len() == rows.len()
                 && r.inputs_output
@@ -389,11 +468,20 @@ impl FnPtrRegions {
         }
         let rows: Vec<_> = rows.iter().map(|row| arena.1.alloc(row)).collect();
         let rows = arena.2.alloc(&rows);
+        let projections: Vec<_> = projections
+            .iter()
+            .map(|(alias, inputs)| FnProjection {
+                alias: *alias,
+                inputs: arena.1.alloc(inputs),
+            })
+            .collect();
+        let projections = arena.4.alloc(&projections);
         let value = FnPtrRegions {
             bound,
             free,
             inputs_output: rows,
             types: Ty::list(types),
+            projections,
         };
         let value = &arena.3.alloc(&[value])[0];
         arena.0.insert_unique(hash, (hash, value), |&(h, _)| h);
@@ -436,11 +524,21 @@ impl FnSigTy {
         let list = map_list(self.inputs_output, &mut f);
         let regions = self.regions.map(|r| {
             let types = map_list(r.types, &mut f);
-            if types == r.types {
+            let projections: Vec<_> = r
+                .projections
+                .iter()
+                .map(|p| (p.alias.map_args(&mut f), p.inputs.to_vec()))
+                .collect();
+            if types == r.types
+                && r.projections
+                    .iter()
+                    .zip(&projections)
+                    .all(|(old, (alias, _))| old.alias == *alias)
+            {
                 r
             } else {
                 let rows: Vec<_> = r.inputs_output.iter().map(|row| row.to_vec()).collect();
-                FnPtrRegions::intern(r.bound, r.free, &rows, types)
+                FnPtrRegions::intern_with_projections(r.bound, r.free, &rows, types, &projections)
             }
         });
         FnSigTy {
@@ -1171,7 +1269,7 @@ impl TyKind {
             TyKind::FnPtr(sig) => (sig.inputs_output, &[]),
             TyKind::FnDef(def) => (def.args, def.sig.inputs_output),
             TyKind::Dynamic(d) => {
-                inline[0] = d.callable;
+                inline = [d.callable, d.quantified];
                 (d.args, d.assoc_tys)
             }
             _ => (&[], &[]),

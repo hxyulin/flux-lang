@@ -227,22 +227,30 @@ fn associated_family_regions_match_rustc() {
 }
 
 #[test]
-fn family_pointer_regions_remain_an_explicit_boundary() {
+fn qualified_family_pointer_regions_are_represented() {
     let root =
         std::env::temp_dir().join(format!("flux-gat-pointer-boundary-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
-    for (name, source) in [
+    for (name, source, represented) in [
         (
             "generic",
             "trait L{type Ref<'a>where Self:'a;}type P<T:L>=for<'a>fn(&'a T)-><T as L>::Ref<'a>;fn main(){}",
+            true,
         ),
         (
             "concrete",
             "trait L{type Ref<'a>where Self:'a;}struct H;impl L for H{type Ref<'a>=&'a u32;}type P=for<'a>fn(&'a H)-><H as L>::Ref<'a>;fn main(){}",
+            true,
         ),
         (
             "owner_only",
             "trait V<'a>{type Out;fn get(&self)->Self::Out;}type P<'a,T:V<'a>>=fn()-><T as V<'a>>::Out;fn main(){}",
+            true,
+        ),
+        (
+            "unqualified",
+            "trait L{type Ref<'a>where Self:'a;}fn f<T:L>(_:for<'a>fn(&'a T)->T::Ref<'a>){}fn main(){}",
+            false,
         ),
     ] {
         let path = root.join(format!("{name}.rs"));
@@ -262,12 +270,22 @@ fn family_pointer_regions_remain_an_explicit_boundary() {
         let (_, _, hir) = flux_hir::lower_text(&path, source);
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
-        assert!(
-            typed.diagnostics.iter().any(|d| d.message
-                == "associated family regions in function pointers are not supported yet"),
-            "{name}: {:?}",
-            typed.diagnostics
-        );
+        if represented {
+            assert!(
+                typed.diagnostics.is_empty(),
+                "{name}: {:?}",
+                typed.diagnostics
+            );
+            let mir = flux_mir::build_file(&hir, &typed);
+            assert!(mir.diagnostics.is_empty(), "{name}: {:?}", mir.diagnostics);
+        } else {
+            assert!(
+                typed.diagnostics.iter().any(|d| d.message
+                    == "associated family regions in function pointers are not supported yet"),
+                "{name}: {:?}",
+                typed.diagnostics
+            );
+        }
     }
     std::fs::remove_dir_all(root).unwrap();
 }

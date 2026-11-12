@@ -1,0 +1,25 @@
+use std::io::{self,Write};
+use std::sync::{Arc,Mutex};
+use tracing_subscriber::fmt::{format::FmtSpan,writer::BoxMakeWriter};
+#[derive(Clone)]
+struct Capture(Arc<Mutex<Vec<u8>>>);
+impl Write for Capture {
+    fn write(&mut self,bytes:&[u8])->io::Result<usize>{self.0.lock().unwrap().extend_from_slice(bytes);Ok(bytes.len())}
+    fn flush(&mut self)->io::Result<()>{Ok(())}
+}
+fn main(){
+    let output=Arc::new(Mutex::new(Vec::new()));
+    let writer=BoxMakeWriter::new({let output=output.clone();move||Capture(output.clone())});
+    let subscriber=tracing_subscriber::fmt().without_time().with_ansi(false).with_target(false)
+        .with_max_level(tracing::Level::TRACE).with_span_events(FmtSpan::NEW).with_writer(writer).finish();
+    tracing::subscriber::with_default(subscriber,||{
+        tracing::info!(answer=42,"hello");
+        let span=tracing::info_span!("work",step=1);
+        let _entered=span.enter();
+        tracing::warn!("inside");
+    });
+    let bytes=output.lock().unwrap().clone();
+    let text=String::from_utf8(bytes).unwrap();
+    assert!(text.contains("hello")&&text.contains("inside")&&text.contains("new"));
+    print!("{}",text);
+}

@@ -137,11 +137,7 @@ fn compiler_probes_check_flux_capabilities_without_a_toolchain() {
             .unwrap()
             .contains("panic=\"abort\"")
     );
-    for (file, succeeds) in [
-        ("valid.rs", true),
-        ("invalid.rs", false),
-        ("span.rs", false),
-    ] {
+    for (file, succeeds) in [("valid.rs", true), ("invalid.rs", false), ("span.rs", true)] {
         let output = invoke(&[
             "--edition=2024",
             "--crate-name=probe",

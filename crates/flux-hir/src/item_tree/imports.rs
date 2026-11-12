@@ -13,6 +13,7 @@ use super::{ModuleId, Use, UseKind};
 pub struct Uses {
     values: Vec<Use>,
     names: FxHashMap<(ModuleId, Symbol), Vec<usize>>,
+    globs: FxHashMap<ModuleId, Vec<usize>>,
 }
 
 impl Uses {
@@ -27,7 +28,21 @@ impl Uses {
                 .or_default()
                 .push(self.values.len());
         }
+        if matches!(import.kind, UseKind::Glob) {
+            self.globs
+                .entry(import.module)
+                .or_default()
+                .push(self.values.len());
+        }
         self.values.push(import);
+    }
+
+    pub(crate) fn globs(&self, module: ModuleId) -> impl Iterator<Item = (usize, &Use)> {
+        self.globs
+            .get(&module)
+            .into_iter()
+            .flatten()
+            .map(|&index| (index, &self.values[index]))
     }
 
     /// The most recent matching binding not already followed by this lookup.

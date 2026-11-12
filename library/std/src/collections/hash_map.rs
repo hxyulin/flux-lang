@@ -515,6 +515,13 @@ impl<'a, K, V, S> IntoIterator for &'a mut HashMap<K, V, S> {
 pub struct Keys<'a, K, V> {
     inner: Iter<'a, K, V>,
 }
+impl<K, V> Clone for Keys<'_, K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
 impl<'a, K, V> Iterator for Keys<'a, K, V> {
     type Item = &'a K;
     fn next(&mut self) -> Option<Self::Item> {
@@ -528,6 +535,13 @@ impl<K, V> ExactSizeIterator for Keys<'_, K, V> {}
 impl<K, V> FusedIterator for Keys<'_, K, V> {}
 pub struct Values<'a, K, V> {
     inner: Iter<'a, K, V>,
+}
+impl<K, V> Clone for Values<'_, K, V> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 impl<'a, K, V> Iterator for Values<'a, K, V> {
     type Item = &'a V;

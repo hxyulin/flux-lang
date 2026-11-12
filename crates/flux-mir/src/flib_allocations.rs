@@ -32,6 +32,7 @@ pub(super) fn value_height(value: &Value, e: &mut Encoder, level: u32) -> Result
     }
     let extra = match value {
         Value::Ref(value)
+        | Value::Union { value, .. }
         | Value::InteriorRef(value)
         | Value::DynPointer { pointer: value, .. }
         | Value::PointerView { pointer: value, .. }
@@ -113,6 +114,7 @@ pub(super) fn decoded_height(value: &Value, d: &Decoder<'_>) -> Result<u32, Erro
     }
     let extra = match value {
         Value::Ref(value)
+        | Value::Union { value, .. }
         | Value::InteriorRef(value)
         | Value::DynPointer { pointer: value, .. }
         | Value::PointerView { pointer: value, .. }
@@ -217,6 +219,46 @@ mod tests {
         };
         assert_eq!(inner.as_ref(), &Value::Bool(true));
     }
+    #[test]
+    fn union_storage_keeps_its_field_and_shared_payload() {
+        let payload = Arc::new(Value::Aggregate(
+            vec![Value::Int {
+                bits: 7,
+                ty: flux_ty::IntTy::U8,
+            }]
+            .into(),
+        ));
+        let value = Value::Aggregate(
+            vec![
+                Value::Union {
+                    field: 2,
+                    value: payload.clone(),
+                },
+                Value::Union {
+                    field: 2,
+                    value: payload,
+                },
+            ]
+            .into(),
+        );
+        let bytes = encoded(&value);
+        let mut decoder = Decoder::new(&bytes);
+        let copy = Value::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+        assert_eq!(copy, value);
+        let Value::Aggregate(fields) = copy else {
+            panic!("aggregate");
+        };
+        let [
+            Value::Union { field: 2, value: a },
+            Value::Union { field: 2, value: b },
+        ] = &*fields
+        else {
+            panic!("stored fields");
+        };
+        assert!(Arc::ptr_eq(a, b));
+    }
+
     #[test]
     fn shared_constant_graphs_encode_linearly_and_keep_allocation_identity() {
         let small = encoded(&dag(20));

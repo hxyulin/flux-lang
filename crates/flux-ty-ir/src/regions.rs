@@ -40,6 +40,9 @@ pub const IMPL_SELF_ARG: u32 = u32::MAX;
 /// owner lifetimes, not the slots of a type.
 pub const TRAIT_LIFETIMES_ARG: u32 = u32::MAX - 1;
 
+/// Explicit own lifetimes of a free function with represented early binders.
+pub const FUNCTION_LIFETIMES_ARG: u32 = u32::MAX - 2;
+
 /// How a type's subtyping depends on one of its parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Variance {
@@ -230,6 +233,15 @@ pub struct TraitRegions {
 /// An associated family's contract, under its owner's lifetimes followed by
 /// fresh family-local lifetime parameters. Type parameters follow the same
 /// owner-then-family order in the type signature templates.
+/// An equality on an associated output, in the binder of one output bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FamilyProjection {
+    pub projection: crate::Projection,
+    pub regions: Box<[Region]>,
+    /// Index into the enclosing family's output trait occurrences.
+    pub bound: u32,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FamilyRegions {
     pub names: Box<[LifetimeName]>,
@@ -241,7 +253,7 @@ pub struct FamilyRegions {
     /// Explicit lifetime bounds on the declared output.
     pub output_outlives: Box<[Region]>,
     pub output_traits: Box<[(crate::TraitRef, TraitRefRegions)]>,
-    pub output_projections: Box<[(crate::Projection, Box<[Region]>)]>,
+    pub output_projections: Box<[FamilyProjection]>,
     pub bound_selfs: Box<[Box<[Region]>]>,
     pub bound_traits: Box<[TraitRefRegions]>,
     pub projections: Box<[Box<[Region]>]>,
@@ -336,12 +348,13 @@ pub fn has_projection_inputs(items: &ItemTree, alias: crate::AliasTy) -> bool {
 /// Occurrence rows of a non-callable object's type and equality arguments.
 /// Callable input regions remain bound at each call, not stored in the object.
 pub fn object_region_types(items: &ItemTree, object: crate::DynTy) -> impl Iterator<Item = Ty> {
-    let count = if crate::fn_trait_kind(items, object.trait_).is_some() {
-        0
-    } else {
-        usize::MAX
-    };
-    object.callable.into_iter().chain(
+    let count =
+        if object.quantified.is_some() || crate::fn_trait_kind(items, object.trait_).is_some() {
+            0
+        } else {
+            usize::MAX
+        };
+    object.callable.or(object.quantified).into_iter().chain(
         object
             .args
             .iter()
@@ -353,7 +366,11 @@ pub fn object_region_types(items: &ItemTree, object: crate::DynTy) -> impl Itera
 
 /// The object bound followed by its principal's explicit lifetime arguments.
 pub fn object_own_slots(items: &ItemTree, object: crate::DynTy) -> usize {
-    1 + items.traits[object.trait_].generics.lifetimes.len()
+    1 + if object.quantified.is_some() {
+        0
+    } else {
+        items.traits[object.trait_].generics.lifetimes.len()
+    }
 }
 
 /// The occurrence row of one declared object associated equality, after its
@@ -363,7 +380,7 @@ pub fn object_associated_range(
     object: crate::DynTy,
     name: Symbol,
 ) -> Option<std::ops::Range<usize>> {
-    if crate::fn_trait_kind(items, object.trait_).is_some() {
+    if object.quantified.is_some() || crate::fn_trait_kind(items, object.trait_).is_some() {
         return None;
     }
     let mut at = object_own_slots(items, object)

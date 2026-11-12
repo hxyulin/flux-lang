@@ -16,7 +16,6 @@ fn main() -> ()
 const N: usize
 error 310..311: struct takes 1 lifetime argument but 2 lifetime arguments were supplied
 error 413..415: lifetime arguments in expressions are not supported yet
-error 429..431: lifetime arguments in expressions are not supported yet
 error 455..457: trait takes 1 lifetime argument but 2 lifetime arguments were supplied
 error 485..502: lifetimes in function item values are not supported yet
 error 533..535: lifetime arguments in patterns are not supported yet

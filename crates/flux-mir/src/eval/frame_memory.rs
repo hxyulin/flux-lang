@@ -54,6 +54,17 @@ impl Evaluator<'_> {
         range: TextRange,
     ) -> Result<(), EvalError> {
         self.sync_frame(locals);
+        if dest.projection.first() != Some(&ProjectionElem::Deref)
+            && let Some(origin) = self
+                .local_borrows
+                .last()
+                .and_then(|frame| frame.get(dest.local.index()))
+                .copied()
+                .flatten()
+            && let Some(version) = self.snapshot_versions.get_mut(&origin.token)
+        {
+            *version += 1;
+        }
         if dest.projection.first() == Some(&ProjectionElem::Deref) {
             let pointer = locals[dest.local.index()]
                 .as_ref()
@@ -301,6 +312,9 @@ impl Evaluator<'_> {
         if layout.align < target_layout.align || offset % target_layout.align != 0 {
             return Err(error(range, "unaligned constant pointer write".into()));
         }
+        if let Some(version) = self.snapshot_versions.get_mut(&origin.token) {
+            *version += 1;
+        }
         let mut allocation = self.frame_memory.remove(&origin.token).unwrap();
         let result = self.write_memory(&mut allocation.value, ty, offset, target, value, range, 0);
         self.frame_memory.insert(origin.token, allocation);
@@ -414,6 +428,13 @@ impl Evaluator<'_> {
         }
         if self.maybe_uninit(ty) {
             return Ok(());
+        }
+        if let Value::Union { field, value } = value {
+            let types = flux_solve::fields(self.sigs, ty).ok_or_else(|| unsupported_view(range))?;
+            let ty = *types
+                .get(*field as usize)
+                .ok_or_else(|| unsupported_view(range))?;
+            return self.initialized_at(value, ty, range, memo, depth + 1);
         }
         let (fields, types, variant) = match value {
             Value::Uninit(_) => return Err(error(range, "use of an uninitialized value".into())),

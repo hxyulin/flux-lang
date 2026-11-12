@@ -388,6 +388,8 @@ fn http_redirects_and_interrupted_downloads() {
             while paths.len() < if broken { 1 } else { 2 } {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // macOS inherits the listener's nonblocking mode.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(3)))
                             .unwrap();

@@ -4,7 +4,7 @@ use std::fmt;
 
 const ARCHIVE_MAGIC: &[u8; 8] = b"!<arch>\n";
 const META_MAGIC: &[u8; 8] = b"FLUXMETA";
-const VERSION: u32 = 7;
+const VERSION: u32 = 8;
 const MAX_METADATA: usize = 512 * 1024 * 1024;
 
 /// Opt-in metadata timings include nested work; phases must not be summed.

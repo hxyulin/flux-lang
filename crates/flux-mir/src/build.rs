@@ -21,7 +21,7 @@ use crate::{
 /// have no diagnostics from lowering or type checking.
 ///
 /// The embedded libraries' bodies are built and checked once per
-/// process ([`crate::library`]); a compilation copies those it reaches.
+/// process (`crate::library`); a compilation copies those it reaches.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
     build_file_inner(hir, typed, None, &[], crate::PanicStrategy::Abort)
 }
@@ -701,6 +701,12 @@ fn check_patterns(
                 .ok()
                 .filter(|&valid| valid)
                 .map(|_| flux_ty::PatternConst::Str)
+        } else if ty == Ty::new(TyKind::Ref(Mutability::Not, Ty::slice(Ty::int(IntTy::U8)))) {
+            evaluator
+                .byte_slice_pattern(&value, items.consts[c.konst].def_range)
+                .ok()
+                .flatten()
+                .map(flux_ty::PatternConst::Bytes)
         } else {
             pattern(items, &typed.sigs, value, ty)
         };
@@ -755,6 +761,9 @@ fn check_body(
     crate::borrowck::ClosureRequirements,
 ) {
     let mut found = body.init_errors.clone();
+    for body in &body.inline_constants {
+        found.extend(check_body(hir, typed, body, true, requirements).0);
+    }
     found.extend(crate::alignment::check(body, &hir.items, &typed.sigs));
     let (errors, required) = crate::borrowck::check(body, &hir.items, &typed.sigs, requirements);
     found.extend(errors);
@@ -1065,7 +1074,21 @@ pub fn build_const(hir: &Hir, typed: &TypedFile, konst: ConstId) -> Body {
     let (body, source_map) = hir.const_body(konst).expect("constants built have values");
     let sig = flux_ty::FnSig {
         params: Box::default(),
-        ret: typed.sigs.consts[konst],
+        ret: flux_solve::traits::normalize_with_memberships(
+            &hir.items,
+            &typed.sigs,
+            &flux_solve::traits::owner_projections(
+                &hir.items,
+                &typed.sigs,
+                hir.items.consts[konst].owner,
+            ),
+            &flux_solve::traits::owner_predicates(
+                &hir.items,
+                &typed.sigs,
+                hir.items.consts[konst].owner,
+            ),
+            typed.sigs.consts[konst],
+        ),
     };
     let mut built = build_body(
         hir,
@@ -1400,6 +1423,7 @@ pub fn closure_shims_with_panic_strategy(
                 owner: None,
                 constant_owner: None,
                 promoted: Vec::new(),
+                inline_constants: Vec::new(),
                 bugs: Vec::new(),
                 fn_spans: Default::default(),
             },
@@ -1416,6 +1440,20 @@ fn build_body(
     types: &InferenceResult,
     sig: &flux_ty::FnSig,
     item: Item,
+) -> Body {
+    build_body_inner(hir, typed, body, source_map, types, sig, item, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_body_inner(
+    hir: &Hir,
+    typed: &TypedFile,
+    body: &flux_hir::Body,
+    source_map: &flux_hir::BodySourceMap,
+    types: &InferenceResult,
+    sig: &flux_ty::FnSig,
+    item: Item,
+    inline_root: Option<ExprId>,
 ) -> Body {
     let module = match item {
         Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _, _) => {
@@ -1478,7 +1516,7 @@ fn build_body(
         source_map,
         types,
         in_const_closure: matches!(item, Item::Closure(ClosureOwner::Const(_), _, _)),
-        const_initializer: matches!(item, Item::Const(_)),
+        const_initializer: inline_root.is_some() || matches!(item, Item::Const(_)),
         locals: Arena::new(),
         call_regions: ArenaMap::new(),
         reification_regions: ArenaMap::new(),
@@ -1508,6 +1546,9 @@ fn build_body(
         upvars: Vec::new(),
         capture_uses: Vec::new(),
         promoted: Vec::new(),
+        inline_constants: Vec::new(),
+        item,
+        inline_root,
         storage_temps: Default::default(),
         call_arguments: body
             .exprs
@@ -1537,46 +1578,52 @@ fn build_body(
         .collect();
     let entry = b.new_block();
     b.current = Some(entry);
-    let (root, param_pats) = match item {
-        Item::Closure(_, expr, _) => {
-            let Expr::Closure {
-                params: pats,
-                body: closure_body,
-                ..
-            } = &body.exprs[expr]
-            else {
-                unreachable!("closures are closure expressions")
-            };
-            // What it captures, through `self`.
-            let info = &types.closures[expr];
-            let this = Place::from(params[0]);
-            let env = match info.kind {
-                flux_ty::ClosureKind::FnOnce => this,
-                _ => this.deref(),
-            };
-            for (i, capture) in info.captures.iter().enumerate() {
-                let field = env.field(i as u32);
-                let place = match capture.mode {
-                    flux_ty::CaptureMode::ByValue => field,
-                    flux_ty::CaptureMode::ByRef(_) | flux_ty::CaptureMode::Unique => field.deref(),
+    let (root, param_pats) = if let Some(root) = inline_root {
+        (root, &[][..])
+    } else {
+        match item {
+            Item::Closure(_, expr, _) => {
+                let Expr::Closure {
+                    params: pats,
+                    body: closure_body,
+                    ..
+                } = &body.exprs[expr]
+                else {
+                    unreachable!("closures are closure expressions")
                 };
-                b.upvars.push((capture.clone(), place));
+                // What it captures, through `self`.
+                let info = &types.closures[expr];
+                let this = Place::from(params[0]);
+                let env = match info.kind {
+                    flux_ty::ClosureKind::FnOnce => this,
+                    _ => this.deref(),
+                };
+                for (i, capture) in info.captures.iter().enumerate() {
+                    let field = env.field(i as u32);
+                    let place = match capture.mode {
+                        flux_ty::CaptureMode::ByValue => field,
+                        flux_ty::CaptureMode::ByRef(_) | flux_ty::CaptureMode::Unique => {
+                            field.deref()
+                        }
+                    };
+                    b.upvars.push((capture.clone(), place));
+                }
+                let at = b.range(expr);
+                b.scopes[0].locals.push((params[0], at));
+                b.scopes[0].locals.push((params[1], at));
+                // The parameters, from the tuple of the arguments.
+                for (i, &pat) in body.lists[*pats].iter().enumerate() {
+                    let range = b.pat_range(pat);
+                    b.declare_bindings(pat);
+                    let place = Place::from(params[1]).field(i as u32);
+                    b.annotate_let_bindings(pat);
+                    b.annotate_let_source(pat, place.clone());
+                    b.match_irrefutable(pat, place.into(), range);
+                }
+                (*closure_body, &[][..])
             }
-            let at = b.range(expr);
-            b.scopes[0].locals.push((params[0], at));
-            b.scopes[0].locals.push((params[1], at));
-            // The parameters, from the tuple of the arguments.
-            for (i, &pat) in body.lists[*pats].iter().enumerate() {
-                let range = b.pat_range(pat);
-                b.declare_bindings(pat);
-                let place = Place::from(params[1]).field(i as u32);
-                b.annotate_let_bindings(pat);
-                b.annotate_let_source(pat, place.clone());
-                b.match_irrefutable(pat, place.into(), range);
-            }
-            (*closure_body, &[][..])
+            _ => (body.root, &body.lists[body.params]),
         }
-        _ => (body.root, &body.lists[body.params]),
     };
     for (&pat, &local) in param_pats.iter().zip(&params) {
         let range = b.pat_range(pat);
@@ -1596,75 +1643,82 @@ fn build_body(
             }
         }
     }
-    let upvars = match item {
-        Item::Closure(_, expr, _) => {
-            let info = &types.closures[expr];
-            Some(crate::Upvars {
-                kind: info.kind,
-                names: info
-                    .captures
-                    .iter()
-                    .map(|c| capture_name(body, &types.binding_types, c, &typed.sigs, &hir.items))
-                    .collect(),
-                by_ref: info
-                    .captures
-                    .iter()
-                    .map(|c| {
-                        matches!(
-                            c.mode,
-                            flux_ty::CaptureMode::ByRef(_) | flux_ty::CaptureMode::Unique
-                        )
-                    })
-                    .collect(),
-                mutable: info
-                    .captures
-                    .iter()
-                    .map(|c| {
-                        body.bindings[c.binding].mutable
-                            && !c.projection.contains(&flux_ty::CaptureProj::Deref)
-                    })
-                    .collect(),
-                annotated_refs: !info.hinted
-                    && match &body.exprs[expr] {
-                        Expr::Closure { param_types, .. } => body.lists[*param_types]
-                            .iter()
-                            .flatten()
-                            .any(|&t| has_ref(&body.types[t])),
-                        _ => false,
-                    },
-                fixed_args: {
-                    let mut fixed = Vec::new();
-                    let mut next = 0;
-                    if let Expr::Closure { params, .. } = &body.exprs[expr] {
-                        for &pat in &body.lists[*params] {
-                            if let Some((ty, table)) = types.let_regions.get(pat) {
-                                for (i, r) in table.iter().enumerate() {
-                                    if matches!(
-                                        r,
-                                        flux_ty::regions::Region::Static
-                                            | flux_ty::regions::Region::Param(_)
-                                    ) {
-                                        fixed.push(next + i as u32);
+    let upvars = if inline_root.is_some() {
+        None
+    } else {
+        match item {
+            Item::Closure(_, expr, _) => {
+                let info = &types.closures[expr];
+                Some(crate::Upvars {
+                    kind: info.kind,
+                    names: info
+                        .captures
+                        .iter()
+                        .map(|c| {
+                            capture_name(body, &types.binding_types, c, &typed.sigs, &hir.items)
+                        })
+                        .collect(),
+                    by_ref: info
+                        .captures
+                        .iter()
+                        .map(|c| {
+                            matches!(
+                                c.mode,
+                                flux_ty::CaptureMode::ByRef(_) | flux_ty::CaptureMode::Unique
+                            )
+                        })
+                        .collect(),
+                    mutable: info
+                        .captures
+                        .iter()
+                        .map(|c| {
+                            body.bindings[c.binding].mutable
+                                && !c.projection.contains(&flux_ty::CaptureProj::Deref)
+                        })
+                        .collect(),
+                    annotated_refs: !info.hinted
+                        && match &body.exprs[expr] {
+                            Expr::Closure { param_types, .. } => body.lists[*param_types]
+                                .iter()
+                                .flatten()
+                                .any(|&t| has_ref(&body.types[t])),
+                            _ => false,
+                        },
+                    fixed_args: {
+                        let mut fixed = Vec::new();
+                        let mut next = 0;
+                        if let Expr::Closure { params, .. } = &body.exprs[expr] {
+                            for &pat in &body.lists[*params] {
+                                if let Some((ty, table)) = types.let_regions.get(pat) {
+                                    for (i, r) in table.iter().enumerate() {
+                                        if matches!(
+                                            r,
+                                            flux_ty::regions::Region::Static
+                                                | flux_ty::regions::Region::Param(_)
+                                        ) {
+                                            fixed.push(next + i as u32);
+                                        }
                                     }
+                                    next += flux_ty::regions::slots(&hir.items, *ty) as u32;
+                                } else {
+                                    next +=
+                                        flux_ty::regions::slots(&hir.items, types.pat_types[pat])
+                                            as u32;
                                 }
-                                next += flux_ty::regions::slots(&hir.items, *ty) as u32;
-                            } else {
-                                next += flux_ty::regions::slots(&hir.items, types.pat_types[pat])
-                                    as u32;
                             }
                         }
-                    }
-                    fixed
-                },
-            })
+                        fixed
+                    },
+                })
+            }
+            _ => None,
         }
-        _ => None,
     };
     let range = b.range(root);
     // A constant's value keeps what it borrows, which is never dropped.
-    if let Item::Const(_) = item {
+    if b.const_initializer {
         let mut extended = Vec::new();
-        b.extending_refs(body.root, &mut extended);
+        b.extending_refs(root, &mut extended);
         b.extended_refs = extended;
         b.extend_at = Some((usize::MAX, 0));
     }
@@ -1717,12 +1771,17 @@ fn build_body(
         init_errors: Vec::new(),
         upvars,
         capture_uses: b.capture_uses,
-        owner: match item {
-            Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _, _) => Some(f),
-            Item::Const(_) | Item::Closure(ClosureOwner::Const(_), _, _) => None,
+        owner: if inline_root.is_some() {
+            None
+        } else {
+            match item {
+                Item::Function(f, _) | Item::Closure(ClosureOwner::Function(f), _, _) => Some(f),
+                Item::Const(_) | Item::Closure(ClosureOwner::Const(_), _, _) => None,
+            }
         },
         constant_owner: None,
         promoted: b.promoted,
+        inline_constants: b.inline_constants,
         bugs: b.bugs,
         fn_spans: b.fn_spans,
     };
@@ -1936,6 +1995,9 @@ struct Builder<'a> {
     call_arguments: rustc_hash::FxHashSet<ExprId>,
     /// [`Body::promoted`].
     promoted: Vec<crate::eval::Value>,
+    inline_constants: Vec<Body>,
+    item: Item,
+    inline_root: Option<ExprId>,
     /// [`Body::bugs`].
     bugs: Vec<(TextRange, &'static str)>,
     /// [`Body::fn_spans`].
@@ -2679,6 +2741,7 @@ impl Builder<'_> {
     /// `&T`, or `*mut T` for a `static mut`, as in rustc.
     fn static_place(&mut self, id: flux_hir::ConstId, range: TextRange) -> Place {
         let ty = self.typed.sigs.consts.get(id).copied().unwrap_or(Ty::ERROR);
+        let ty = self.normalize(ty);
         let pointer = if self.items.consts[id].is_static_mut() {
             Ty::raw_ptr(Mutability::Mut, ty)
         } else {
@@ -4030,6 +4093,14 @@ impl Builder<'_> {
                 let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
+            Expr::Path(Res::Assoc { .. }) if self.types.unit_variants.get(expr).is_some() => {
+                let &(strukt, variant) = &self.types.unit_variants[expr];
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Variant(strukt, variant), Vec::new()),
+                    range,
+                );
+            }
             Expr::Path(Res::Assoc { .. }) if self.types.consts.get(expr).is_some() => {
                 let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
@@ -4272,6 +4343,39 @@ impl Builder<'_> {
                 }
             }
             Expr::Block { stmts, tail, .. } => {
+                if self.body.const_blocks.get(expr).is_some() && self.inline_root != Some(expr) {
+                    let ty = self.expr_ty(expr);
+                    let sig = flux_ty::FnSig {
+                        params: Box::default(),
+                        ret: ty,
+                    };
+                    let constant = build_body_inner(
+                        self.hir,
+                        self.typed,
+                        self.body,
+                        self.source_map,
+                        self.types,
+                        &sig,
+                        self.item,
+                        Some(expr),
+                    );
+                    if crate::inline_consts::closed(&constant)
+                        && crate::inline_consts::borrowed_storage_supported(
+                            self.items,
+                            &self.typed.sigs,
+                            ty,
+                        )
+                    {
+                        let index = self.inline_constants.len() as u32;
+                        self.inline_constants.push(constant);
+                        self.assign(
+                            dest,
+                            Rvalue::Use(Operand::Const(Constant::Inline { index, ty })),
+                            range,
+                        );
+                        return;
+                    }
+                }
                 // An inline constant's value cannot borrow its evaluation frame.
                 let output = if self.body.const_blocks.get(expr).is_some() {
                     let ty = self.expr_ty(expr);

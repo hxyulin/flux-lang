@@ -432,6 +432,7 @@ fn constant_text(hir: &Hir, constant: Constant) -> String {
             }
             _ => ty.to_string(),
         },
+        Constant::Inline { index, .. } => format!("inline_const{index}"),
         Constant::CStr(index) => format!("c_str{index}"),
         Constant::Fn { function, args, .. } => {
             let name = hir.items.function_path(&hir.items.functions[function]);

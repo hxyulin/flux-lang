@@ -61,9 +61,9 @@ use rustc_hash::FxHashMap;
 
 pub use flux_ty_ir::{
     AdtId, AliasTy, ArgTys, Builtins, ClosureArgs, ClosureId, ClosureKind, ClosureOwner,
-    ConstInstance, DynTy, FloatTy, FnDefTy, FnPtrRegions, FnRegion, FnSig, FnSigTy, GenericArgs,
-    InferVar, Instance, IntTy, LenValues, Metadata, Mutability, OpaqueSig, OpaqueTy, ParamTy,
-    Signatures, Ty, TyKind, fn_trait, fn_trait_kind, params_of, subst_list, symbol_list,
+    ConstInstance, DynTy, FloatTy, FnDefTy, FnProjection, FnPtrRegions, FnRegion, FnSig, FnSigTy,
+    GenericArgs, InferVar, Instance, IntTy, LenValues, Metadata, Mutability, OpaqueSig, OpaqueTy,
+    ParamTy, Signatures, Ty, TyKind, fn_trait, fn_trait_kind, params_of, subst_list, symbol_list,
 };
 use flux_ty_ir::{impl_index, in_scope, mentions_param, metadata, overlap, ty};
 pub use infer::{
@@ -310,6 +310,7 @@ fn check_alias(
 /// The innermost type preventing a shared static from being `Sync`.
 /// Use the same rules as bounds, including explicit unsafe impls.
 fn not_sync(items: &ItemTree, sigs: &Signatures, ty: Ty, seen: &mut Vec<StructId>) -> Option<Ty> {
+    let ty = flux_solve::traits::normalize(items, sigs, &[], ty);
     let sync = *items.lang_traits.get(&Symbol::intern("sync"))?;
     let goal = traits::Predicate {
         self_ty: ty,
@@ -1175,6 +1176,8 @@ pub enum PatternConst {
     /// An evaluated shared string. Its contents are compared in MIR; a finite
     /// set of strings cannot exhaust the string domain.
     Str,
+    /// Exact elements of a shared byte-slice constant pattern.
+    Bytes(Vec<u8>),
     Scalar(i128),
     Aggregate(Vec<PatternConst>),
     Variant {

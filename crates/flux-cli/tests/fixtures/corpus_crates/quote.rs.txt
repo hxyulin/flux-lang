@@ -1,0 +1,14 @@
+use quote::{format_ident, quote, ToTokens};
+fn main() {
+    let name = format_ident!("Record{}", 17u32);
+    let fields = [format_ident!("one"), format_ident!("two")];
+    let values = [13u32, 29u32];
+    let tokens = quote! { struct #name { #( #fields: u32 ),* } fn values() { #( let #fields = #values; )* } };
+    println!("{}", tokens);
+    let nested = quote! { module::#name { #( #fields: #values ),* } };
+    println!("{}", nested.to_token_stream());
+    let text = "a\n\"b";
+    println!("{}", quote! { #text });
+    let empty: [u8; 0] = [];
+    assert!(quote! { #(#empty)* }.is_empty());
+}

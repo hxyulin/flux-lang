@@ -32,13 +32,16 @@ use flux_syntax::TextRange;
 
 use crate::{ClosureArgs, Signatures, Ty, TyKind, TypeScope};
 
-pub use flux_ty_ir::fn_regions::instantiate as instantiate_fn_pointer;
+pub use flux_ty_ir::fn_regions::{
+    instantiate as instantiate_fn_pointer, instantiate_with as instantiate_fn_pointer_with,
+};
 pub use flux_ty_ir::regions::{
-    AliasRegions, CallbackBinder, FamilyRegions, FnRegions, IMPL_SELF_ARG, ImplRegions,
-    LifetimeName, OpaqueBoundRegions, OpaqueRegions, Outlives, ProjectionSelection, Region,
-    RegionSigs, StructRegions, TRAIT_LIFETIMES_ARG, TraitRefRegions, TraitRegions, TypeArgRegions,
-    Variance, has_declared_projection_inputs, has_projection_inputs, instantiate,
-    object_associated_range, object_own_slots, object_region_types, slots,
+    AliasRegions, CallbackBinder, FUNCTION_LIFETIMES_ARG, FamilyProjection, FamilyRegions,
+    FnRegions, IMPL_SELF_ARG, ImplRegions, LifetimeName, OpaqueBoundRegions, OpaqueRegions,
+    Outlives, ProjectionSelection, Region, RegionSigs, StructRegions, TRAIT_LIFETIMES_ARG,
+    TraitRefRegions, TraitRegions, TypeArgRegions, Variance, has_declared_projection_inputs,
+    has_projection_inputs, instantiate, object_associated_range, object_own_slots,
+    object_region_types, slots,
 };
 
 pub use crate::fn_regions::variances as fn_pointer_variances;
@@ -60,6 +63,10 @@ pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
 
 mod method_binders;
 mod object;
+mod projection_outlives;
+pub use projection_outlives::{
+    ProjectionOutlives, signature_projection_outlives, type_projection_outlives,
+};
 mod resolve;
 mod selected;
 mod selected_signatures;
@@ -415,6 +422,24 @@ impl<'a> Walker<'a> {
         object: crate::DynTy,
         out: &mut Vec<Region>,
     ) {
+        if let Some(signature) = object.quantified_signature() {
+            if let Some((params, _)) = crate::objects::quantified_type_ref(self.items, path, object)
+            {
+                self.fn_ptr(
+                    names,
+                    &params,
+                    &TypeRef::Tuple(Box::default()),
+                    signature,
+                    out,
+                );
+            } else {
+                self.errors.push((
+                    TextRange::default(),
+                    "quantified object argument regions are not represented".into(),
+                ));
+            }
+            return;
+        }
         if crate::fn_trait_kind(self.items, object.trait_).is_some() {
             if let Some(signature) = object.callable_signature() {
                 if let Some(TypeRef::FnPtr {
@@ -1065,6 +1090,10 @@ impl<'a> Walker<'a> {
         let last = path.segments.len().saturating_sub(1);
         let written = path.args(last).map_or(&[][..], |a| &a.lifetimes);
         if want != 0 && written.is_empty() {
+            if self.body && self.infer_unknown_owners && !header {
+                out.extend(std::iter::repeat_n(Region::Erased, want));
+                return;
+            }
             let at = path.ranges.get(last).copied().unwrap_or_default();
             self.errors.push((
                 at,
@@ -1626,7 +1655,7 @@ pub fn trait_requirements(
                     &mut table,
                 );
                 out.extend(table.into_iter().map(|a| Outlives::Region(a, b)));
-                outlives_params(sigs, ty.subst(&types), b, &mut out);
+                outlives_params(items, sigs, ty.subst(&types), b, &mut out);
             }
         }
     }
@@ -1729,7 +1758,7 @@ fn implied_at<R: Copy + PartialEq>(
                     out.push(Outlives::Region(inner_r, r));
                 }
             }
-            outlives_params(sigs, inner, r, out);
+            outlives_params(items, sigs, inner, r, out);
         }
         TyKind::RawPtr(_, t) | TyKind::Array(t, _) | TyKind::Slice(t) => {
             implied_at(items, sigs, t, regions, next, static_region, out)
@@ -1819,7 +1848,7 @@ fn implied_at<R: Copy + PartialEq>(
                                 }
                             }
                         }
-                        outlives_params(sigs, ty.subst(&args), b, out);
+                        outlives_params(items, sigs, ty.subst(&args), b, out);
                     }
                 }
             }
@@ -1859,7 +1888,7 @@ fn implied_at<R: Copy + PartialEq>(
                             // `I::Item: 'a`. Substitute the complete type;
                             // requiring only its inputs to outlive would
                             // strengthen or lose the associated-value bound.
-                            outlives_params(sigs, t.subst(args), b, out);
+                            outlives_params(items, sigs, t.subst(args), b, out);
                             continue;
                         };
                         let Some(&arg) = args.get(p.index as usize) else {
@@ -1875,7 +1904,7 @@ fn implied_at<R: Copy + PartialEq>(
                                 out.push(Outlives::Region(a, b));
                             }
                         }
-                        outlives_params(sigs, arg, b, out);
+                        outlives_params(items, sigs, arg, b, out);
                     }
                 }
             }
@@ -1934,8 +1963,14 @@ fn implied_at<R: Copy + PartialEq>(
 }
 
 /// `T: r` for each parameter and associated type in `ty`.
-fn outlives_params<R: Copy>(sigs: &Signatures, ty: Ty, r: R, out: &mut Vec<Outlives<R>>) {
-    for component in outlives_type_components(sigs, ty) {
+fn outlives_params<R: Copy>(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    r: R,
+    out: &mut Vec<Outlives<R>>,
+) {
+    for component in outlives_type_components(items, sigs, ty) {
         out.push(Outlives::Type(component, r));
     }
 }
@@ -2023,7 +2058,7 @@ pub fn outlives_structs_with_projections(
 /// ADT fields can contain projections absent from their generic arguments,
 /// such as `Cow<B>`'s `B::Owned`. Include those components in both implied
 /// assumptions and obligations, using the same storage traversal.
-pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
+pub fn outlives_type_components(items: &ItemTree, sigs: &Signatures, ty: Ty) -> Vec<Ty> {
     // Leaf queries cannot expose nominal fields. Hidden-field traversal issues
     // many of these; do not rebuild the complete declaration graph for each one.
     match ty.kind() {
@@ -2043,6 +2078,7 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
     }
     let projected = outlives_structs_with_projections(sigs, ty);
     fn visit(
+        items: &ItemTree,
         sigs: &Signatures,
         projected: &rustc_hash::FxHashSet<flux_hir::StructId>,
         ty: Ty,
@@ -2065,19 +2101,20 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
                 // Function-item identity captures its substitutions even when
                 // the zero-sized value has no physical region slots.
                 for &arg in def.args {
-                    visit(sigs, projected, arg, active, expanded, out);
+                    visit(items, sigs, projected, arg, active, expanded, out);
                 }
             }
             TyKind::FnPtr(sig) => {
                 if let Some(r) = sig.regions {
                     for &ty in r.types {
-                        visit(sigs, projected, ty, active, expanded, out);
+                        visit(items, sigs, projected, ty, active, expanded, out);
                     }
                 }
             }
             // Generic arguments in a closure's signature do not store values.
             // Only its environment contributes type-outlives requirements.
             TyKind::Closure(_, args) => visit(
+                items,
                 sigs,
                 projected,
                 ClosureArgs::split(args).upvars,
@@ -2086,10 +2123,15 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
                 out,
             ),
             // A const array length is a generic argument, not borrowed data.
-            TyKind::Array(elem, _) => visit(sigs, projected, elem, active, expanded, out),
+            TyKind::Array(elem, _) => visit(items, sigs, projected, elem, active, expanded, out),
             TyKind::Adt(adt, args) => {
-                for &arg in args {
-                    visit(sigs, projected, arg, active, expanded, out);
+                // A symbolic const argument is represented by Param too, but
+                // it stores no borrowed value.
+                for (&arg, parameter) in args.iter().zip(&items.structs[adt.strukt].generics.params)
+                {
+                    if !parameter.is_const() {
+                        visit(items, sigs, projected, arg, active, expanded, out);
+                    }
                 }
                 if projected.contains(&adt.strukt)
                     && !active.contains(&adt.strukt)
@@ -2097,7 +2139,15 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
                 {
                     active.push(adt.strukt);
                     for &field in *fields {
-                        visit(sigs, projected, field.subst(args), active, expanded, out);
+                        visit(
+                            items,
+                            sigs,
+                            projected,
+                            field.subst(args),
+                            active,
+                            expanded,
+                            out,
+                        );
                     }
                     active.pop();
                 }
@@ -2105,7 +2155,7 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
             _ => {
                 if ty.has_params() || ty.has_aliases() {
                     for child in ty.children() {
-                        visit(sigs, projected, child, active, expanded, out);
+                        visit(items, sigs, projected, child, active, expanded, out);
                     }
                 }
             }
@@ -2113,6 +2163,7 @@ pub fn outlives_type_components(sigs: &Signatures, ty: Ty) -> Vec<Ty> {
     }
     let mut out = Vec::new();
     visit(
+        items,
         sigs,
         &projected,
         ty,
@@ -2150,4 +2201,33 @@ pub(crate) fn check_trait_admission(
             });
         }
     }
+}
+
+/// Explicit calls can fix these free-function binders: every named lifetime
+/// has a written outlives bound, and the signature adds no elided binders.
+pub fn named_call_lifetimes(
+    items: &ItemTree,
+    sigs: &Signatures,
+    function: flux_hir::FunctionId,
+) -> Option<u32> {
+    let data = &items.functions[function];
+    let regions = sigs.regions.fns.get(function)?;
+    let names = &data.generics.lifetimes;
+    if data.owner.is_some()
+        || regions.owner != 0
+        || regions.names.len() != names.len()
+        || names.iter().zip(&regions.names).any(|(written, stored)| {
+            stored.name != Some(written.name) || stored.range != written.range
+        })
+        || names.iter().any(|name| {
+            !data
+                .generics
+                .outlives
+                .iter()
+                .any(|bound| bound.longer.name == name.name || bound.shorter.name == name.name)
+        })
+    {
+        return None;
+    }
+    Some(names.len() as u32)
 }

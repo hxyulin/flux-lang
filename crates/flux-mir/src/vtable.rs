@@ -79,6 +79,9 @@ pub fn super_object(items: &ItemTree, sigs: &Signatures, object: Ty, d: DynTy, p
         }
     }
     Ty::new(TyKind::Dynamic(DynTy {
+        quantified: (p.trait_ref.trait_ == d.trait_ && p.trait_ref.args == d.args)
+            .then_some(d.quantified)
+            .flatten(),
         callable: (flux_ty::fn_trait_kind(items, p.trait_ref.trait_).is_some()
             && p.trait_ref.args == d.args)
             .then_some(d.callable)

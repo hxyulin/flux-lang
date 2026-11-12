@@ -32,7 +32,8 @@ impl Ord for TypeId {
 }
 impl crate::hash::Hash for TypeId {
     fn hash<H: crate::hash::Hasher>(&self, state: &mut H) {
-        self.value.hash(state);
+        // TypeId consumers may use a hasher that accepts only this u64 call.
+        state.write_u64(self.value as u64);
     }
 }
 impl crate::fmt::Debug for TypeId {

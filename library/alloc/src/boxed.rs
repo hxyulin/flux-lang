@@ -405,13 +405,20 @@ impl<T> From<Box<[T]>> for crate::vec::Vec<T> {
     fn from(values: Box<[T]>) -> Self { values.into_vec() }
 }
 
-impl Box<dyn core::any::Any + core::marker::Send> {
-    /// Converts a matching owned dynamic value without changing its allocation.
-    pub fn downcast<T: core::any::Any>(self) -> Result<Box<T>, Self> {
-        if self.is::<T>() {
-            let pointer = Box::into_raw(self) as *mut T;
-            // SAFETY: Any's type identity proves the allocation contains T.
-            Ok(unsafe { Box::from_raw(pointer) })
-        } else { Err(self) }
-    }
+macro_rules! any_downcast {
+    ($object:ty) => {
+        impl Box<$object> {
+            /// Converts a matching owned dynamic value without changing its allocation.
+            pub fn downcast<T: core::any::Any>(self) -> Result<Box<T>, Self> {
+                if self.is::<T>() {
+                    let pointer = Box::into_raw(self) as *mut T;
+                    // SAFETY: Any's type identity proves the allocation contains T.
+                    Ok(unsafe { Box::from_raw(pointer) })
+                } else { Err(self) }
+            }
+        }
+    };
 }
+any_downcast!(dyn core::any::Any);
+any_downcast!(dyn core::any::Any + core::marker::Send);
+any_downcast!(dyn core::any::Any + core::marker::Send + core::marker::Sync);

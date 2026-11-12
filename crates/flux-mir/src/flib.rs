@@ -488,6 +488,12 @@ impl Encode for Constant {
                 ty.encode(e)?;
                 Ok(())
             }
+            Self::Inline { index, ty } => {
+                13u8.encode(e)?;
+                index.encode(e)?;
+                ty.encode(e)?;
+                Ok(())
+            }
             Self::Promoted { index, ty } => {
                 10u8.encode(e)?;
                 index.encode(e)?;
@@ -551,6 +557,10 @@ impl Decode for Constant {
             12 => Ok(Self::ItemRef {
                 id: Decode::decode(d)?,
                 args: Ty::list(&Vec::<Ty>::decode(d)?),
+                ty: Decode::decode(d)?,
+            }),
+            13 => Ok(Self::Inline {
+                index: Decode::decode(d)?,
                 ty: Decode::decode(d)?,
             }),
             _ => Err(Error::new("invalid MIR metadata tag")),
@@ -918,6 +928,11 @@ impl Encode for Value {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         allocations::value_height(self, e, 0)?;
         e.nested(|e| match self {
+            Self::Union { field, value } => {
+                15u8.encode(e)?;
+                field.encode(e)?;
+                allocations::encode_value(value, e)
+            }
             Self::Float { bits, ty } => {
                 0u8.encode(e)?;
                 bits.encode(e)?;
@@ -1035,6 +1050,10 @@ impl Decode for Value {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
         d.nested(|d| {
             let value = match u8::decode(d)? {
+                15 => Ok(Self::Union {
+                    field: Decode::decode(d)?,
+                    value: allocations::decode_value(d)?,
+                }),
                 0 => Ok(Self::Float {
                     bits: Decode::decode(d)?,
                     ty: Decode::decode(d)?,
@@ -1209,6 +1228,7 @@ impl Encode for Body {
             self.owner.encode(e)?;
             self.constant_owner.encode(e)?;
             self.promoted.encode(e)?;
+            self.inline_constants.encode(e)?;
             let mut spans: Vec<_> = self
                 .fn_spans
                 .iter()
@@ -1244,6 +1264,7 @@ impl Decode for Body {
                 owner: Decode::decode(d)?,
                 constant_owner: Decode::decode(d)?,
                 promoted: Decode::decode(d)?,
+                inline_constants: Decode::decode(d)?,
                 fn_spans: Default::default(),
                 init_errors: Vec::new(),
                 bugs: Vec::new(),
@@ -1308,6 +1329,11 @@ fn validate_body_indices(body: &Body) -> Result<(), Error> {
             Operand::Copy(p) | Operand::Move(p) => place(p),
             Operand::Const(Constant::CStr(i)) if *i as usize >= body.c_strings.len() => {
                 Err(Error::new("invalid MIR string reference"))
+            }
+            Operand::Const(Constant::Inline { index, .. })
+                if *index as usize >= body.inline_constants.len() =>
+            {
+                Err(Error::new("invalid MIR inline constant reference"))
             }
             Operand::Const(Constant::Promoted { index, .. })
                 if *index as usize >= body.promoted.len() =>

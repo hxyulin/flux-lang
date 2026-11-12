@@ -70,6 +70,11 @@ pub enum Value {
     },
     /// A tuple or struct, fields in order; `()` has none.
     Aggregate(Arc<[Value]>),
+    /// Initialized storage through one union field. Other fields need not be valid.
+    Union {
+        field: u32,
+        value: Arc<Value>,
+    },
     /// Variant `index` of enum `strukt`, its fields in order.
     Variant {
         strukt: flux_hir::StructId,
@@ -107,11 +112,12 @@ pub enum Value {
         target: Ty,
         len: Option<u64>,
     },
-    /// Named frame storage is not promoted into a constant allocation. Raw
-    /// access to it needs an addressable frame-memory model, not a value copy.
+    /// A shared snapshot of named local storage. Raw reads require that its
+    /// source has not changed since the borrow was evaluated.
     LocalRef {
         value: Arc<Value>,
         origin: LocalOrigin,
+        version: u64,
         raw: bool,
     },
 }
@@ -126,9 +132,15 @@ pub enum StaticProjection {
 }
 
 /// The stored type at an address path, before any raw pointer reinterpretation.
-pub fn static_path_type(sigs: &Signatures, mut ty: Ty, path: &[StaticProjection]) -> Option<Ty> {
+pub fn static_path_type(
+    items: &flux_hir::ItemTree,
+    sigs: &Signatures,
+    mut ty: Ty,
+    path: &[StaticProjection],
+) -> Option<Ty> {
     let mut variant = 0;
     for p in path {
+        ty = flux_solve::traits::normalize(items, sigs, &[], ty);
         match *p {
             StaticProjection::Downcast(v) => variant = v,
             StaticProjection::Field(i) => {
@@ -139,7 +151,7 @@ pub fn static_path_type(sigs: &Signatures, mut ty: Ty, path: &[StaticProjection]
             StaticProjection::Subslice { len, .. } => ty = Ty::array(ty.sequence_elem()?, len),
         }
     }
-    Some(ty)
+    Some(flux_solve::traits::normalize(items, sigs, &[], ty))
 }
 
 impl Value {
@@ -176,6 +188,10 @@ impl Value {
                     (mapped != *instance).then_some(Value::Function(mapped))
                 }
                 Value::Aggregate(values) => fields(values, mapper).map(Value::Aggregate),
+                Value::Union { field, value } => changed(value, mapper).map(|value| Value::Union {
+                    field: *field,
+                    value: Arc::new(value),
+                }),
                 Value::Variant {
                     strukt,
                     index,
@@ -264,12 +280,15 @@ pub struct Evaluator<'a> {
     in_progress: Vec<ConstInstance>,
     /// The promoted constants of each body being run, innermost last.
     promoted: Vec<&'a [Value]>,
+    inline_constants: Vec<&'a [Body]>,
+    inline_depth: u32,
     /// Cleared frame storage, reused after a call returns (including errors).
     frames: Vec<Vec<Option<Value>>>,
     arguments: Vec<Vec<Value>>,
     local_borrows: Vec<Vec<Option<LocalOrigin>>>,
     borrow_frames: Vec<Vec<Option<LocalOrigin>>>,
     live_borrows: FxHashSet<u64>,
+    snapshot_versions: FxHashMap<u64, u64>,
     frame_memory: FxHashMap<u64, FrameAllocation>,
     frame_slots: Vec<Vec<(usize, u64)>>,
     next_borrow: u64,
@@ -315,11 +334,14 @@ impl<'a> Evaluator<'a> {
             unbuilt: Vec::new(),
             steps: 0,
             promoted: Vec::new(),
+            inline_constants: Vec::new(),
+            inline_depth: 0,
             frames: Vec::new(),
             arguments: Vec::new(),
             local_borrows: Vec::new(),
             borrow_frames: Vec::new(),
             live_borrows: FxHashSet::default(),
+            snapshot_versions: FxHashMap::default(),
             frame_memory: FxHashMap::default(),
             frame_slots: Vec::new(),
             next_borrow: 1,
@@ -328,6 +350,51 @@ impl<'a> Evaluator<'a> {
             view_fields: FxHashMap::default(),
             promotion_flags: FxHashMap::default(),
         }
+    }
+
+    /// Evaluate a closed inline expression when its enclosing function is used.
+    /// A local evaluator borrows this context's immutable templates, so callers
+    /// can also supply a substituted or generated MIR body with a shorter life.
+    pub fn eval_inline_constant(
+        &self,
+        constant: &Body,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        let mut evaluator = Evaluator::new(
+            self.items,
+            self.sigs,
+            self.functions,
+            self.consts,
+            self.names,
+        );
+        if let Some(provider) = self.imported_provider {
+            evaluator = evaluator.with_provider(provider);
+        }
+        if let (Some(values), Some(discriminants)) =
+            (self.imported_values, self.imported_discriminants)
+        {
+            evaluator = evaluator.with_imported(values, discriminants);
+        }
+        evaluator.inline_value(constant, range)
+    }
+
+    fn inline_value(&mut self, body: &'a Body, range: TextRange) -> Result<Value, EvalError> {
+        if self.inline_depth >= DEPTH_LIMIT {
+            return Err(error(
+                range,
+                "reached the configured maximum number of stack frames".into(),
+            ));
+        }
+        self.inline_depth += 1;
+        let result = self
+            .switched(body)
+            .and_then(|()| self.run(body, Vec::new(), &[], self.inline_depth, true))
+            .and_then(|value| {
+                self.check_escaping_borrows(&value, body.locals[Body::RETURN].ty, range)?;
+                Ok(value)
+            });
+        self.inline_depth -= 1;
+        result
     }
 
     /// The value of constant `id`, which has no generic parameters,
@@ -446,6 +513,9 @@ impl<'a> Evaluator<'a> {
                     })
                 }
             }
+            Value::Union { field, value } => flux_solve::fields(self.sigs, ty)
+                .and_then(|types| types.get(*field as usize))
+                .is_some_and(|&ty| self.inline_lang(value, ty, langs)),
             Value::Variant { index, fields, .. } => {
                 flux_solve::variant_fields(self.sigs, ty, *index).is_some_and(|types| {
                     fields
@@ -506,6 +576,11 @@ impl<'a> Evaluator<'a> {
                     return Err(error(range, "shared borrow of a temporary with interior mutability cannot escape constant evaluation".into()));
                 }
                 self.check_escaping_borrows(inner, target, range)?;
+            }
+            Value::Union { field, value } => {
+                let types = flux_solve::fields(self.sigs, ty).ok_or_else(|| unsupported_view(range))?;
+                let ty = *types.get(*field as usize).ok_or_else(|| unsupported_view(range))?;
+                self.check_escaping_borrows(value, ty, range)?;
             }
             Value::Aggregate(fields) => {
                 let element = match ty.kind() {
@@ -818,6 +893,7 @@ impl<'a> Evaluator<'a> {
         let mut offset = 0;
         let mut variant = 0;
         for projection in path.iter() {
+            ty = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
             let delta = match *projection {
                 StaticProjection::Downcast(v) => {
                     variant = v;
@@ -905,14 +981,7 @@ impl<'a> Evaluator<'a> {
             } else {
                 target
             };
-            let mut to = pointer_pointee(target).ok_or_else(|| unsupported_view(range))?;
-            if let Some(len) = len {
-                to = match to.kind() {
-                    TyKind::Slice(element) => Ty::array(element, *len),
-                    TyKind::Str => Ty::array(Ty::int(IntTy::U8), *len),
-                    _ => to,
-                };
-            }
+            let to = pointer_pointee(target).ok_or_else(|| unsupported_view(range))?;
             let from = self.allocation_type(base, *allocation, range)?;
             let base_align = self.view_layout(from, range)?.align;
             let align = if *offset == 0 {
@@ -927,7 +996,7 @@ impl<'a> Evaluator<'a> {
                 ));
             }
             let stored = self.pointer_value(base, *allocation, *allocation, range)?;
-            let result = self.memory_value(&stored, from, *offset, to, range, 0)?;
+            let result = self.memory_view(&stored, from, *offset, to, *len, range, 0)?;
             if matches!(pointer_pointee(target).map(Ty::kind), Some(TyKind::Str))
                 && str_value(&Value::Ref(Arc::new(result.clone()))).is_none()
             {
@@ -940,15 +1009,32 @@ impl<'a> Evaluator<'a> {
                 self.frame_allocation(*origin, range)?.value.clone()
             }
             Value::Ref(value) | Value::InteriorRef(value) => (**value).clone(),
-            Value::LocalRef { value, origin, raw } => {
+            Value::LocalRef {
+                value,
+                origin,
+                version,
+                raw,
+            } => {
                 if !self.live_borrows.contains(&origin.token) {
                     return Err(error(
                         range,
                         "dangling reference to local constant storage".into(),
                     ));
                 }
-                if *raw && origin.mutable {
-                    return Err(error(range, "raw pointer reads of mutable local storage in constants are not supported yet".into()));
+                if *raw
+                    && origin.mutable
+                    && self
+                        .snapshot_versions
+                        .get(&origin.token)
+                        .copied()
+                        .unwrap_or(0)
+                        != *version
+                {
+                    return Err(error(
+                        range,
+                        "raw reads of changed local snapshots in constants are not supported yet"
+                            .into(),
+                    ));
                 }
                 if source == Ty::ERROR {
                     return Ok((**value).clone());
@@ -976,7 +1062,8 @@ impl<'a> Evaluator<'a> {
             _ => return Err(unsupported_view(range)),
         };
         let mut from = pointer_pointee(source).ok_or_else(|| unsupported_view(range))?;
-        let mut to = pointer_pointee(target).ok_or_else(|| unsupported_view(range))?;
+        let to = pointer_pointee(target).ok_or_else(|| unsupported_view(range))?;
+        let mut metadata = None;
         // A wide pointer retains its original element-count metadata. The
         // structural value supplies that count, not an inferred byte length.
         if let Value::Aggregate(fields) = &value {
@@ -986,24 +1073,109 @@ impl<'a> Evaluator<'a> {
                 TyKind::Str => Ty::array(Ty::int(IntTy::U8), len),
                 _ => from,
             };
-            to = match to.kind() {
-                TyKind::Slice(elem) => Ty::array(elem, len),
-                TyKind::Str => Ty::array(Ty::int(IntTy::U8), len),
-                _ => to,
-            };
+            if self
+                .sigs
+                .is_unsized(pointer_pointee(source).unwrap_or(Ty::ERROR))
+            {
+                metadata = Some(len);
+            }
         }
         let stored = self.view_layout(from, range)?;
         let viewed = self.view_layout(to, range)?;
-        if !stored.exact || !viewed.exact || stored.align < viewed.align {
+        if !stored.exact || stored.align < viewed.align {
             return Err(unsupported_view(range));
         }
-        let result = self.memory_value(&value, from, 0, to, range, 0)?;
+        let result = self.memory_view(&value, from, 0, to, metadata, range, 0)?;
         if matches!(pointer_pointee(target).map(Ty::kind), Some(TyKind::Str))
             && str_value(&Value::Ref(Arc::new(result.clone()))).is_none()
         {
             return Err(error(range, "invalid utf-8 in constant reference".into()));
         }
         Ok(result)
+    }
+
+    /// Length metadata applies to a slice and its transparent single-field
+    /// wrappers. Keep their allocation symbolic while validating each element.
+    #[allow(clippy::too_many_arguments)]
+    fn memory_view(
+        &mut self,
+        value: &Value,
+        from: Ty,
+        offset: u64,
+        to: Ty,
+        len: Option<u64>,
+        range: TextRange,
+        depth: u32,
+    ) -> Result<Value, EvalError> {
+        if depth > DEPTH_LIMIT {
+            return Err(unsupported_view(range));
+        }
+        match to.kind() {
+            TyKind::Slice(element) => self.memory_value(
+                value,
+                from,
+                offset,
+                Ty::array(element, len.ok_or_else(|| unsupported_view(range))?),
+                range,
+                depth + 1,
+            ),
+            TyKind::Str => {
+                let result = self.memory_value(
+                    value,
+                    from,
+                    offset,
+                    Ty::array(
+                        Ty::int(IntTy::U8),
+                        len.ok_or_else(|| unsupported_view(range))?,
+                    ),
+                    range,
+                    depth + 1,
+                )?;
+                if str_value(&Value::Ref(Arc::new(result.clone()))).is_none() {
+                    return Err(error(range, "invalid utf-8 in constant reference".into()));
+                }
+                Ok(result)
+            }
+            TyKind::Adt(adt, _)
+                if self.sigs.is_unsized(to) && self.items.structs[adt.strukt].repr_transparent =>
+            {
+                let fields =
+                    flux_solve::fields(self.sigs, to).ok_or_else(|| unsupported_view(range))?;
+                let mut values = Vec::with_capacity(fields.len());
+                let mut tail = false;
+                for &field in fields {
+                    if self.sigs.is_unsized(field) {
+                        if tail {
+                            return Err(unsupported_view(range));
+                        }
+                        tail = true;
+                        values.push(self.memory_view(
+                            value,
+                            from,
+                            offset,
+                            field,
+                            len,
+                            range,
+                            depth + 1,
+                        )?);
+                    } else {
+                        let layout = self.view_layout(field, range)?;
+                        if !layout.exact || layout.size != 0 || layout.align != 1 {
+                            return Err(unsupported_view(range));
+                        }
+                        let mut value = Value::Uninit(field);
+                        self.materialize_zero_sized(&mut value, field, range)?;
+                        self.initialized(&value, field, range)?;
+                        values.push(value);
+                    }
+                }
+                if !tail {
+                    return Err(unsupported_view(range));
+                }
+                Ok(Value::Aggregate(values.into()))
+            }
+            _ => self.memory_value(value, from, offset, to, range, depth),
+        }
     }
 
     /// Interpret initialized typed storage at a byte offset. Pointer values
@@ -1062,6 +1234,79 @@ impl<'a> Evaluator<'a> {
                 }
             }
             return Ok(pointer_view(value.clone(), from, to));
+        }
+        if let TyKind::Adt(adt, _) = to.kind()
+            && self.sigs.unions.contains(&adt.strukt)
+        {
+            let fields =
+                flux_solve::fields(self.sigs, to).ok_or_else(|| unsupported_view(range))?;
+            for (field, &ty) in fields.iter().enumerate() {
+                if matches!(ty.kind(), TyKind::Array(element, _) if element == Ty::int(IntTy::U8))
+                    && self.view_layout(ty, range)?.size == viewed.size
+                {
+                    let value = self.memory_value(value, from, offset, ty, range, depth + 1)?;
+                    return Ok(Value::Union {
+                        field: field as u32,
+                        value: Arc::new(value),
+                    });
+                }
+            }
+            return Err(unsupported_view(range));
+        }
+        if let Value::Union { field, value } = value {
+            let fields =
+                flux_solve::fields(self.sigs, from).ok_or_else(|| unsupported_view(range))?;
+            let &ty = fields
+                .get(*field as usize)
+                .ok_or_else(|| unsupported_view(range))?;
+            return self.memory_value(value, ty, offset, to, range, depth + 1);
+        }
+        // Explicit integer representations make fieldless enum storage exact.
+        // Decode only a declared discriminant; holes are invalid values.
+        if let TyKind::Adt(adt, _) = to.kind()
+            && let Some(repr) = self.items.structs[adt.strukt]
+                .repr
+                .and_then(IntTy::from_name)
+            && flux_solve::variants(self.sigs, to)
+                .is_some_and(|variants| variants.iter().all(|fields| fields.is_empty()))
+        {
+            let value = self.memory_value(value, from, offset, Ty::int(repr), range, depth + 1)?;
+            let Value::Int { bits, .. } = value else {
+                return Err(unsupported_view(range));
+            };
+            let values = self.discriminants(adt.strukt)?;
+            let Some(index) = values
+                .iter()
+                .position(|&value| truncate(value, repr) == bits)
+            else {
+                return Err(error(
+                    range,
+                    "invalid enum discriminant in constant value".into(),
+                ));
+            };
+            return Ok(Value::Variant {
+                strukt: adt.strukt,
+                index: index as u32,
+                fields: Vec::new().into(),
+            });
+        }
+        if let (Value::Variant { index, fields, .. }, TyKind::Adt(adt, _)) = (value, from.kind())
+            && fields.is_empty()
+            && let Some(repr) = self.items.structs[adt.strukt]
+                .repr
+                .and_then(IntTy::from_name)
+            && flux_solve::variants(self.sigs, from)
+                .is_some_and(|variants| variants.iter().all(|fields| fields.is_empty()))
+        {
+            let bits = truncate(self.discriminant(adt.strukt, *index)?, repr);
+            return self.memory_value(
+                &Value::Int { bits, ty: repr },
+                Ty::int(repr),
+                offset,
+                to,
+                range,
+                depth + 1,
+            );
         }
         let bits = match value {
             Value::Float { bits, .. } if from.as_float().is_some() => Some(u128::from(*bits)),
@@ -1247,6 +1492,11 @@ impl<'a> Evaluator<'a> {
         ty: Ty,
         range: TextRange,
     ) -> Result<Rc<crate::layout::Layout>, EvalError> {
+        let ty = if ty.has_aliases() {
+            flux_solve::traits::normalize(self.items, self.sigs, &[], ty)
+        } else {
+            ty
+        };
         if let Some(layout) = self.view_layouts.get(&ty) {
             return Ok(layout.clone());
         }
@@ -1544,7 +1794,7 @@ impl<'a> Evaluator<'a> {
             _ => None,
         };
         if let Some((id, mut path)) = static_origin {
-            let len = static_path_type(self.sigs, self.sigs.consts[id], &path)
+            let len = static_path_type(self.items, self.sigs, self.sigs.consts[id], &path)
                 .and_then(Ty::array_len)
                 .ok_or_else(|| error(range, "static slice metadata is not supported yet".into()))?
                 as usize;
@@ -1585,7 +1835,8 @@ impl<'a> Evaluator<'a> {
             },
             Value::Static(id) => self.sigs.consts[*id].array_len(),
             Value::StaticPart { id, path } => {
-                static_path_type(self.sigs, self.sigs.consts[*id], path).and_then(Ty::array_len)
+                static_path_type(self.items, self.sigs, self.sigs.consts[*id], path)
+                    .and_then(Ty::array_len)
             }
             _ => pointee.array_len(),
         }
@@ -1682,7 +1933,7 @@ impl<'a> Evaluator<'a> {
         stored = match &value {
             Value::Static(id) => Some(self.sigs.consts[*id]),
             Value::StaticPart { id, path } => {
-                static_path_type(self.sigs, self.sigs.consts[*id], path)
+                static_path_type(self.items, self.sigs, self.sigs.consts[*id], path)
             }
             _ => stored,
         };
@@ -1708,10 +1959,18 @@ impl<'a> Evaluator<'a> {
             }
         };
         if stored_element != element {
-            return Err(error(
-                range,
-                "reinterpreted raw slices in constants are not supported yet".into(),
-            ));
+            let source = Ty::raw_ptr(
+                flux_ty::Mutability::Not,
+                stored.ok_or_else(|| unsupported_view(range))?,
+            );
+            let view = Value::PointerOffset {
+                pointer: Arc::new(value),
+                source,
+                offset: 0,
+                target: pointer_ty,
+                len: None,
+            };
+            return self.slice_from_pointer(view, pointer_ty, len, result_ty, range);
         }
         let Some(count) = count else {
             return Err(unsupported_view(range));
@@ -1981,6 +2240,7 @@ impl<'a> Evaluator<'a> {
         checked: bool,
     ) -> Result<Value, EvalError> {
         self.promoted.push(&body.promoted);
+        self.inline_constants.push(&body.inline_constants);
         let mut locals = self.frames.pop().unwrap_or_default();
         locals.resize(body.locals.len(), None);
         for (param, value) in body.params().zip(args.drain(..)) {
@@ -1993,10 +2253,12 @@ impl<'a> Evaluator<'a> {
         let result = self.run_body(body, &mut locals, generics, depth, checked);
         self.frame_slots.pop();
         self.promoted.pop();
+        self.inline_constants.pop();
         let mut borrows = self.local_borrows.pop().unwrap();
         for origin in borrows.drain(..).flatten() {
             self.live_borrows.remove(&origin.token);
             self.frame_memory.remove(&origin.token);
+            self.snapshot_versions.remove(&origin.token);
         }
         self.borrow_frames.push(borrows);
         // No evaluated values survive in scratch storage: in particular, a
@@ -2061,6 +2323,7 @@ impl<'a> Evaluator<'a> {
                 {
                     self.live_borrows.remove(&origin.token);
                     self.frame_memory.remove(&origin.token);
+                    self.snapshot_versions.remove(&origin.token);
                     self.frame_slots
                         .last_mut()
                         .unwrap()
@@ -2100,6 +2363,7 @@ impl<'a> Evaluator<'a> {
                         | Value::DynPointer { .. }
                         | Value::Aggregate(_)
                         | Value::Variant { .. }
+                        | Value::Union { .. }
                         | Value::Static(_)
                         | Value::StaticPart { .. }
                         | Value::RawAddr(_)
@@ -2705,6 +2969,39 @@ impl<'a> Evaluator<'a> {
         Ok(None)
     }
 
+    /// Read the validated elements of a named shared byte-slice pattern.
+    pub(crate) fn byte_slice_pattern(
+        &mut self,
+        value: &Value,
+        range: TextRange,
+    ) -> Result<Option<Vec<u8>>, EvalError> {
+        let ty = Ty::new(TyKind::Ref(
+            flux_ty::Mutability::Not,
+            Ty::slice(Ty::int(IntTy::U8)),
+        ));
+        let viewed = match value {
+            Value::PointerView {
+                pointer,
+                source,
+                target,
+            } => self.pointer_value(pointer, *source, *target, range)?,
+            _ => self.pointer_value(value, ty, ty, range)?,
+        };
+        let Value::Aggregate(fields) = viewed else {
+            return Ok(None);
+        };
+        Ok(fields
+            .iter()
+            .map(|value| match value {
+                Value::Int {
+                    bits,
+                    ty: IntTy::U8,
+                } => u8::try_from(*bits).ok(),
+                _ => None,
+            })
+            .collect())
+    }
+
     /// Validate the actual bytes behind an evaluated shared string pattern.
     /// Pointer views retain their allocation, offset and length checks.
     pub(crate) fn is_string_pattern(
@@ -2769,8 +3066,9 @@ impl<'a> Evaluator<'a> {
                 if let Some(Some(Value::StaticPart { id, path })) = locals.get(place.local.index())
                     && place.projection.first() == Some(&ProjectionElem::Deref)
                 {
-                    let target = static_path_type(self.sigs, self.sigs.consts[*id], path)
-                        .ok_or_else(|| unsupported_view(range))?;
+                    let target =
+                        static_path_type(self.items, self.sigs, self.sigs.consts[*id], path)
+                            .ok_or_else(|| unsupported_view(range))?;
                     self.check_static_address(*id, path, target, range)?;
                     let mut value = self.static_value(*id, range)?;
                     for p in path.iter() {
@@ -2820,6 +3118,14 @@ impl<'a> Evaluator<'a> {
                     };
                     self.eval_instance(instance)
                         .map(|value| Value::Ref(Arc::new(value)))
+                }
+                Constant::Inline { index, .. } => {
+                    let constant = self
+                        .inline_constants
+                        .last()
+                        .and_then(|entries| entries.get(index as usize))
+                        .ok_or_else(|| error(range, "inline constant is missing".into()))?;
+                    self.inline_value(constant, range)
                 }
                 Constant::Promoted { index, .. } => {
                     let value = self
@@ -2904,9 +3210,10 @@ impl<'a> Evaluator<'a> {
                     self.promoted_layouts(field, range)?;
                 }
             }
-            Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. } => {
-                self.promoted_layouts(value, range)?
-            }
+            Value::Ref(value)
+            | Value::Union { value, .. }
+            | Value::InteriorRef(value)
+            | Value::LocalRef { value, .. } => self.promoted_layouts(value, range)?,
             Value::PointerView { pointer, .. }
             | Value::PointerOffset { pointer, .. }
             | Value::DynPointer { pointer, .. } => self.promoted_layouts(pointer, range)?,
@@ -3056,7 +3363,7 @@ impl<'a> Evaluator<'a> {
                         }
                         Some(Value::Static(id)) => Some(self.sigs.consts[*id]),
                         Some(Value::StaticPart { id, path }) => {
-                            static_path_type(self.sigs, self.sigs.consts[*id], path)
+                            static_path_type(self.items, self.sigs, self.sigs.consts[*id], path)
                         }
                         _ => None,
                     }
@@ -3134,6 +3441,36 @@ impl<'a> Evaluator<'a> {
             } if *raw || *mutability == flux_ty::Mutability::Not => {
                 if place.projection.first() == Some(&ProjectionElem::Deref) {
                     if place.projection.len() > 1
+                        && place.projection.last() == Some(&ProjectionElem::Deref)
+                    {
+                        // A reference stored in a static/aggregate carries the
+                        // referent's own allocation, independently of its container.
+                        let mut pointer_place = place.clone();
+                        pointer_place.projection = place.projection[..place.projection.len() - 1]
+                            .to_vec()
+                            .into();
+                        let target = body.place_ty(&pointer_place, self.sigs).subst(generics);
+                        let mut pointer =
+                            self.operand(locals, generics, &Operand::Copy(pointer_place), range)?;
+                        if *raw {
+                            mark_raw_origin(&mut pointer);
+                        } else {
+                            match &pointer {
+                                Value::PointerView {
+                                    pointer,
+                                    source,
+                                    target,
+                                } => {
+                                    self.pointer_value(pointer, *source, *target, range)?;
+                                }
+                                _ => {
+                                    self.pointer_value(&pointer, target, target, range)?;
+                                }
+                            }
+                        }
+                        return Ok(pointer);
+                    }
+                    if place.projection.len() > 1
                         && !place.projection[1..].contains(&ProjectionElem::Deref)
                         && let Some(Some(
                             value @ (Value::Ref(_)
@@ -3183,29 +3520,6 @@ impl<'a> Evaluator<'a> {
                         value @ (Value::PointerView { .. } | Value::PointerOffset { .. }),
                     )) = locals.get(place.local.index())
                     {
-                        if place.projection.len() > 1
-                            && place.projection.last() == Some(&ProjectionElem::Deref)
-                        {
-                            // Reborrow a reference stored inside projected storage.
-                            // Reading the reference preserves its own allocation,
-                            // rather than projecting through the outer allocation.
-                            let mut pointer_place = place.clone();
-                            pointer_place.projection = place.projection
-                                [..place.projection.len() - 1]
-                                .to_vec()
-                                .into();
-                            let target = body.place_ty(&pointer_place, self.sigs).subst(generics);
-                            let pointer = self.operand(
-                                locals,
-                                generics,
-                                &Operand::Copy(pointer_place),
-                                range,
-                            )?;
-                            if !*raw {
-                                self.pointer_value(&pointer, target, target, range)?;
-                            }
-                            return Ok(pointer);
-                        }
                         if place.projection.len() != 1 {
                             return Err(unsupported_view(range));
                         }
@@ -3248,7 +3562,11 @@ impl<'a> Evaluator<'a> {
                             &[],
                             body.place_ty(&root, self.sigs).subst(generics),
                         );
-                        let stored = static_path_type(self.sigs, self.sigs.consts[id], &path);
+                        let stored =
+                            static_path_type(self.items, self.sigs, self.sigs.consts[id], &path)
+                                .map(|ty| {
+                                    flux_solve::traits::normalize(self.items, self.sigs, &[], ty)
+                                });
                         let compatible = stored == Some(view)
                             || matches!((stored.map(Ty::kind), view.kind()),
                                 (Some(TyKind::Array(a, _)), TyKind::Slice(b)) if a == b);
@@ -3265,8 +3583,12 @@ impl<'a> Evaluator<'a> {
                                 ProjectionElem::ConstantIndex {
                                     offset, from_end, ..
                                 } => {
-                                    let stored =
-                                        static_path_type(self.sigs, self.sigs.consts[id], &path);
+                                    let stored = static_path_type(
+                                        self.items,
+                                        self.sigs,
+                                        self.sigs.consts[id],
+                                        &path,
+                                    );
                                     let Some(TyKind::Array(_, len)) = stored.map(Ty::kind) else {
                                         return Err(error(
                                             range,
@@ -3283,12 +3605,16 @@ impl<'a> Evaluator<'a> {
                                     })
                                 }
                                 ProjectionElem::Subslice { from, to, from_end } => {
-                                    let len =
-                                        static_path_type(self.sigs, self.sigs.consts[id], &path)
-                                            .and_then(Ty::array_len)
-                                            .ok_or_else(|| {
-                                                error(range, "unknown static array length".into())
-                                            })?;
+                                    let len = static_path_type(
+                                        self.items,
+                                        self.sigs,
+                                        self.sigs.consts[id],
+                                        &path,
+                                    )
+                                    .and_then(Ty::array_len)
+                                    .ok_or_else(|| {
+                                        error(range, "unknown static array length".into())
+                                    })?;
                                     let end = if from_end {
                                         len.checked_sub(u64::from(to))
                                     } else {
@@ -3390,6 +3716,7 @@ impl<'a> Evaluator<'a> {
                     Value::LocalRef {
                         value: Arc::new(value),
                         origin,
+                        version: *self.snapshot_versions.entry(origin.token).or_default(),
                         raw: *raw,
                     }
                 } else if origin.interior || self.inline_interior(&value, ty) {
@@ -3655,6 +3982,7 @@ impl<'a> Evaluator<'a> {
                     | Value::DynPointer { .. }
                     | Value::Aggregate(_)
                     | Value::Variant { .. }
+                    | Value::Union { .. }
                     | Value::Static(_)
                     | Value::StaticPart { .. }
                     | Value::RawAddr(_)
@@ -4279,7 +4607,9 @@ pub fn show(value: &Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Function(_) => "{function}".to_owned(),
         Value::DynPointer { .. } => "{trait object}".to_owned(),
-        Value::Aggregate(_) | Value::Variant { .. } => "{aggregate}".to_owned(),
+        Value::Aggregate(_) | Value::Variant { .. } | Value::Union { .. } => {
+            "{aggregate}".to_owned()
+        }
         Value::Static(_) | Value::StaticPart { .. } => "{static}".to_owned(),
         Value::RawAddr(address) => format!("0x{address:x}"),
         Value::PointerOffset {

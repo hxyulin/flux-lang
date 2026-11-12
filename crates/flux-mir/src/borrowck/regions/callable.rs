@@ -49,6 +49,52 @@ fn record_pointer_check(
 }
 
 impl Cx<'_> {
+    /// Expand bound-dependent output recipes in this caller's proof context.
+    pub(super) fn instantiate_pointer(
+        &mut self,
+        signature: flux_ty::FnSigTy,
+        own: &[Var],
+        bound: &[Var],
+    ) -> Option<Vec<Vec<Var>>> {
+        let env = self.caller_region_goals();
+        self.instantiate_pointer_with_env(signature, own, bound, &env)
+    }
+
+    pub(super) fn instantiate_pointer_with_env(
+        &mut self,
+        signature: flux_ty::FnSigTy,
+        own: &[Var],
+        bound: &[Var],
+        env: &[super::ImplRegionGoal],
+    ) -> Option<Vec<Vec<Var>>> {
+        flux_ty::regions::instantiate_fn_pointer_with(
+            self.items,
+            signature,
+            own,
+            bound,
+            STATIC,
+            |alias, inputs| {
+                self.proven_family_output(alias, inputs, env, 0)?;
+                let source: Vec<_> = (0..inputs.len() as u32)
+                    .map(flux_ty::regions::Region::Param)
+                    .collect();
+                let mut map = |r| match r {
+                    flux_ty::regions::Region::Static => Some(STATIC),
+                    flux_ty::regions::Region::Param(i) => inputs.get(i as usize).copied(),
+                    _ => None,
+                };
+                self.instantiate_family(
+                    alias,
+                    &source,
+                    &mut 0,
+                    &mut map,
+                    &[],
+                    &Vec::<Vec<Var>>::new(),
+                )
+            },
+        )
+    }
+
     /// Finish a scoped higher-ranked proof. Older inference regions cannot
     /// capture its placeholders. An older region required to outlive every
     /// admitted placeholder must outlive its declared upper bounds, or static
@@ -160,8 +206,7 @@ impl Cx<'_> {
         own: &[Var],
         bound: &[Var],
     ) -> Option<Vec<Vec<Var>>> {
-        let rows =
-            flux_ty::regions::instantiate_fn_pointer(self.items, target, own, bound, STATIC)?;
+        let rows = self.instantiate_pointer(target, own, bound)?;
         // Reification compares independent binders, not calls on concrete
         // references. Input well-formedness must not change output links.
         self.close_known();
@@ -509,7 +554,7 @@ impl Cx<'_> {
         }
         let bound = self.fresh_list(count);
         let rows = if sig.regions.is_some() {
-            flux_ty::regions::instantiate_fn_pointer(self.items, sig, own, &bound, STATIC)?
+            self.instantiate_pointer(sig, own, &bound)?
         } else {
             vec![Vec::new(); sig.inputs_output.len()]
         };

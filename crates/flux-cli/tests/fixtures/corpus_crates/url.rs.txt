@@ -1,0 +1,19 @@
+use url::Url;
+fn main() {
+    let url=Url::parse("https://BÜCHER.example:443/a/../b?x=1#part").unwrap();
+    println!("{} {} {}",url,url.host_str().unwrap(),url.path());
+    assert_eq!(url.host_str(),Some("xn--bcher-kva.example"));
+    let joined=url.join("../café?q=a%20b").unwrap();
+    println!("{}",joined);
+    let snow=Url::parse("http://☃.example/").unwrap();
+    println!("{}",snow);
+    let mut query=Url::parse("https://example.com/").unwrap();
+    query.query_pairs_mut().append_pair("space key","a+b c").append_pair("unicode","你好");
+    println!("{}",query);
+    for (key,value) in query.query_pairs() {println!("{}={}",key,value);}
+    let ipv6=Url::parse("http://user:password@[::1]:8080/path").unwrap();
+    println!("{} {} {:?}",ipv6.username(),ipv6.port().unwrap(),ipv6.socket_addrs(||None).unwrap());
+    let file=Url::from_file_path("/tmp/space name").unwrap();
+    println!("{} {}",file,file.to_file_path().unwrap().display());
+    assert!(Url::parse("http://[bad]").is_err());
+}

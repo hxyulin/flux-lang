@@ -79,7 +79,7 @@ fn reexports_and_cached_library_ids() {
         let typed = flux_ty::check_file(&hir);
         assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
         let items = &hir.items;
-        assert_eq!(items.main_crate().0, 3);
+        assert_eq!(items.main_crate().0, 4);
         assert_eq!(items.crates[2].name.as_str(), "std");
         assert!(!items.crates[2].is_core);
         for krate in &items.crates[..2] {

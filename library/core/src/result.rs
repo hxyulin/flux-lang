@@ -17,6 +17,14 @@ pub enum Result<T, E> {
 use Result::{Err, Ok};
 
 impl<T, E> Result<T, E> {
+    /// Iterates over the success value by shared reference.
+    pub fn iter(&self) -> Iter<'_, T> {
+        Iter { inner: self.as_ref().ok().into_iter() }
+    }
+    /// Iterates over the success value by exclusive reference.
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
+        IterMut { inner: self.as_mut().ok().into_iter() }
+    }
     /// Borrows the payload of either variant.
     pub const fn as_ref(&self)->Result<&T,&E> {match self {Ok(value)=>Ok(value),Err(error)=>Err(error)}}
     /// Mutably borrows the payload of either variant.
@@ -346,4 +354,64 @@ impl<T: crate::marker::Copy, E> Result<&mut T, E> {
     pub fn copied(self) -> Result<T, E> {
         match self { Ok(value) => Ok(*value), Err(error) => Err(error) }
     }
+}
+
+/// An iterator over a Result success value.
+pub struct Iter<'a, T> { inner: crate::option::IntoIter<&'a T> }
+impl<'a, T> crate::clone::Clone for Iter<'a, T> {
+    fn clone(&self) -> Self { Self { inner: self.inner.clone() } }
+}
+impl<'a, T> crate::iter::Iterator for Iter<'a, T> {
+    type Item = &'a T;
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next() }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<'a, T> crate::iter::DoubleEndedIterator for Iter<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next_back() }
+}
+impl<'a, T> crate::iter::ExactSizeIterator for Iter<'a, T> {}
+impl<'a, T> crate::iter::FusedIterator for Iter<'a, T> {}
+
+/// An iterator over a Result success value.
+pub struct IterMut<'a, T> { inner: crate::option::IntoIter<&'a mut T> }
+impl<'a, T> crate::iter::Iterator for IterMut<'a, T> {
+    type Item = &'a mut T;
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next() }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<'a, T> crate::iter::DoubleEndedIterator for IterMut<'a, T> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next_back() }
+}
+impl<'a, T> crate::iter::ExactSizeIterator for IterMut<'a, T> {}
+impl<'a, T> crate::iter::FusedIterator for IterMut<'a, T> {}
+
+/// An iterator over a Result success value.
+pub struct IntoIter<T> { inner: crate::option::IntoIter<T> }
+impl<T: crate::clone::Clone> crate::clone::Clone for IntoIter<T> {
+    fn clone(&self) -> Self { Self { inner: self.inner.clone() } }
+}
+impl<T> crate::iter::Iterator for IntoIter<T> {
+    type Item = T;
+    fn next(&mut self) -> Option<Self::Item> { self.inner.next() }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.inner.size_hint() }
+}
+impl<T> crate::iter::DoubleEndedIterator for IntoIter<T> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.inner.next_back() }
+}
+impl<T> crate::iter::ExactSizeIterator for IntoIter<T> {}
+impl<T> crate::iter::FusedIterator for IntoIter<T> {}
+impl<T, E> crate::iter::IntoIterator for Result<T, E> {
+    type Item = T;
+    type IntoIter = IntoIter<T>;
+    fn into_iter(self) -> Self::IntoIter { IntoIter { inner: self.ok().into_iter() } }
+}
+impl<'a, T, E> crate::iter::IntoIterator for &'a Result<T, E> {
+    type Item = &'a T;
+    type IntoIter = Iter<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.iter() }
+}
+impl<'a, T, E> crate::iter::IntoIterator for &'a mut Result<T, E> {
+    type Item = &'a mut T;
+    type IntoIter = IterMut<'a, T>;
+    fn into_iter(self) -> Self::IntoIter { self.iter_mut() }
 }

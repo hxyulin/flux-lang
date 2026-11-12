@@ -1037,6 +1037,7 @@ impl<'a> Reach<'a> {
                     }
                 }
                 Value::Ref(value)
+                | Value::Union { value, .. }
                 | Value::InteriorRef(value)
                 | Value::PointerView { pointer: value, .. }
                 | Value::PointerOffset { pointer: value, .. }

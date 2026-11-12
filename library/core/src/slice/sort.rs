@@ -97,3 +97,52 @@ pub(super) fn rotate<T>(v: &mut [T], mid: usize) {
     v[mid..].reverse();
     v.reverse();
 }
+
+/// Selects a rank with median-of-medians pivots and a three-way partition.
+/// Moving the medians of groups of five to the front bounds each recursive
+/// partition's size; equal values leave the active range in one step.
+pub(super) fn select<T, F: FnMut(&T, &T) -> bool>(
+    mut values: &mut [T], mut index: usize, is_less: &mut F,
+) {
+    loop {
+        let len = values.len();
+        if len <= 5 {
+            insertion(values, is_less);
+            return;
+        }
+        let groups = len / 5 + if len % 5 == 0 { 0 } else { 1 };
+        for group in 0..groups {
+            let start = group * 5;
+            let end = (start + 5).min(len);
+            insertion(&mut values[start..end], is_less);
+            values.swap(group, start + (end - start) / 2);
+        }
+        let median = groups / 2;
+        select(&mut values[..groups], median, is_less);
+        values.swap(median, len - 1);
+        let mut lower = 0;
+        let mut scan = 0;
+        let mut upper = len - 1;
+        while scan < upper {
+            if (*is_less)(&values[scan], &values[len - 1]) {
+                values.swap(lower, scan);
+                lower += 1;
+                scan += 1;
+            } else if (*is_less)(&values[len - 1], &values[scan]) {
+                upper -= 1;
+                values.swap(scan, upper);
+            } else {
+                scan += 1;
+            }
+        }
+        values.swap(upper, len - 1);
+        if index < lower {
+            values = &mut values[..lower];
+        } else if index > upper {
+            index -= upper + 1;
+            values = &mut values[upper + 1..];
+        } else {
+            return;
+        }
+    }
+}

@@ -251,6 +251,33 @@ impl Cx<'_> {
         if row.len() != self.slots(goal.predicate.self_ty) as usize {
             return None;
         }
+        if let Some(signature) = object.quantified_signature() {
+            let recipe = signature.regions?;
+            let bound: Vec<_> = (0..recipe.bound).map(|_| self.fresh()).collect();
+            let rows = self.quantified_object_rows(object, row.get(1..)?, &bound)?;
+            let root = ImplRegionGoal {
+                predicate: flux_solve::traits::dyn_principal(goal.predicate.self_ty, object),
+                vars: std::iter::once(row.clone()).chain(rows.arguments).collect(),
+                lifetimes: rows.owner,
+                bound,
+            };
+            let mut goals = Vec::new();
+            if !self.impl_super_goals(root, &mut goals, 0) {
+                return None;
+            }
+            for &trait_ref in object.auto_traits {
+                goals.push(ImplRegionGoal {
+                    predicate: flux_ty::Predicate {
+                        self_ty: goal.predicate.self_ty,
+                        trait_ref,
+                    },
+                    vars: vec![row.clone()],
+                    lifetimes: Vec::new(),
+                    bound: Vec::new(),
+                });
+            }
+            return Some(goals);
+        }
         let own = flux_ty::regions::object_own_slots(self.items, object);
         let mut at = own;
         let mut args = Vec::new();
@@ -379,6 +406,7 @@ mod tests {
             Ty::new(TyKind::Ref(Mutability::Not, Ty::int(flux_ty::IntTy::U8))),
         ]);
         let object = flux_ty::DynTy {
+            quantified: None,
             callable: None,
             trait_,
             name: data.name,

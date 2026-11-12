@@ -273,6 +273,28 @@ fn collect_roots(
     let names = |id| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, sigs, &mir.bodies, &mir.consts, &names)
         .with_imported(&mir.const_values, &mir.discriminants);
+    // Rustc evaluates inline constants in all monomorphic functions during
+    // code generation, including unused ones. Generic function bodies defer
+    // their expressions until an instance is requested.
+    for (function, body) in mir
+        .bodies
+        .iter()
+        .filter(|(_, body)| !body.inline_constants.is_empty())
+    {
+        let data = &items.functions[function];
+        if !flux_ty::generic_names(items, data.owner, &data.generics).is_empty() {
+            continue;
+        }
+        for constant in &body.inline_constants {
+            evaluator
+                .eval_inline_constant(constant, data.def_range)
+                .map_err(|error| Diagnostic {
+                    file: data.loc.file,
+                    range: error.range,
+                    message: error.message,
+                })?;
+        }
+    }
     let mut const_values = FxHashMap::default();
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
@@ -431,6 +453,19 @@ fn collect_roots(
                             &const_values[&c]
                         };
                         value_functions(value, &mir.const_values, items, sigs, &mut found);
+                    }
+                    Operand::Const(Constant::Inline { index, .. }) => {
+                        let value = evaluator
+                            .eval_inline_constant(
+                                &body.inline_constants[*index as usize],
+                                data.terminator.range,
+                            )
+                            .map_err(|error| Diagnostic {
+                                file: items.functions[caller.function].loc.file,
+                                range: error.range,
+                                message: error.message,
+                            })?;
+                        value_functions(&value, &mir.const_values, items, sigs, &mut found);
                     }
                     Operand::Const(Constant::Promoted { index, .. }) => {
                         let original = &body.promoted[*index as usize];
@@ -863,7 +898,10 @@ pub(crate) fn value_functions<'a>(
                     values.extend(fields.iter());
                 }
             }
-            Value::Ref(value) | Value::InteriorRef(value) | Value::LocalRef { value, .. }
+            Value::Ref(value)
+            | Value::Union { value, .. }
+            | Value::InteriorRef(value)
+            | Value::LocalRef { value, .. }
                 if allocations.insert((0, std::sync::Arc::as_ptr(value) as usize)) =>
             {
                 values.push(value);
@@ -1178,6 +1216,7 @@ fn builtin_shim(
         owner: None,
         constant_owner: None,
         promoted: Vec::new(),
+        inline_constants: Vec::new(),
         bugs: Vec::new(),
         fn_spans: Default::default(),
     })
@@ -1248,6 +1287,7 @@ fn pointer_address_shim(items: &ItemTree, sigs: &Signatures, instance: Instance)
         owner: None,
         constant_owner: None,
         promoted: Vec::new(),
+        inline_constants: Vec::new(),
         bugs: Vec::new(),
         fn_spans: Default::default(),
     }
@@ -1345,6 +1385,7 @@ fn pointer_debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -
         owner: None,
         constant_owner: None,
         promoted: Vec::new(),
+        inline_constants: Vec::new(),
         bugs: Vec::new(),
         fn_spans: Default::default(),
     }
@@ -1452,6 +1493,7 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
         owner: None,
         constant_owner: None,
         promoted: Vec::new(),
+        inline_constants: Vec::new(),
         bugs: Vec::new(),
         fn_spans: Default::default(),
     }
@@ -2572,7 +2614,10 @@ fn map_body_types(body: &Body, args: &[Ty], subst: impl Fn(Ty) -> Ty) -> Body {
         local.ty = subst(local.ty);
     }
     let operand = |op: &mut Operand| {
-        if let Operand::Const(Constant::FnItem(ty) | Constant::Promoted { ty, .. }) = op {
+        if let Operand::Const(
+            Constant::FnItem(ty) | Constant::Promoted { ty, .. } | Constant::Inline { ty, .. },
+        ) = op
+        {
             *ty = subst(*ty);
         }
         if let Operand::Const(Constant::TyConst { value, ty }) = *op {

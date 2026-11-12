@@ -403,8 +403,29 @@ fn split_file_name(name: &OsStr) -> (&OsStr, Option<&OsStr>) {
 /// A Windows prefix cannot occur in Unix paths; this view keeps the public
 /// component type usable in platform-independent pattern matches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PrefixComponent<'a> { raw: &'a OsStr }
-impl<'a> PrefixComponent<'a> { pub fn as_os_str(&self) -> &'a OsStr { self.raw } }
+pub struct PrefixComponent<'a> { raw: &'a OsStr, parsed: Prefix<'a> }
+impl<'a> PrefixComponent<'a> {
+    pub fn as_os_str(&self) -> &'a OsStr { self.raw }
+    pub fn kind(&self) -> Prefix<'a> { self.parsed }
+}
+
+/// Windows path prefixes, available for platform-independent pattern matching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Prefix<'a> {
+    Verbatim(&'a OsStr),
+    VerbatimUNC(&'a OsStr, &'a OsStr),
+    VerbatimDisk(u8),
+    DeviceNS(&'a OsStr),
+    UNC(&'a OsStr, &'a OsStr),
+    Disk(u8),
+}
+impl Prefix<'_> {
+    pub fn is_verbatim(&self) -> bool {
+        matches!(self, Prefix::Verbatim(_) | Prefix::VerbatimUNC(..) | Prefix::VerbatimDisk(_))
+    }
+
+}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Component<'a> {

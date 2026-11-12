@@ -160,12 +160,12 @@ impl<T> [T] {
     }
 
     /// The first element, or `None` if the slice is empty.
-    pub fn first(&self) -> Option<&T> {
+    pub const fn first(&self) -> Option<&T> {
         if self.len() == 0 { None } else { Some(&self[0]) }
     }
 
     /// The last element, or `None` if the slice is empty.
-    pub fn last(&self) -> Option<&T> {
+    pub const fn last(&self) -> Option<&T> {
         let len = self.len();
         if len == 0 { None } else { Some(&self[len - 1]) }
     }
@@ -232,8 +232,11 @@ impl<T> [T] {
     }
 
     /// The first element and the rest, or `None` if the slice is empty.
-    pub fn split_first(&self) -> Option<(&T, &[T])> {
-        if self.len() == 0 { None } else { Some((&self[0], &self[1..])) }
+    pub const fn split_first(&self) -> Option<(&T, &[T])> {
+        if self.len() == 0 { None } else {
+            let (first, rest) = self.split_at(1);
+            Some((&first[0], rest))
+        }
     }
 
     /// The first N elements, or None when the slice is shorter.
@@ -355,6 +358,22 @@ impl<T> [T] {
             panic("mid > len")
         }
         unsafe { (subslice_mut(self, 0, mid), subslice_mut(self, mid, len)) }
+    }
+
+    /// Splits a slice without requiring an explicit bounds check by the caller.
+    ///
+    /// # Safety
+    /// `mid` must not exceed the slice length.
+    pub const unsafe fn split_at_unchecked(&self, mid: usize) -> (&[T], &[T]) {
+        self.split_at(mid)
+    }
+
+    /// Splits a mutable slice into disjoint slices.
+    ///
+    /// # Safety
+    /// `mid` must not exceed the slice length.
+    pub const unsafe fn split_at_mut_unchecked(&mut self, mid: usize) -> (&mut [T], &mut [T]) {
+        self.split_at_mut(mid)
     }
 
     /// Splits at `mid`, or returns `None` when it exceeds the length.
@@ -782,6 +801,37 @@ impl<T> [T] {
             previous = next;
         }
         true
+    }
+
+    /// Partitions around the element at `index` in sorted order.
+    ///
+    /// # Panics
+    /// Panics when `index` is out of bounds.
+    pub fn select_nth_unstable(&mut self, index: usize) -> (&mut [T], &mut T, &mut [T])
+    where T: Ord {
+        self.select_nth_unstable_by(index, |a: &T, b: &T| a.cmp(b))
+    }
+    /// Partitions in linear time using `compare`, without allocating.
+    ///
+    /// # Panics
+    /// Panics when `index` is out of bounds or `compare` panics.
+    pub fn select_nth_unstable_by<F: FnMut(&T, &T) -> Ordering>(
+        &mut self, index: usize, mut compare: F,
+    ) -> (&mut [T], &mut T, &mut [T]) {
+        assert!(index < self.len(), "selection index out of bounds");
+        sort::select(self, index, &mut |a: &T, b: &T| compare(a, b) == Less);
+        let (before, rest) = self.split_at_mut(index);
+        let (pivot, after) = rest.split_first_mut().unwrap();
+        (before, pivot, after)
+    }
+    /// Partitions by the keys produced by `f`, without allocating.
+    ///
+    /// # Panics
+    /// Panics when `index` is out of bounds or `f` panics.
+    pub fn select_nth_unstable_by_key<K: Ord, F: FnMut(&T) -> K>(
+        &mut self, index: usize, mut f: F,
+    ) -> (&mut [T], &mut T, &mut [T]) {
+        self.select_nth_unstable_by(index, |a: &T, b: &T| f(a).cmp(&f(b)))
     }
 
     /// Sorts the slice, keeping equal elements in order.

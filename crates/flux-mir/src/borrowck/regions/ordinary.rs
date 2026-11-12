@@ -1,6 +1,10 @@
 //! Depth-first ordinary impl prerequisites without recursive Rust stack frames.
 use super::*;
 
+// A finite work budget also covers non-embedding recurrences.
+const MAX_ORDINARY_FRAMES: usize = 4096;
+const EMBEDDING_DEPTH_LIMIT: u32 = 64;
+
 pub(super) struct OrdinaryGoal {
     pub predicate: flux_ty::Predicate,
     pub vars: Vec<Vec<Var>>,
@@ -85,13 +89,16 @@ pub(super) struct OrdinaryWork {
 }
 impl OrdinaryWork {
     /// Ordinary traits are inductive. Repeated goals cannot prove themselves,
-    /// and a growing recurrence through the same impl is not structural descent.
+    /// and a structurally growing recurrence cannot provide a finite proof.
     pub(super) fn check_expansion(
         &self,
         predicate: flux_ty::Predicate,
         imp: flux_hir::ImplId,
         mut parent: Option<usize>,
     ) -> Result<(), &'static str> {
+        if self.frames.len() >= MAX_ORDINARY_FRAMES {
+            return Err("trait lifetime obligation limit exceeded");
+        }
         let size = goal_size(predicate);
         while let Some(index) = parent {
             let frame = &self.frames[index];
@@ -101,6 +108,15 @@ impl OrdinaryWork {
             if frame.imp == imp
                 && size > frame.size
                 && !strict_subterm(predicate.self_ty, frame.predicate.self_ty)
+                && embeds(frame.predicate.self_ty, predicate.self_ty, 0)
+                && frame.predicate.trait_ref.args.len() == predicate.trait_ref.args.len()
+                && frame
+                    .predicate
+                    .trait_ref
+                    .args
+                    .iter()
+                    .zip(predicate.trait_ref.args)
+                    .all(|(&a, &b)| embeds(a, b, 0))
             {
                 return Err("growing trait lifetime obligation cannot be proved");
             }
@@ -175,6 +191,49 @@ fn strict_subterm(needle: Ty, parent: Ty) -> bool {
         }
     }
     false
+}
+
+/// A larger proof can introduce a different finite implementation path.
+/// Reject growth when the old inputs remain embedded in the new inputs, rather
+/// than using size alone (normalizing an associated value may increase size).
+fn embeds(earlier: Ty, later: Ty, depth: u32) -> bool {
+    fn visit(
+        earlier: Ty,
+        later: Ty,
+        depth: u32,
+        memo: &mut FxHashMap<(Ty, Ty, u32), bool>,
+    ) -> bool {
+        if earlier == later {
+            return true;
+        }
+        if depth > EMBEDDING_DEPTH_LIMIT {
+            return false;
+        }
+        let key = (earlier, later, depth);
+        if let Some(&known) = memo.get(&key) {
+            return known;
+        }
+        let nested = later
+            .children()
+            .any(|child| visit(earlier, child, depth + 1, memo));
+        let same_head = match (earlier.kind(), later.kind()) {
+            (TyKind::Adt(a, _), TyKind::Adt(b, _)) => a == b,
+            (TyKind::Ref(a, _), TyKind::Ref(b, _))
+            | (TyKind::RawPtr(a, _), TyKind::RawPtr(b, _)) => a == b,
+            (TyKind::Tuple(a), TyKind::Tuple(b)) => a.len() == b.len(),
+            (TyKind::Array(..), TyKind::Array(..)) | (TyKind::Slice(_), TyKind::Slice(_)) => true,
+            _ => false,
+        };
+        let result = nested
+            || same_head
+                && earlier
+                    .children()
+                    .zip(later.children())
+                    .all(|(a, b)| visit(a, b, depth + 1, memo));
+        memo.insert(key, result);
+        result
+    }
+    visit(earlier, later, depth, &mut FxHashMap::default())
 }
 
 fn goal_size(predicate: flux_ty::Predicate) -> usize {

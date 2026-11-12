@@ -46,6 +46,7 @@ pub mod eval;
 pub mod flib;
 pub mod imported;
 pub mod init;
+mod inline_consts;
 mod interval;
 pub mod layout;
 mod lens;
@@ -161,6 +162,8 @@ pub struct Body {
     pub constant_owner: Option<flux_hir::ConstId>,
     /// The values [`Constant::Promoted`] refers to.
     pub promoted: Vec<eval::Value>,
+    /// Closed inline constants, evaluated independently of runtime locals.
+    pub inline_constants: Vec<Body>,
     /// Code that type checking should have ruled out, which building
     /// lowered to `unreachable`: what and where. Expected only where the
     /// program has errors; anywhere else, a bug in flux, which
@@ -289,6 +292,7 @@ impl Body {
             owner,
             constant_owner: None,
             promoted: Vec::new(),
+            inline_constants: Vec::new(),
             bugs: Vec::new(),
             fn_spans: Default::default(),
         }
@@ -748,6 +752,11 @@ pub enum Constant {
         index: u32,
         ty: Ty,
     },
+    /// The value of the body's independently evaluated inline constant.
+    Inline {
+        index: u32,
+        ty: Ty,
+    },
     /// A constant of the type system, of type `ty`: a const parameter
     /// (`N`), or an array's length that depends on one. Substituting
     /// generic arguments makes it an `Int`, `Bool` or `Char`
@@ -773,6 +782,7 @@ impl Constant {
             | Constant::Static { ty, .. }
             | Constant::Fn { ty, .. }
             | Constant::Promoted { ty, .. }
+            | Constant::Inline { ty, .. }
             | Constant::TyConst { ty, .. } => ty,
         }
     }
@@ -1081,6 +1091,9 @@ impl Body {
     /// functions coerced to pointers.
     pub fn callees(&self) -> smallvec::SmallVec<[FunctionId; 4]> {
         let mut found = smallvec::SmallVec::new();
+        for body in &self.inline_constants {
+            found.extend(body.callees());
+        }
         let mut short_seen = smallvec::SmallVec::<[Ty; 16]>::new();
         let mut seen = rustc_hash::FxHashSet::default();
         let mut stack: smallvec::SmallVec<[Ty; 16]> = self.locals.values().map(|l| l.ty).collect();
@@ -1159,12 +1172,21 @@ impl Body {
             .flat_map(|t| flux_solve::objects::supertraits_of(items, t))
             .flat_map(|t| items.traits[t].functions.iter().copied())
             .chain(drop)
+            .chain(
+                self.inline_constants
+                    .iter()
+                    .flat_map(|body| body.object_methods(items)),
+            )
             .collect()
     }
 
     /// The constant items the body uses, with their generic arguments.
     pub fn const_items(&self) -> Vec<flux_ty::ConstInstance> {
-        let mut found = Vec::new();
+        let mut found: Vec<_> = self
+            .inline_constants
+            .iter()
+            .flat_map(Body::const_items)
+            .collect();
         let mut operand = |op: &Operand| {
             if let Operand::Const(
                 Constant::Item { id, args, .. } | Constant::ItemRef { id, args, .. },

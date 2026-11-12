@@ -17,6 +17,7 @@ struct Builder<'a> {
     bound: u32,
     free: Vec<LifetimeRef>,
     captures: Vec<(TypeRef, Ty)>,
+    projections: Vec<(crate::AliasTy, Vec<FnRegion>)>,
     inputs: Vec<FnRegion>,
     output: bool,
     enclosing: Option<FnRegion>,
@@ -48,6 +49,7 @@ pub(crate) fn describe(
         bound: 0,
         free: Vec::new(),
         captures: Vec::new(),
+        projections: Vec::new(),
         inputs: Vec::new(),
         output: false,
         enclosing: None,
@@ -59,7 +61,9 @@ pub(crate) fn describe(
         let candidates = cx.elision_regions(written, ty);
         let row = cx.walk(written, ty);
         for &region in &candidates {
-            if !matches!(region, FnRegion::Type(_)) && !cx.inputs.contains(&region) {
+            if !matches!(region, FnRegion::Type(_) | FnRegion::Projection(_))
+                && !cx.inputs.contains(&region)
+            {
                 cx.inputs.push(region);
             }
         }
@@ -67,9 +71,27 @@ pub(crate) fn describe(
     }
     cx.output = true;
     rows.push(cx.walk(ret, signature.ret()));
+    fn unconstrained(
+        region: FnRegion,
+        projections: &[(crate::AliasTy, Vec<FnRegion>)],
+        inputs: &[FnRegion],
+        depth: u32,
+    ) -> bool {
+        if depth > 64 {
+            return true;
+        }
+        match region {
+            FnRegion::Bound(_) => !inputs.contains(&region),
+            FnRegion::Projection(i) => projections.get(i as usize).is_none_or(|(_, row)| {
+                row.iter()
+                    .any(|&r| unconstrained(r, projections, inputs, depth + 1))
+            }),
+            _ => false,
+        }
+    }
     if rows.last().is_some_and(|row| {
         row.iter()
-            .any(|r| matches!(r, FnRegion::Bound(_)) && !cx.inputs.contains(r))
+            .any(|&r| unconstrained(r, &cx.projections, &cx.inputs, 0))
     }) {
         cx.errors.push((
             TextRange::default(),
@@ -77,7 +99,13 @@ pub(crate) fn describe(
         ));
     }
     let types: Vec<_> = cx.captures.iter().map(|(_, ty)| *ty).collect();
-    let regions = FnPtrRegions::intern(cx.bound, cx.free.len() as u32, &rows, &types);
+    let regions = FnPtrRegions::intern_with_projections(
+        cx.bound,
+        cx.free.len() as u32,
+        &rows,
+        &types,
+        &cx.projections,
+    );
     Description {
         regions,
         free: cx.free,
@@ -217,6 +245,74 @@ impl Builder<'_> {
         Some(out)
     }
 
+    fn projection(
+        &mut self,
+        path: &flux_hir::Path,
+        alias: crate::AliasTy,
+    ) -> Option<Vec<FnRegion>> {
+        let qself = path.qself.as_ref()?;
+        let owner = qself.trait_.as_ref()?;
+        if self
+            .items
+            .resolve_trait(
+                self.module,
+                &flux_hir::Bound {
+                    path: owner.clone(),
+                    bound_lifetimes: Box::default(),
+                    range: TextRange::default(),
+                },
+            )
+            .0
+            != Some(alias.trait_)
+        {
+            return None;
+        }
+        let owner_args = owner.args(owner.segments.len().saturating_sub(1));
+        let lifetimes = owner_args.map_or(&[][..], |a| &a.lifetimes);
+        if lifetimes.len() != alias.owner_lifetimes as usize {
+            return None;
+        }
+        let mut inputs = Vec::new();
+        for &lifetime in lifetimes {
+            inputs.push(self.lifetime(Some(lifetime), lifetime.range));
+        }
+        inputs.extend(self.walk(&qself.ty, alias.args[0]));
+        for (index, &ty) in alias.args.iter().skip(1).enumerate() {
+            if let Some(written) = owner_args.and_then(|a| a.types.get(index)) {
+                inputs.extend(self.walk(written, ty));
+            } else if ty.has_params()
+                || ty.has_aliases()
+                || crate::regions::slots(self.items, ty) != 0
+            {
+                return None;
+            }
+        }
+        let family_args = path.args(path.segments.len().saturating_sub(1));
+        let lifetimes = family_args.map_or(&[][..], |a| &a.lifetimes);
+        if lifetimes.len() != alias.family_lifetimes as usize {
+            return None;
+        }
+        for &lifetime in lifetimes {
+            inputs.push(self.lifetime(Some(lifetime), lifetime.range));
+        }
+        for (index, &ty) in alias.family_args.iter().enumerate() {
+            inputs.extend(self.walk(family_args?.types.get(index)?, ty));
+        }
+        let index = match self
+            .projections
+            .iter()
+            .position(|(old, row)| *old == alias && *row == inputs)
+        {
+            Some(index) => index,
+            None => {
+                let index = self.projections.len();
+                self.projections.push((alias, inputs));
+                index
+            }
+        };
+        Some(vec![FnRegion::Projection(index as u32)])
+    }
+
     fn capture(&mut self, written: &TypeRef, ty: Ty) -> Vec<FnRegion> {
         if !ty.has_params()
             && !ty.has_infer()
@@ -249,6 +345,7 @@ impl Builder<'_> {
             bound: self.bound,
             free: self.free.clone(),
             captures: self.captures.clone(),
+            projections: self.projections.clone(),
             inputs: self.inputs.clone(),
             output: self.output,
             enclosing: self.enclosing,
@@ -365,6 +462,18 @@ impl Builder<'_> {
                 }
                 row
             }
+            (TypeRef::Path(path), TyKind::Alias(alias))
+                if crate::regions::has_projection_inputs(self.items, alias) =>
+            {
+                if let Some(row) = self.projection(path, alias) {
+                    return row;
+                }
+                self.errors.push((
+                    path.range(0, TextRange::default()),
+                    "function pointer projection inputs are not represented".into(),
+                ));
+                Vec::new()
+            }
             (TypeRef::Path(path), TyKind::Adt(adt, args)) => {
                 let root = self.items.structs[adt.strukt].generics.lifetimes.len();
                 let last = path.segments.len().saturating_sub(1);
@@ -447,11 +556,37 @@ pub fn variances(
                     *slot = slot.join(variance);
                 }
                 FnRegion::Bound(_) | FnRegion::Static => {}
-                FnRegion::Type(_) => return None,
+                FnRegion::Type(_) | FnRegion::Projection(_) => return None,
+            }
+            Some(())
+        }
+        fn projection(&mut self, index: u32, depth: u32) -> Option<()> {
+            if depth > 64 {
+                return None;
+            }
+            let inputs = self.r.projections.get(index as usize)?.inputs;
+            for &input in inputs {
+                match input {
+                    FnRegion::Free(i) => *self.free.get_mut(i as usize)? = V::Invariant,
+                    FnRegion::Type(i) => *self.types.get_mut(i as usize)? = V::Invariant,
+                    FnRegion::Projection(i) => self.projection(i, depth + 1)?,
+                    FnRegion::Bound(_) | FnRegion::Static => {}
+                }
             }
             Some(())
         }
         fn go(&mut self, ty: Ty, row: &[FnRegion], at: &mut usize, variance: V) -> Option<()> {
+            if let Some(&FnRegion::Projection(i)) = row.get(*at) {
+                let alias = self.r.projections.get(i as usize)?.alias;
+                let original = Ty::alias(alias);
+                if ty == original
+                    || ty == flux_solve::traits::normalize(self.items, self.sigs, &[], original)
+                {
+                    self.projection(i, 0)?;
+                    *at += 1;
+                    return Some(());
+                }
+            }
             if let Some(&FnRegion::Type(i)) = row.get(*at)
                 && self.r.types.get(i as usize) == Some(&ty)
             {

@@ -721,7 +721,7 @@ pub fn check_impls(
                             Outlives::Type(ty, b) => implied.iter().any(|i| {
                                 matches!(*i, Outlives::Type(u, c) if c == b
                                     && (u == ty
-                                        || crate::regions::outlives_type_components(sigs, u)
+                                        || crate::regions::outlives_type_components(items, sigs, u)
                                             .contains(&ty)))
                             }),
                         };
@@ -3339,6 +3339,9 @@ fn unify_headers_with_predicates(
                 signature.map(|ty| apply(bound, (side, ty), depth + 1)),
             )),
             TyKind::Dynamic(object) => Ty::new(TyKind::Dynamic(crate::DynTy {
+                quantified: object
+                    .quantified
+                    .map(|ty| apply(bound, (side, ty), depth + 1)),
                 callable: object
                     .callable
                     .map(|ty| apply(bound, (side, ty), depth + 1)),

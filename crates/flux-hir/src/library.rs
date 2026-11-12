@@ -98,7 +98,7 @@ impl Core {
     }
 
     /// The embedded crates as a program without items of its own: a
-    /// tree whose items all come before [`ItemTree::core`]'s counts, so
+    /// tree whose items all come before `ItemTree::core`'s counts, so
     /// that their bodies can be checked apart from any program.
     pub fn hir(&self) -> &Hir {
         self.hir.get_or_init(|| {

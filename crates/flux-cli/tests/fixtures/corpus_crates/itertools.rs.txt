@@ -1,0 +1,20 @@
+use itertools::{Itertools, PeekingNext};
+use std::collections::HashMap;
+fn main() {
+    let pairs: Vec<(i32,i32)> = (0..5).tuple_combinations().collect();
+    assert_eq!(pairs.len(), 10); assert_eq!(pairs[0], (0,1)); assert_eq!(pairs[9], (3,4));
+    let sum = (0..5).tuple_combinations::<(i32,i32,i32)>().fold(0, |sum,(a,b,c)| sum+a+b+c);
+    assert_eq!(sum, 60);
+    let smallest: Vec<_> = [7,2,9,3,1,8].into_iter().k_smallest(3).collect();
+    assert_eq!(smallest, [1,2,3]);
+    assert_eq!([3i32,-1,2,1].into_iter().min_set_by_key(|x|x.abs()), [-1,1]);
+    assert_eq!([3i32,-1,2,-3].into_iter().max_set_by_key(|x|x.abs()), [3,-3]);
+    let grouped = [1,1,2,2,2,3].into_iter().chunk_by(|x|*x);
+    let counts: Vec<_> = grouped.into_iter().map(|(key, group)|(key,group.count())).collect();
+    assert_eq!(counts, [(1,2),(2,3),(3,1)]);
+    let mut map = HashMap::new(); map.insert(19, 23);
+    assert_eq!(map.keys().peeking_next(|key|**key==19), Some(&19));
+    let result: Result<i32,()> = Ok(29);
+    assert_eq!(result.iter().peeking_next(|value|**value==29), Some(&29));
+    println!("itertools combinations, selection, grouping and peeking passed");
+}

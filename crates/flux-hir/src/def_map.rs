@@ -806,7 +806,9 @@ impl ItemTree {
             .iter()
             .enumerate()
             .find(|(i, c)| {
-                c.name == name && (c.is_core || c.name == sym::std) && (*i as u32) < own.0
+                c.name == name
+                    && (c.is_core || c.name == sym::std || c.name.as_str() == "proc_macro")
+                    && (*i as u32) < own.0
             })
             .filter(|_| {
                 name == sym::core
@@ -829,7 +831,9 @@ impl ItemTree {
             .iter()
             .enumerate()
             .find(|(i, c)| {
-                c.name == name && (c.is_core || c.name == sym::std) && (*i as u32) < own.0
+                c.name == name
+                    && (c.is_core || c.name == sym::std || c.name.as_str() == "proc_macro")
+                    && (*i as u32) < own.0
             })
             .map(|(_, c)| c.root)
     }

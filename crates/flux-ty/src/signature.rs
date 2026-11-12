@@ -969,7 +969,10 @@ pub(super) fn extend_signatures(
         if !data.is_union {
             continue;
         }
-        let env = sigs.struct_predicates.get(id).map_or(&[][..], |p| p);
+        let env = flux_solve::traits::elaborate(
+            &sigs,
+            sigs.struct_predicates.get(id).map_or(&[][..], |p| p),
+        );
         for (field, &ty) in data.fields.iter().zip(sigs.structs[id]) {
             if ty.has_error() {
                 continue;
@@ -979,8 +982,8 @@ pub(super) fn extend_signatures(
             {
                 Some("this union field type is not supported yet")
             } else if !matches!(ty.kind(), TyKind::Adt(adt, _) if is_lang_struct(items, adt.strukt, "manually_drop"))
-                && (!flux_solve::traits::is_copy(items, &sigs, env, ty)
-                    || flux_solve::traits::needs_drop(items, &sigs, env, ty))
+                && (!flux_solve::traits::is_copy(items, &sigs, &env, ty)
+                    || flux_solve::traits::needs_drop(items, &sigs, &env, ty))
             {
                 Some("union fields must implement Copy")
             } else {

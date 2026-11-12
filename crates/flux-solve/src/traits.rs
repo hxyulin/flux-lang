@@ -452,9 +452,10 @@ impl<'a> RigidSolver<'a> {
         }
         if self.normalized_arguments
             && self.memberships.iter().any(|predicate| {
-                predicate.self_ty == goal.self_ty
-                    && predicate.trait_ref.trait_ == goal.trait_ref.trait_
-                    && predicate.trait_ref.args.iter().any(|ty| ty.has_aliases())
+                predicate.trait_ref.trait_ == goal.trait_ref.trait_
+                    && (predicate.self_ty.has_aliases()
+                        || predicate.trait_ref.args.iter().any(|ty| ty.has_aliases()))
+                    && self.normalize_ty(predicate.self_ty, None) == goal.self_ty
                     && crate::ty::map_list(predicate.trait_ref.args, |ty| {
                         self.normalize_ty(ty, None)
                     }) == goal.trait_ref.args

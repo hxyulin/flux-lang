@@ -1813,6 +1813,7 @@ impl Ctx<'_> {
     /// `value`, of type `ty`, laid out in memory: its bytes and
     /// alignment.
     fn value_bytes(&mut self, value: &flux_mir::eval::Value, ty: Ty) -> (Vec<DataItem>, u32) {
+        let ty = flux_solve::traits::normalize(&self.hir.items, &self.typed.sigs, &[], ty);
         let layout = self.layouts.of(ty);
         let mut bytes = vec![0u8; layout.size.max(1) as usize];
         // The addresses, which the linker fills in, by offset.
@@ -1882,6 +1883,7 @@ impl Ctx<'_> {
         let mut variant = 0;
         let mut offset = 0;
         for p in path {
+            ty = flux_solve::traits::normalize(&self.hir.items, &self.typed.sigs, &[], ty);
             match *p {
                 P::Downcast(v) => variant = v,
                 P::Field(i) => {
@@ -1915,6 +1917,7 @@ impl Ctx<'_> {
         addresses: &mut Vec<(usize, String, u32)>,
     ) {
         use flux_mir::eval::Value as V;
+        let ty = flux_solve::traits::normalize(&self.hir.items, &self.typed.sigs, &[], ty);
         let put = |bytes: &mut [u8], at: usize, bits: u128, width: usize| {
             bytes[at..at + width].copy_from_slice(&bits.to_le_bytes()[..width]);
         };
@@ -2036,6 +2039,10 @@ impl Ctx<'_> {
                 if let Some(len) = len {
                     put(bytes, at + 8, u128::from(len), 8);
                 }
+            }
+            V::Union { field, value } => {
+                let ty = flux_solve::fields(&self.typed.sigs, ty).unwrap()[*field as usize];
+                self.write_bytes(value, ty, at, bytes, addresses);
             }
             V::Aggregate(elements) if matches!(ty.kind(), TyKind::Array(..)) => {
                 let elem = ty.sequence_elem().unwrap_or(Ty::ERROR);
@@ -3486,6 +3493,24 @@ impl Lower<'_, '_, '_> {
                 self.value_leaves(&value, *ty, &mut leaves);
                 leaves
             }
+            Operand::Const(Constant::Inline { index, ty }) => {
+                let value = self
+                    .ctx
+                    .evaluator
+                    .eval_inline_constant(
+                        &self.body.inline_constants[*index as usize],
+                        Default::default(),
+                    )
+                    .expect("inline constant passed instance collection");
+                if is_memory(self.sigs, *ty) {
+                    let address = self.new_slot(*ty);
+                    self.store_value(address, &value, *ty);
+                    return smallvec![address];
+                }
+                let mut leaves = Values::new();
+                self.value_leaves(&value, *ty, &mut leaves);
+                leaves
+            }
             // A reference to a slice or `str` is two leaves.
             Operand::Const(Constant::Promoted { index, ty }) => {
                 let value = flux_mir::eval::Value::Ref(Arc::new(
@@ -3523,6 +3548,10 @@ impl Lower<'_, '_, '_> {
         }
         let layout = self.ctx.layouts.of(ty);
         match (value, ty.kind()) {
+            (V::Union { field, value }, _) => {
+                let ty = flux_solve::fields(sigs, ty).unwrap()[*field as usize];
+                self.store_value(address, value, ty);
+            }
             (V::Aggregate(elements), TyKind::Array(elem, _)) => {
                 let size = self.ctx.layouts.of(elem).size;
                 for (i, element) in elements.iter().enumerate() {
@@ -3665,6 +3694,7 @@ impl Lower<'_, '_, '_> {
                     out.push(self.int_const(u128::from(len), IntTy::Usize));
                 }
             }
+            V::Union { .. } => unreachable!("union values use memory storage"),
             V::Aggregate(fields) => {
                 let types = flux_solve::fields(self.sigs, ty).unwrap_or_default();
                 for (field, &field_ty) in fields.iter().zip(types) {
@@ -3719,7 +3749,7 @@ impl Lower<'_, '_, '_> {
                 let data = self.b.import_data(&name);
                 Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)))
             }
-            Constant::Item { .. } | Constant::ItemRef { .. } => {
+            Constant::Item { .. } | Constant::ItemRef { .. } | Constant::Inline { .. } => {
                 unreachable!("handled by `operand`")
             }
             Constant::TyConst { .. } => unreachable!("monomorphized constants are known"),

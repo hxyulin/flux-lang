@@ -766,8 +766,16 @@ the pointee; references retain alignment, bounds and validity checks. Normal
 unsupported. Non-callable objects retain lifetime rows inside principal type
 arguments and associated equalities, including borrowed iterator items. Those
 arguments are invariant independently of the object lifetime bound. Explicit
-trait lifetime arguments, nested objects, region-bearing function-pointer
-arguments and unrepresented supertrait argument transforms remain restricted. Same-object
+trait lifetime arguments use their occurrence rows. A quantified principal such
+as `dyn for<'a> MakeWriter<'a, Writer = Box<dyn Write + 'a>>` retains a
+separate binder and its equality rows. Calls instantiate those rows; conversions
+prove the implementation and equalities for every bound lifetime. Each binder
+must occur in the principal's lifetime arguments, and every principal lifetime
+argument must name a bound lifetime. Free captures may occur in type/equality
+arguments. Projected recipes, binders introduced only in type/equality arguments,
+and unrepresented supertrait argument
+transforms remain restricted. Ordinary unquantified nested objects and
+region-bearing function-pointer arguments retain their existing restrictions. Same-object
 reference-to-raw-pointer casts preserve metadata; checked Any downcasts are
 supported with represented auto-trait bounds.
 Callable objects retain a relative input/output region recipe when their inputs
@@ -2216,3 +2224,29 @@ The parser preserves specialization's `default fn` and `default impl`, and
 files in the source corpus. Active specialization and box patterns report
 unsupported-feature diagnostics during HIR lowering; their semantics are not
 implemented. `default` remains an identifier outside its qualifier position.
+
+
+## Selected registry compatibility
+
+The selected default-feature library graphs for itertools 0.15.0, URL 2.5.8,
+tracing-subscriber 0.3.23, proc-macro2 1.0.107, quote 1.0.47 and syn 3.0.10
+have native consumer comparisons on arm64 macOS. The consumers compare debug,
+fast-build and release output with Rustc. Procedural-macro hosts use Rustc;
+the target libraries and consumers compile with Flux. These checks retain
+upstream sources and default features and do not qualify every upstream test.
+
+The target `proc_macro` crate models use outside a macro invocation: empty
+streams support ordinary collection and formatting operations, and
+`is_available()` is false. Invocation-only operations panic outside a host.
+Flux's procedural-macro invocation host remains separate.
+
+Closed inline constants have independent evaluation frames and static storage.
+Generic inline constants wait for instantiation. Constant pointer views retain
+allocation, bounds, alignment and value-validity checks. Transparent slice
+wrappers may include zero-sized marker fields. Byte-backed union slice views
+retain initialized byte storage without requiring every overlapping field to be
+valid. Evaluating arbitrary union values by value remains unsupported.
+
+Free functions may receive explicit lifetime arguments when every named lifetime
+has an explicit outlives bound and the signature introduces no additional elided
+lifetimes. Other explicit function lifetime forms retain an unsupported diagnostic.

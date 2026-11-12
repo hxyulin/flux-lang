@@ -2863,6 +2863,11 @@ impl<'a> Ctx<'a> {
                         range
                     );
                 }
+                if bin.op_kind() == Some(BinaryOp::Assign(None))
+                    && let Some(ast::Expr::TupleExpr(tuple)) = bin.lhs()
+                {
+                    return self.lower_tuple_assignment(tuple, bin.rhs(), range);
+                }
                 let lhs = self.lower_opt(bin.lhs(), syntax);
                 let rhs = self.lower_opt(bin.rhs(), syntax);
                 match (bin.op_kind(), bin.op()) {
@@ -3050,6 +3055,92 @@ impl<'a> Ctx<'a> {
             }
         };
         self.alloc_expr(hir, range)
+    }
+
+    /// Evaluate and destructure the complete RHS before evaluating assignees.
+    /// The tuple annotation prevents pattern ergonomics from accepting `&tuple`.
+    fn lower_tuple_assignment(
+        &mut self,
+        tuple: ast::TupleExpr<'_>,
+        rhs: Option<ast::Expr<'_>>,
+        range: TextRange,
+    ) -> ExprId {
+        fn pattern(
+            ctx: &mut Ctx<'_>,
+            expr: ast::Expr<'_>,
+            assignments: &mut Vec<Stmt>,
+        ) -> (PatId, TypeRef) {
+            let range = expr.syntax().text_range();
+            match expr {
+                ast::Expr::TupleExpr(tuple) => {
+                    let (pats, types): (Vec<_>, Vec<_>) = tuple
+                        .fields()
+                        .map(|field| pattern(ctx, field, assignments))
+                        .unzip();
+                    let pats = ctx.lists.alloc(pats);
+                    (
+                        ctx.alloc_pat(Pat::Tuple { pats, rest: None }, range),
+                        TypeRef::Tuple(types.into()),
+                    )
+                }
+                ast::Expr::UnderscoreExpr(_) => (ctx.alloc_pat(Pat::Wild, range), TypeRef::Infer),
+                ast::Expr::RangeExpr(_) => {
+                    ctx.unsupported(range, "rest patterns in tuple assignments");
+                    (ctx.alloc_pat(Pat::Missing, range), TypeRef::Infer)
+                }
+                ast::Expr::ParenExpr(paren) => match paren.expr() {
+                    Some(expr) => pattern(ctx, expr, assignments),
+                    None => (ctx.alloc_pat(Pat::Missing, range), TypeRef::Infer),
+                },
+                place => {
+                    let lhs = ctx.lower_expr(place);
+                    let binding = ctx.bindings.alloc(Binding {
+                        name: Symbol::intern("__assignment_value"),
+                        mutable: false,
+                        by_ref: None,
+                    });
+                    let rhs = ctx.alloc_expr(Expr::Path(Res::Local(binding)), range);
+                    let expr = ctx.alloc_expr(
+                        Expr::Binary {
+                            op: BinaryOp::Assign(None),
+                            lhs,
+                            rhs,
+                        },
+                        range,
+                    );
+                    assignments.push(Stmt::Expr {
+                        expr,
+                        has_semicolon: true,
+                    });
+                    (
+                        ctx.alloc_pat(Pat::Bind { binding, sub: None }, range),
+                        TypeRef::Infer,
+                    )
+                }
+            }
+        }
+        let rhs = self.lower_opt(rhs, tuple.syntax());
+        let mut statements = Vec::new();
+        let (pat, ty) = pattern(self, ast::Expr::TupleExpr(tuple), &mut statements);
+        let ty = self.alloc_type(ty);
+        statements.insert(
+            0,
+            Stmt::Let {
+                pat,
+                ty: Some(ty),
+                init: Some(rhs),
+                else_branch: None,
+            },
+        );
+        let stmts = self.lists.alloc(statements);
+        self.alloc_expr(
+            Expr::Block {
+                stmts,
+                tail: None,
+                is_unsafe: false,
+            },
+            range,
+        )
     }
 
     /// A type written in the body, whose array lengths may not name

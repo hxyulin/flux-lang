@@ -1,6 +1,7 @@
 //! Address parsing/formatting is independent of network system calls.
 extern crate alloc as alloc_crate;
 pub use alloc_crate::format;
+pub use std::{ffi, io};
 #[path = "../../../library/std/src/net.rs"]
 pub mod facade;
 mod support;

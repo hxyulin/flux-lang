@@ -306,3 +306,59 @@ fn safe_foreign_items_survive_item_fragment_matching() {
         flux_syntax::Edition::E2024,
     );
 }
+
+#[test]
+fn forwarded_type_fragments_in_attributes() {
+    for (name, source, accepted) in [
+        (
+            "forwarded",
+            r#"macro_rules! make{($derive:ty,$attr:ty)=>{#[derive(Debug,$derive)]enum Flag{#[$attr]A,B}}}make!(Default,default);"#,
+            true,
+        ),
+        (
+            "forwarded_twice",
+            r#"macro_rules! inner{($derive:ty)=>{#[derive(Debug,$derive)]struct Value;}}macro_rules! outer{($derive:ty)=>{inner!($derive);}}outer!(Default);"#,
+            true,
+        ),
+        (
+            "literal_parens",
+            r#"#[derive((Default))]struct Value;"#,
+            false,
+        ),
+        (
+            "nonpath",
+            r#"macro_rules! make{($derive:ty)=>{#[derive($derive)]struct Value;}}make!(&u8);"#,
+            false,
+        ),
+    ] {
+        compare(name, source, None, accepted, flux_syntax::Edition::E2024);
+    }
+}
+
+#[test]
+fn forwarded_type_path_fragments() {
+    for (name, source, accepted) in [
+        (
+            "type_to_path",
+            "macro_rules! inner{($p:path)=>{impl $p{fn value(){}}}}macro_rules! outer{($t:ty)=>{inner!($t);}}struct Value;outer!(Value);",
+            true,
+        ),
+        (
+            "nested_type_to_path",
+            "macro_rules! inner{($p:path)=>{impl $p{fn value(){}}}}macro_rules! middle{($t:ty)=>{inner!($t);}}macro_rules! outer{($t:ty)=>{middle!($t);}}struct Value;outer!(Value);",
+            true,
+        ),
+        (
+            "reference_not_path",
+            "macro_rules! inner{($p:path)=>{}}macro_rules! outer{($t:ty)=>{inner!($t);}}outer!(&u8);",
+            false,
+        ),
+        (
+            "literal_parens_not_path",
+            "macro_rules! inner{($p:path)=>{}}inner!((u8));",
+            false,
+        ),
+    ] {
+        compare(name, source, None, accepted, flux_syntax::Edition::E2024);
+    }
+}

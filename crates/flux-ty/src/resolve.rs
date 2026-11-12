@@ -1241,7 +1241,7 @@ fn assoc_type(
     let TyKind::Alias(alias) = base.kind() else {
         return base;
     };
-    if scope.in_fn_pointer && regions::has_projection_inputs(items, alias) {
+    if scope.in_fn_pointer && path.qself.is_none() && regions::has_projection_inputs(items, alias) {
         errors.push((
             range,
             "associated family regions in function pointers are not supported yet".into(),

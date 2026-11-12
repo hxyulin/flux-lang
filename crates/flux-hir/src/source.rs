@@ -31,6 +31,11 @@ impl FileId {
         FileId((CORE_FILES.len() + ALLOC_FILES.len()) as u32)
     }
 
+    /// Target-side `proc_macro`, after the other embedded library files.
+    pub fn proc_macro_root() -> FileId {
+        FileId((CORE_FILES.len() + ALLOC_FILES.len() + STD_FILES.len()) as u32)
+    }
+
     /// `alloc`'s root file, its `lib.rs`, after `core`'s files.
     pub fn alloc_root() -> FileId {
         FileId(CORE_FILES.len() as u32)
@@ -101,6 +106,13 @@ pub const ALLOC_ROOT: &str = "<alloc>";
 /// Where the bounded `std` facade's files appear to be.
 pub const STD_ROOT: &str = "<std>";
 
+/// Where the ordinary target-side procedural macro API appears.
+pub const PROC_MACRO_ROOT: &str = "<proc_macro>";
+const PROC_MACRO_FILES: &[(&str, &str)] = &[(
+    "lib.rs",
+    include_str!("../../../library/proc_macro/src/lib.rs"),
+)];
+
 const STD_FILES: &[(&str, &str)] = &[
     ("lib.rs", include_str!("../../../library/std/src/lib.rs")),
     (
@@ -116,6 +128,10 @@ const STD_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/std/src/io/stdio.rs"),
     ),
     ("net.rs", include_str!("../../../library/std/src/net.rs")),
+    (
+        "net/lookup.rs",
+        include_str!("../../../library/std/src/net/lookup.rs"),
+    ),
     ("os.rs", include_str!("../../../library/std/src/os.rs")),
     (
         "process.rs",
@@ -487,10 +503,14 @@ pub(crate) fn core_files() -> &'static [Arc<SourceFile>] {
             .iter()
             .map(|&(name, text)| (ALLOC_ROOT, name, text));
         let std = STD_FILES.iter().map(|&(name, text)| (STD_ROOT, name, text));
+        let proc_macro = PROC_MACRO_FILES
+            .iter()
+            .map(|&(name, text)| (PROC_MACRO_ROOT, name, text));
         std::thread::scope(|scope| {
             let threads: Vec<_> = core
                 .chain(alloc)
                 .chain(std)
+                .chain(proc_macro)
                 .map(|(root, name, text)| {
                     scope.spawn(move || SourceFile {
                         diagnostic_text: None,
@@ -592,7 +612,10 @@ impl SourceDb {
         if self.files.get(root.0 as usize).is_none() {
             return Err("unknown crate source".into());
         }
-        if root.0 < FileId::std_root().0 || self.file(root).path.starts_with(STD_ROOT) {
+        if root.0 < FileId::std_root().0
+            || (self.file(root).path.starts_with(STD_ROOT)
+                || self.file(root).path.starts_with(PROC_MACRO_ROOT))
+        {
             return Err("expected a physical crate root".into());
         }
         self.compilation_dirs.insert(root, directory);
@@ -644,6 +667,7 @@ impl SourceDb {
             || source.path.starts_with(CORE_ROOT)
             || source.path.starts_with(ALLOC_ROOT)
             || source.path.starts_with(STD_ROOT)
+            || source.path.starts_with(PROC_MACRO_ROOT)
         {
             return Err("expected a physical crate root".into());
         }
@@ -670,6 +694,7 @@ impl SourceDb {
             || source.path.starts_with(CORE_ROOT)
             || source.path.starts_with(ALLOC_ROOT)
             || source.path.starts_with(STD_ROOT)
+            || source.path.starts_with(PROC_MACRO_ROOT)
         {
             return Err("expected a physical crate root".into());
         }
@@ -885,7 +910,10 @@ impl SourceDb {
             return Ok(id);
         }
         // All embedded library files are here already.
-        if path.starts_with(CORE_ROOT) || path.starts_with(ALLOC_ROOT) || path.starts_with(STD_ROOT)
+        if path.starts_with(CORE_ROOT)
+            || path.starts_with(ALLOC_ROOT)
+            || path.starts_with(STD_ROOT)
+            || path.starts_with(PROC_MACRO_ROOT)
         {
             return Err(format!(
                 "{} is not part of the embedded libraries",
@@ -908,6 +936,7 @@ impl SourceDb {
             || source.path.starts_with(CORE_ROOT)
             || source.path.starts_with(ALLOC_ROOT)
             || source.path.starts_with(STD_ROOT)
+            || source.path.starts_with(PROC_MACRO_ROOT)
         {
             return Err("includes from virtual sources are not supported yet".into());
         }
@@ -942,6 +971,7 @@ impl SourceDb {
         built_in(CORE_ROOT, CORE_FILES)
             .or_else(|| built_in(ALLOC_ROOT, ALLOC_FILES))
             .or_else(|| built_in(STD_ROOT, STD_FILES))
+            .or_else(|| built_in(PROC_MACRO_ROOT, PROC_MACRO_FILES))
             .unwrap_or_else(|| path.is_file())
     }
 

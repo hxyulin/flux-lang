@@ -1707,6 +1707,7 @@ impl Ctx<'_> {
         if let Some(nested) = flux_solve::traits::auto_trait_requirements(items, sigs, goal) {
             return !check_bounds
                 || nested.into_iter().all(|p| {
+                    let p = self.normalize_predicate(p, TextRange::default());
                     self.may_hold(
                         p.self_ty,
                         p.trait_ref.trait_,

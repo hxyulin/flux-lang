@@ -614,6 +614,21 @@ impl Cx<'_> {
     fn constant(&self, value: &crate::PatternConst, ty: Ty) -> DPat {
         match value {
             crate::PatternConst::Str => DPat::Ctor(Ctor::Single, vec![DPat::Or(Vec::new())]),
+            crate::PatternConst::Bytes(bytes) => DPat::Ctor(
+                Ctor::Single,
+                vec![DPat::Ctor(
+                    Ctor::Slice(SliceKind::Fixed(bytes.len() as u32)),
+                    bytes
+                        .iter()
+                        .map(|&value| {
+                            self.constant(
+                                &crate::PatternConst::Scalar(i128::from(value)),
+                                Ty::int(crate::IntTy::U8),
+                            )
+                        })
+                        .collect(),
+                )],
+            ),
             crate::PatternConst::Scalar(value) => match ty.kind() {
                 TyKind::Bool => DPat::Ctor(Ctor::Bool(*value != 0), Vec::new()),
                 TyKind::Int(_) | TyKind::Char => {

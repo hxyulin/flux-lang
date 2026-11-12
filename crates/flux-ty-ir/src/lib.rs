@@ -29,8 +29,8 @@ pub use metadata::Metadata;
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 pub use ty::{
     AdtId, AliasTy, ClosureArgs, ClosureId, ClosureKind, ClosureOwner, DynTy, FloatTy, FnDefTy,
-    FnPtrRegions, FnRegion, FnSigTy, GenericArgs, InferVar, IntTy, Mutability, OpaqueTy, ParamTy,
-    Ty, TyKind, subst_list, symbol_list,
+    FnProjection, FnPtrRegions, FnRegion, FnSigTy, GenericArgs, InferVar, IntTy, Mutability,
+    OpaqueTy, ParamTy, Ty, TyKind, subst_list, symbol_list,
 };
 
 /// The types of the anonymous constants of const generic arguments.

@@ -81,10 +81,6 @@ fn compile(probe: Probe) -> Result<(), String> {
     crate::builtins::initialize()?;
     std::fs::create_dir_all(&probe.out_dir).map_err(|e| e.to_string())?;
     let directory = probe.out_dir.canonicalize().map_err(|e| e.to_string())?;
-    let runtime = directory.join("flux-probe-api");
-    std::fs::create_dir_all(&runtime).map_err(|e| e.to_string())?;
-    flux_proc_macro::write_sources(&runtime).map_err(|e| e.to_string())?;
-    let api = runtime.join("proc_macro.flib");
     let options = crate::BuildOptions {
         panic_strategy: flux_syntax::PanicStrategy::Abort,
         optimize: false,
@@ -92,16 +88,6 @@ fn compile(probe: Probe) -> Result<(), String> {
         timings: false,
         debug_assertions: None,
     };
-    if !crate::flib_build::library(
-        &runtime.join("lib.rs"),
-        &api,
-        "proc_macro",
-        options,
-        true,
-        &[],
-    )? {
-        return Err("cannot compile native probe token API".into());
-    }
     let name = probe
         .crate_name
         .unwrap_or_else(|| crate::build::crate_name(&probe.source));
@@ -116,7 +102,7 @@ fn compile(probe: Probe) -> Result<(), String> {
         options,
         crate::CrateType::Lib,
         true,
-        &[("proc_macro".into(), api)],
+        &[],
     )? {
         return Err("compiler probe failed".into());
     }

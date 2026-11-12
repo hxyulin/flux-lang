@@ -1,0 +1,25 @@
+use syn::{Data, DeriveInput, Fields, GenericParam, LitInt, LitStr, Type};
+fn main() {
+    let source = "#[repr(C)] pub struct Packet<'a, T: Clone, const N: usize> where T: 'a { pub name: &'a str, values: [T; N] }";
+    let parsed: DeriveInput = syn::parse_str(source).unwrap();
+    println!("{} {} {}", parsed.ident, parsed.attrs.len(), parsed.generics.params.len());
+    assert!(matches!(parsed.generics.params.first(), Some(GenericParam::Lifetime(_))));
+    let cloned = parsed.clone();
+    match cloned.data {
+        Data::Struct(data) => match data.fields {
+            Fields::Named(fields) => {
+                for field in &fields.named { println!("{}", field.ident.as_ref().unwrap()); }
+                assert!(matches!(&fields.named[0].ty, Type::Reference(_)));
+                assert!(matches!(&fields.named[1].ty, Type::Array(_)));
+            }
+            _ => panic!("expected named fields"),
+        },
+        _ => panic!("expected struct"),
+    }
+    let number: LitInt = syn::parse_str("0xff_u32").unwrap();
+    let value: u32 = number.base10_parse().unwrap();
+    println!("{} {}", value, number.suffix());
+    let text: LitStr = syn::parse_str("r#\"quoted\\text\"#").unwrap();
+    println!("{}", text.value());
+    assert!(syn::parse_str::<DeriveInput>("struct Broken {").is_err());
+}

@@ -133,6 +133,11 @@ record!(TraitRegions {
     names,
     outlives
 });
+record!(FamilyProjection {
+    projection,
+    regions,
+    bound
+});
 record!(FamilyRegions {
     names,
     owner,
@@ -260,6 +265,10 @@ impl Encode for FnRegion {
                 3u8.encode(e)?;
                 i.encode(e)
             }
+            Self::Projection(i) => {
+                4u8.encode(e)?;
+                i.encode(e)
+            }
         }
     }
 }
@@ -270,6 +279,7 @@ impl Decode for FnRegion {
             1 => Ok(Self::Bound(Decode::decode(d)?)),
             2 => Ok(Self::Free(Decode::decode(d)?)),
             3 => Ok(Self::Type(Decode::decode(d)?)),
+            4 => Ok(Self::Projection(Decode::decode(d)?)),
             _ => Err(Error::new("invalid function region")),
         }
     }
@@ -359,6 +369,7 @@ impl Decode for FnDefTy {
 impl Encode for DynTy {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.callable.encode(e)?;
+        self.quantified.encode(e)?;
         self.auto_traits.encode(e)?;
         self.trait_.encode(e)?;
         self.name.encode(e)?;
@@ -371,18 +382,36 @@ impl Encode for DynTy {
 impl Decode for DynTy {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
         let callable = Option::<Ty>::decode(d)?;
+        let quantified = Option::<Ty>::decode(d)?;
+        if quantified
+            .is_some_and(|ty| !matches!(ty.kind(), TyKind::FnPtr(sig) if sig.regions.is_some()))
+            || callable.is_some() && quantified.is_some()
+        {
+            return Err(Error::new("invalid quantified object region recipe"));
+        }
         if callable.is_some_and(|ty| !matches!(ty.kind(), TyKind::FnPtr(_))) {
             return Err(Error::new("invalid callable object region recipe"));
         }
-        Ok(Self {
+        let object = Self {
             callable,
+            quantified,
             auto_traits: crate::ty::object_auto_traits(&Vec::decode(d)?),
             trait_: Decode::decode(d)?,
             name: Decode::decode(d)?,
             args: Ty::list(&Vec::<Ty>::decode(d)?),
             assoc_names: crate::ty::symbol_list(&Vec::decode(d)?),
             assoc_tys: Ty::list(&Vec::<Ty>::decode(d)?),
-        })
+        };
+        if let Some(signature) = object.quantified_signature()
+            && signature
+                .params()
+                .len()
+                .checked_sub(object.args.len() + object.assoc_tys.len())
+                .is_none_or(|owners| !object.valid_quantified(owners))
+        {
+            return Err(Error::new("invalid quantified object signature"));
+        }
+        Ok(object)
     }
 }
 impl Encode for Instance {
@@ -427,6 +456,11 @@ impl Encode for FnSigTy {
             r.free.encode(e)?;
             r.inputs_output.encode(e)?;
             r.types.encode(e)?;
+            (r.projections.len() as u32).encode(e)?;
+            for projection in r.projections {
+                projection.alias.encode(e)?;
+                projection.inputs.encode(e)?;
+            }
         }
         Ok(())
     }
@@ -444,23 +478,40 @@ impl Decode for FnSigTy {
             let free = u32::decode(d)?;
             let rows = Vec::<Vec<FnRegion>>::decode(d)?;
             let captures = Vec::<Ty>::decode(d)?;
+            let count = u32::decode(d)? as usize;
+            let mut projections = Vec::new();
+            let valid = |term: FnRegion, earlier: usize| match term {
+                FnRegion::Bound(i) => i < bound,
+                FnRegion::Free(i) => i < free,
+                FnRegion::Type(i) => (i as usize) < captures.len(),
+                FnRegion::Projection(i) => (i as usize) < earlier,
+                FnRegion::Static => true,
+            };
+            for _ in 0..count {
+                let alias = AliasTy::decode(d)?;
+                let inputs = Vec::<FnRegion>::decode(d)?;
+                if inputs.iter().any(|&term| !valid(term, projections.len())) {
+                    return Err(Error::new("invalid function projection input index"));
+                }
+                projections.push((alias, inputs));
+            }
             if rows.len() != types.len() {
                 return Err(Error::new("invalid function region rows"));
             }
-            for row in &rows {
-                for term in row {
-                    let valid = match *term {
-                        FnRegion::Bound(i) => i < bound,
-                        FnRegion::Free(i) => i < free,
-                        FnRegion::Type(i) => (i as usize) < captures.len(),
-                        FnRegion::Static => true,
-                    };
-                    if !valid {
-                        return Err(Error::new("invalid function region index"));
-                    }
-                }
+            if rows
+                .iter()
+                .flatten()
+                .any(|&term| !valid(term, projections.len()))
+            {
+                return Err(Error::new("invalid function region index"));
             }
-            Some(FnPtrRegions::intern(bound, free, &rows, &captures))
+            Some(FnPtrRegions::intern_with_projections(
+                bound,
+                free,
+                &rows,
+                &captures,
+                &projections,
+            ))
         } else {
             None
         };
@@ -958,6 +1009,56 @@ mod tests {
     }
 
     #[test]
+    fn quantified_object_recipes_round_trip_and_check_their_shape() {
+        let reference = Ty::new(TyKind::Ref(Mutability::Not, Ty::int(IntTy::U8)));
+        let output = Ty::tuple(&[reference, reference]);
+        let make = |principal: FnRegion, ty: Ty| {
+            let signature = FnSigTy {
+                regions: Some(FnPtrRegions::intern(
+                    1,
+                    1,
+                    &[
+                        vec![principal],
+                        vec![FnRegion::Bound(0), FnRegion::Free(0)],
+                        vec![],
+                    ],
+                    &[],
+                )),
+                ..FnSigTy::new(
+                    &[Ty::new(TyKind::Ref(Mutability::Not, Ty::UNIT)), ty],
+                    Ty::UNIT,
+                    false,
+                )
+            };
+            DynTy {
+                callable: None,
+                quantified: Some(Ty::new(TyKind::FnPtr(signature))),
+                auto_traits: &[],
+                trait_: flux_hir::TraitId::from_raw(3),
+                name: Symbol::intern("Lending"),
+                args: &[],
+                assoc_names: crate::ty::symbol_list(&[Symbol::intern("Output")]),
+                assoc_tys: Ty::list(&[output]),
+            }
+        };
+        let valid = make(FnRegion::Bound(0), output);
+        assert!(valid.valid_quantified(1));
+        assert_eq!(
+            round_trip(&Ty::new(TyKind::Dynamic(valid))),
+            Ty::new(TyKind::Dynamic(valid))
+        );
+        assert!(!valid.valid_quantified(0));
+        for invalid in [
+            make(FnRegion::Static, output),
+            make(FnRegion::Bound(0), Ty::BOOL),
+        ] {
+            let mut encoder = Encoder::new();
+            invalid.encode(&mut encoder).unwrap();
+            assert!(DynTy::decode(&mut Decoder::new(&encoder.into_bytes())).is_err());
+        }
+    }
+
+    #[test]
     fn structural_types_round_trip_with_callable_regions() {
         let parameter = Ty::param(0, Symbol::intern("T"));
         let recipe = FnPtrRegions::intern(
@@ -982,6 +1083,44 @@ mod tests {
         ]);
         assert_eq!(round_trip(&ty), ty);
         assert_eq!(round_trip(&sig), sig);
+    }
+
+    #[test]
+    fn bound_dependent_pointer_projections_round_trip_and_reject_cycles() {
+        let parameter = Ty::param(0, Symbol::intern("T"));
+        let alias = AliasTy {
+            trait_: flux_hir::TraitId::from_raw(3),
+            trait_name: Symbol::intern("Family"),
+            name: Symbol::intern("Output"),
+            args: Ty::list(&[parameter]),
+            owner_lifetimes: 1,
+            family_lifetimes: 0,
+            family_args: &[],
+        };
+        let make = |inputs: Vec<FnRegion>| FnSigTy {
+            inputs_output: Ty::list(&[Ty::alias(alias)]),
+            is_unsafe: false,
+            abi: flux_hir::Abi::Rust,
+            regions: Some(FnPtrRegions::intern_with_projections(
+                1,
+                0,
+                &[vec![FnRegion::Projection(0)]],
+                &[parameter],
+                &[(alias, inputs)],
+            )),
+        };
+        let sig = make(vec![FnRegion::Bound(0), FnRegion::Type(0)]);
+        assert_eq!(round_trip(&sig), sig);
+        let replaced = sig.map(|ty| ty.subst(&[Ty::int(IntTy::U32)]));
+        assert_eq!(
+            replaced.regions.unwrap().projections[0].alias.args,
+            &[Ty::int(IntTy::U32)]
+        );
+        let mut encoder = Encoder::new();
+        make(vec![FnRegion::Projection(0)])
+            .encode(&mut encoder)
+            .unwrap();
+        assert!(FnSigTy::decode(&mut Decoder::new(&encoder.into_bytes())).is_err());
     }
 
     #[test]
@@ -1115,6 +1254,7 @@ mod type_form_tests {
             Ty::slice(Ty::BOOL),
             Ty::new(TyKind::CStr),
             Ty::new(TyKind::Dynamic(DynTy {
+                quantified: None,
                 callable: Some(Ty::new(TyKind::FnPtr(FnSigTy::new(
                     &[Ty::BOOL],
                     Ty::UNIT,

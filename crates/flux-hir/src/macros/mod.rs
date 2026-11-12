@@ -425,13 +425,27 @@ pub(crate) fn resolve_predecessor(
     path: &crate::Path,
     ns: crate::def_map::Ns,
 ) -> Option<crate::def_map::Resolved> {
+    resolve_predecessor_inner(items, module, path, ns, &[], 0)
+}
+
+fn resolve_predecessor_inner(
+    items: &ItemTree,
+    module: ModuleId,
+    path: &crate::Path,
+    ns: crate::def_map::Ns,
+    followed: &[usize],
+    depth: u32,
+) -> Option<crate::def_map::Resolved> {
+    if depth >= RECURSION_LIMIT {
+        return None;
+    }
     let krate = items.modules[module].krate;
     let mut lowered = path.clone();
     // Current-crate item collection can call a predecessor's macro before
     // current scopes exist. Resolve through that crate's completed scope.
     if items.def_map.scopes.len() < items.modules.len() {
         let mut lookup_module = module;
-        let mut followed_imports = Vec::new();
+        let mut followed_imports = followed.to_vec();
         for _ in 0..RECURSION_LIMIT {
             if !matches!(
                 lowered.anchor,
@@ -492,7 +506,59 @@ pub(crate) fn resolve_predecessor(
             {
                 return None;
             }
-            let target = items.modules[items.loaded_extern_crate(first, lookup_module)?].krate;
+            let Some(external) = items.loaded_extern_crate(first, lookup_module) else {
+                // Dependency scopes are complete before this crate's scopes.
+                // Resolve each imported glob independently and retain ambiguity.
+                let mut found = None;
+                let mut current = lookup_module;
+                loop {
+                    for (index, import) in items.uses.globs(current) {
+                        if followed_imports.contains(&index) {
+                            continue;
+                        }
+                        let mut candidate = import.path.clone();
+                        candidate.segments = candidate
+                            .segments
+                            .iter()
+                            .chain(&lowered.segments)
+                            .copied()
+                            .collect();
+                        candidate.ranges = candidate
+                            .ranges
+                            .iter()
+                            .chain(&lowered.ranges)
+                            .copied()
+                            .collect();
+                        candidate.args = candidate
+                            .args
+                            .iter()
+                            .chain(&lowered.args)
+                            .cloned()
+                            .collect();
+                        let mut followed = followed_imports.clone();
+                        followed.push(index);
+                        if let Some(resolved) = resolve_predecessor_inner(
+                            items,
+                            import.module,
+                            &candidate,
+                            ns,
+                            &followed,
+                            depth + 1,
+                        ) {
+                            if found.is_some_and(|previous| previous != resolved) {
+                                return None;
+                            }
+                            found = Some(resolved);
+                        }
+                    }
+                    let data = &items.modules[current];
+                    match (data.block, data.parent) {
+                        (Some(_), Some(parent)) if found.is_none() => current = parent,
+                        _ => return found,
+                    }
+                }
+            };
+            let target = items.modules[external].krate;
             lowered.anchor = crate::PathAnchor::DefinitionCrate(target);
             lowered.segments = lowered.segments[1..].into();
             lowered.ranges = lowered.ranges.get(1..).unwrap_or_default().into();

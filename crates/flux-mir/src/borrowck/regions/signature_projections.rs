@@ -237,11 +237,12 @@ pub(crate) fn check_signature_projection_requirements(
                 complete = false;
             }
         }
-        for (&ty, selections) in signature
+        for ((&ty, selections), table) in signature
             .params
             .iter()
             .chain([&signature.ret])
             .zip(regions.selected_inputs.iter())
+            .zip(regions.params.iter().chain([&regions.ret]))
         {
             complete &= selections.iter().all(|selection| {
                 selection.lifetimes.len() == selection.alias.owner_lifetimes as usize
@@ -254,6 +255,7 @@ pub(crate) fn check_signature_projection_requirements(
             });
             complete &= cx.associated_value_selections(
                 ty,
+                Some(table),
                 selections,
                 &lifetimes,
                 &env,
@@ -324,6 +326,7 @@ fn check_bound_projection_requirements(
         for &ty in &bound.types {
             complete &= cx.associated_value_selections(
                 ty,
+                None,
                 &bound.selections,
                 &lifetimes,
                 &env,

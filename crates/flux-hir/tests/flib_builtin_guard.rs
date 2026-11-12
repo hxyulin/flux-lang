@@ -40,5 +40,5 @@ fn explicit_guard_rejects_fresh_and_cached_source_library_access() {
         );
     }
     // Child guards do not prohibit source-based graph comparisons in this process.
-    assert_eq!(Core::get().items.crates.len(), 3);
+    assert_eq!(Core::get().items.crates.len(), 4);
 }

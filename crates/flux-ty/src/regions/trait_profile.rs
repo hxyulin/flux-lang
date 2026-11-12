@@ -406,7 +406,7 @@ fn method_profile(
         return Err(fail(None, TraitProfileReason::TraitPredicates));
     }
     if (!projected && !data.types.is_empty())
-        || !scalar_const_contracts(items, diagnostics, sigs, trait_)
+        || !region_free_const_contracts(items, diagnostics, sigs, trait_)
     {
         return Err(fail(None, TraitProfileReason::AssociatedItems));
     }
@@ -602,9 +602,17 @@ fn method_profile(
             .get(method)
             .ok_or(bad(TraitProfileReason::MissingMetadata))?;
         let self_ty = Ty::param(0, flux_intern::kw::SelfUpper);
+        let method_sized = sigs.fn_predicates.get(method).is_some_and(|bounds| {
+            bounds.iter().any(|bound| {
+                bound.self_ty == self_ty
+                    && Some(bound.trait_ref.trait_) == sigs.builtins.sized
+                    && bound.trait_ref.args.is_empty()
+            })
+        });
         let receiver = match signature.params.first().copied().map(Ty::kind) {
             Some(TyKind::Param(parameter)) => {
-                parameter.index == 0 && (copy || (projected && (sized || !function.has_body)))
+                parameter.index == 0
+                    && (copy || (projected && (sized || method_sized || !function.has_body)))
             }
             Some(TyKind::Ref(_, pointee)) => pointee == self_ty,
             _ => false,
@@ -675,10 +683,10 @@ fn method_profile(
     Ok(())
 }
 
-/// Scalar const values store no lifetime rows. Admission still reconstructs
+/// Closed region-free const values store no lifetime rows. Admission still reconstructs
 /// the declaration type and checks its owner and complete empty region table;
 /// ordinary const bodies and impl/caller contracts are checked independently.
-fn scalar_const_contracts(
+fn region_free_const_contracts(
     items: &ItemTree,
     diagnostics: &[flux_hir::Diagnostic],
     sigs: &Signatures,
@@ -703,10 +711,10 @@ fn scalar_const_contracts(
             || data.is_static.is_some()
             || data.anon.is_some()
             || diagnosed(diagnostics, data.loc.file, data.item_range)
-            || !matches!(
-                ty.kind(),
-                TyKind::Bool | TyKind::Char | TyKind::Int(_) | TyKind::Float(_)
-            )
+            || ty.has_params()
+            || ty.has_aliases()
+            || ty.has_opaques()
+            || type_slots(items, sigs, ty, 0) != Some(0)
             || !sigs
                 .regions
                 .consts
@@ -1127,7 +1135,11 @@ fn region_free_edges(
         {
             return Err(fail(TraitProfileReason::SupertraitMetadata));
         }
-        if !r.outlives.is_empty() {
+        if !r.outlives.is_empty()
+            && !(associated
+                && super::resolve::trait_outlives_contract(items, sigs, edge.trait_).as_deref()
+                    == Some(r.outlives.as_ref()))
+        {
             return Err(fail(TraitProfileReason::SupertraitRegions));
         }
     }
@@ -1570,7 +1582,7 @@ mod tests {
             .find(|(_, t)| t.loc.file == file && t.name.as_str() == "Access")
             .unwrap()
             .0;
-        for corruption in 0..6 {
+        for corruption in 0..7 {
             let mut bad = sigs.clone();
             let mut row = bad.regions.traits[owner].clone();
             let contract = &mut row
@@ -1589,6 +1601,7 @@ mod tests {
                     signature.implied = Box::default();
                     bad.traits.insert(owner, signature);
                 }
+                6 => contract.output_projections[0].bound = u32::MAX,
                 _ => {
                     bad.trait_projections.insert(owner, Box::default());
                 }
@@ -1631,7 +1644,7 @@ mod tests {
                 }
                 _ => {
                     let mut row = bad.regions.traits[owner].clone();
-                    row.families[0].1.output_projections[0].0.ty = Ty::BOOL;
+                    row.families[0].1.output_projections[0].projection.ty = Ty::BOOL;
                     bad.regions.traits.insert(owner, row);
                 }
             }
@@ -1717,6 +1730,26 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn by_value_extension_method_has_its_own_sized_bound() {
+        let source = "trait Writer<'a>{fn value(&'a self)->u32;}struct Layer<T>(T);trait Ext<'a>:Writer<'a>{fn wrap(self)->Layer<Self>where Self:Sized{Layer(self)}}";
+        let (_, file, hir) = flux_hir::lower_text("sized-method-profile.rs", source);
+        let (sigs, diagnostics) = crate::signatures(&hir.items);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let owner = hir
+            .items
+            .traits
+            .iter()
+            .find(|(_, t)| t.loc.file == file && t.name.as_str() == "Ext")
+            .unwrap()
+            .0;
+        assert!(generic_method_profile(&hir.items, &[], &sigs, owner).is_ok());
+        let method = hir.items.traits[owner].functions[0];
+        let mut bad = sigs.clone();
+        *bad.fn_predicates.get_mut(method).unwrap() = Box::default();
+        assert!(generic_method_profile(&hir.items, &[], &bad, owner).is_err());
+    }
+
     #[test]
     fn inherited_lifetime_edges_reconstruct_original_rows() {
         let source = "trait Parent<'a>{} trait Child<'a>:Parent<'a>{fn value(&self)->usize;}";

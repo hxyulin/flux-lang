@@ -119,3 +119,39 @@ fn dependency_values_and_discriminants_do_not_need_initializer_mir() {
     assert_eq!(evaluator.discriminants(tag).unwrap().as_ref(), &[4, 9]);
     assert!(evaluator.unbuilt.is_empty());
 }
+
+#[test]
+fn inline_constants_keep_checked_bodies_in_metadata() {
+    let (_, _, hir) = flux_hir::lower_text(
+        "inline.rs",
+        "const fn twice(x:u32)->u32{x*2}pub fn values<T>()->&'static[u32]{const{&[twice(7),twice(11)]}}pub fn unused<T>()->u8{const{panic!(\"deferred\")}}fn main(){}",
+    );
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    for name in ["values", "unused"] {
+        let (id, _) = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| {
+                f.name.as_str() == name
+                    && f.loc.module == hir.items.module_of(hir.items.main_crate())
+            })
+            .unwrap();
+        let body = &mir.bodies[id];
+        assert_eq!(body.inline_constants.len(), 1, "{name}");
+        assert!(body.inline_constants[0].owner.is_none());
+        assert_eq!(body.inline_constants[0].param_count, 0);
+        let mut encoder = Encoder::new();
+        body.encode(&mut encoder).unwrap();
+        let bytes = encoder.into_bytes();
+        let mut decoder = Decoder::new(&bytes);
+        let copied = flux_mir::Body::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+        let mut encoder = Encoder::new();
+        copied.encode(&mut encoder).unwrap();
+        assert_eq!(bytes, encoder.into_bytes(), "{name}");
+    }
+}

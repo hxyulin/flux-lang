@@ -235,7 +235,7 @@ fn nested_storage_outlives() {
         },
         |&ty| {
             for _ in 0..64 {
-                let components = flux_ty::regions::outlives_type_components(&sigs, ty);
+                let components = flux_ty::regions::outlives_type_components(&hir.items, &sigs, ty);
                 assert!(
                     components
                         .iter()
@@ -266,7 +266,8 @@ fn recursive_storage_paths_preserve_nested_projections() {
         .iter()
         .find(|(_, f)| f.name.as_str() == "storage_probe")
         .unwrap();
-    let components = flux_ty::regions::outlives_type_components(&sigs, sigs.fns[probe].params[0]);
+    let components =
+        flux_ty::regions::outlives_type_components(&hir.items, &sigs, sigs.fns[probe].params[0]);
     assert!(
         components
             .iter()
@@ -298,11 +299,17 @@ fn recursive_nominal_outlives_paths() {
             .iter()
             .find(|(_, s)| s.name.as_str() == "N0")
             .unwrap();
-        (sigs, Ty::adt(id, definition.name, &[]))
+        let ty = Ty::adt(id, definition.name, &[]);
+        (hir.items, sigs, ty)
     };
-    assert_scales("recursive nominal outlives", 3, make, |(sigs, ty)| {
-        for _ in 0..32 {
-            assert!(flux_ty::regions::outlives_type_components(sigs, *ty).is_empty());
-        }
-    });
+    assert_scales(
+        "recursive nominal outlives",
+        3,
+        make,
+        |(items, sigs, ty)| {
+            for _ in 0..32 {
+                assert!(flux_ty::regions::outlives_type_components(items, sigs, *ty).is_empty());
+            }
+        },
+    );
 }

@@ -63,6 +63,7 @@ mod adt_bounds;
 mod associated_types;
 mod families;
 mod header_patterns;
+mod quantified_objects;
 mod signature_projections;
 mod source_signatures;
 pub(crate) use signature_projections::check_signature_projection_requirements;
@@ -633,7 +634,7 @@ pub(crate) fn impl_method_matches(
                 // header. Preserve its bound on each outlives component,
                 // just as type_outlives decomposes the matching obligation.
                 let ty = cx.normalize(ty.subst(&args));
-                for component in flux_ty::regions::outlives_type_components(sigs, ty) {
+                for component in flux_ty::regions::outlives_type_components(items, sigs, ty) {
                     cx.known_types.push((component, region));
                 }
             }
@@ -892,6 +893,7 @@ fn impl_header_match(
     // Projection instantiation in this declaration has no body owner from
     // which to recover assumptions. Retain only the original impl header.
     cx.family_goals = env.clone();
+
     for (p, table) in cx.env.clone().iter().zip(block.projections.iter()) {
         if let Some(vars) = cx.instantiate_sig(p.ty, table, &mut { map }, &[], &[]) {
             cx.env_regions.push((p.alias, vars));
@@ -957,6 +959,7 @@ fn impl_header_match(
                 .map_or(&[][..], |(_, selections)| selections);
             if !cx.associated_value_selections(
                 value,
+                Some(table),
                 selections,
                 &lifetimes,
                 &env,
@@ -976,7 +979,7 @@ fn impl_header_match(
     }
     if associated {
         let sig = sigs.traits.get(trait_ref.trait_)?;
-        for &(name, bound) in &sig.type_bounds {
+        for (index, &(name, bound)) in sig.type_bounds.iter().enumerate() {
             if !items.traits[trait_ref.trait_].generics.lifetimes.is_empty()
                 || items.impls[imp].types.iter().any(|t| {
                     t.name == name
@@ -993,11 +996,28 @@ fn impl_header_match(
                 ),
                 ..flux_solve::traits::alias_of(items, trait_ref, self_ty, name)
             };
+            let occurrence = sig.type_bounds[..index]
+                .iter()
+                .filter(|(known, _)| *known == name)
+                .count();
+            let (stored, tables) = sigs
+                .regions
+                .traits
+                .get(trait_ref.trait_)?
+                .families
+                .iter()
+                .find(|(known, _)| *known == name)?
+                .1
+                .output_traits
+                .get(occurrence)?;
+            if *stored != bound {
+                return None;
+            }
             let goal = cx.impl_region_goal(
                 bound.with_self(Ty::alias(alias)),
                 &[],
-                &TraitRefRegions::default(),
-                &[],
+                tables,
+                &root.lifetimes,
                 &args,
                 &root.vars,
             )?;
@@ -1066,6 +1086,8 @@ struct Cx<'a> {
     header_aliases: Vec<AliasTy>,
     family_depth: u32,
     family_goals: Vec<ImplRegionGoal>,
+    /// Reference-implied facts keep the projection's exact selection inputs.
+    projection_outlives: Vec<(Ty, Vec<Var>, Var)>,
     /// Original caller assumptions already reconstructed during projection re-entry.
     caller_goals_in_progress: Option<Vec<ImplRegionGoal>>,
     /// Declaration proof cycles are coinductive only across Send/Sync goals
@@ -1227,6 +1249,7 @@ impl<'a> Cx<'a> {
             header_aliases: Vec::new(),
             family_depth: 0,
             family_goals: Vec::new(),
+            projection_outlives: Vec::new(),
             caller_goals_in_progress: None,
             declaration_stack: Vec::new(),
             header_predicates: body.owner.map_or(Vec::new(), |f| {
@@ -1760,6 +1783,7 @@ impl<'a> Cx<'a> {
                 Region::Erased => None,
             })
             .collect::<Option<Vec<_>>>()?;
+        let self_input_table = table;
         let mut vars = Vec::new();
         let mut types = Vec::new();
         for (k, &ty) in std::iter::once(&p.self_ty)
@@ -1771,7 +1795,15 @@ impl<'a> Cx<'a> {
             } else {
                 trait_regions.args.get(k - 1).map_or(&[][..], |t| t)
             };
-            let mut aliases_proven = (k == 0 && known_self)
+            // Supertraits and default arguments can repeat an already
+            // represented Self. Reuse it only with the same original table,
+            // or the same substituted type and complete argument row.
+            let same_self = (ty == p.self_ty && table == self_input_table)
+                || matches!(ty.kind(), TyKind::Param(param)
+                    if args.get(param.index as usize).copied() == Some(p.self_ty.subst(args))
+                        && arg_vars.get(param.index as usize).is_some_and(|row| vars.first() == Some(row)));
+            let represented_self = known_self && (k == 0 || same_self);
+            let mut aliases_proven = represented_self
                 || self.impl_aliases_known(ty, args)
                 || proof.is_some_and(|(env, depth)| self.impl_aliases_proven(ty, args, env, depth))
                 || projection_inputs.is_some_and(|env| {
@@ -1805,12 +1837,9 @@ impl<'a> Cx<'a> {
                 Region::Late(i) => named_bound.get(&i).copied(),
                 Region::Erased => fresh.next(),
             };
-            if !aliases_proven
-                && let TyKind::Alias(alias) = ty.kind()
-                && let Some(env) = projection_inputs
-            {
+            if !aliases_proven && let Some(env) = projection_inputs {
                 aliases_proven =
-                    self.written_family_alias_proven(alias, table, &mut map, args, arg_vars, env);
+                    self.written_aliases_proven(ty, table, &mut map, args, arg_vars, env, 0);
             }
             let slots = self.instantiate_sig(ty, table, &mut map, args, arg_vars)?;
             // Proving a selected occurrence may resolve this associated type.
@@ -2037,6 +2066,14 @@ impl<'a> Cx<'a> {
                 } else { p.alias.args.first() == Some(&self_param) }
             })
         {
+            // Higher-ranked output equalities are checked by the family
+            // declaration checker under that output bound's own universals.
+            if associated && self.sigs.regions.traits.get(goal.predicate.trait_ref.trait_)
+                .into_iter().flat_map(|traits| traits.families.iter())
+                .any(|(_, family)| family.output_projections.iter().any(|output|
+                    output.projection == *p && family.output_traits.get(output.bound as usize)
+                        .is_some_and(|(_, rows)| rows.bound != 0)))
+            { continue; }
             // Associated output contracts retain written lifetime rows,
             // including static references nested in equality RHS tuples.
             if !self.impl_aliases_known(p.ty, &args)
@@ -2049,8 +2086,8 @@ impl<'a> Cx<'a> {
                 self.sigs.regions.traits.get(goal.predicate.trait_ref.trait_)
                     .into_iter().flat_map(|r| r.families.iter())
                     .flat_map(|(_, family)| family.output_projections.iter())
-                    .find(|(projection, _)| projection == p)
-                    .map_or(&[][..], |(_, row)| row.as_ref())
+                    .find(|projection| &projection.projection == p)
+                    .map_or(&[][..], |projection| projection.regions.as_ref())
             } else {
                 declaration.header_projections.iter().position(|projection| projection == p)
                     .and_then(|index| header_rows.get(index)).map_or(&[][..], |row| row.as_ref())
@@ -2092,9 +2129,21 @@ impl<'a> Cx<'a> {
                 };
                 alias
             };
+            // A family equality belongs to its exact captured input row.
+            // Prove its owner before using the declaration in place of a
+            // concrete impl selection for the abstract output.
+            let family_output = if let TyKind::Alias(owner) = alias.args[0].kind()
+                && let Some(row) = alias_goal.vars.first()
+                && self.proven_family_output(owner, row, env, 0).is_some()
+            {
+                self.family_projection_output(alias, &alias_goal.vars, &[])
+            } else {
+                None
+            };
             // A still-abstract output, or an equality inherited from a
-            // proven type-only declaration bound, selects no concrete RHS.
-            if !self.env.iter().any(|p| p.alias == alias)
+            // proven declaration bound, selects no concrete RHS.
+            if family_output.is_none()
+                && !self.env.iter().any(|p| p.alias == alias)
                 && self.normalize(Ty::alias(alias)) != Ty::alias(alias)
                 && !self.declared_region_free_bound(&alias_goal, env)
             {
@@ -2133,6 +2182,8 @@ impl<'a> Cx<'a> {
                 // tables; do not borrow an erased-equal Self's regions.
                 if associated{return None;}
                 self.instantiate_sig(Ty::alias(p.alias),&[],&mut |_|None,&args,&goal.vars)?
+            } else if let Some(row) = family_output {
+                row
             } else if self.slots(actual_ty) == 0 {
                 Vec::new()
             } else {
@@ -2764,6 +2815,20 @@ impl<'a> Cx<'a> {
                     }
                 }
             }
+            for occurrence in flux_ty::regions::signature_projection_outlives(self.items, sigs, f) {
+                let Some(target) = map(occurrence.target) else {
+                    continue;
+                };
+                if let Some(row) = occurrence
+                    .regions
+                    .iter()
+                    .copied()
+                    .map(map)
+                    .collect::<Option<Vec<_>>>()
+                {
+                    self.projection_outlives.push((occurrence.ty, row, target));
+                }
+            }
             // Instantiating a selected family can prove caller bounds. Its
             // proof must see the original signature assumptions before any
             // family requirements are generated.
@@ -2870,7 +2935,7 @@ impl<'a> Cx<'a> {
                     _ => None,
                 };
                 let vars = sigs.regions.consts.get(konst).and_then(|row| {
-                    self.instantiate_sig(body.locals[Body::RETURN].ty, row, &mut map, &[], &[])
+                    self.instantiate_sig(sigs.consts[konst], row, &mut map, &[], &[])
                 });
                 signature.push((Body::RETURN, vars));
             } else {
@@ -4481,7 +4546,7 @@ impl<'a> Cx<'a> {
                 let rows_b = match b.regions {
                     Some(r) => {
                         let bound: Vec<_> = (0..r.bound).map(|i| Var::MAX - i).collect();
-                        flux_ty::regions::instantiate_fn_pointer(self.items, b, bv, &bound, STATIC)
+                        self.instantiate_pointer(b, bv, &bound)
                     }
                     None if b.inputs_output.iter().all(|&ty| self.slots(ty) == 0) => {
                         Some(vec![Vec::new(); b.inputs_output.len()])
@@ -5241,9 +5306,7 @@ impl<'a> Cx<'a> {
                                 }
                             })
                             .collect();
-                        let Some(rows) = flux_ty::regions::instantiate_fn_pointer(
-                            self.items, signature, own, &bound, STATIC,
-                        ) else {
+                        let Some(rows) = self.instantiate_pointer(signature, own, &bound) else {
                             self.errors.push(Diagnostic::new(
                                 range,
                                 "callable object region recipe does not match its occurrence",
@@ -5402,6 +5465,7 @@ impl<'a> Cx<'a> {
                     && !callable_principal_checked
                     && let Some(object) = object
                     && let TyKind::Dynamic(d) = object.kind()
+                    && d.quantified.is_none()
                 {
                     let mut rows = vec![inner.to_vec()];
                     let object_start = usize::from(matches!(dest_ty.kind(), TyKind::Ref(..)));
@@ -5421,10 +5485,7 @@ impl<'a> Cx<'a> {
                                 Outlives::Type(ty, Region::Static) if matches!(ty.kind(), TyKind::Param(p) if p.index == 0)))
                         }));
                     if static_self {
-                        for &var in inner {
-                            self.outlives(var, STATIC, category, range);
-                        }
-                        self.type_outlives(pointee, STATIC, range);
+                        self.stored_type_outlives(pointee, inner, STATIC, category, range);
                     }
                     self.prove(
                         flux_solve::traits::dyn_principal(pointee, d),
@@ -5437,6 +5498,7 @@ impl<'a> Cx<'a> {
                 if let Some(object) = object
                     && let TyKind::Dynamic(d) = object.kind()
                     && flux_ty::fn_trait_kind(self.items, d.trait_).is_none()
+                    && d.quantified.is_none()
                 {
                     let offset = usize::from(matches!(dest_ty.kind(), TyKind::Ref(..)));
                     let object_vars = dest_vars.get(offset..).unwrap_or(&[]);
@@ -5554,6 +5616,20 @@ impl<'a> Cx<'a> {
                             self.equate(a, b, category, range);
                         }
                     }
+                }
+                if let Some(object) = object
+                    && let TyKind::Dynamic(d) = object.kind()
+                    && d.quantified.is_some()
+                {
+                    let offset = usize::from(matches!(dest_ty.kind(), TyKind::Ref(..)));
+                    self.unsize_quantified_object(
+                        pointee,
+                        inner,
+                        d,
+                        dest_vars.get(offset..).unwrap_or(&[]),
+                        category,
+                        range,
+                    );
                 }
                 if let Some(bound) = bound {
                     // An existing object's argument rows are contracts, not
@@ -5962,7 +6038,17 @@ impl<'a> Cx<'a> {
             for constraint in implied {
                 match constraint {
                     Outlives::Region(a, b) => self.outlives(a, b, Category::CallArgument, range),
-                    Outlives::Type(t, b) => self.type_outlives(t, b, range),
+                    Outlives::Type(t, b) => {
+                        if !self.constrain_implied_projection(
+                            generic_args[*index as usize],
+                            vars,
+                            t,
+                            b,
+                            range,
+                        ) {
+                            self.type_outlives(t, b, range);
+                        }
+                    }
                 }
             }
         }
@@ -5976,6 +6062,30 @@ impl<'a> Cx<'a> {
             .find(|(index, _)| *index == flux_ty::regions::IMPL_SELF_ARG)
         {
             self.impl_self_annotation(func, table, &mut map, generic_args, &type_vars, range);
+        }
+        if let Some((_, table)) = written
+            .iter()
+            .find(|(index, _)| *index == flux_ty::regions::FUNCTION_LIFETIMES_ARG)
+        {
+            if flux_ty::regions::named_call_lifetimes(items, sigs, func).map(|n| n as usize)
+                != Some(table.len())
+            {
+                self.errors.push(Diagnostic::new(
+                    range,
+                    "function lifetime arguments are not represented",
+                ));
+            } else {
+                for (&var, region) in lifetimes.iter().zip(table.iter()) {
+                    let declared = match *region {
+                        Region::Static => Some(STATIC),
+                        Region::Param(i) => Some(1 + i),
+                        _ => None,
+                    };
+                    if let Some(declared) = declared {
+                        self.equate(var, declared, Category::CallArgument, range);
+                    }
+                }
+            }
         }
         // `<T as Tr<'a>>::f`: the trait's lifetimes, the first of `func`'s.
         if let Some((_, table)) = written
@@ -6105,6 +6215,47 @@ impl<'a> Cx<'a> {
         }
     }
 
+    /// Preserve a projection occurrence when an explicit type spelling imposes
+    /// reference well-formedness. The temporary Param namespace names local vars.
+    fn constrain_implied_projection(
+        &mut self,
+        ty: Ty,
+        vars: &[Var],
+        subject: Ty,
+        target: Var,
+        range: TextRange,
+    ) -> bool {
+        let rows: Vec<_> = vars.iter().map(|&var| Region::Param(var)).collect();
+        let map = |region| match region {
+            Region::Static => Some(STATIC),
+            Region::Param(var) => Some(var),
+            _ => None,
+        };
+        let occurrences =
+            flux_ty::regions::type_projection_outlives(self.items, self.sigs, ty, &rows);
+        let mut handled = false;
+        for occurrence in occurrences
+            .iter()
+            .filter(|o| o.ty == subject && map(o.target) == Some(target))
+        {
+            let Some(row) = occurrence
+                .regions
+                .iter()
+                .copied()
+                .map(map)
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            let env = self.caller_region_goals();
+            if !self.constrain_family_outlives(subject, &row, target, &env, range) {
+                return false;
+            }
+            handled = true;
+        }
+        handled
+    }
+
     /// `S::<'a>::f`: the self type of `func`'s `impl` block, instantiated
     /// for the call, is the written `table`'s, as rustc's user type
     /// annotation has it.
@@ -6158,7 +6309,11 @@ impl<'a> Cx<'a> {
         for constraint in implied {
             match constraint {
                 Outlives::Region(a, b) => self.outlives(a, b, Category::CallArgument, range),
-                Outlives::Type(t, b) => self.type_outlives(t, b, range),
+                Outlives::Type(t, b) => {
+                    if !self.constrain_implied_projection(self_ty, &vars, t, b, range) {
+                        self.type_outlives(t, b, range);
+                    }
+                }
             }
         }
     }
@@ -6221,6 +6376,8 @@ impl<'a> Cx<'a> {
         for (&ty, vars) in generic_args.iter().zip(type_vars) {
             self.adt_obligations(ty, vars, range);
         }
+        let projection_occurrences =
+            flux_ty::regions::signature_projection_outlives(items, sigs, func);
         // The callee's bounds, and what its types imply.
         for p in regions.outlives.iter() {
             match *p {
@@ -6233,6 +6390,48 @@ impl<'a> Cx<'a> {
                     }
                 }
                 Outlives::Type(t, b) => {
+                    let mut handled = false;
+                    for occurrence in projection_occurrences
+                        .iter()
+                        .filter(|o| o.ty == t && o.target == b)
+                    {
+                        handled = true;
+                        let Some(target) = map(b) else { continue };
+                        let Some(vars) = self.instantiate_sig(
+                            t,
+                            &occurrence.regions,
+                            &mut |region| map(region),
+                            generic_args,
+                            type_vars,
+                        ) else {
+                            self.errors.push(Diagnostic::new(
+                                range,
+                                "associated output outlives inputs are not represented",
+                            ));
+                            continue;
+                        };
+                        let instance = self.normalize(t.subst(generic_args));
+                        if matches!(instance.kind(), TyKind::Alias(alias)
+                            if flux_ty::regions::has_projection_inputs(items, alias))
+                        {
+                            let env = self.caller_region_goals();
+                            if !self.constrain_family_outlives(instance, &vars, target, &env, range)
+                            {
+                                self.type_outlives(instance, target, range);
+                            }
+                        } else {
+                            self.stored_type_outlives(
+                                instance,
+                                &vars,
+                                target,
+                                Category::CallArgument,
+                                range,
+                            );
+                        }
+                    }
+                    if handled {
+                        continue;
+                    }
                     let Some(b) = map(b) else { continue };
                     let instance = self.normalize(t.subst(generic_args));
                     if let TyKind::Param(p) = t.kind()
@@ -8088,22 +8287,64 @@ impl<'a> Cx<'a> {
                         ));
                     }
                 }
-                Outlives::Type(t, b) => {
-                    let Some(b) = map(b) else {
+                Outlives::Type(t, region_target) => {
+                    let Some(b) = map(region_target) else {
                         self.errors.push(Diagnostic::new(
                             range,
                             "impl type-outlives condition is not represented",
                         ));
                         continue;
                     };
+                    let occurrences = flux_ty::regions::type_projection_outlives(
+                        items,
+                        sigs,
+                        sigs.impls[imp],
+                        &regions.self_ty,
+                    );
+                    let mut handled = false;
+                    for occurrence in occurrences
+                        .iter()
+                        .filter(|o| o.ty == t && o.target == region_target)
+                    {
+                        handled = true;
+                        let Some(row) = self.instantiate_sig(
+                            t,
+                            &occurrence.regions,
+                            &mut |region| map(region),
+                            &impl_args,
+                            &type_vars,
+                        ) else {
+                            self.errors.push(Diagnostic::new(
+                                range,
+                                "impl associated output inputs are not represented",
+                            ));
+                            continue;
+                        };
+                        let instance = self.normalize(t.subst(&impl_args));
+                        let env = self.caller_region_goals();
+                        if !self.constrain_family_outlives(instance, &row, b, &env, range) {
+                            self.type_outlives(instance, b, range);
+                        }
+                    }
+                    if handled {
+                        continue;
+                    }
+                    let instance = self.normalize(t.subst(&impl_args));
                     if let TyKind::Param(p) = t.kind()
                         && let Some(vars) = type_vars.get(p.index as usize)
                     {
+                        if matches!(instance.kind(), TyKind::Alias(alias)
+                            if flux_ty::regions::has_projection_inputs(self.items, alias))
+                        {
+                            let env = self.caller_region_goals();
+                            if self.constrain_family_outlives(instance, vars, b, &env, range) {
+                                continue;
+                            }
+                        }
                         for &v in &vars.clone() {
                             self.outlives(v, b, self.proving, range);
                         }
                     }
-                    let instance = self.normalize(t.subst(&impl_args));
                     if instance.has_error() || instance.has_infer() {
                         self.errors.push(Diagnostic::new(
                             range,
@@ -8281,12 +8522,27 @@ impl<'a> Cx<'a> {
                 self.type_outlives(ty, bound, range);
                 continue;
             }
-            for &var in &vars {
-                self.outlives(var, bound, category, range);
+            if matches!(ty.kind(), TyKind::Alias(alias) if flux_ty::regions::has_projection_inputs(self.items, alias))
+            {
+                let env = if self.body.owner.is_some() {
+                    self.caller_region_goals()
+                } else {
+                    self.family_goals.clone()
+                };
+                if !self.family_output_outlives(ty, &vars, bound, &env) {
+                    self.errors.push(Diagnostic::new(
+                        range,
+                        "associated output outlives inputs cannot be proved",
+                    ));
+                }
+                continue;
             }
             let (children, mut at): (Vec<Ty>, usize) = match ty.kind() {
                 TyKind::Adt(adt, args) => (
-                    args.to_vec(),
+                    args.iter()
+                        .zip(&self.items.structs[adt.strukt].generics.params)
+                        .filter_map(|(&arg, parameter)| (!parameter.is_const()).then_some(arg))
+                        .collect(),
                     self.items.structs[adt.strukt].generics.lifetimes.len(),
                 ),
                 TyKind::Tuple(types) => (types.to_vec(), 0),
@@ -8303,6 +8559,9 @@ impl<'a> Cx<'a> {
                     continue;
                 }
             };
+            for &var in &vars[..at] {
+                self.outlives(var, bound, category, range);
+            }
             for child in children {
                 let end = at + self.slots(child) as usize;
                 let Some(row) = vars.get(at..end) else {
@@ -8350,7 +8609,7 @@ impl<'a> Cx<'a> {
 
     /// `T: b` for the parameters and associated types in `ty`.
     fn type_outlives(&mut self, ty: Ty, b: Var, range: TextRange) {
-        let mut pending = flux_ty::regions::outlives_type_components(self.sigs, ty);
+        let mut pending = flux_ty::regions::outlives_type_components(self.items, self.sigs, ty);
         let mut seen = Vec::new();
         while let Some(component) = pending.pop() {
             if seen.contains(&component) {
@@ -8363,7 +8622,7 @@ impl<'a> Cx<'a> {
             // which a bare Ty does not contain.
             if normalized != component && flux_ty::regions::slots(self.items, normalized) == 0 {
                 pending.extend(flux_ty::regions::outlives_type_components(
-                    self.sigs, normalized,
+                    self.items, self.sigs, normalized,
                 ));
             } else {
                 self.type_tests.push((component, b, range));
@@ -8906,8 +9165,7 @@ impl<'a> Cx<'a> {
         let tracked: Vec<bool> = (0..body.locals.len())
             .map(|i| self.local_base[i + 1] > self.local_base[i])
             .collect();
-        let held = (include_drops && body.has_unwind())
-            .then(|| super::held_locals(body, self.sigs, &tracked));
+        let held = include_drops.then(|| super::held_locals(body, self.sigs, &tracked));
         let live_out = super::liveness_where(body, &tracked, include_drops, held.as_deref());
         let mut live = vec![IntervalSet::new(); body.locals.len()];
         // Walking each block backwards: where each live local's current
@@ -9488,6 +9746,11 @@ impl<'a> Cx<'a> {
     /// trait references or type arguments need their represented region maps;
     /// do not infer anything from erased inputs in those cases.
     fn known_type_outlives(&self, ty: Ty, end: u32, active: &mut Vec<Ty>) -> bool {
+        if let TyKind::Alias(alias) = ty.kind()
+            && self.declared_static_output(alias)
+        {
+            return true;
+        }
         // Lifetime-bearing projections need their occurrence's concrete rows.
         // Type/const-only families can use type facts when all their arguments
         // have zero slots; no occurrence regions are erased in that case.
@@ -9525,32 +9788,29 @@ impl<'a> Cx<'a> {
         }) {
             return true;
         }
-        let TyKind::Alias(alias) = ty.kind() else {
-            return false;
-        };
-        // A declared static output does not depend on the owner's lifetime.
-        // Selection and associated-value checks enforce this contract at its
-        // definition; using it must not require the owner itself to be static.
-        if self
-            .sigs
-            .regions
-            .traits
-            .get(alias.trait_)
-            .and_then(|contract| contract.families.iter().find(|(name, _)| *name == alias.name))
-            .is_some_and(|(_, output)| {
-                output.output_outlives.contains(&Region::Static)
-                    || output.output_traits.iter().any(|(bound, _)| {
-                        self.sigs.regions.traits.get(bound.trait_).is_some_and(|contract| {
+        // Caller trait assumptions also supply their declared static Self
+        // contract, including owner predicates of default trait methods.
+        if represented
+            && self.header_predicates.iter().any(|predicate| {
+                predicate.self_ty == ty
+                    && self
+                        .sigs
+                        .regions
+                        .traits
+                        .get(predicate.trait_ref.trait_)
+                        .is_some_and(|contract| {
                             contract.outlives.iter().any(|requirement| {
-                                matches!(requirement, Outlives::Type(ty, Region::Static)
-                                    if matches!(ty.kind(), TyKind::Param(param) if param.index == 0))
+                                matches!(requirement, Outlives::Type(t, Region::Static)
+                        if matches!(t.kind(), TyKind::Param(param) if param.index == 0))
                             })
                         })
-                    })
             })
         {
             return true;
         }
+        let TyKind::Alias(alias) = ty.kind() else {
+            return false;
+        };
         if active.contains(&ty)
             || !self.items.traits[alias.trait_]
                 .generics
@@ -9566,7 +9826,7 @@ impl<'a> Cx<'a> {
         }
         active.push(ty);
         let holds = alias.template_args().iter().all(|&arg| {
-            flux_ty::regions::outlives_type_components(self.sigs, arg)
+            flux_ty::regions::outlives_type_components(self.items, self.sigs, arg)
                 .into_iter()
                 .all(|component| self.known_type_outlives(component, end, active))
         });

@@ -434,7 +434,7 @@ pub(crate) fn liveness_where(
     live_out
 }
 
-/// Shared unwind ladders can test a drop flag for a value moved on one incoming
+/// Shared drop ladders can test a drop flag for a value moved on one incoming
 /// path. That conditional drop must not extend the value's borrow along that
 /// path after the move. Keep liveness within the local's initialized storage.
 pub(crate) fn held_locals(

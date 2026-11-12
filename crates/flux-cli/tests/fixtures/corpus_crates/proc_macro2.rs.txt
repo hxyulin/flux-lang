@@ -1,0 +1,19 @@
+use proc_macro2::{Delimiter, Group, Ident, Literal, Punct, Spacing, Span, TokenStream, TokenTree};
+fn main() {
+    let parsed: TokenStream = "fn café<'a>(value: &'a str) -> Option<u32> { Some(17) }".parse().unwrap();
+    println!("{}", parsed);
+    let cloned = parsed.clone();
+    assert_eq!(parsed.into_iter().count(), cloned.clone().into_iter().count());
+    let mut built = TokenStream::new();
+    built.extend([
+        TokenTree::Ident(Ident::new("answer", Span::call_site())),
+        TokenTree::Punct(Punct::new('=', Spacing::Alone)),
+        TokenTree::Literal(Literal::u32_suffixed(37)),
+        TokenTree::Punct(Punct::new(';', Spacing::Alone)),
+    ]);
+    let group = Group::new(Delimiter::Brace, built);
+    println!("{}", group);
+    println!("{} {} {}", Literal::string("a\n\"b"), Literal::character('🦀'), Literal::byte_string(b"\0\xff"));
+    assert!("(unclosed".parse::<TokenStream>().is_err());
+    assert!(TokenStream::new().is_empty());
+}

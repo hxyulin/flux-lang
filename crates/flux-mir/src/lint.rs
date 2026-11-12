@@ -230,6 +230,7 @@ fn operand(
             | Value::DynPointer { .. }
             | Value::Aggregate(_)
             | Value::Variant { .. }
+            | Value::Union { .. }
             | Value::Static(_)
             | Value::StaticPart { .. }
             | Value::Ref(_)
@@ -242,6 +243,7 @@ fn operand(
         },
         Operand::Const(
             Constant::Unit
+            | Constant::Inline { .. }
             | Constant::TyConst { .. }
             | Constant::FnItem(_)
             | Constant::CStr(_)
@@ -328,6 +330,7 @@ fn evaluate(
                 | Value::DynPointer { .. }
                 | Value::Aggregate(_)
                 | Value::Variant { .. }
+                | Value::Union { .. }
                 | Value::Static(_)
                 | Value::StaticPart { .. }
                 | Value::Ref(_)

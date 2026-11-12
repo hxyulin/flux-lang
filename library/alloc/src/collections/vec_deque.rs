@@ -120,6 +120,32 @@ impl<T> VecDeque<T> {
         // SAFETY: the former final element is initialized and now removed.
         Some(unsafe { ptr::read(self.buf.ptr().add(index)) })
     }
+    /// Rotates the first `mid` elements to the back without allocating.
+    ///
+    /// # Panics
+    /// Panics when `mid` exceeds the deque's length.
+    pub fn rotate_left(&mut self, mid: usize) {
+        assert!(mid <= self.len, "rotation count exceeds deque length");
+        if mid <= self.len - mid {
+            for _ in 0..mid {
+                let value = self.pop_front().unwrap();
+                self.push_back(value);
+            }
+        } else {
+            for _ in 0..self.len - mid {
+                let value = self.pop_back().unwrap();
+                self.push_front(value);
+            }
+        }
+    }
+    /// Rotates the last `count` elements to the front without allocating.
+    ///
+    /// # Panics
+    /// Panics when `count` exceeds the deque's length.
+    pub fn rotate_right(&mut self, count: usize) {
+        assert!(count <= self.len, "rotation count exceeds deque length");
+        self.rotate_left(self.len - count);
+    }
     pub fn get(&self, offset: usize) -> Option<&T> {
         if offset >= self.len {
             return None;

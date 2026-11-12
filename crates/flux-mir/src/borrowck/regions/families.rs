@@ -35,7 +35,7 @@ impl Cx<'_> {
         env: &[ImplRegionGoal],
         depth: u32,
     ) -> Option<(Vec<Var>, Vec<ImplRegionGoal>)> {
-        if !flux_ty::regions::has_projection_inputs(self.items, alias) {
+        if depth > DECLARATION_RECURSION_LIMIT {
             return None;
         }
         let owner = row.get(..alias.owner_lifetimes as usize)?;
@@ -140,7 +140,16 @@ impl Cx<'_> {
             .iter()
             .find(|(name, _)| *name == alias.name)?
             .1;
-        Some(
+        let mut sources: Vec<_> = self
+            .projection_outlives
+            .iter()
+            .filter(|(ty, inputs, _)| *ty == value && self.projection_inputs_equal(inputs, row))
+            .map(|(_, _, target)| *target)
+            .collect();
+        if self.declared_static_output(alias) {
+            sources.push(STATIC);
+        }
+        sources.extend(
             contract
                 .output_outlives
                 .iter()
@@ -148,9 +157,50 @@ impl Cx<'_> {
                     Region::Static => Some(STATIC),
                     Region::Param(index) => lifetimes.get(index as usize).copied(),
                     Region::Erased | Region::Late(_) => None,
-                })
-                .collect(),
-        )
+                }),
+        );
+        Some(sources)
+    }
+
+    /// Projection identities may pass through invariant local slots. Reuse a
+    /// signature fact only when existing constraints already equate every input.
+    pub(super) fn projection_inputs_equal(&self, left: &[Var], right: &[Var]) -> bool {
+        if left == right {
+            return true;
+        }
+        if left.len() != right.len() {
+            return false;
+        }
+        let edges = Adjacency::new(
+            self.vars as usize,
+            self.constraints.iter().map(|c| (c.sup, c.sub)),
+        );
+        let reaches = |start, target| {
+            let mut seen = vec![false; self.vars as usize];
+            let mut pending = vec![start];
+            while let Some(var) = pending.pop() {
+                if var == target {
+                    return true;
+                }
+                if std::mem::replace(&mut seen[var as usize], true) {
+                    continue;
+                }
+                pending.extend(edges[var as usize].iter().copied());
+                if let Some(&index) = self.universal_of.get(&var) {
+                    pending.extend(
+                        self.universal
+                            .iter()
+                            .enumerate()
+                            .filter(|(other, _)| self.known(index, *other as u32))
+                            .map(|(_, &(var, _))| var),
+                    );
+                }
+            }
+            false
+        };
+        left.iter()
+            .zip(right)
+            .all(|(&a, &b)| reaches(a, b) && reaches(b, a))
     }
 
     /// Constrain an inferred call lifetime from an exact associated output row.
@@ -170,19 +220,69 @@ impl Cx<'_> {
         if sources.contains(&STATIC) {
             return true;
         }
+        if sources.is_empty() {
+            let TyKind::Alias(alias) = value.kind() else {
+                return false;
+            };
+            for &region in row {
+                self.outlives(region, target, Category::CallArgument, range);
+            }
+            for &argument in alias.template_args().iter() {
+                self.type_outlives(argument, target, range);
+            }
+            return true;
+        }
         sources.sort_unstable();
         sources.dedup();
-        let [source] = sources.as_slice() else {
+        let mut independent = Vec::new();
+        for source in sources {
+            if !independent
+                .iter()
+                .any(|&other| self.projection_inputs_equal(&[source], &[other]))
+            {
+                independent.push(source);
+            }
+        }
+        let [source] = independent.as_slice() else {
             return false;
         };
         self.outlives(*source, target, Category::CallArgument, range);
         true
     }
 
+    /// A declaration-wide static output contract does not constrain its owner.
+    pub(super) fn declared_static_output(&self, alias: AliasTy) -> bool {
+        self.sigs
+            .regions
+            .traits
+            .get(alias.trait_)
+            .and_then(|contract| {
+                contract
+                    .families
+                    .iter()
+                    .find(|(name, _)| *name == alias.name)
+            })
+            .is_some_and(|(_, output)| {
+                output.output_outlives.contains(&Region::Static)
+                    || output.output_traits.iter().any(|(bound, _)| {
+                        self.sigs
+                            .regions
+                            .traits
+                            .get(bound.trait_)
+                            .is_some_and(|contract| {
+                                contract.outlives.iter().any(|requirement| {
+                                    matches!(requirement, Outlives::Type(ty, Region::Static)
+                            if matches!(ty.kind(), TyKind::Param(param) if param.index == 0))
+                                })
+                            })
+                    })
+            })
+    }
+
     /// A declaration proof can use an output lifetime bound from this exact
     /// family occurrence. Captured owner inputs are not the output's fields,
     /// and an erased alias cannot supply a global type-outlives fact.
-    fn family_output_outlives(
+    pub(super) fn family_output_outlives(
         &mut self,
         value: Ty,
         row: &[Var],
@@ -353,6 +453,19 @@ impl Cx<'_> {
             };
             instance
         };
+        // Each nested projection has supplied its selected output row.
+        // Select the outer owner using those output types as well, retaining
+        // the independently reconstructed region rows.
+        let instance = instance.map_args(|ty| self.normalize(ty));
+        if instance
+            .args
+            .iter()
+            .zip(&inputs)
+            .chain(instance.family_args.iter().zip(&family_inputs))
+            .any(|(&ty, row)| self.slots(ty) as usize != row.len())
+        {
+            return None;
+        }
         Some(FamilyInputs {
             alias: instance,
             owner,
@@ -360,6 +473,54 @@ impl Cx<'_> {
             family,
             family_inputs,
         })
+    }
+
+    /// Validate projections nested under written references and aggregates
+    /// from their input occurrence tables, rather than from selected outputs.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn written_aliases_proven(
+        &mut self,
+        ty: Ty,
+        own: &[Region],
+        map: &mut dyn FnMut(Region) -> Option<Var>,
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+        env: &[ImplRegionGoal],
+        depth: u32,
+    ) -> bool {
+        if depth > DECLARATION_RECURSION_LIMIT {
+            return false;
+        }
+        if let TyKind::Alias(alias) = ty.kind() {
+            return if flux_ty::regions::has_projection_inputs(self.items, alias) {
+                self.written_family_alias_proven(alias, own, map, args, arg_vars, env)
+            } else {
+                self.instantiated_aliases_proven(ty, args, arg_vars, env, depth + 1)
+            };
+        }
+        if let TyKind::Param(_) = ty.kind() {
+            return self.instantiated_aliases_proven(ty, args, arg_vars, env, depth + 1);
+        }
+        let (children, mut at): (Vec<_>, usize) = match ty.kind() {
+            TyKind::Ref(_, child) => (vec![child], 1),
+            TyKind::Adt(adt, children) => (
+                children.to_vec(),
+                self.items.structs[adt.strukt].generics.lifetimes.len(),
+            ),
+            TyKind::Dynamic(_) | TyKind::FnPtr(_) | TyKind::Opaque(_) => return false,
+            _ => (ty.children().collect(), 0),
+        };
+        for child in children {
+            let end = at + flux_ty::regions::slots(self.items, child);
+            let Some(row) = own.get(at..end) else {
+                return false;
+            };
+            if !self.written_aliases_proven(child, row, map, args, arg_vars, env, depth + 1) {
+                return false;
+            }
+            at = end;
+        }
+        at == own.len()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -505,6 +666,9 @@ impl Cx<'_> {
         family_inputs: &[Vec<Var>],
         depth: u32,
     ) -> Option<Vec<Var>> {
+        if let Some(output) = self.quantified_object_output(alias, owner, inputs) {
+            return Some(output);
+        }
         if let Some(scheme) = self.env_ranked.iter().find(|s| s.alias == alias).cloned() {
             return self.ranked_projection_output(&scheme, owner, inputs);
         }
@@ -740,6 +904,7 @@ pub(super) fn impl_family_values_match(
             && decl.names.is_empty()
             && definition.generics.params.is_empty()
             && decl.output_outlives.is_empty()
+            && decl.output_traits.iter().all(|(_, rows)| rows.bound == 0)
         {
             continue;
         }
@@ -797,7 +962,8 @@ pub(super) fn impl_family_values_match(
                     Outlives::Type(ty, b) => {
                         let mapped = if reverse { map_impl(b)? } else { map_decl(b)? };
                         let instance = if reverse { ty } else { ty.subst(&args) };
-                        for component in flux_ty::regions::outlives_type_components(sigs, instance)
+                        for component in
+                            flux_ty::regions::outlives_type_components(items, sigs, instance)
                         {
                             cx.known_types.push((component, mapped));
                         }
@@ -885,18 +1051,29 @@ pub(super) fn impl_family_values_match(
                     if cx.family_output_outlives(value, &row, target, &env) {
                         continue;
                     }
-                    for &v in &row {
-                        cx.outlives(v, target, Category::Boring, definition.item_range);
-                    }
-                    cx.type_outlives(value, target, definition.item_range);
+                    cx.stored_type_outlives(
+                        value,
+                        &row,
+                        target,
+                        Category::Boring,
+                        definition.item_range,
+                    );
                 }
                 for (bound, tables) in &decl.output_traits {
+                    let named: Vec<_> = (0..tables.bound)
+                        .map(|index| cx.new_universal(format!("'output{index}")))
+                        .collect();
+                    cx.close_known();
+                    let map_output = |r| match r {
+                        Region::Late(index) => named.get(index as usize).copied(),
+                        r => map_decl(r),
+                    };
                     let mut vars = vec![row.clone()];
                     for (&ty, table) in bound.args.iter().zip(tables.args.iter()) {
                         vars.push(cx.instantiate_sig(
                             ty,
                             table,
-                            &mut { map_decl },
+                            &mut { map_output },
                             &args,
                             &inputs,
                         )?);
@@ -904,23 +1081,34 @@ pub(super) fn impl_family_values_match(
                     let trait_lifetimes = tables
                         .lifetimes
                         .iter()
-                        .map(|&r| map_decl(r))
+                        .map(|&r| map_output(r))
                         .collect::<Option<_>>()?;
                     let goal = ImplRegionGoal {
                         predicate: bound.subst(&args).with_self(cx.normalize(value)),
                         lifetimes: trait_lifetimes,
                         vars,
-                        bound: Vec::new(),
+                        bound: named,
                     };
                     if !cx.impl_prove_super(&goal, &env, 0) {
                         return Some(false);
                     }
                 }
-                for (projection, table) in &decl.output_projections {
+                for output in &decl.output_projections {
+                    let projection = &output.projection;
+                    let table = &output.regions;
+                    let (_, owner_table) = decl.output_traits.get(output.bound as usize)?;
+                    let bound: Vec<_> = (0..owner_table.bound)
+                        .map(|index| cx.new_universal(format!("'output{index}")))
+                        .collect();
+                    cx.close_known();
+                    let map_output = |r| match r {
+                        Region::Late(index) => bound.get(index as usize).copied(),
+                        r => map_decl(r),
+                    };
                     let expected = cx.instantiate_sig(
                         projection.ty,
                         table,
-                        &mut { map_decl },
+                        &mut { map_output },
                         &args,
                         &inputs,
                     )?;
@@ -945,14 +1133,10 @@ pub(super) fn impl_family_values_match(
                         alias_vars.push(Vec::new());
                     }
                     let actual = if alias.owner_lifetimes != 0 {
-                        let (_, owner_table) = decl
-                            .output_traits
-                            .iter()
-                            .find(|(bound, _)| bound.trait_ == alias.trait_)?;
                         let owner = owner_table
                             .lifetimes
                             .iter()
-                            .map(|&r| map_decl(r))
+                            .map(|&r| map_output(r))
                             .collect::<Option<Vec<_>>>()?;
                         cx.family_prerequisites(alias, &owner, &alias_vars, &[], &[])?;
                         cx.family_output(alias, &owner, &alias_vars, &[], &[], 0)?
@@ -992,7 +1176,7 @@ impl Cx<'_> {
         let TyKind::Alias(alias) = goal.self_ty.kind() else {
             return false;
         };
-        if !flux_ty::regions::has_projection_inputs(self.items, alias) || self.family_depth > 32 {
+        if self.family_depth > 32 {
             return false;
         }
         self.family_depth += 1;
@@ -1064,9 +1248,7 @@ impl Cx<'_> {
         let TyKind::Alias(owner_alias) = alias.args.first()?.kind() else {
             return None;
         };
-        if !flux_ty::regions::has_projection_inputs(self.items, owner_alias)
-            || self.family_depth > 32
-        {
+        if self.family_depth > 32 {
             return None;
         }
         let row = arg_vars.first()?;
@@ -1103,32 +1285,49 @@ impl Cx<'_> {
             .1
             .clone();
         let args = owner_alias.template_args();
-        let (projection, table) = contract
+        let mut candidates = contract
             .output_projections
             .iter()
-            .find(|(p, _)| p.alias.map_args(|ty| ty.subst(&args)) == alias)?;
+            .filter(|p| p.projection.alias.map_args(|ty| ty.subst(&args)) == alias);
+        let output = candidates.next()?;
+        if candidates.next().is_some() {
+            return None;
+        }
+        let projection = &output.projection;
+        let table = &output.regions;
+        let (bound_trait, bound) = contract.output_traits.get(output.bound as usize)?;
+        if (bound_trait.trait_ != alias.trait_
+            && (!bound.lifetimes.is_empty() || alias.args.len() != 1))
+            || bound.lifetimes.len() != outer_owner.len()
+            || alias.owner_lifetimes as usize != outer_owner.len()
+            || bound.args.iter().any(|row| !row.is_empty())
+        {
+            return None;
+        }
         let lifetimes: Vec<_> = owner.iter().chain(&family).copied().collect();
         let types: Vec<_> = inputs.iter().chain(&family_inputs).cloned().collect();
-        let mut map = |r| match r {
+        let fixed = |r| match r {
             Region::Static => Some(STATIC),
             Region::Param(i) => lifetimes.get(i as usize).copied(),
             _ => None,
         };
-        if alias.owner_lifetimes as usize != outer_owner.len() {
-            return None;
-        }
-        if !outer_owner.is_empty() {
-            let (_, bound) = contract
-                .output_traits
-                .iter()
-                .find(|(bound, _)| bound.trait_ == alias.trait_)?;
-            if bound.lifetimes.len() != outer_owner.len() {
-                return None;
-            }
-            for (&r, &actual) in bound.lifetimes.iter().zip(outer_owner) {
-                self.equate(map(r)?, actual, Category::CallArgument, self.call_range);
+        let mut late = FxHashMap::default();
+        for (&r, &actual) in bound.lifetimes.iter().zip(outer_owner) {
+            if let Region::Late(index) = r {
+                if index >= bound.bound {
+                    return None;
+                }
+                if let Some(previous) = late.insert(index, actual) {
+                    self.equate(previous, actual, Category::CallArgument, self.call_range);
+                }
+            } else {
+                self.equate(fixed(r)?, actual, Category::CallArgument, self.call_range);
             }
         }
+        let mut map = |r| match r {
+            Region::Late(index) => late.get(&index).copied(),
+            r => fixed(r),
+        };
         self.family_depth += 1;
         let result = self.instantiate_sig(projection.ty, table, &mut map, &args, &types);
         self.family_depth -= 1;

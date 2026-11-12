@@ -84,7 +84,10 @@ fn ty_at(
             sigs.fns.get(f.function).ok_or_else(invalid)?;
         }
         TyKind::Dynamic(d) => {
-            items.traits.get(d.trait_).ok_or_else(invalid)?;
+            let principal = items.traits.get(d.trait_).ok_or_else(invalid)?;
+            if !d.valid_quantified(principal.generics.lifetimes.len()) {
+                return Err(invalid());
+            }
             sigs.traits.get(d.trait_).ok_or_else(invalid)?;
         }
         TyKind::Alias(a) => {
@@ -264,6 +267,17 @@ fn constant(c: &Constant, body: &Body, items: &ItemTree, sigs: &Signatures) -> R
             let v = body.promoted.get(*index as usize).ok_or_else(invalid)?;
             value_for(v, pointee, items, sigs, 0)?;
         }
+        Constant::Inline { index, ty } => {
+            self::ty(*ty, items, sigs, 0)?;
+            let constant = body
+                .inline_constants
+                .get(*index as usize)
+                .ok_or_else(invalid)?;
+            let stored = constant.locals.get(Body::RETURN).ok_or_else(invalid)?.ty;
+            if stored != *ty {
+                return Err(invalid());
+            }
+        }
         Constant::TyConst { value, ty } => {
             self::ty(*value, items, sigs, 0)?;
             self::ty(*ty, items, sigs, 0)?;
@@ -282,6 +296,43 @@ fn operand(o: &Operand, body: &Body, items: &ItemTree, sigs: &Signatures) -> Res
         }
         Operand::Const(c) => constant(c, body, items, sigs)?,
     };
+    Ok(())
+}
+
+/// Explicit early function lifetime rows name caller universals. They cannot
+/// manufacture a binder or attach a row to an unrelated call site.
+fn named_call_regions(
+    body: &Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    names: usize,
+) -> Result<(), Error> {
+    for (block, rows) in body.call_regions.iter() {
+        let block = body.blocks.get(block).ok_or_else(invalid)?;
+        let mut seen = false;
+        for (index, row) in rows {
+            if *index != flux_ty::regions::FUNCTION_LIFETIMES_ARG {
+                continue;
+            }
+            let TerminatorKind::Call { func, .. } = block.terminator.kind else {
+                return Err(invalid());
+            };
+            if seen
+                || items.functions.get(func).is_none()
+                || sigs.fns.get(func).is_none()
+                || flux_ty::regions::named_call_lifetimes(items, sigs, func)
+                    != Some(row.len() as u32)
+                || row.iter().any(|region| match *region {
+                    flux_ty::regions::Region::Param(index) => index as usize >= names,
+                    flux_ty::regions::Region::Late(_) => true,
+                    flux_ty::regions::Region::Static | flux_ty::regions::Region::Erased => false,
+                })
+            {
+                return Err(Error::new("invalid MIR function lifetime arguments"));
+            }
+            seen = true;
+        }
+    }
     Ok(())
 }
 
@@ -437,6 +488,18 @@ pub(super) fn body_for_owner(
         if fields(capture, None, sigs)?.len() != up.names.len() {
             return Err(invalid());
         }
+    }
+    for inner in &body.inline_constants {
+        if inner.owner.is_some()
+            || inner.constant_owner.is_some()
+            || inner.param_count != 0
+            || inner.upvars.is_some()
+            || inner.locals.get(Body::RETURN).is_none()
+            || !crate::inline_consts::closed(inner)
+        {
+            return Err(invalid());
+        }
+        self::body_for_owner(inner, items, sigs, owner, check_types)?;
     }
     for v in &body.promoted {
         value(v, items, sigs, 0)?;
@@ -600,6 +663,7 @@ pub(super) fn body_for_owner(
             .and_then(|imp| sigs.regions.impls.get(imp))
             .map_or(0, |r| r.names.len()),
     };
+    named_call_regions(body, items, sigs, names)?;
     reification_regions(body, items, names)?;
     if !check_types {
         return Ok(());
@@ -656,6 +720,7 @@ fn value_at(
         Value::Uninit(stored) => {
             ty(*stored, items, sigs, depth + 1)?;
         }
+        Value::Union { value, .. } => value_at(value, items, sigs, depth + 1, memo)?,
         Value::Variant {
             strukt,
             index,
@@ -809,6 +874,13 @@ fn value_for_storage(
             if u32::try_from(*bits).ok().and_then(char::from_u32).is_some() => {}
         (Value::Bool(_), TyKind::Bool) => {}
         (Value::Float { ty, .. }, TyKind::Float(float)) if *ty == float => {}
+        (Value::Union { field, value }, TyKind::Adt(adt, _))
+            if sigs.unions.contains(&adt.strukt) =>
+        {
+            let types = fields(expected, None, sigs)?;
+            let ty = types.get(*field as usize).copied().ok_or_else(invalid)?;
+            value_for_storage(value, ty, items, sigs, depth + 1, memo, storage)?;
+        }
         (Value::Aggregate(values), TyKind::Array(element, len)) => {
             if len.as_usize().is_some_and(|n| n != values.len() as u64) {
                 return Err(invalid());
@@ -1018,6 +1090,216 @@ mod value_dag_tests {
         assert!(
             !memo.values.contains(&(shared_key, 128)),
             "deep reference must not skip its overflowing child"
+        );
+    }
+}
+
+#[cfg(test)]
+mod inline_constant_tests {
+    use super::*;
+
+    #[test]
+    fn imported_inline_frames_reject_corrupt_structure() {
+        let (_, _, hir) = flux_hir::lower_text(
+            "inline.rs",
+            "const fn twice(x:u32)->u32{x*2}pub fn value<T>()->&'static[u32]{const{&[twice(7)]}}",
+        );
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = crate::build_file(&hir, &typed);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        let (id, _) = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| {
+                f.name.as_str() == "value"
+                    && f.loc.module == hir.items.module_of(hir.items.main_crate())
+            })
+            .unwrap();
+        let original = &mir.bodies[id];
+        assert_eq!(original.inline_constants.len(), 1);
+        assert!(body(original, &hir.items, &typed.sigs, true).is_ok());
+        for corruption in ["index", "type", "owner", "parameters", "generic"] {
+            let mut changed = original.clone();
+            match corruption {
+                "index" | "type" => {
+                    let mut found = false;
+                    for block in changed.blocks.values_mut() {
+                        for statement in &mut block.statements {
+                            if let StatementKind::Assign(
+                                _,
+                                Rvalue::Use(Operand::Const(Constant::Inline { index, ty })),
+                            ) = &mut statement.kind
+                            {
+                                if corruption == "index" {
+                                    *index = u32::MAX;
+                                } else {
+                                    *ty = Ty::BOOL;
+                                }
+                                found = true;
+                            }
+                        }
+                    }
+                    assert!(found);
+                }
+                "owner" => changed.inline_constants[0].owner = Some(id),
+                "parameters" => changed.inline_constants[0].param_count = 1,
+                "generic" => {
+                    changed.inline_constants[0].locals[Body::RETURN].ty =
+                        Ty::param(0, flux_intern::Symbol::intern("T"))
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                body(&changed, &hir.items, &typed.sigs, true).is_err(),
+                "{corruption}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod named_call_tests {
+    use super::*;
+    #[test]
+    fn imported_early_lifetimes_reject_invalid_binders() {
+        let (_, _, hir) = flux_hir::lower_text(
+            "early.rs",
+            "fn first<'a:'a>(x:&'a u8)->&'a u8{x}fn forward<'s>(x:&'s u8)->&'s u8{first::<'s>(x)}",
+        );
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = crate::build_file(&hir, &typed);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        let (id, _) = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "forward")
+            .unwrap();
+        let original = &mir.bodies[id];
+        let (block, _) = original
+            .call_regions
+            .iter()
+            .find(|(_, rows)| {
+                rows.iter()
+                    .any(|(index, _)| *index == flux_ty::regions::FUNCTION_LIFETIMES_ARG)
+            })
+            .unwrap();
+        assert!(body(original, &hir.items, &typed.sigs, true).is_ok());
+        for corruption in ["count", "param", "late", "duplicate", "terminator"] {
+            let mut changed = original.clone();
+            let rows = changed.call_regions.get_mut(block).unwrap();
+            let (_, row) = rows
+                .iter_mut()
+                .find(|(index, _)| *index == flux_ty::regions::FUNCTION_LIFETIMES_ARG)
+                .unwrap();
+            match corruption {
+                "count" => *row = Box::default(),
+                "param" => row[0] = flux_ty::regions::Region::Param(u32::MAX),
+                "late" => row[0] = flux_ty::regions::Region::Late(0),
+                "duplicate" => {
+                    let duplicate = (flux_ty::regions::FUNCTION_LIFETIMES_ARG, row.clone());
+                    rows.push(duplicate);
+                }
+                "terminator" => changed.blocks[block].terminator.kind = TerminatorKind::Return,
+                _ => unreachable!(),
+            }
+            assert!(
+                body(&changed, &hir.items, &typed.sigs, true).is_err(),
+                "{corruption}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod union_storage_tests {
+    use super::*;
+    #[test]
+    fn stored_union_field_is_validated() {
+        let (_, _, hir) = flux_hir::lower_text(
+            "union.rs",
+            "#[repr(C)]union Bits{bytes:[u8;1],flag:bool}fn main(){}",
+        );
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let (id, data) = hir
+            .items
+            .structs
+            .iter()
+            .find(|(_, data)| data.name.as_str() == "Bits")
+            .unwrap();
+        let ty = Ty::adt(id, data.name, &[]);
+        let stored = Value::Aggregate(
+            vec![Value::Int {
+                bits: 2,
+                ty: flux_ty::IntTy::U8,
+            }]
+            .into(),
+        );
+        let valid = Value::Union {
+            field: 0,
+            value: std::sync::Arc::new(stored),
+        };
+        assert!(
+            value_for_at(
+                &valid,
+                ty,
+                &hir.items,
+                &typed.sigs,
+                0,
+                &mut ValueChecks::default()
+            )
+            .is_ok()
+        );
+        for field in [1, u32::MAX] {
+            let changed = Value::Union {
+                field,
+                value: std::sync::Arc::new(Value::Bool(false)),
+            };
+            assert_eq!(
+                value_for_at(
+                    &changed,
+                    ty,
+                    &hir.items,
+                    &typed.sigs,
+                    0,
+                    &mut ValueChecks::default()
+                )
+                .is_ok(),
+                field == 1
+            );
+        }
+        let wrong = Value::Union {
+            field: 1,
+            value: std::sync::Arc::new(Value::Int {
+                bits: 2,
+                ty: flux_ty::IntTy::U8,
+            }),
+        };
+        assert!(
+            value_for_at(
+                &wrong,
+                ty,
+                &hir.items,
+                &typed.sigs,
+                0,
+                &mut ValueChecks::default()
+            )
+            .is_err()
+        );
+        assert!(
+            value_for_at(
+                &valid,
+                Ty::BOOL,
+                &hir.items,
+                &typed.sigs,
+                0,
+                &mut ValueChecks::default()
+            )
+            .is_err()
         );
     }
 }

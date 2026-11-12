@@ -7,7 +7,7 @@ use super::{Decode, Decoder, Encode, Encoder, Error, IdKind, IdMap};
 use crate::{FileId, ItemTree, SourceDb};
 use flux_arena::LayeredArena;
 
-const MAGIC: &str = "FLUX-BUILTIN-HIR-1";
+const MAGIC: &str = "FLUX-BUILTIN-HIR-2";
 const KINDS: [IdKind; 11] = [
     IdKind::Crate,
     IdKind::Module,
@@ -47,21 +47,31 @@ fn read_arena<T: Decode>(count: usize, d: &mut Decoder<'_>) -> Result<LayeredAre
     Ok(arena)
 }
 fn roles(items: &ItemTree) -> Result<(), Error> {
-    if items.crates.len() != 3
+    if items.crates.len() != 4
         || items
             .crates
             .iter()
             .map(|c| (c.name.as_str(), c.is_core))
             .collect::<Vec<_>>()
-            != [("core", true), ("alloc", true), ("std", false)]
+            != [
+                ("core", true),
+                ("alloc", true),
+                ("std", false),
+                ("proc_macro", false),
+            ]
     {
-        return Err(Error("expected exact core alloc std library suite"));
+        return Err(Error("expected exact compiler library suite"));
     }
     if items.def_map.scopes.len() != items.modules.len() {
         return Err(Error("builtin scope count mismatch"));
     }
     for (index, data) in items.crates.iter().enumerate() {
-        let roots = [FileId::CORE_ROOT, FileId::alloc_root(), FileId::std_root()];
+        let roots = [
+            FileId::CORE_ROOT,
+            FileId::alloc_root(),
+            FileId::std_root(),
+            FileId::proc_macro_root(),
+        ];
         if items
             .modules
             .get(data.root)
@@ -196,7 +206,7 @@ pub fn read_builtin_suite(d: &mut Decoder<'_>) -> Result<(SourceDb, ItemTree), E
     for count in &mut counts {
         *count = d.length()?;
     }
-    if counts[0] != 3 {
+    if counts[0] != 4 {
         return Err(Error("invalid builtin crate count"));
     }
     d.ids = identity(&counts);

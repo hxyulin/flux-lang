@@ -35,6 +35,11 @@ pub(crate) fn impl_associated_values_match(
             .map_or(&[][..], |(_, s)| s);
         if !cx.associated_value_selections(
             ty,
+            block
+                .types
+                .iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, row)| row.as_ref()),
             selections,
             &lifetimes,
             &env,
@@ -153,6 +158,7 @@ impl Cx<'_> {
     pub(super) fn associated_value_selections(
         &mut self,
         ty: Ty,
+        table: Option<&[Region]>,
         selections: &[flux_ty::regions::ProjectionSelection],
         lifetimes: &[Var],
         env: &[ImplRegionGoal],
@@ -162,11 +168,56 @@ impl Cx<'_> {
         if depth > 32 {
             return false;
         }
-        for child in ty.children() {
-            if !self.associated_value_selections(child, selections, lifetimes, env, used, depth + 1)
-            {
+        if let TyKind::FnPtr(signature) = ty.kind()
+            && let Some(recipe) = signature.regions.filter(|r| !r.projections.is_empty())
+        {
+            let Some(table) = table else {
+                return false;
+            };
+            let mut map = |r| match r {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => lifetimes.get(i as usize).copied(),
+                _ => None,
+            };
+            let Some(own) = self.instantiate_sig(ty, table, &mut map, &[], &[]) else {
+                return false;
+            };
+            let bound: Vec<_> = (0..recipe.bound)
+                .map(|i| self.new_universal(format!("'pointer{i}")))
+                .collect();
+            self.close_known();
+            return self
+                .instantiate_pointer_with_env(signature, &own, &bound, env)
+                .is_some();
+        }
+        let (children, mut at): (Vec<_>, usize) = match ty.kind() {
+            TyKind::Adt(adt, args) => (
+                args.to_vec(),
+                self.items.structs[adt.strukt].generics.lifetimes.len(),
+            ),
+            TyKind::Dynamic(object) => (
+                flux_ty::regions::object_region_types(self.items, object).collect(),
+                flux_ty::regions::object_own_slots(self.items, object),
+            ),
+            TyKind::Ref(_, inner) => (vec![inner], 1),
+            TyKind::Array(inner, _) => (vec![inner], 0),
+            _ => (ty.children().collect(), 0),
+        };
+        for child in children {
+            let end = at + flux_ty::regions::slots(self.items, child);
+            let row = table.and_then(|row| row.get(at..end));
+            if !self.associated_value_selections(
+                child,
+                row,
+                selections,
+                lifetimes,
+                env,
+                used,
+                depth + 1,
+            ) {
                 return false;
             }
+            at = end;
         }
         let TyKind::Alias(alias) = ty.kind() else {
             return true;

@@ -192,7 +192,7 @@ pub struct ItemTree {
     /// `macro_use` prelude.
     pub macro_prelude: rustc_hash::FxHashMap<Symbol, MacroId>,
     /// The files read, for `line!`, `column!` and `file!`. Add them with
-    /// [`ItemTree::insert_file`], which keeps `span_index` current.
+    /// `ItemTree::insert_file`, which keeps `span_index` current.
     pub files: rustc_hash::FxHashMap<FileId, Arc<SourceFile>>,
     /// The ranges of the files that have their own, for `source_span`.
     span_index: std::sync::OnceLock<SpanIndex>,
@@ -1642,6 +1642,12 @@ impl ItemTree {
         // Std may define its own inherent primitive APIs and intrinsics,
         // while compiler lang items remain restricted to core/alloc.
         items.add_crate(db, FileId::std_root(), sym::std, false);
+        items.add_crate(
+            db,
+            FileId::proc_macro_root(),
+            Symbol::intern("proc_macro"),
+            false,
+        );
         items.modules.freeze();
         items.functions.freeze();
         items.structs.freeze();
@@ -3011,15 +3017,20 @@ fn lower_dyn(d: ast::DynTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> Typ
             continue;
         } else if bound.use_token().is_some() {
             "`use` bounds in trait objects"
-        } else if bound.for_token().is_some() {
-            "higher-ranked bounds"
         } else {
             let Some(path) = bound.path_type().and_then(|p| p.path()) else {
                 continue;
             };
             if let Some(path) = lower_trait_path(path, diagnostics) {
+                let Some(names) = bound
+                    .for_token()
+                    .map(|_| binder_names(bound.generic_param_list(), diagnostics))
+                    .unwrap_or_else(|| Some(Vec::new()))
+                else {
+                    return TypeRef::Error;
+                };
                 bounds.push(Bound {
-                    bound_lifetimes: Box::default(),
+                    bound_lifetimes: names.into(),
                     path,
                     range: bound_range,
                 });

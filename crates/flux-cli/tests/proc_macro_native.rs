@@ -309,3 +309,23 @@ pub fn answer(_: TokenStream) -> TokenStream {
     assert_eq!(native.stdout, reference.stdout);
     assert_eq!(native.stdout, b"37\n");
 }
+
+#[test]
+fn dependency_globs_import_derives_before_item_collection() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", "[package]\nname='consumer'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nlibrary={path='library'}\n");
+    fixture.write("library/Cargo.toml", "[package]\nname='library'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nmacros={path='../macros'}\n");
+    fixture.write(
+        "library/src/lib.rs",
+        "pub mod items{pub trait Value{fn value()->u32;}pub use macros::Value;}",
+    );
+    fixture.write("macros/src/lib.rs", "use proc_macro::TokenStream;#[proc_macro_derive(Value)]pub fn derive(_:TokenStream)->TokenStream{\"impl library::items::Value for S{fn value()->u32{7}}\".parse().unwrap()}");
+    fixture.write(
+        "src/main.rs",
+        "use library::items::*;#[derive(Value)]struct S;fn main(){println!(\"{}\",S::value());}",
+    );
+    let expected = success(fixture.run(false));
+    let actual = success(fixture.run(true));
+    assert_eq!(actual.stdout, expected.stdout);
+    assert_eq!(actual.stdout, b"7\n");
+}

@@ -3519,7 +3519,9 @@ impl Collector<'_> {
                 .iter()
                 .enumerate()
                 .find(|(i, c)| {
-                    (*i as u32) < krate.0 && c.name == name && (c.is_core || name == sym::std)
+                    (*i as u32) < krate.0
+                        && c.name == name
+                        && (c.is_core || name == sym::std || name.as_str() == "proc_macro")
                 })
                 .map(|(i, _)| CrateId(i as u32))
         });
@@ -3597,7 +3599,10 @@ impl Collector<'_> {
                 .extern_aliases
                 .push((alias, target));
         }
-        if ctx.module == root && e.rename().is_none() && (name == sym::alloc || name == sym::std) {
+        if ctx.module == root
+            && e.rename().is_none()
+            && (name == sym::alloc || name == sym::std || name.as_str() == "proc_macro")
+        {
             self.items.crates[krate.0 as usize].externs.push(name);
         }
         self.items.uses.push(Use {

@@ -44,7 +44,17 @@ fn inherited(x: &dyn Inherited) -> &(dyn Any + Send + Sync) {
 fn inherited_arc(x: Arc<dyn Inherited>) -> Arc<dyn Any + Send + Sync> {
     x
 }
+struct TypeIdHasher { calls:usize }
+impl std::hash::Hasher for TypeIdHasher {
+    fn write(&mut self,_:&[u8]){panic!("TypeId must use write_u64");}
+    fn write_u64(&mut self,_:u64){self.calls+=1;}
+    fn finish(&self)->u64{self.calls as u64}
+}
 fn main() {
+    use std::hash::{Hash,Hasher};
+    let mut hasher=TypeIdHasher{calls:0};
+    TypeId::of::<u32>().hash(&mut hasher);
+    assert_eq!(hasher.finish(),1);
     let a: &dyn Inherited = &41u32;
     assert_eq!(inherited(a).downcast_ref::<u32>(), Some(&41));
     let marker: &dyn Send = a;

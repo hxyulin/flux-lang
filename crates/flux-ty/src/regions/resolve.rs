@@ -99,6 +99,7 @@ fn family_contract(
         &flux_hir::AssocBinding,
         Option<&flux_hir::GenericArgs>,
         crate::Projection,
+        u32,
     )],
     schema: Option<&crate::traits::AssociatedTypeSig>,
     errors: &mut Vec<(TextRange, String)>,
@@ -182,7 +183,7 @@ fn family_contract(
                     outlives.push(Outlives::Region(a, r));
                 }
             }
-            outlives_params(sigs, ty, r, &mut outlives);
+            outlives_params(items, sigs, ty, r, &mut outlives);
         }
     }
     let output_outlives = output_bounds
@@ -190,9 +191,10 @@ fn family_contract(
         .map(|&l| walker.named(l))
         .filter(|r| *r != Region::Erased)
         .collect();
-    let output_traits = output_traits
+    let output_trait_rows = output_traits
         .iter()
         .map(|(written, bound)| {
+            let outer = enter_bound_binder(&mut walker, written);
             let mut lifetimes = Vec::new();
             walker.trait_lifetimes(&written.path, bound.trait_, false, &mut lifetimes);
             let args = written
@@ -209,10 +211,11 @@ fn family_contract(
                     )
                 })
                 .collect();
+            walker.late_names = outer;
             (
                 *bound,
                 TraitRefRegions {
-                    bound: 0,
+                    bound: written.bound_lifetimes.len() as u32,
                     lifetimes: lifetimes.into(),
                     args: rows,
                 },
@@ -221,11 +224,15 @@ fn family_contract(
         .collect();
     let output_projections = output_projections
         .iter()
-        .map(|(written, args, projection)| {
-            (
-                *projection,
-                projection_regions(&mut walker, written, *args, projection),
-            )
+        .map(|(written, args, projection, bound)| {
+            let outer = enter_bound_binder(&mut walker, output_traits[*bound as usize].0);
+            let regions = projection_regions(&mut walker, written, *args, projection);
+            walker.late_names = outer;
+            FamilyProjection {
+                projection: *projection,
+                regions,
+                bound: *bound,
+            }
         })
         .collect();
     walker.selections = Some(Vec::new());
@@ -254,7 +261,7 @@ fn family_contract(
         value: row,
         outlives: outlives.into(),
         output_outlives,
-        output_traits,
+        output_traits: output_trait_rows,
         output_projections,
         bound_selfs,
         bound_traits,
@@ -327,12 +334,13 @@ pub(super) fn ordinary_associated_contract(
         if bindings.len() != implied.len() {
             return None;
         }
+        let index = traits.len() as u32;
         traits.push((bound, target));
         projections.extend(
             bindings
                 .iter()
                 .zip(implied)
-                .map(|(binding, projection)| (binding, args, projection)),
+                .map(|(binding, projection)| (binding, args, projection, index)),
         );
     }
     let contract = family_contract(
@@ -355,7 +363,7 @@ pub(super) fn ordinary_associated_contract(
         (
             contract,
             traits.into_iter().map(|(_, t)| t).collect(),
-            projections.into_iter().map(|(_, _, p)| p).collect(),
+            projections.into_iter().map(|(_, _, p, _)| p).collect(),
         )
     })
 }
@@ -374,8 +382,8 @@ fn resolve_trait_families(
             let resolved:Vec<_>=sigs.traits.get(id).into_iter().flat_map(|t|t.type_bounds.iter()).filter(|(name,_)|*name==family.name).map(|(_,bound)|*bound).collect();
             let output:Vec<_>=family.bounds.iter().zip(resolved).collect();
             let implied:Vec<_>=sigs.traits.get(id).into_iter().flat_map(|t|t.implied.iter()).filter(|p|matches!(p.alias.args.first().map(|t|t.kind()),Some(TyKind::Alias(alias))if alias.trait_==id && alias.name==family.name)).copied().collect();
-            let bindings=family.bounds.iter().flat_map(|b| {let args=b.path.args(b.path.segments.len().saturating_sub(1));args.into_iter().flat_map(move |args|args.bindings.iter().map(move |binding|(binding,Some(args))))});
-            let projections:Vec<_>=bindings.zip(implied).map(|((binding,args),projection)|(binding,args,projection)).collect();
+            let bindings=family.bounds.iter().enumerate().flat_map(|(index,b)| {let args=b.path.args(b.path.segments.len().saturating_sub(1));args.into_iter().flat_map(move |args|args.bindings.iter().map(move |binding|(binding,Some(args),index as u32)))});
+            let projections:Vec<_>=bindings.zip(implied).map(|((binding,args,index),projection)|(binding,args,projection,index)).collect();
             let mut contract = family_contract(items,sigs,data.loc.module,flux_hir::Owner::Trait(id),owner_names,&family.generics,Ty::param(0,kw::SelfUpper),None,None,&family.lifetime_bounds,&output,&projections,schema,&mut list);
             // Generic associated outputs are Sized unless explicitly relaxed.
             if let Some(sized) = sigs.builtins.sized
@@ -474,7 +482,7 @@ fn check_family_equality_outlives(
                     Outlives::Region(a, b) => outlives_known(Outlives::Region(a, b), assumptions),
                     Outlives::Type(ty, b) => {
                         let ty = flux_solve::traits::normalize(items, sigs, &[], ty.subst(&args));
-                        outlives_type_components(sigs, ty)
+                        outlives_type_components(items, sigs, ty)
                             .into_iter()
                             .all(|component| {
                                 outlives_known(Outlives::Type(component, b), assumptions)
@@ -1254,6 +1262,10 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
                 items,
                 sigs,
                 &predicate,
+                &flux_solve::traits::elaborate(
+                    sigs,
+                    sigs.impl_predicates.get(id).map_or(&[][..], |p| p),
+                ),
                 &self_regions,
                 &regions,
                 &outlives,
@@ -2796,6 +2808,7 @@ fn check_trait_wf(
     items: &ItemTree,
     sigs: &Signatures,
     predicate: &crate::Predicate,
+    env: &[crate::Predicate],
     self_regions: &[Region],
     regions: &TraitRefRegions,
     assumptions: &[Outlives<Region>],
@@ -2816,7 +2829,7 @@ fn check_trait_wf(
                 let normalized = flux_solve::traits::normalize(items, sigs, &[], ty);
                 normalized != ty
                     && slots(items, normalized) == 0
-                    && outlives_type_components(sigs, normalized)
+                    && outlives_type_components(items, sigs, normalized)
                         .into_iter()
                         .all(|component| {
                             outlives_known(Outlives::Type(component, region), assumptions)
@@ -2824,7 +2837,28 @@ fn check_trait_wf(
             }
             _ => false,
         };
-        if !outlives_known(requirement, assumptions) && !concrete {
+        // Region-free associated storage can inherit a static guarantee from
+        // its declared output bounds. The owner must be available in this env;
+        // an alias's erased spelling alone does not prove its contract.
+        let declared_static = match requirement {
+            Outlives::Type(ty, _) if slots(items, ty) == 0 => {
+                flux_solve::traits::alias_bounds(sigs, env, ty)
+                    .iter()
+                    .any(|bound| {
+                        sigs.regions
+                            .traits
+                            .get(bound.trait_ref.trait_)
+                            .is_some_and(|contract| {
+                                contract.outlives.iter().any(|requirement| {
+                                    matches!(requirement, Outlives::Type(ty, Region::Static)
+                                if matches!(ty.kind(), TyKind::Param(param) if param.index == 0))
+                                })
+                            })
+                    })
+            }
+            _ => false,
+        };
+        if !outlives_known(requirement, assumptions) && !concrete && !declared_static {
             let message = match requirement {
                 Outlives::Region(..) => "lifetime bound not satisfied",
                 Outlives::Type(..) => "type does not fulfill the required lifetime",
@@ -2871,6 +2905,11 @@ fn check_bound_wf(
                         .unwrap_or(Region::Erased),
                     r => r,
                 };
+                // A bound's placeholder belongs to that quantified
+                // occurrence, never to the enclosing header's assumptions.
+                if matches!(r, Region::Late(_)) {
+                    continue;
+                }
                 assumptions.push(Outlives::Type(predicate.self_ty, r));
             }
         }
@@ -2911,6 +2950,23 @@ fn check_bound_wf(
                     &mut local,
                 );
             }
+            if let Some(declaration) = sigs.regions.traits.get(predicate.trait_ref.trait_) {
+                for bound in &declaration.outlives {
+                    if let Outlives::Type(ty, region) = *bound
+                        && matches!(ty.kind(), TyKind::Param(p) if p.index == 0)
+                    {
+                        let region = match region {
+                            Region::Param(i) => regions
+                                .lifetimes
+                                .get(i as usize)
+                                .copied()
+                                .unwrap_or(Region::Erased),
+                            region => region,
+                        };
+                        local.push(Outlives::Type(predicate.self_ty, region));
+                    }
+                }
+            }
             scoped = local;
             &scoped
         } else {
@@ -2920,6 +2976,7 @@ fn check_bound_wf(
             items,
             sigs,
             predicate,
+            &flux_solve::traits::elaborate(sigs, predicates),
             self_regions,
             regions,
             bound_assumptions,
@@ -3350,7 +3407,7 @@ fn bounds_outlives(
                 out.push(Outlives::Region(a, r));
             }
         }
-        outlives_params(sigs, ty, r, out);
+        outlives_params(items, sigs, ty, r, out);
     }
     errors.append(&mut walker.errors);
 }
@@ -3501,7 +3558,7 @@ fn selected_pointees_wf(
                 if stored_regions(items, output_ty, &output)
                     .into_iter()
                     .any(|r| !outlives_known(Outlives::Region(r, lifetime), bounds))
-                    || outlives_type_components(sigs, output_ty)
+                    || outlives_type_components(items, sigs, output_ty)
                         .into_iter()
                         .any(|t| !outlives_known(Outlives::Type(t, lifetime), bounds))
                 {

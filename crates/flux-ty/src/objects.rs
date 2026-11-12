@@ -116,6 +116,16 @@ pub(crate) fn resolve_dyn(
             auto_traits.push(bound);
         }
     }
+    if resolved
+        .iter()
+        .any(|&(bound, _)| !std::ptr::eq(bound, first) && !bound.bound_lifetimes.is_empty())
+    {
+        return fail(
+            errors,
+            range,
+            "quantified auto-trait bounds are not supported yet".into(),
+        );
+    }
     auto_traits.sort_by_key(|bound| bound.trait_);
     let path = &first.path;
     let last = path.segments.len().saturating_sub(1);
@@ -311,6 +321,7 @@ pub(crate) fn resolve_dyn(
         && !callable_inputs
         && !represented
         && callable.is_none()
+        && first.bound_lifetimes.is_empty()
     {
         return fail(
             errors,
@@ -318,7 +329,8 @@ pub(crate) fn resolve_dyn(
             "references and trait objects in trait objects' arguments are not supported yet".into(),
         );
     }
-    Ty::new(TyKind::Dynamic(DynTy {
+    let mut object = DynTy {
+        quantified: None,
         callable: callable.map(|signature| Ty::new(TyKind::FnPtr(signature))),
         auto_traits: crate::ty::object_auto_traits(&auto_traits),
         trait_: t,
@@ -326,7 +338,49 @@ pub(crate) fn resolve_dyn(
         args: trait_ref.args,
         assoc_names: symbol_list(&names),
         assoc_tys: Ty::list(&tys),
-    }))
+    };
+    if !first.bound_lifetimes.is_empty() && crate::fn_trait_kind(items, t).is_none() {
+        let Some((params, signature)) = quantified_type_ref(items, path, object) else {
+            return fail(
+                errors,
+                range,
+                "quantified object argument regions are not supported yet".into(),
+            );
+        };
+        let description = crate::fn_regions::describe(
+            items,
+            module,
+            &first.bound_lifetimes,
+            &params,
+            &flux_hir::TypeRef::Tuple(Box::default()),
+            signature,
+            errors,
+        );
+        let owners = data.generics.lifetimes.len();
+        let principal = &description.regions.inputs_output[..owners];
+        if !description.regions.projections.is_empty()
+            || principal
+                .iter()
+                .any(|row| !matches!(&**row, [crate::FnRegion::Bound(_)]))
+            || (0..description.regions.bound).any(|index| {
+                !principal
+                    .iter()
+                    .any(|row| **row == [crate::FnRegion::Bound(index)])
+            })
+        {
+            return fail(
+                errors,
+                range,
+                "quantified object binders outside principal lifetimes are not supported yet"
+                    .into(),
+            );
+        }
+        object.quantified = Some(Ty::new(TyKind::FnPtr(crate::FnSigTy {
+            regions: Some(description.regions),
+            ..signature
+        })));
+    }
+    Ty::new(TyKind::Dynamic(object))
 }
 
 /// Whether `ty` contains a trait object.
@@ -337,7 +391,7 @@ fn mentions_object(ty: Ty) -> bool {
 /// Object metadata can be reused when only auto-trait bounds are erased.
 pub fn same_principal(a: Ty, b: Ty) -> bool {
     matches!((a.kind(), b.kind()), (TyKind::Dynamic(x), TyKind::Dynamic(y))
-        if x.trait_ == y.trait_ && x.args == y.args && x.assoc_names == y.assoc_names && x.assoc_tys == y.assoc_tys)
+        if x.trait_ == y.trait_ && x.args == y.args && x.assoc_names == y.assoc_names && x.assoc_tys == y.assoc_tys && x.quantified == y.quantified)
 }
 
 /// Explicit and inherited marker bounds survive an object upcast.
@@ -440,4 +494,47 @@ pub(crate) fn callable_type_ref(
         is_unsafe: false,
         abi: flux_hir::Abi::Rust,
     })
+}
+
+/// A function-region schema with one reference per principal lifetime, then
+/// type and equality arguments as parameters. No region can escape its binder.
+pub(crate) fn quantified_type_ref(
+    items: &ItemTree,
+    path: &flux_hir::Path,
+    object: DynTy,
+) -> Option<(Vec<flux_hir::TypeRef>, crate::FnSigTy)> {
+    use flux_hir::TypeRef;
+    let written = path.args(path.segments.len().checked_sub(1)?)?;
+    let count = items.traits[object.trait_].generics.lifetimes.len();
+    if written.lifetimes.len() != count {
+        return None;
+    }
+    let mut params = Vec::new();
+    let mut types = Vec::new();
+    for &lifetime in &written.lifetimes {
+        params.push(TypeRef::Ref {
+            lifetime: Some(lifetime),
+            amp: lifetime.range,
+            mutable: false,
+            pointee: Box::new(TypeRef::Tuple(Box::default())),
+        });
+        types.push(Ty::new(TyKind::Ref(crate::Mutability::Not, Ty::UNIT)));
+    }
+    for (i, &ty) in object.args.iter().enumerate() {
+        let argument = written.types.get(i).cloned().or_else(|| {
+            (crate::regions::slots(items, ty) == 0 && !ty.has_params())
+                .then_some(TypeRef::Tuple(Box::default()))
+        })?;
+        params.push(argument);
+        types.push(ty);
+    }
+    for (&name, &ty) in object.assoc_names.iter().zip(object.assoc_tys) {
+        let binding = written
+            .bindings
+            .iter()
+            .find(|binding| binding.name == name)?;
+        params.push(binding.ty.clone());
+        types.push(ty);
+    }
+    Some((params, crate::FnSigTy::new(&types, Ty::UNIT, false)))
 }

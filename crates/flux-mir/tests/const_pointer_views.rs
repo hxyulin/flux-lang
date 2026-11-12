@@ -10,6 +10,96 @@ fn const_pointer_reads_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, rustc_accepted, flux_accepted, text) in [
         (
+            "byte_backed_raw_slice",
+            true,
+            true,
+            r#"#[repr(transparent)]struct Raw([u8;2]);const X:&[Raw]=unsafe{std::slice::from_raw_parts(b"abcd".as_ptr() as *const Raw,2)};fn main(){assert_eq!(X[1].0,*b"cd");}"#,
+        ),
+        (
+            "static_reference_reborrow",
+            true,
+            true,
+            r#"struct Data{field:u32}static REF:&Data=&Data{field:7};const X:&Data=&*REF;const Y:&u32=&X.field;fn main(){assert_eq!(*Y,7);}"#,
+        ),
+        (
+            "static_associated_storage",
+            true,
+            true,
+            r#"trait M{type Data;}struct Data{bytes:[u8;2]}struct Marker;impl M for Marker{type Data=Data;}static STORE:<Marker as M>::Data=Data{bytes:*b"ab"};const X:&[u8;2]=&STORE.bytes;fn main(){assert_eq!(X,b"ab");}"#,
+        ),
+        (
+            "union_slice_bytes",
+            true,
+            true,
+            r#"#[repr(C)]#[derive(Copy,Clone)]union Bits{bytes:[u8;4],word:[u8;4]}const X:&[Bits]=unsafe{std::slice::from_raw_parts(b"abcdwxyz".as_ptr() as *const Bits,2)};fn main(){assert_eq!(unsafe{X[1].bytes},*b"wxyz");}"#,
+        ),
+        (
+            "union_slice_any_bits",
+            true,
+            true,
+            r#"#[repr(C)]#[derive(Copy,Clone)]union Bits{bytes:[u8;1],flag:bool}const X:&[Bits]=unsafe{std::slice::from_raw_parts(b"\x02".as_ptr() as *const Bits,1)};fn main(){assert_eq!(unsafe{X[0].bytes},[2]);}"#,
+        ),
+        (
+            "union_slice_bounds",
+            false,
+            false,
+            r#"#[repr(C)]#[derive(Copy,Clone)]union Bits{bytes:[u8;4],word:[u8;4]}const X:&[Bits]=unsafe{std::slice::from_raw_parts(b"abcdef".as_ptr() as *const Bits,2)};fn main(){let _=X;}"#,
+        ),
+        (
+            "transparent_slice_markers",
+            true,
+            true,
+            r#"#[repr(transparent)]struct View<T:?Sized>{marker:std::marker::PhantomData<T>,bytes:[u8]}const X:&View<str>=unsafe{std::mem::transmute::<&[u8],&View<str>>(b"abc")};fn main(){assert_eq!(&X.bytes,b"abc");}"#,
+        ),
+        (
+            "transparent_slice_view",
+            true,
+            true,
+            r#"#[repr(transparent)]struct View([u8]);const X:&View=unsafe{&*(b"abc".as_slice() as *const [u8] as *const View)};fn main(){assert_eq!(&X.0,b"abc");}"#,
+        ),
+        (
+            "reinterpreted_slice_bounds",
+            false,
+            false,
+            r#"#[repr(transparent)]struct Raw([u8;2]);const X:&[Raw]=unsafe{std::slice::from_raw_parts(b"abc".as_ptr() as *const Raw,2)};fn main(){let _=X;}"#,
+        ),
+        (
+            "reinterpreted_slice_bool_validity",
+            false,
+            false,
+            r#"const X:&[bool]=unsafe{std::slice::from_raw_parts(b"ab".as_ptr() as *const bool,2)};fn main(){let _=X;}"#,
+        ),
+        (
+            "shared_mutable_snapshot",
+            true,
+            true,
+            r#"const X:u8={let mut bytes=[0u8;4];bytes[2]=9;unsafe{*bytes.as_ptr().add(2)}};fn main(){assert_eq!(X,9);}"#,
+        ),
+        (
+            "raw_reborrow_of_temp_snapshot",
+            true,
+            false,
+            r#"const X:u8={let mut n=7u8;let r=&n;let p=&raw const **(&r);n=9;unsafe{*p}};fn main(){assert_eq!(X,9);}"#,
+        ),
+        (
+            "raw_reborrow_unchanged_snapshot",
+            true,
+            true,
+            r#"const X:u8={let mut n=7u8;let r=&n;let p=&raw const **(&r);unsafe{*p}};fn main(){assert_eq!(X,7);}"#,
+        ),
+        (
+            "shared_snapshot_after_write",
+            true,
+            false,
+            r#"const X:u8={let mut n=7u8;let p=&n as *const u8;n=9;unsafe{*p}};fn main(){assert_eq!(X,9);}"#,
+        ),
+        (
+            "shared_snapshot_after_raw_write",
+            true,
+            false,
+            r#"const X:u8={let mut n=7u8;let p=&n as *const u8;let q=&raw mut n;unsafe{*q=9;*p}};fn main(){assert_eq!(X,9);}"#,
+        ),
+        (
             "static_nested_subslice",
             true,
             true,
