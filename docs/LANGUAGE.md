@@ -2264,3 +2264,7 @@ PathBuf supports const empty construction, fallible reservation, exact
 reservation, shrink-to, leaking and appending extensions. Mutable Path and
 OsString views preserve Unix bytes. `path::absolute` normalizes separators and
 current-directory components without resolving symlinks or parent components.
+
+`char::UNICODE_VERSION` exposes the same version as `core::char::UNICODE_VERSION`
+and the compiler's Unicode tables. `u8::escape_ascii` returns the existing
+ASCII escape iterator, including double-ended iteration and display.

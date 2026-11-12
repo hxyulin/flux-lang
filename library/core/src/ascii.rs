@@ -34,6 +34,7 @@ impl crate::fmt::Display for EscapeDefault {
 }
 
 impl u8 {
+    pub fn escape_ascii(self) -> EscapeDefault { escape_default(self) }
     /// Whether the byte is ASCII: below 128.
     pub const fn is_ascii(&self) -> bool {
         *self < 128

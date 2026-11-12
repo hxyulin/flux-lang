@@ -1,0 +1,8 @@
+use unicode_segmentation::UnicodeSegmentation;
+fn main(){
+ for text in ["a\u{301}b","hello world","👩‍👩‍👧‍👦!","a\r\nb",""]{
+  let graphemes:Vec<&str>=text.graphemes(true).collect();
+  let words:Vec<&str>=text.unicode_words().collect();
+  println!("{:?} {:?}",graphemes,words);
+ }
+}

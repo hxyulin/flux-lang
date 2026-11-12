@@ -227,3 +227,12 @@ fn camino_default_graph_matches_rustc() {
         include_str!("fixtures/corpus_crates/camino.rs.txt"),
     );
 }
+
+#[test]
+fn unicode_segmentation_default_graph_matches_rustc() {
+    compare_registry(
+        "unicode-segmentation",
+        "1.13.3",
+        include_str!("fixtures/corpus_crates/unicode-segmentation.rs.txt"),
+    );
+}

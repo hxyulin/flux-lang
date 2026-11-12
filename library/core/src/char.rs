@@ -96,6 +96,7 @@ pub const unsafe fn from_u32_unchecked(i: u32) -> char {
 }
 
 impl char {
+    pub const UNICODE_VERSION: (u8, u8, u8) = crate::char_properties::UNICODE_VERSION;
     /// Whether this scalar is a Unicode control character.
     pub const fn is_control(self)->bool {
         let value=self as u32;
