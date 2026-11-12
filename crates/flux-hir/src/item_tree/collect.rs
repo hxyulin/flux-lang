@@ -2896,6 +2896,10 @@ impl Collector<'_> {
             }
         }
         for pending in std::mem::take(&mut self.legacy_calls) {
+            // Callee paths can contain ordinary anonymous const arguments even
+            // when this call does not use a legacy intrinsic. Retain their
+            // source file just as the initial item collection does.
+            let _file = TypesFile::enter(pending.ctx.file);
             let shared = self.db.shared(pending.ctx.file);
             let node = shared.parse.tree().node(pending.node);
             let Some(call) = ast::CallExpr::cast(node) else {

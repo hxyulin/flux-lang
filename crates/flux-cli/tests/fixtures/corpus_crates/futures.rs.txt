@@ -1,0 +1,10 @@
+use futures::executor::{LocalPool,block_on};
+use futures::task::LocalSpawnExt;
+fn main(){
+ let mut pool=LocalPool::new();let spawner=pool.spawner();
+ let sum=std::rc::Rc::new(std::cell::Cell::new(0));let copy=sum.clone();
+ spawner.spawn_local(async move{copy.set(41);}).unwrap();
+ pool.run();assert_eq!(sum.get(),41);
+ let n=block_on(async{futures::future::ready(1).await+41});println!("{} {}",n,sum.get());
+ drop(pool);assert!(spawner.spawn_local(async{}).is_err());
+}

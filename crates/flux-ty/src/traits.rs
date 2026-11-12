@@ -222,14 +222,9 @@ pub fn trait_ref(
         // `Output` of `FnOnce` in `Fn(A) -> B`, `Item` of `Iterator` in
         // `DoubleEndedIterator<Item = A>`.
         if !data.types.iter().any(|ty| ty.name == binding.name)
-            && let Some(sup) = supertrait_with_type(items, t, binding.name)
+            && let Some(sup_ref) = supertrait_with_type(items, trait_ref, self_ty, binding.name)
         {
             let ty = resolve_type(items, module, &binding.ty, scope, binding.ty_range, errors);
-            let sup_ref = TraitRef {
-                trait_: sup,
-                name: items.traits[sup].name,
-                args: Ty::list(&args[..items.traits[sup].generics.len().min(args.len())]),
-            };
             if let Some(alias) = resolve_binding_family(
                 items,
                 module,
@@ -303,44 +298,115 @@ fn resolve_binding_family(
     Some(alias)
 }
 
-/// The supertrait of `t`, through any chain of supertraits, that has an
-/// associated type `name`, if its parameters are `t`'s first ones in
-/// order (or none), so that a binding of `name` in a bound on `t` can
-/// name it with `t`'s arguments.
-pub(super) fn supertrait_with_type(items: &ItemTree, t: TraitId, name: Symbol) -> Option<TraitId> {
-    let mut stack = vec![t];
-    let mut seen = vec![t];
-    while let Some(current) = stack.pop() {
-        let data = &items.traits[current];
+/// Find the declaring supertrait while preserving forwarded parameters and
+/// explicit `Self` arguments. An inherited binding belongs to that complete
+/// trait reference, not a prefix of the child trait's arguments.
+pub(super) fn supertrait_with_type(
+    items: &ItemTree,
+    root: TraitRef,
+    self_ty: Ty,
+    name: Symbol,
+) -> Option<TraitRef> {
+    fn argument(written: &TypeRef, data: &flux_hir::Trait, args: &[Ty], self_ty: Ty) -> Option<Ty> {
+        let TypeRef::Path(path) = written else {
+            return None;
+        };
+        let name = path.as_name()?;
+        if name == kw::SelfUpper {
+            return Some(self_ty);
+        }
+        let index = data.generics.params.iter().position(|p| p.name == name)?;
+        args.get(index).copied()
+    }
+    fn can_declare(items: &ItemTree, root: TraitId, name: Symbol) -> bool {
+        let mut stack = vec![root];
+        let mut seen = Vec::new();
+        while let Some(current) = stack.pop() {
+            if seen.contains(&current) {
+                continue;
+            }
+            seen.push(current);
+            let data = &items.traits[current];
+            if data.types.iter().any(|ty| ty.name == name) {
+                return true;
+            }
+            stack.extend(
+                data.supertraits
+                    .iter()
+                    .filter_map(|bound| items.resolve_trait(data.loc.module, bound).0),
+            );
+        }
+        false
+    }
+    let mut stack = vec![(root, vec![root.trait_])];
+    let mut found = None;
+    let mut budget = 256;
+    while let Some((current, ancestors)) = stack.pop() {
+        if budget == 0 {
+            return None;
+        }
+        budget -= 1;
+        let data = &items.traits[current.trait_];
         for bound in data.supertraits.iter() {
             let (Some(sup), _) = items.resolve_trait(data.loc.module, bound) else {
                 continue;
             };
-            if seen.contains(&sup) {
+            if ancestors.contains(&sup) {
                 continue;
             }
-            seen.push(sup);
             let last = bound.path.segments.len().saturating_sub(1);
-            let forwarded = bound.path.args(last).is_none_or(|args| {
-                args.types.iter().enumerate().all(|(i, ty)| match ty {
-                    flux_hir::TypeRef::Path(p) => {
-                        p.qself.is_none()
-                            && p.segments.len() == 1
-                            && data.generics.params.get(i).map(|g| g.name) == Some(p.segments[0])
-                    }
-                    _ => false,
-                })
-            });
-            if !forwarded {
+            let written = bound.path.args(last);
+            let mut args = Vec::new();
+            let supplied = written.map_or(&[][..], |w| &w.types);
+            let mut valid = supplied.len() <= items.traits[sup].generics.len()
+                && items.traits[sup].generics.lifetimes.is_empty()
+                && bound.bound_lifetimes.is_empty();
+            for ty in supplied {
+                if let Some(ty) = argument(ty, data, current.args, self_ty) {
+                    args.push(ty);
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            for parameter in items.traits[sup].generics.params.iter().skip(args.len()) {
+                // Resolve defaults in the declaring supertrait's scope.
+                let Some(ty) = parameter
+                    .default
+                    .as_ref()
+                    .and_then(|(ty, _)| argument(ty, &items.traits[sup], &args, self_ty))
+                else {
+                    valid = false;
+                    break;
+                };
+                args.push(ty);
+            }
+            if !valid {
+                // An unrepresented edge may compete with an otherwise supported
+                // declaration. Never select the first representable spelling.
+                if can_declare(items, sup, name) {
+                    return None;
+                }
                 continue;
             }
+            let next = TraitRef {
+                trait_: sup,
+                name: items.traits[sup].name,
+                args: Ty::list(&args),
+            };
             if items.traits[sup].types.iter().any(|ty| ty.name == name) {
-                return Some(sup);
+                if found.is_some_and(|previous| previous != next) {
+                    return None;
+                }
+                found = Some(next);
+            } else {
+                let mut ancestors = ancestors.clone();
+                ancestors.push(sup);
+                stack.push((next, ancestors));
             }
-            stack.push(sup);
         }
     }
-    None
+    found
 }
 
 /// The bounds of `generics`, in its list and `where` clause, written in

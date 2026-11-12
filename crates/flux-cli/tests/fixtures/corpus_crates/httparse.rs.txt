@@ -1,0 +1,8 @@
+fn main(){
+ let mut headers=[httparse::EMPTY_HEADER;16];let mut request=httparse::Request::new(&mut headers);
+ let data=b"GET /this/is/a/long/path?with=query HTTP/1.1\r\nHost: example.test\r\nX-Long-Header-Name: a sufficiently long header value to exercise vectors\r\n\r\n";
+ println!("{:?}",request.parse(data).unwrap());
+ println!("{} {} {}",request.method.unwrap(),request.path.unwrap(),request.headers.len());
+ let mut headers=[httparse::EMPTY_HEADER;4];let mut bad=httparse::Request::new(&mut headers);
+ assert!(bad.parse(b"GET / HTTP/1.1\r\nBad Header: x\r\n\r\n").is_err());
+}

@@ -350,3 +350,18 @@ impl TryFrom<isize> for i16 { type Error = TryFromIntError; fn try_from(u: isize
 impl TryFrom<isize> for i32 { type Error = TryFromIntError; fn try_from(u: isize) -> Result<i32, TryFromIntError> { let v = u as i32; if v as isize == u { Ok(v) } else { Err(TryFromIntError(if u < 0 { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow })) } } }
 impl TryFrom<isize> for i64 { type Error = TryFromIntError; fn try_from(u: isize) -> Result<i64, TryFromIntError> { let v = u as i64; if v as isize == u { Ok(v) } else { Err(TryFromIntError(if u < 0 { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow })) } } }
 impl TryFrom<isize> for i128 { type Error = TryFromIntError; fn try_from(u: isize) -> Result<i128, TryFromIntError> { let v = u as i128; if v as isize == u { Ok(v) } else { Err(TryFromIntError(if u < 0 { IntErrorKind::NegOverflow } else { IntErrorKind::PosOverflow })) } } }
+
+// Kept private to the library, as in core: only integer destinations implement
+// the conversion required by the primitive float method.
+pub(crate) trait FloatToInt<Int>: Sized {
+    fn to_int(self) -> Int;
+}
+macro_rules! float_to_int {
+    ($float:ty; $($int:ty),*) => {$(
+        impl FloatToInt<$int> for $float {
+            fn to_int(self) -> $int { self as $int }
+        }
+    )*};
+}
+float_to_int!(f32; u8,u16,u32,u64,u128,usize,i8,i16,i32,i64,i128,isize);
+float_to_int!(f64; u8,u16,u32,u64,u128,usize,i8,i16,i32,i64,i128,isize);

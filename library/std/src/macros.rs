@@ -2,6 +2,12 @@
 
 #[macro_export]
 macro_rules! __is_aarch64_feature_detected {
+    ("neon" $(,)?) => {{
+        #[cfg(target_arch = "aarch64")]
+        { $crate::arch::__aarch64_neon_detected() }
+        #[cfg(not(target_arch = "aarch64"))]
+        { compile_error!("aarch64 feature detection requires an aarch64 target") }
+    }};
     ("crc" $(,)?) => {{
         #[cfg(target_arch = "aarch64")]
         {

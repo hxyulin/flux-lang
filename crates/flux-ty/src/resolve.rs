@@ -1386,15 +1386,9 @@ fn assoc_type_base(
         };
         if !has_type(trait_ref.trait_)
             && path.qself.as_ref().is_some_and(|q| q.associated_bound)
-            && let Some(owner) = traits::supertrait_with_type(items, trait_ref.trait_, name)
+            && let Some(owner) = traits::supertrait_with_type(items, trait_ref, self_ty, name)
         {
-            trait_ref = TraitRef {
-                trait_: owner,
-                name: items.traits[owner].name,
-                args: Ty::list(
-                    &trait_ref.args[..items.traits[owner].generics.len().min(trait_ref.args.len())],
-                ),
-            };
+            trait_ref = owner;
         }
         if !has_type(trait_ref.trait_) {
             errors.push((
@@ -1416,9 +1410,10 @@ fn assoc_type_base(
         {
             return ty;
         }
-        // AliasTy has no trait-region table. Reject these projections until
-        // normalization can preserve their owner and type-argument regions.
-        if !captures_inputs(trait_ref.trait_)
+        // Ordinary projection occurrences retain their input region rows.
+        // Callable projections still use their separate bound-input protocol.
+        if crate::fn_trait_kind(items, trait_ref.trait_).is_some()
+            && !captures_inputs(trait_ref.trait_)
             && trait_ref
                 .args
                 .iter()

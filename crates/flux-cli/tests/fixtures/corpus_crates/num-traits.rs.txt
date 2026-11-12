@@ -1,0 +1,8 @@
+use num_traits::{Num,NumCast,ToPrimitive};
+fn add<T:Num>(a:T,b:T)->T{a+b}
+fn main(){
+ assert_eq!(add(12u32,30),42);assert_eq!(num_integer::gcd(48u32,18),6);
+ let a:Option<i16>=NumCast::from(-32768.5f64);println!("{:?}",a);
+ println!("{:?} {:?} {:?}",255.99f32.to_u8(),256.0f32.to_u8(),f32::NAN.to_i32());
+ println!("{:?} {:?}",1e30f64.to_u128(),(-1e30f64).to_i128());
+}

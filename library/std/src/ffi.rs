@@ -19,7 +19,7 @@ impl OsString {
         // Every Unix byte sequence is valid, and ownership transfers to the box.
         unsafe { Box::from_raw(Box::into_raw(bytes) as *mut OsStr) }
     }
-    pub fn new() -> Self { Self { bytes: Vec::new() } }
+    pub const fn new() -> Self { Self { bytes: Vec::new() } }
     pub fn with_capacity(capacity: usize) -> Self { Self { bytes: Vec::with_capacity(capacity) } }
     pub fn capacity(&self) -> usize { self.bytes.capacity() }
     pub fn clear(&mut self) { self.bytes.clear() }

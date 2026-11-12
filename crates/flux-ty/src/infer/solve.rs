@@ -1945,6 +1945,24 @@ impl Ctx<'_> {
                     }
                     Some(args)
                 }
+                None if self_ty.is_some() => {
+                    let defaults = self
+                        .sigs
+                        .trait_defaults
+                        .get(t)
+                        .map_or(&[][..], |values| values.as_ref());
+                    if defaults.len() == items.traits[t].generics.len()
+                        && defaults.iter().all(Option::is_some)
+                    {
+                        let mut arguments = vec![self_ty.unwrap()];
+                        for default in defaults {
+                            arguments.push(default.unwrap().subst(&arguments));
+                        }
+                        Some(arguments[1..].to_vec())
+                    } else {
+                        None
+                    }
+                }
                 None => None,
             };
             return Some((item, self_ty, trait_args));

@@ -161,3 +161,13 @@ impl<S: Borrow<OsStr>> crate::alloc_crate::slice::Join<&OsStr> for [S] {
         result
     }
 }
+
+impl core::ops::DerefMut for OsString {
+    fn deref_mut(&mut self) -> &mut OsStr {
+        // SAFETY: OsStr is a transparent byte slice with no Unix validity restriction.
+        unsafe { &mut *(self.bytes.as_mut_slice() as *mut [u8] as *mut OsStr) }
+    }
+}
+impl OsString {
+    pub fn as_mut_os_str(&mut self) -> &mut OsStr { self }
+}

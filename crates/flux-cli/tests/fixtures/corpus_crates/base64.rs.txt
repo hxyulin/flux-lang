@@ -1,0 +1,12 @@
+use base64::{Engine,engine::{Simd,general_purpose::{STANDARD,URL_SAFE,GeneralPurposeConfig}}};
+fn main(){
+ let simd=Simd::standard(GeneralPurposeConfig::new());let url=Simd::url_safe(GeneralPurposeConfig::new());
+ let mut checksum=0u64;
+ for length in 0..200usize{
+  let input:Vec<u8>=(0..length).map(|i|(i*97+length)as u8).collect();
+  let encoded=simd.encode(&input);assert_eq!(encoded,STANDARD.encode(&input));assert_eq!(simd.decode(&encoded).unwrap(),input);
+  let encoded_url=url.encode(&input);assert_eq!(encoded_url,URL_SAFE.encode(&input));assert_eq!(url.decode(&encoded_url).unwrap(),input);
+  for byte in encoded.bytes(){checksum=checksum.wrapping_mul(31).wrapping_add(byte as u64);}
+ }
+ assert!(simd.decode("bad~").is_err());println!("{}",checksum);
+}

@@ -1,0 +1,13 @@
+use http::{HeaderMap,HeaderValue,Request};
+fn main(){
+ let mut input=std::collections::HashMap::new();input.insert("x-check".to_string(),"seven".to_string());
+ let mut headers=HeaderMap::<HeaderValue>::try_from(&input).unwrap();
+ headers.entry("x-check").or_insert(HeaderValue::from_static("eight"));
+ assert_eq!(headers["x-check"],"seven");
+ let name="x-other".parse::<http::header::HeaderName>().unwrap();
+ headers.entry(&name).or_insert(HeaderValue::from_static("nine"));
+ let error:http::Error="bad\n".parse::<HeaderValue>().unwrap_err().into();
+ assert!(error.is::<http::header::InvalidHeaderValue>());
+ let request=Request::builder().uri("https://example.com/a?b=c").body(()).unwrap();
+ println!("{} {} {}",headers["x-check"].to_str().unwrap(),headers[&name].to_str().unwrap(),request.uri());
+}

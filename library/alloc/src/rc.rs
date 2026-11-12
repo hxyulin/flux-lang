@@ -8,6 +8,8 @@ use core::ptr::{self, NonNull};
 
 struct Header {
     strong: Cell<usize>,
+    // Includes an implicit weak owner while the payload is alive or dropping.
+    weak: Cell<usize>,
     layout: Layout,
 }
 
@@ -19,6 +21,21 @@ pub struct Rc<T: ?Sized> {
     ptr: NonNull<Header>,
     data: NonNull<T>,
     owner: PhantomData<T>,
+}
+
+/// A single-threaded allocation owner that does not keep the payload alive.
+pub struct Weak<T: ?Sized> {
+    ptr: Option<NonNull<Header>>,
+    data: Option<NonNull<T>>,
+    owner: PhantomData<T>,
+}
+
+fn increment(counter: &Cell<usize>) {
+    let value = counter.get();
+    if value >= isize::MAX as usize {
+        handle_alloc_error(Layout::new::<Header>());
+    }
+    counter.set(value + 1);
 }
 
 impl<T> Rc<T> {
@@ -44,11 +61,11 @@ impl<T> Rc<T> {
         let data = this.data;
         core::mem::forget(this);
         // SAFETY: the only owner was consumed without running Drop. Reading
-        // transfers T before freeing its allocation, so T is not destroyed here.
+        // transfers T before releasing the implicit weak, so T is not destroyed here.
         unsafe {
+            (*header.as_ptr()).strong.set(0);
             let value = ptr::read(data.as_ptr());
-            let layout = (*header.as_ptr()).layout;
-            dealloc(header.as_ptr() as *mut u8, layout);
+            drop(Release { ptr: header });
             Ok(value)
         }
     }
@@ -60,12 +77,27 @@ impl<T: ?Sized> Rc<T> {
         unsafe { (*this.ptr.as_ptr()).strong.get() }
     }
 
+    pub fn weak_count(this: &Rc<T>) -> usize {
+        // SAFETY: the borrowed strong owner retains the implicit weak count.
+        unsafe { (*this.ptr.as_ptr()).weak.get() - 1 }
+    }
+
+    pub fn downgrade(this: &Rc<T>) -> Weak<T> {
+        // SAFETY: this strong handle pins the header and its implicit weak.
+        increment(unsafe { &(*this.ptr.as_ptr()).weak });
+        Weak {
+            ptr: Some(this.ptr),
+            data: Some(this.data),
+            owner: PhantomData,
+        }
+    }
+
     pub fn ptr_eq(this: &Rc<T>, other: &Rc<T>) -> bool {
         this.ptr.as_ptr() == other.ptr.as_ptr()
     }
 
     pub fn get_mut(this: &mut Rc<T>) -> Option<&mut T> {
-        if Rc::strong_count(this) != 1 {
+        if Rc::strong_count(this) != 1 || Rc::weak_count(this) != 0 {
             return None;
         }
         // SAFETY: the only strong owner is exclusively borrowed. There are no
@@ -81,6 +113,20 @@ impl<T: Clone> Rc<T> {
             // panic leaves the original handle and reference count intact.
             let replacement = Rc::new((**this).clone());
             *this = replacement;
+        } else if Rc::weak_count(this) != 0 {
+            let (header, raw) = allocate(Layout::new::<T>());
+            // SAFETY: allocation succeeded before changing this handle. The
+            // sole payload moves into fresh aligned storage; weak owners of the
+            // old header subsequently observe strong == 0.
+            unsafe {
+                let data = raw as *mut T;
+                ptr::write(data, ptr::read(this.data.as_ptr()));
+                let old = this.ptr;
+                (*old.as_ptr()).strong.set(0);
+                this.ptr = header;
+                this.data = NonNull::new_unchecked(data);
+                drop(Release { ptr: old });
+            }
         }
         Rc::get_mut(this).unwrap()
     }
@@ -96,13 +142,7 @@ impl<T: Clone> Rc<T> {
 impl<T: ?Sized> Clone for Rc<T> {
     fn clone(&self) -> Rc<T> {
         // SAFETY: self pins the header; this non-atomic owner cannot cross threads.
-        let count = unsafe { &(*self.ptr.as_ptr()).strong };
-        let strong = count.get();
-        if strong >= isize::MAX as usize {
-            // SAFETY: self keeps the allocation/header layout initialized.
-            handle_alloc_error(unsafe { (*self.ptr.as_ptr()).layout });
-        }
-        count.set(strong + 1);
+        increment(unsafe { &(*self.ptr.as_ptr()).strong });
         Rc {
             ptr: self.ptr,
             data: self.data,
@@ -129,11 +169,17 @@ struct Release {
 }
 impl Drop for Release {
     fn drop(&mut self) {
-        // SAFETY: the final strong owner transfers the allocation to this
-        // guard, which releases it even when the payload destructor unwinds.
+        // SAFETY: this guard owns one weak count, including the implicit
+        // count held across payload destruction. Only the last weak owner
+        // releases storage, even if the payload destructor unwinds.
         unsafe {
-            let layout = (*self.ptr.as_ptr()).layout;
-            dealloc(self.ptr.as_ptr() as *mut u8, layout);
+            let header = self.ptr.as_ref();
+            let weak = header.weak.get();
+            header.weak.set(weak - 1);
+            if weak == 1 {
+                let layout = header.layout;
+                dealloc(self.ptr.as_ptr() as *mut u8, layout);
+            }
         }
     }
 }
@@ -181,6 +227,7 @@ fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
             ptr,
             Header {
                 strong: Cell::new(1),
+                weak: Cell::new(1),
                 layout,
             },
         );
@@ -421,6 +468,84 @@ impl<T: ?Sized + core::error::Error> core::error::Error for Rc<T> {
         core::error::Error::source(&**self)
     }
 }
+
+impl<T> Weak<T> {
+    pub const fn new() -> Weak<T> {
+        Weak {
+            ptr: None,
+            data: None,
+            owner: PhantomData,
+        }
+    }
+}
+impl<T: ?Sized> Weak<T> {
+    pub fn upgrade(&self) -> Option<Rc<T>> {
+        let header = self.ptr?;
+        // SAFETY: this weak owner pins the header. Nonzero strong means T is
+        // initialized; no other thread can change these non-atomic counters.
+        unsafe {
+            if header.as_ref().strong.get() == 0 {
+                return None;
+            }
+            increment(&header.as_ref().strong);
+            Some(Rc {
+                ptr: header,
+                data: self.data.unwrap(),
+                owner: PhantomData,
+            })
+        }
+    }
+    pub fn strong_count(&self) -> usize {
+        match self.ptr {
+            // SAFETY: this weak handle retains the allocation header.
+            Some(header) => unsafe { header.as_ref().strong.get() },
+            None => 0,
+        }
+    }
+    pub fn weak_count(&self) -> usize {
+        if self.strong_count() == 0 {
+            return 0;
+        }
+        // SAFETY: a live strong owner retains the implicit weak counted here.
+        unsafe { self.ptr.unwrap().as_ref().weak.get() - 1 }
+    }
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr
+    }
+}
+impl<T: ?Sized> Clone for Weak<T> {
+    fn clone(&self) -> Self {
+        if let Some(header) = self.ptr {
+            // SAFETY: self keeps this header alive even after T is destroyed.
+            increment(unsafe { &header.as_ref().weak });
+        }
+        Weak {
+            ptr: self.ptr,
+            data: self.data,
+            owner: PhantomData,
+        }
+    }
+}
+impl<T: ?Sized> Drop for Weak<T> {
+    fn drop(&mut self) {
+        if let Some(ptr) = self.ptr {
+            drop(Release { ptr });
+        }
+    }
+}
+impl<T> Default for Weak<T> {
+    fn default() -> Self {
+        Weak::new()
+    }
+}
+impl<T: ?Sized> core::fmt::Debug for Weak<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("(Weak)")
+    }
+}
+impl<T: ?Sized> core::marker::Unpin for Weak<T> {}
+impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::UnwindSafe for Weak<T> {}
+impl<T: ?Sized + core::panic::RefUnwindSafe> core::panic::RefUnwindSafe for Weak<T> {}
 
 #[cfg(test)]
 mod tests {

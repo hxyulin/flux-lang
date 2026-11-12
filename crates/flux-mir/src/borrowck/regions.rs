@@ -2173,7 +2173,8 @@ impl<'a> Cx<'a> {
                     }
                 }
             }
-            let actual_ty = self.normalize(Ty::alias(alias));
+            let actual_ty = self.header_region_free_output(alias, &alias_goal, env)
+                .unwrap_or_else(||self.normalize(Ty::alias(alias)));
             if actual_ty != expected_ty {
                 return Some(false);
             }

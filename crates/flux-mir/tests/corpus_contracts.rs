@@ -42,6 +42,15 @@ fn unsized_callback_place() {
         false,
     );
 }
+
+#[test]
+fn ordinary_const_arguments_during_legacy_collection() {
+    compare(
+        "ordinary_const_arguments_during_legacy_collection",
+        "fn size<const N:usize>()->usize{N} fn call()->usize{size::<{1+2}>()} macro_rules! call{()=>{size::<{2+3}>()}} fn expanded()->usize{call!()}",
+        true,
+    );
+}
 #[test]
 fn comparator_key_forwarding() {
     compare(
@@ -925,5 +934,152 @@ fn require<'a,T:Mark<'a>>(_: &'a T){}
 fn check<'a>(value:&'a Wrap<A,Small>){require(value);}
 "#,
         true,
+    );
+}
+
+#[test]
+fn inherited_binding_for_explicit_self_argument() {
+    compare(
+        "inherited_self_binding",
+        r#"
+trait Checked: Sized+std::ops::Add<Self> {}
+fn add<T:Checked<Output=T>>(a:T,b:T)->T{a+b}
+trait First<A,B>{type Out;}
+trait Second<A,B>:First<B,A>{}
+fn reordered<T:Second<u8,u16,Out=u32>>(x:<T as First<u16,u8>>::Out)->u32{x}
+"#,
+        true,
+    );
+    compare(
+        "inherited_wrong_arguments",
+        r#"
+trait First<A,B>{type Out;}
+trait Second<A,B>:First<B,A>{}
+fn wrong<T:Second<u8,u16,Out=u32>+First<u8,u16,Out=u64>>(x:<T as First<u16,u8>>::Out)->u64{x}
+"#,
+        false,
+    );
+    compare(
+        "float_conversion_noninteger",
+        "fn bad(x:f32)->bool{unsafe{x.to_int_unchecked()}}",
+        false,
+    );
+}
+
+#[test]
+fn quantified_supertrait_region_free_output() {
+    compare(
+        "quantified_supertrait_output",
+        r#"
+trait Ops<R=Self,O=Self>:Sized+std::ops::Add<R,Output=O>{}
+trait RefOps:Sized+for<'a>Ops<&'a Self>{}
+impl<T>RefOps for T where T:for<'a>Ops<&'a T>{}
+"#,
+        true,
+    );
+    compare(
+        "quantified_supertrait_wrong_output",
+        r#"
+trait Ops<R=Self,O=Self>:Sized+std::ops::Add<R,Output=O>{}
+trait RefOps:Sized+for<'a>Ops<&'a Self,u32>{}
+impl<T>RefOps for T where T:for<'a>Ops<&'a T,u64>{}
+"#,
+        false,
+    );
+}
+
+#[test]
+fn qualified_reference_argument_projection() {
+    compare(
+        "qualified_input_projection",
+        r#"
+trait Convert<T>{type Error;}
+fn require<'a,T,E>()where T:Convert<&'a u8>,<T as Convert<&'a u8>>::Error:Into<E>{}
+trait Output<T>{type Value;fn value(x:T)->Self::Value;}
+impl<'a>Output<&'a u8>for(){type Value=&'a u8;fn value(x:&'a u8)->Self::Value{x}}
+fn good<'a>(x:&'a u8)-><()as Output<&'a u8>>::Value{<()as Output<&'a u8>>::value(x)}
+"#,
+        true,
+    );
+    compare(
+        "qualified_input_escape",
+        r#"
+trait Output<T>{type Value;fn value(x:T)->Self::Value;}
+impl<'a>Output<&'a u8>for(){type Value=&'a u8;fn value(x:&'a u8)->Self::Value{x}}
+fn bad<'a>(x:&'a u8)-><()as Output<&'static u8>>::Value{<()as Output<&'a u8>>::value(x)}
+"#,
+        false,
+    );
+}
+#[test]
+fn by_value_self_does_not_add_elision_candidates() {
+    compare(
+        "by_value_self_elision",
+        r#"
+struct S;
+trait Tr{fn get(self,x:&u8)->&u8;}
+impl Tr for &'static S{fn get(self,x:&u8)->&u8{x}}
+"#,
+        true,
+    );
+    compare(
+        "by_value_self_elision_escape",
+        r#"
+struct S;
+trait Tr{fn get(self,x:&u8)->&u8;}
+impl Tr for &'static S{fn get(self,x:&u8)->&u8{x}}
+fn bad(x:&u8)->&'static u8{(&S).get(x)}
+"#,
+        false,
+    );
+}
+
+#[test]
+fn qualified_trait_defaults_are_fixed_by_self() {
+    compare(
+        "qualified_trait_default",
+        r#"
+struct S;
+trait Choice<R=Self>{fn choose(&self,r:&R)->u8;}
+impl Choice for S{fn choose(&self,_:&S)->u8{1}}
+impl Choice<&S> for S{fn choose(&self,_:&&S)->u8{2}}
+fn call(x:&S)->u8{<S as Choice>::choose(x,&x)}
+"#,
+        true,
+    );
+}
+
+#[test]
+fn inherited_binding_rejects_unrepresented_competitors() {
+    for (name, supers) in [
+        ("concrete_after", "Base<Self>+Base<u8>"),
+        ("concrete_before", "Base<u8>+Base<Self>"),
+    ] {
+        compare(
+            name,
+            &format!(
+                "trait Base<T:?Sized>{{type Out;}} trait Child:{supers}{{}} fn test<T:Child<Out=u8>>(){{}}"
+            ),
+            false,
+        );
+    }
+    compare(
+        "inherited_competing_nested",
+        r#"
+trait Base<T:?Sized>{type Out;}
+trait Extra:Base<u8>{}
+trait Child:Base<Self>+Extra{}
+fn test<T:Child<Out=u8>>(){}
+"#,
+        false,
+    );
+    compare(
+        "inherited_lifetime_competitors",
+        r#"
+trait Base<'a>{type Out;}
+trait Child<'a,'b>:Base<'a>+Base<'b>{}
+fn test<'a,'b,T:Child<'a,'b,Out=u8>>(){}
+"#,
+        false,
     );
 }

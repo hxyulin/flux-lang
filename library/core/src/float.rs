@@ -24,6 +24,14 @@ impl f64 {
 macro_rules! float_impl {
     ($t:ty, $u:ty, $sign:expr, $exp:expr, $frac:expr, $max:expr, $minpos:expr, $epsilon:expr) => {
         impl $t {
+            /// Converts a finite float to an integer by truncating toward zero.
+            ///
+            /// # Safety
+            /// The truncated value must be representable by `Int`.
+            pub unsafe fn to_int_unchecked<Int>(self) -> Int
+            where Self: crate::convert::FloatToInt<Int> {
+                <Self as crate::convert::FloatToInt<Int>>::to_int(self)
+            }
             pub const fn classify(self)->crate::num::FpCategory {
                 let bits=self.to_bits();
                 let exponent=bits & $exp;

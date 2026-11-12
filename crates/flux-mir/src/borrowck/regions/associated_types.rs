@@ -59,6 +59,96 @@ pub(crate) fn impl_associated_values_match(
 }
 
 impl Cx<'_> {
+    /// A region-free output may follow from a quantified original header even
+    /// when the projection's selection inputs contain references. Match those
+    /// inputs before using the equality; never install an erased alias globally.
+    pub(super) fn header_region_free_output(
+        &mut self,
+        alias: AliasTy,
+        wanted: &ImplRegionGoal,
+        env: &[ImplRegionGoal],
+    ) -> Option<Ty> {
+        if flux_ty::regions::has_declared_projection_inputs(alias) {
+            return None;
+        }
+        fn type_only(cx: &Cx<'_>, ty: Ty) -> bool {
+            flux_ty::regions::slots(cx.items, ty) == 0
+                && ty.children().all(|child| type_only(cx, child))
+        }
+        for known in env {
+            let declaration = self.sigs.traits.get(known.predicate.trait_ref.trait_)?;
+            let args: Vec<_> = std::iter::once(known.predicate.self_ty)
+                .chain(known.predicate.trait_ref.args.iter().copied())
+                .collect();
+            for projection in &declaration.header_projections {
+                let instantiated = projection.subst(&args);
+                if instantiated.alias != alias {
+                    continue;
+                }
+                let output = self.normalize(instantiated.ty);
+                if !type_only(self, output) {
+                    continue;
+                }
+                let candidate = self.impl_region_goal(
+                    flux_ty::Predicate {
+                        self_ty: projection.alias.args[0],
+                        trait_ref: flux_ty::TraitRef {
+                            trait_: projection.alias.trait_,
+                            name: projection.alias.trait_name,
+                            args: &projection.alias.args[1..],
+                        },
+                    },
+                    &[],
+                    &TraitRefRegions::default(),
+                    &known.lifetimes,
+                    &args,
+                    &known.vars,
+                )?;
+                if candidate.vars.len() != wanted.vars.len()
+                    || candidate.lifetimes.len() != wanted.lifetimes.len()
+                    || candidate
+                        .vars
+                        .iter()
+                        .zip(&wanted.vars)
+                        .any(|(a, b)| a.len() != b.len())
+                {
+                    continue;
+                }
+                let mut bound = FxHashMap::default();
+                let mut equalities = Vec::new();
+                for (a, b) in candidate
+                    .lifetimes
+                    .iter()
+                    .copied()
+                    .zip(wanted.lifetimes.iter().copied())
+                    .chain(
+                        candidate
+                            .vars
+                            .iter()
+                            .zip(&wanted.vars)
+                            .flat_map(|(a, b)| a.iter().copied().zip(b.iter().copied())),
+                    )
+                {
+                    if known.bound.contains(&a) {
+                        if let Some(previous) = bound.insert(a, b) {
+                            equalities.push((previous, b));
+                        }
+                    } else {
+                        equalities.push((a, b));
+                    }
+                }
+                if !self.caller_equalities_fit(&equalities) {
+                    continue;
+                }
+                for (a, b) in equalities {
+                    self.equate(a, b, Category::Boring, TextRange::default());
+                }
+                return Some(output);
+            }
+        }
+        None
+    }
+
     /// Supertrait equalities are consequences of original header assumptions,
     /// not of the trait currently being implemented. Only type-only facts need
     /// no additional syntax-to-region tables here.

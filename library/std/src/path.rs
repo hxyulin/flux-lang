@@ -48,6 +48,7 @@ impl Path {
         unsafe { &*(os as *const OsStr as *const Path) }
     }
     pub fn as_os_str(&self) -> &OsStr { &self.inner }
+    pub fn as_mut_os_str(&mut self) -> &mut OsStr { &mut self.inner }
     pub fn to_str(&self) -> Option<&str> { self.inner.to_str() }
     pub fn to_string_lossy(&self) -> crate::alloc_crate::borrow::Cow<'_, str> { self.inner.to_string_lossy() }
     pub fn to_path_buf(&self) -> PathBuf { PathBuf { inner: self.inner.to_os_string() } }
@@ -135,6 +136,9 @@ impl Path {
         let mut result = PathBuf { inner: OsString { bytes: bytes[..end].to_vec() } };
         result.set_extension(extension);
         result
+    }
+    pub fn with_added_extension<S:AsRef<OsStr>>(&self,extension:S)->PathBuf {
+        let mut path=self.to_path_buf();path.add_extension(extension);path
     }
     pub fn strip_prefix<P: AsRef<Path>>(&self, base: P) -> Result<&Path, StripPrefixError> {
         let bytes = self.inner.as_encoded_bytes();
@@ -250,7 +254,7 @@ impl PathBuf {
         unsafe { Box::from_raw(Box::into_raw(os) as *mut Path) }
     }
 
-    pub fn new() -> Self { Self::default() }
+    pub const fn new() -> Self { Self { inner:OsString::new() } }
     pub fn as_path(&self) -> &Path { Path::new(&self.inner) }
     pub fn into_os_string(self) -> OsString { self.inner }
     /// Changes the final filename's extension, returning false without a filename.
@@ -278,6 +282,31 @@ impl PathBuf {
         self.inner.bytes.truncate(name_start + stem_len);
         if !extension.is_empty() { self.inner.bytes.push(b'.'); self.inner.bytes.extend_from_slice(extension); }
         true
+    }
+    /// Appends an extension without replacing any existing extension.
+    pub fn add_extension<S: AsRef<OsStr>>(&mut self, extension: S) -> bool {
+        let extension = extension.as_ref().as_encoded_bytes();
+        assert!(!extension.contains(&b'/'), "extension cannot contain path separators");
+        if self.file_name().is_none() { return false; }
+        if !extension.is_empty() {
+            let mut position=0;
+            let mut end=0;
+            while let Some((_,_,next))=component(self.inner.as_encoded_bytes(),&mut position) {end=next;}
+            self.inner.bytes.truncate(end);
+            self.inner.bytes.push(b'.');
+            self.inner.bytes.extend_from_slice(extension);
+        }
+        true
+    }
+    pub fn reserve_exact(&mut self, additional:usize) {self.inner.bytes.reserve_exact(additional)}
+    pub fn try_reserve(&mut self, additional:usize)->Result<(),crate::alloc_crate::collections::TryReserveError>{self.inner.bytes.try_reserve(additional)}
+    pub fn try_reserve_exact(&mut self, additional:usize)->Result<(),crate::alloc_crate::collections::TryReserveError>{self.inner.bytes.try_reserve_exact(additional)}
+    pub fn shrink_to(&mut self,min_capacity:usize){self.inner.bytes.shrink_to(min_capacity)}
+    pub fn leak<'a>(self)->&'a mut Path {
+        let bytes=self.inner.bytes.leak();
+        // SAFETY: transparent Path/OsStr store unrestricted Unix bytes. The
+        // leaked allocation outlives the requested borrow, including its metadata.
+        unsafe{&mut *(bytes as *mut [u8] as *mut Path)}
     }
     pub fn with_capacity(capacity: usize) -> PathBuf { PathBuf { inner: OsString::with_capacity(capacity) } }
     pub fn capacity(&self) -> usize { self.inner.capacity() }
@@ -507,7 +536,7 @@ impl Eq for Components<'_> {}
 impl PartialOrd for Components<'_> { fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) } }
 impl Ord for Components<'_> { fn cmp(&self, other: &Self) -> Ordering { self.clone().cmp(other.clone()) } }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct Ancestors<'a> { next: Option<&'a Path> }
 impl<'a> Iterator for Ancestors<'a> {
     type Item = &'a Path;
@@ -574,3 +603,30 @@ impl From<PathBuf> for Rc<Path> {
 impl AsRef<Path> for Cow<'_, OsStr> { fn as_ref(&self) -> &Path { Path::new(self) } }
 impl PartialEq<OsStr> for Path { fn eq(&self, other: &OsStr) -> bool { self == Path::new(other) } }
 impl PartialEq<Path> for OsStr { fn eq(&self, other: &Path) -> bool { Path::new(self) == other } }
+
+impl core::ops::DerefMut for PathBuf {
+    fn deref_mut(&mut self)->&mut Path {
+        let os=self.inner.as_mut_os_str();
+        // SAFETY: transparent Path and OsStr have the same byte storage.
+        unsafe{&mut *(os as *mut OsStr as *mut Path)}
+    }
+}
+impl PartialEq<&Path> for Path {fn eq(&self,other:&&Path)->bool{self==*other}}
+impl PartialEq<Path> for &Path {fn eq(&self,other:&Path)->bool{*self==other}}
+impl<'a> PartialEq<Cow<'a,Path>> for Path {fn eq(&self,other:&Cow<'a,Path>)->bool{self==other.as_ref()}}
+impl<'a> PartialEq<Path> for Cow<'a,Path> {fn eq(&self,other:&Path)->bool{self.as_ref()==other}}
+
+/// Makes a Unix path absolute without resolving symlinks or parent components.
+pub fn absolute<P:AsRef<Path>>(path:P)->crate::io::Result<PathBuf>{
+    let path=path.as_ref();
+    let bytes=path.as_os_str().as_encoded_bytes();
+    if bytes.is_empty(){return Err(crate::io::Error::new(crate::io::ErrorKind::InvalidInput,"cannot make an empty path absolute"));}
+    let mut parts=path.strip_prefix(".").unwrap_or(path).components();
+    let mut result=if path.is_absolute(){
+        if bytes.starts_with(b"//")&&!bytes.starts_with(b"///"){parts.next();PathBuf::from("//")}
+        else {PathBuf::new()}
+    }else{crate::env::current_dir()?};
+    result.extend(parts);
+    if bytes.ends_with(b"/"){result.push("");}
+    Ok(result)
+}

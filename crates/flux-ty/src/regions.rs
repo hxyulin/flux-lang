@@ -725,6 +725,9 @@ impl<'a> Walker<'a> {
         let args = path.args(last);
         match resolved {
             Resolved::SelfType => {
+                if self.elision_only {
+                    return;
+                }
                 if let Some(regions) = self.self_regions {
                     out.extend_from_slice(regions);
                 }

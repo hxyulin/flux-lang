@@ -294,3 +294,42 @@ fn compare_native(case: &str) {
         assert_eq!(actual.stderr, expected.stderr);
     }
 }
+
+#[test]
+fn weak_owners_survive_payload_destruction() {
+    use rc::{Rc, Weak};
+    use std::cell::Cell;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let drops = Cell::new(0);
+    struct Value<'a>(&'a Cell<u32>);
+    impl Drop for Value<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    let owner = Rc::new(Value(&drops));
+    let weak = Rc::downgrade(&owner);
+    let other = weak.clone();
+    assert_eq!(Rc::weak_count(&owner), 2);
+    assert_eq!(weak.strong_count(), 1);
+    drop(weak.upgrade().unwrap());
+    drop(owner);
+    assert_eq!(drops.get(), 1);
+    assert!(weak.upgrade().is_none());
+    assert_eq!(weak.weak_count(), 0);
+    drop(weak);
+    drop(other);
+    let empty = Weak::<u32>::new();
+    assert!(empty.upgrade().is_none());
+    assert!(empty.ptr_eq(&empty.clone()));
+    struct Bomb;
+    impl Drop for Bomb {
+        fn drop(&mut self) {
+            panic!("payload drop");
+        }
+    }
+    let owner = Rc::new(Bomb);
+    let weak = Rc::downgrade(&owner);
+    assert!(catch_unwind(AssertUnwindSafe(|| drop(owner))).is_err());
+    assert!(weak.upgrade().is_none());
+}

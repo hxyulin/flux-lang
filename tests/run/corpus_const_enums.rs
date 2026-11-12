@@ -54,7 +54,10 @@ static STATIC_DATA:<M as Marker>::Data=Data{field:41};
 const STATIC_FIELD:&u32=&STATIC_DATA.field;
 static STATIC_REF:&Data=&Data{field:43};
 const STATIC_REBORROW:&Data=&*STATIC_REF;
+fn size<const N:usize>()->usize{N}
+macro_rules! sized_call {()=>{size::<{2+3}>()}}
 fn main() {
+    println!("{} {}",size::<{1+2}>(),sized_call!());
     println!("{}",STATIC_REBORROW.field);
     println!("{}",STATIC_FIELD);
     println!("{:?}", unsafe{UNION_BYTES[1].bytes});

@@ -1768,7 +1768,7 @@ Additional floating-point, signed and polynomial vector types and byte-vector
 tuple aggregates provide Copy/Clone storage with Rust sizes and alignments.
 These storage types do not add vector operations or vector C ABI support.
 
-`std::arch::is_aarch64_feature_detected!` accepts `"crc"`, `"dit"` and `"sb"`,
+`std::arch::is_aarch64_feature_detected!` accepts `"neon"`, `"crc"`, `"dit"` and `"sb"`,
 querying the runtime CPU through macOS sysctl or Linux HWCAP. Imported aliases and explicit std in no_std crates
 work. Other feature names remain explicitly unsupported. The macro is not
 available directly under the std root, matching Rust's namespace.
@@ -1949,7 +1949,9 @@ Unix bytes in an owned OsString. NUL or `=` in keys reports NotPresent.
 Unsafe `env::set_var` and `remove_var` use Unix `setenv` and `unsetenv`.
 Callers must exclude concurrent environment access, as their safety contracts require. Sized `Rc<T>` supports shared
 ownership, clone-on-write and unique extraction, and remains neither Send nor
-Sync. Atomics and
+Sync. `Rc::downgrade` and `rc::Weak` keep allocation storage alive independently
+of the payload. `make_mut` detaches outstanding weak handles without cloning a
+solely owned payload. Weak unsizing and cyclic construction remain unsupported. Atomics and
 synchronization follow the bounded APIs described above.
 
 ## Deliberately rejected
@@ -2169,9 +2171,10 @@ provides allocation/deallocation contracts and default zeroing/reallocation.
 A failed default reallocation preserves the old block. This does not add
 custom global allocator registration.
 
-The bounded AArch64 NEON API includes word/byte shifts and extraction, word
-OR/XOR, halfword reversal within words, and integer reinterpretations used by
-aho-corasick and chacha20. Immediate ranges are checked on collected instances,
+The bounded AArch64 NEON API includes word/halfword/byte shifts and extraction,
+byte arithmetic, saturation, comparison and selection masks, byte maximum
+reduction, word/halfword bitwise operations, reversal and reinterpretations used
+by aho-corasick, chacha20, base64 and httparse. Immediate ranges are checked on collected instances,
 including reified function pointers. Scalar implementations preserve lane
 results and do not establish hardware acceleration.
 
@@ -2250,3 +2253,14 @@ valid. Evaluating arbitrary union values by value remains unsupported.
 Free functions may receive explicit lifetime arguments when every named lifetime
 has an explicit outlives bound and the signature introduces no additional elided
 lifetimes. Other explicit function lifetime forms retain an unsupported diagnostic.
+
+The 2026-11-12 corpus follow-up adds primitive float `to_int_unchecked` for
+integer destinations, inherited associated bindings with explicit Self and
+forwarded generic arguments, and occurrence-matched quantified header equalities
+with region-free output types. Ordinary qualified projections retain lifetime
+rows from reference type arguments. `dyn Error` provides type tests and borrowed
+downcasts using an unforgeable library type identity method.
+PathBuf supports const empty construction, fallible reservation, exact
+reservation, shrink-to, leaking and appending extensions. Mutable Path and
+OsString views preserve Unix bytes. `path::absolute` normalizes separators and
+current-directory components without resolving symlinks or parent components.

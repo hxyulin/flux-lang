@@ -17,6 +17,46 @@ fn immediate_boundaries_match_rustc() {
     std::fs::create_dir_all(&directory).unwrap();
     for (name, body, expected) in [
         (
+            "half_left_min",
+            "let _=vshlq_n_u16::<0>(core::mem::transmute([1u16;8]));",
+            true,
+        ),
+        (
+            "half_left_max",
+            "let _=vshlq_n_u16::<15>(core::mem::transmute([1u16;8]));",
+            true,
+        ),
+        (
+            "half_left_invalid",
+            "let f:unsafe fn(uint16x8_t)->uint16x8_t=vshlq_n_u16::<16>;let _=f(core::mem::transmute([1u16;8]));",
+            false,
+        ),
+        (
+            "half_right_full",
+            "let _=vshrq_n_u16::<16>(core::mem::transmute([1u16;8]));",
+            true,
+        ),
+        (
+            "half_right_zero",
+            "let _=vshrq_n_u16::<0>(core::mem::transmute([1u16;8]));",
+            false,
+        ),
+        (
+            "half_right_invalid",
+            "let _=vshrq_n_u16::<17>(core::mem::transmute([1u16;8]));",
+            false,
+        ),
+        (
+            "word_lane_last",
+            "let _=vgetq_lane_u32::<3>(core::mem::transmute([1u32;4]));",
+            true,
+        ),
+        (
+            "word_lane_invalid",
+            "let f:unsafe fn(uint32x4_t)->u32=vgetq_lane_u32::<4>;let _=f(core::mem::transmute([1u32;4]));",
+            false,
+        ),
+        (
             "vshlq_n_u32_min",
             "let _=vshlq_n_u32::<0>(core::mem::transmute([1u32;4]));",
             true,

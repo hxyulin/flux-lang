@@ -46,5 +46,26 @@ fn main() {
     Rc::make_mut(&mut sequence).push(7);
     assert_eq!(original.as_slice(), &[3, 5]);
     assert_eq!(sequence.as_slice(), &[3, 5, 7]);
+    let mut value=Rc::new(Value{n:23,clones:&clones,drops:&drops});
+    let weak=Rc::downgrade(&value);
+    assert_eq!(weak.weak_count(),1);
+    assert!(Rc::get_mut(&mut value).is_none());
+    let before=clones.get();
+    Rc::make_mut(&mut value).n+=1;
+    assert_eq!(clones.get(),before);
+    assert!(weak.upgrade().is_none());
+    let survivor=Rc::downgrade(&value);
+    let moved=Rc::try_unwrap(value).ok().unwrap();
+    assert_eq!(moved.n,24);
+    assert!(survivor.upgrade().is_none());
+    drop(moved);
+    let slice:Rc<[u8]>=Rc::from(vec![1,2,3]);
+    let weak_slice=Rc::downgrade(&slice);
+    assert_eq!(&*weak_slice.upgrade().unwrap(),&[1,2,3]);
+    drop(slice);
+    assert!(weak_slice.upgrade().is_none());
+    let empty=std::rc::Weak::<u8>::new();
+    assert!(empty.ptr_eq(&empty.clone()));
+    assert!(empty.upgrade().is_none());
     println!("rc clones {} drops {}", clones.get(), drops.get());
 }

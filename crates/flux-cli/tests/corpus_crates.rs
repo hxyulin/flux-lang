@@ -176,3 +176,54 @@ fn tracing_subscriber_default_graph_matches_rustc() {
         &[("tracing", "0.1.44")],
     );
 }
+
+#[test]
+fn num_traits_default_graph_matches_rustc() {
+    compare_registry_dependencies(
+        "num-traits",
+        "0.2.19",
+        include_str!("fixtures/corpus_crates/num-traits.rs.txt"),
+        &[("num-integer", "0.1.47")],
+    );
+}
+#[test]
+fn http_default_graph_matches_rustc() {
+    compare_registry(
+        "http",
+        "1.5.0",
+        include_str!("fixtures/corpus_crates/http.rs.txt"),
+    );
+}
+#[test]
+fn futures_default_graph_matches_rustc() {
+    compare_registry(
+        "futures",
+        "0.3.34",
+        include_str!("fixtures/corpus_crates/futures.rs.txt"),
+    );
+}
+#[test]
+fn base64_default_graph_matches_rustc() {
+    compare_registry(
+        "base64",
+        "0.23.1",
+        include_str!("fixtures/corpus_crates/base64.rs.txt"),
+    );
+}
+#[test]
+fn httparse_default_graph_matches_rustc() {
+    compare_registry(
+        "httparse",
+        "1.10.1",
+        include_str!("fixtures/corpus_crates/httparse.rs.txt"),
+    );
+}
+
+#[test]
+fn camino_default_graph_matches_rustc() {
+    compare_registry(
+        "camino",
+        "1.2.6",
+        include_str!("fixtures/corpus_crates/camino.rs.txt"),
+    );
+}

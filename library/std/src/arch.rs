@@ -4,6 +4,17 @@ pub use crate::__is_aarch64_feature_detected as is_aarch64_feature_detected;
 pub use core::arch::*;
 
 #[doc(hidden)]
+pub fn __aarch64_neon_detected()->bool{
+    if cfg!(target_feature="neon"){return true;}
+    #[cfg(target_os="macos")]
+    {query(b"hw.optional.AdvSIMD\0")||query(b"hw.optional.arm.AdvSIMD\0")}
+    #[cfg(target_os="linux")]
+    {aarch64_hwcap(1<<1)}
+    #[cfg(not(any(target_os="macos",target_os="linux")))]
+    {false}
+}
+
+#[doc(hidden)]
 pub fn __crc_detected() -> bool {
     if cfg!(target_feature = "crc") {
         return true;

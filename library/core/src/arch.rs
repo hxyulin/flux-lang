@@ -702,6 +702,7 @@ pub mod aarch64 {
     reinterpret128!(vreinterpretq_u64_u32, uint32x4_t, uint64x2_t);
     reinterpret128!(vreinterpretq_u8_u32, uint32x4_t, uint8x16_t);
     reinterpret128!(vreinterpretq_u32_u16, uint16x8_t, uint32x4_t);
+    reinterpret128!(vreinterpretq_u8_u16, uint16x8_t, uint8x16_t);
     reinterpret128!(vreinterpretq_u16_u32, uint32x4_t, uint16x8_t);
 
     /// Reverses halfword lanes within each word.
@@ -759,6 +760,78 @@ pub mod aarch64 {
         let mut i = 0;
         if N != 8 { while i < 16 { lanes[i] = a.0[i] >> N; i += 1; } }
         uint8x16_t(lanes)
+    }
+
+    /// Shifts halfword lanes left; N must be in 0..=15.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshlq_n_u16<const N:i32>(a:uint16x8_t)->uint16x8_t {
+        let mut lanes=a.0;let mut i=0;
+        while i<8{lanes[i]=lanes[i].wrapping_shl(N as u32);i+=1;}
+        uint16x8_t(lanes)
+    }
+    /// Shifts halfword lanes right; N must be in 1..=16.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshrq_n_u16<const N:i32>(a:uint16x8_t)->uint16x8_t {
+        let mut lanes=[0;8];let mut i=0;
+        if N!=16{while i<8{lanes[i]=a.0[i]>>N;i+=1;}}
+        uint16x8_t(lanes)
+    }
+    /// Takes the bitwise union of halfword lanes.
+    #[target_feature(enable = "neon")]
+    pub fn vorrq_u16(a:uint16x8_t,b:uint16x8_t)->uint16x8_t{
+        let mut lanes=a.0;let mut i=0;
+        while i<8{lanes[i]|=b.0[i];i+=1;}
+        uint16x8_t(lanes)
+    }
+    /// Extracts a word lane. The compiler checks the immediate index.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vgetq_lane_u32<const N:i32>(a:uint32x4_t)->u32{a.0[N as usize]}
+
+    macro_rules! byte_binary {
+        ($name:ident,$left:ident,$right:ident,$value:expr)=>{
+            #[target_feature(enable = "neon")]
+            pub fn $name(a:uint8x16_t,b:uint8x16_t)->uint8x16_t{
+                let mut lanes=[0;16];let mut i=0;
+                while i<16{let $left=a.0[i];let $right=b.0[i];lanes[i]=$value;i+=1;}
+                uint8x16_t(lanes)
+            }
+        };
+    }
+    byte_binary!(vaddq_u8,a,b,a.wrapping_add(b));
+    byte_binary!(vsubq_u8,a,b,a.wrapping_sub(b));
+    byte_binary!(vqsubq_u8,a,b,a.saturating_sub(b));
+    byte_binary!(vbicq_u8,a,b,a & !b);
+    byte_binary!(vcleq_u8,a,b,if a<=b{255}else{0});
+    /// Compares signed bytes, producing an all-ones or all-zeroes mask.
+    #[target_feature(enable = "neon")]
+    pub fn vcgtq_s8(a:int8x16_t,b:int8x16_t)->uint8x16_t{
+        let mut lanes=[0;16];let mut i=0;
+        while i<16{lanes[i]=if a.0[i]>b.0[i]{255}else{0};i+=1;}
+        uint8x16_t(lanes)
+    }
+    /// Complements every vector bit.
+    #[target_feature(enable = "neon")]
+    pub fn vmvnq_u8(a:uint8x16_t)->uint8x16_t{
+        let mut lanes=a.0;let mut i=0;
+        while i<16{lanes[i]=!lanes[i];i+=1;}
+        uint8x16_t(lanes)
+    }
+    /// Selects each bit from a when mask is one, and from b otherwise.
+    #[target_feature(enable = "neon")]
+    pub fn vbslq_u8(mask:uint8x16_t,a:uint8x16_t,b:uint8x16_t)->uint8x16_t{
+        let mut lanes=[0;16];let mut i=0;
+        while i<16{lanes[i]=(mask.0[i]&a.0[i])|(!mask.0[i]&b.0[i]);i+=1;}
+        uint8x16_t(lanes)
+    }
+    /// Returns the largest unsigned byte lane.
+    #[target_feature(enable = "neon")]
+    pub fn vmaxvq_u8(a:uint8x16_t)->u8{
+        let mut maximum=0;let mut i=0;
+        while i<16{maximum=maximum.max(a.0[i]);i+=1;}
+        maximum
     }
 
     /// Extracts sixteen bytes starting at N in the concatenated vectors.

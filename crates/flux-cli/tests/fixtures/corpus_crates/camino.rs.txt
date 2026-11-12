@@ -1,0 +1,12 @@
+use camino::{Utf8Path,Utf8PathBuf};
+const EMPTY:Utf8PathBuf=Utf8PathBuf::new();
+fn main(){
+ assert!(EMPTY.as_str().is_empty());
+ let mut p=Utf8PathBuf::from("one/two.tar");assert!(p.add_extension("gz"));assert_eq!(p,"one/two.tar.gz");
+ let borrowed=Utf8Path::new("one/two.tar.gz");assert_eq!(p,borrowed);
+ assert_eq!(borrowed.as_std_path(),std::path::Path::new("one/two.tar.gz"));
+ let owned:std::borrow::Cow<'_,Utf8Path>=std::borrow::Cow::Owned(p.clone());assert_eq!(borrowed,owned);
+ let ancestors=p.ancestors();let copy=ancestors;println!("{} {}",ancestors.count(),copy.count());
+ p.reserve_exact(40);p.try_reserve(2).unwrap();p.try_reserve_exact(2).unwrap();p.shrink_to(2);
+ let leaked=p.leak();println!("{}",leaked.as_str());
+}
