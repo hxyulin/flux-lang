@@ -616,6 +616,7 @@ impl Ctx<'_> {
         // decide what it is.
         if let TyKind::Infer(var) = self.shallow(alias.args[0]).kind()
             && !self.unknown(var).0
+            && !self.float_var(var)
         {
             return None;
         }
@@ -675,6 +676,7 @@ impl Ctx<'_> {
         let self_ty = self.shallow(alias.args[0]);
         if let TyKind::Infer(var) = self_ty.kind()
             && !self.unknown(var).0
+            && !self.float_var(var)
         {
             return None;
         }
@@ -1235,6 +1237,7 @@ impl Ctx<'_> {
         }
         if let TyKind::Infer(var) = self_ty.kind()
             && !self.unknown(var).0
+            && !self.float_var(var)
         {
             return Selection::Ambiguous;
         }
@@ -1625,7 +1628,9 @@ impl Ctx<'_> {
         #[cfg(test)]
         tests::step();
         let ty = self.shallow(ty);
-        if ty == Ty::ERROR || matches!(ty.kind(), TyKind::Infer(v) if !self.unknown(v).0) {
+        if ty == Ty::ERROR
+            || matches!(ty.kind(), TyKind::Infer(v) if !self.unknown(v).0 && !self.float_var(v))
+        {
             return true;
         }
         if flux_solve::traits::is_auto_trait(self.items, t) && matches!(ty.kind(), TyKind::Infer(_))
@@ -1880,6 +1885,7 @@ impl Ctx<'_> {
         if methods
             && let TyKind::Infer(var) = ty.kind()
             && !self.unknown(var).0
+            && !self.float_var(var)
         {
             return found;
         }

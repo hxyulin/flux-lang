@@ -1,0 +1,15 @@
+use time::{Date,Month,SignedDuration,Time,Timestamp,UtcOffset};
+const CLOCK:Time=match Time::from_hms_nano(23,59,58,123_456_789){Ok(v)=>v,Err(_)=>panic!("clock")};
+const OFFSET:UtcOffset=match UtcOffset::from_hms(-5,-30,-45){Ok(v)=>v,Err(_)=>panic!("offset")};
+fn main(){
+ assert_eq!(CLOCK.to_string(),"23:59:58.123456789");
+ assert_eq!(OFFSET.to_string(),"-05:30:45");
+ let leap=Date::from_calendar_date(2024,Month::February,29).unwrap();
+ assert_eq!((leap+SignedDuration::days(1)).to_string(),"2024-03-01");
+ let before=Timestamp::new(-1,999_999_999).unwrap();
+ assert!(before<Timestamp::UNIX_EPOCH);assert!(Timestamp::MIN<before);assert!(Timestamp::MAX>Timestamp::UNIX_EPOCH);
+ assert_eq!(Timestamp::new(0,0).unwrap(),Timestamp::UNIX_EPOCH);
+ let zero=SignedDuration::seconds(0);let duration=SignedDuration::new(1,250_000_000);
+ assert_eq!(format!("{zero:.2}"),"0.00s");assert_eq!(format!("{duration:.2}"),"1.25s");
+ println!("{} {} {} {:.2}",CLOCK,OFFSET,leap,duration);
+}

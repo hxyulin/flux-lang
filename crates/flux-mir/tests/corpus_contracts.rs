@@ -1190,3 +1190,67 @@ fn const_pointer_copy_validity() {
         compare(name, source, accepted);
     }
 }
+
+#[test]
+fn float_receiver_trait_lookup() {
+    compare(
+        "float_display_receiver",
+        "use std::fmt::{self,Display}; struct Zero;impl Display for Zero{fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result{(0.).fmt(f)}}",
+        true,
+    );
+    compare(
+        "float_receiver_unique_impl",
+        "trait Value{fn value(self)->f32;}impl Value for f32{fn value(self)->f32{self}}fn call()->f32{(1.).value()}",
+        true,
+    );
+    compare(
+        "float_receiver_later_constraint",
+        "trait Value{fn value(self);}impl Value for f32{fn value(self){}}impl Value for f64{fn value(self){}}fn call(){let n=1.;n.value();let _:f32=n;}",
+        true,
+    );
+    compare(
+        "float_receiver_wrong_impl",
+        "trait Value{fn value(self);}impl Value for bool{fn value(self){}}fn call(){(1.).value();}",
+        false,
+    );
+    compare(
+        "unknown_receiver_stays_unknown",
+        "fn call(){let n; n.to_string();}",
+        false,
+    );
+}
+
+#[test]
+fn const_generic_layout_dependencies_retry() {
+    compare(
+        "const_generic_transmute_dependency",
+        r#"
+#[derive(Clone,Copy)]struct R<const N:u8>(u8);
+const fn bound()->u8{23}
+type Hours=R<{bound()}>;
+#[repr(C)]#[derive(Clone,Copy)]struct Time{hour:Hours,pad:[u8;7]}
+impl Time{const MIN:Self=Self{hour:R(0),pad:[0;7]};const fn bits(self)->u8{unsafe{std::mem::transmute::<Self,u64>(self) as u8}}}
+type Seconds=R<{Time::MIN.bits()}>;
+struct Timestamp{seconds:Seconds}
+fn test()->u8{Timestamp{seconds:R(7)}.seconds.0}
+"#,
+        true,
+    );
+}
+
+#[test]
+fn const_generic_retry_keeps_layout_errors() {
+    compare(
+        "const_generic_transmute_wrong_size",
+        r#"
+#[derive(Clone,Copy)]struct R<const N:u8>(u8);
+const fn bound()->u8{23}
+type Hours=R<{bound()}>;
+#[repr(C)]#[derive(Clone,Copy)]struct Time{hour:Hours,pad:[u8;6]}
+impl Time{const MIN:Self=Self{hour:R(0),pad:[0;6]};const fn bits(self)->u8{unsafe{std::mem::transmute::<Self,u64>(self) as u8}}}
+type Seconds=R<{Time::MIN.bits()}>;
+struct Timestamp{seconds:Seconds}
+"#,
+        false,
+    );
+}

@@ -64,6 +64,11 @@ fn eval_lens_from(
     let mut pending: Vec<ConstId> = wanted.to_vec();
     while !pending.is_empty() {
         let typed = infer_consts(hir, sigs.clone(), loaded, required_functions);
+        let incomplete_signatures = typed
+            .sigs
+            .structs
+            .iter()
+            .any(|(_, fields)| fields.iter().any(|ty| ty.has_error()));
         let clean = typed.consts.iter().all(|(_, r)| r.diagnostics.is_empty())
             && typed.bodies.iter().all(|(_, r)| r.diagnostics.is_empty());
         let mut consts = ArenaMap::new();
@@ -164,6 +169,14 @@ fn eval_lens_from(
             };
             done.push((c, value));
             sigs.array_lens.insert(c, value);
+        }
+        // A layout-dependent call can fail while another requested constant
+        // still makes its field types errors. Return successful independent
+        // values first; the caller resolves signatures before retrying the rest.
+        // Keeping a failed value here would permanently poison that next round.
+        if incomplete_signatures && done.iter().any(|(_, value)| value.is_some()) {
+            done.retain(|(_, value)| value.is_some());
+            return (done, diagnostics);
         }
         if clean {
             for d in crate::build::eval_failures(items, &evaluator) {

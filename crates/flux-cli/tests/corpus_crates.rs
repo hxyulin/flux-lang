@@ -254,3 +254,12 @@ fn slotmap_default_graph_matches_rustc() {
         include_str!("fixtures/corpus_crates/slotmap.rs.txt"),
     );
 }
+
+#[test]
+fn time_default_graph_matches_rustc() {
+    compare_registry(
+        "time",
+        "0.3.55",
+        include_str!("fixtures/corpus_crates/time.rs.txt"),
+    );
+}

@@ -2299,3 +2299,8 @@ unsupported. Runtime copies lower to memory-copy operations.
 Hash-map entry views retain table storage and counters independently of the
 hasher type, matching the public Entry, OccupiedEntry and VacantEntry arities.
 Entries and map iterators provide standard debug formatting.
+
+Float literals can call in-scope trait methods before their concrete type is
+known. Trait obligations and later constraints can select `f32` or `f64` before
+numeric defaults apply. Type-level constant evaluation retries layout-dependent
+calls after independent constants resolve the field types they need.
