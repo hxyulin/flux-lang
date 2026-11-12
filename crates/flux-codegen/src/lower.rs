@@ -4877,13 +4877,30 @@ impl Lower<'_, '_, '_> {
                     return;
                 }
                 if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::ReadUnaligned) {
-                    // Validated after substitution by mono. No reference to the
-                    // source is formed. Keel's default load flags promise only
-                    // alignment one (and do not promise fault freedom).
-                    let ty = keel_type(generic_args[0]).expect("validated unsigned scalar");
+                    let ty = generic_args[0];
                     let address = self.operand(&args[0])[0];
-                    let value = self.b.ins().load(ty, address);
-                    self.write(dest, &[value]);
+                    if let Some(scalar) = keel_type(ty)
+                        && !is_fat(self.sigs, ty)
+                    {
+                        // No reference to the source is formed. Default flags
+                        // promise alignment one and do not promise fault freedom.
+                        let value = self.b.ins().load(scalar, address);
+                        self.write(dest, &[value]);
+                    } else {
+                        // Copy raw storage before interpreting its represented
+                        // fields. This preserves padding and pointer values and
+                        // gives ordinary typed loads the alignment they require.
+                        let layout = self.ctx.layouts.of(ty);
+                        let slot = self.aligned_slot(layout.size, layout.align);
+                        if layout.size != 0 {
+                            let size = self.b.ins().iconst(Type::I64, layout.size as i64);
+                            self.b
+                                .ins()
+                                .intrinsic(Intrinsic::Memcpy, &[slot, address, size]);
+                        }
+                        let values = self.load(Location::Memory(slot), ty);
+                        self.write(dest, &values);
+                    }
                     if let Some(target) = target {
                         self.b.ins().jump(self.blocks[target.index()], &[]);
                     } else {

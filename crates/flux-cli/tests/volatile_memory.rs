@@ -18,11 +18,11 @@ fn unsupported_aggregate_volatile_layouts_fail_explicitly() {
     for (name, text) in [
         (
             "large_array",
-            "fn main(){let mut a=[1u8;64];unsafe{std::ptr::write_volatile(&mut a,[2u8;64]);}}",
+            "fn main(){let mut a=[1u8;4097];unsafe{std::ptr::write_volatile(&mut a,[2u8;4097]);}}",
         ),
         (
             "overaligned",
-            "#[repr(align(64))]struct Aligned(u32);fn main(){let a=Aligned(1);let _=unsafe{std::ptr::read_volatile(&a)};}",
+            "#[repr(align(8192))]struct Aligned(u32);fn main(){let a=Aligned(1);let _=unsafe{std::ptr::read_volatile(&a)};}",
         ),
     ] {
         let source = directory.join(format!("{name}.rs"));

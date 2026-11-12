@@ -913,6 +913,7 @@ impl<'a> Walker<'a> {
             }
         }
         let self_ty = alias.args[0];
+        let self_start = out.len();
         if let Some(qself) = &path.qself {
             self.walk(&qself.ty, self_ty, out);
         } else if path.segments.first() == Some(&kw::SelfUpper) {
@@ -932,6 +933,7 @@ impl<'a> Walker<'a> {
                 slots(self.items, self_ty),
             ));
         }
+        let self_regions = out[self_start..].to_vec();
         for (index, &ty) in alias.args.iter().skip(1).enumerate() {
             if let Some(written) = owner_path
                 .as_ref()
@@ -939,6 +941,13 @@ impl<'a> Walker<'a> {
                 .and_then(|a| a.types.get(index))
             {
                 self.walk(written, ty, out);
+            } else if owner_path.is_some()
+                && ty == self_ty
+                && resolve::trait_default_self(self.items, alias.trait_, index)
+            {
+                // An omitted `Rhs = Self` repeats this occurrence's regions,
+                // including explicit lifetimes on the qualified Self type.
+                out.extend(self_regions.iter().copied());
             } else if let Some(row) = inherited
                 .as_ref()
                 .and_then(|(_, arguments)| arguments.get(index))

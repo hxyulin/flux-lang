@@ -1846,7 +1846,7 @@ cases, and panics for non-power-of-two alignments. It is runtime-only and
 does not establish allocation bounds or memory validity.
 Volatile reads/writes preserve actual volatile operations for scalar values,
 thin pointers and same-layout scalar wrappers. Aggregates with a supported layout
-of at most 32 bytes also work, including wide pointers,
+of at most 4096 bytes also work, including wide pointers,
 enums and 128-bit integers. Aggregate accesses use multiple volatile integer
 operations; they are not atomic. Larger layouts, including alignment padding beyond that limit, remain unsupported.
 Unsafe `[T]::align_to<U>` splits a shared slice into a T prefix, aligned U

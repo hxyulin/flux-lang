@@ -49,7 +49,7 @@ fn scalar_load_has_no_alignment_or_fault_freedom_promise() {
 }
 
 #[test]
-fn unsupported_substitutions_are_rejected_in_generic_wrappers() {
+fn represented_substitutions_compile_in_generic_wrappers() {
     for ty in [
         "i32",
         "bool",
@@ -67,13 +67,9 @@ fn unsupported_substitutions_are_rejected_in_generic_wrappers() {
              fn main() {{ let p = 0usize as *const {ty}; unsafe {{ let _ = get(p); }} }}"
         );
         let (hir, typed, mir) = front_end(&text);
-        let errors = flux_codegen::lower_module(&hir, &typed, &mir).unwrap_err();
-        assert!(
-            errors
-                .iter()
-                .any(|d| d.message == "read_unaligned supports only unsigned integers yet"),
-            "{ty}: {errors:?}"
-        );
+        let module = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
+        keel_ir::verify_module(&module).unwrap();
+        keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
     }
 }
 

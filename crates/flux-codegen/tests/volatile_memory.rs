@@ -73,3 +73,52 @@ fn volatile_qualifiers_and_accesses_survive_optimization() {
         .unwrap();
     }
 }
+
+#[test]
+fn large_aggregate_keeps_every_volatile_chunk() {
+    let (_, _, hir) = flux_hir::lower_text(
+        "volatile-large.rs",
+        r#"
+    #[inline(never)]unsafe fn volatile_large(p:*mut [u64;16]){unsafe{let value=std::ptr::read_volatile(p);std::ptr::write_volatile(p,value);}}
+    fn main(){let mut values=[7;16];unsafe{volatile_large(&raw mut values);}}
+    "#,
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let original = flux_codegen::lower_module(&hir, &typed, &mir).unwrap();
+    for tier in [
+        keel_opt::OptimizationTier::None,
+        keel_opt::OptimizationTier::Full,
+    ] {
+        let mut module = original.clone();
+        keel_opt::optimize_with_tier(&mut module, tier).unwrap();
+        keel_ir::verify_module(&module).unwrap();
+        let function = module
+            .functions
+            .iter()
+            .find(|f| f.name.contains("volatile_large"))
+            .unwrap();
+        assert_eq!(accesses(&module, function, 0), (16, 16), "{tier:?}");
+        keel_codegen::compile(&module, flux_codegen::Target::Aarch64AppleDarwin).unwrap();
+    }
+}
+#[test]
+fn oversized_volatile_aggregate_stays_explicitly_rejected() {
+    let (_, _, hir) = flux_hir::lower_text(
+        "volatile-limit.rs",
+        "fn main(){let a=[0u8;4097];unsafe{let _=std::ptr::read_volatile(&a);}}",
+    );
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    let errors = flux_codegen::lower_module(&hir, &typed, &mir).unwrap_err();
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.message.contains("up to 4096 bytes")),
+        "{errors:?}"
+    );
+}

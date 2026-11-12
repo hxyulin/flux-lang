@@ -2505,7 +2505,17 @@ impl Builder<'_> {
         (base, index): (ExprId, ExprId),
         instance: flux_ty::Instance,
     ) -> Place {
-        self.overloaded_index_from(expr, (base, index), instance, None)
+        // IndexMut borrows its receiver implicitly. The literal empty array
+        // has the same promotable storage here as in an explicit `&mut []`.
+        let promoted = if self.items.functions[instance.function].name.as_str() == "index_mut"
+            && self.types.field_derefs.get(expr).copied().unwrap_or(0) == 0
+            && self.overloads_of(expr).is_empty()
+        {
+            self.promoted_literal_place(base, Mutability::Mut)
+        } else {
+            None
+        };
+        self.overloaded_index_from(expr, (base, index), instance, promoted)
     }
 
     fn overloaded_index_from(

@@ -72,5 +72,17 @@ fn main() {
         write_volatile(&mut zero, ());
         read_volatile(&zero);
     }
+    #[repr(C)]struct Frame{before:u64,words:[u64;16],after:u64}
+    let mut frame=Frame{before:13,words:[0;16],after:17};
+    // SAFETY: the complete array is initialized, aligned and exclusively borrowed.
+    unsafe{write_volatile(&raw mut frame.words,[37;16]);assert_eq!(read_volatile(&raw const frame.words),[37;16]);}
+    assert_eq!(frame.before,13);assert_eq!(frame.after,17);
+    let mut tail=[0u8;131];
+    // SAFETY: the byte array is initialized and the full access remains in bounds.
+    unsafe{write_volatile(&raw mut tail,[23;131]);assert_eq!(read_volatile(&raw const tail),[23;131]);}
+    #[repr(align(64))]struct LargeAligned(u32);
+    let mut aligned_value=LargeAligned(7);
+    // SAFETY: both accesses cover the complete, aligned initialized aggregate.
+    unsafe{write_volatile(&raw mut aligned_value,LargeAligned(9));assert_eq!(read_volatile(&raw const aligned_value).0,9);}
     println!("volatile {} {} {}", word, wrapped.0, letter);
 }

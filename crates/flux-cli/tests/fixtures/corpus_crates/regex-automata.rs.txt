@@ -1,0 +1,13 @@
+use regex_automata::{dfa::{dense,Automaton},Input};
+fn main(){
+ let dense=dense::DFA::new("a+b").unwrap();let sparse=dense.to_sparse().unwrap();
+ for (text,end) in [("xxaaabyy",Some(6)),("zzz",None),("ab",Some(2)),("aaaa",None)]{
+  let expected=dense.try_search_fwd(&Input::new(text)).unwrap().map(|m|m.offset());
+  let actual=sparse.try_search_fwd(&Input::new(text)).unwrap().map(|m|m.offset());
+  assert_eq!(expected,end);assert_eq!(actual,expected);
+ }
+ let regex=regex_automata::meta::Regex::new("[0-9]+").unwrap();
+ let matches:Vec<_>=regex.find_iter("a12b345c").map(|m|(m.start(),m.end())).collect();
+ assert_eq!(matches,vec![(1,3),(4,7)]);
+ println!("{:?}",matches);
+}

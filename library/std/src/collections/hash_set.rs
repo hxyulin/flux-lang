@@ -13,6 +13,9 @@ impl<T> HashSet<T, crate::hash::RandomState> {
     }
 }
 impl<T, S> HashSet<T, S> {
+    pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
+        Self { map: HashMap::with_capacity_and_hasher(capacity, hasher) }
+    }
     pub const fn with_hasher(hasher: S) -> Self { Self { map: HashMap::with_hasher(hasher) } }
     pub fn len(&self) -> usize { self.map.len() }
     pub fn is_empty(&self) -> bool { self.map.is_empty() }
@@ -28,9 +31,6 @@ impl<T, S: Default> Default for HashSet<T, S> {
     fn default() -> Self { Self::with_hasher(S::default()) }
 }
 impl<T: Eq + Hash, S: BuildHasher> HashSet<T, S> {
-    pub fn with_capacity_and_hasher(capacity: usize, hasher: S) -> Self {
-        Self { map: HashMap::with_capacity_and_hasher(capacity, hasher) }
-    }
     pub fn insert(&mut self, value: T) -> bool { self.map.insert(value, ()).is_none() }
     pub fn contains<Q: ?Sized + Eq + Hash>(&self, value: &Q) -> bool where T: Borrow<Q> {
         self.map.contains_key(value)

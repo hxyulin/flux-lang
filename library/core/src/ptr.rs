@@ -74,9 +74,9 @@ pub const unsafe fn read<T>(src: *const T) -> T {
 }
 
 /// Reads an initialized value without requiring `src` to be aligned.
-/// The caller must provide readable memory for the entire value. Currently
-/// only unsigned integer types are supported; other types are
-/// rejected after substitution. Constant evaluation is not supported.
+/// The caller must provide readable memory for the entire initialized value
+/// and ensure its ownership is used and dropped only once. Exact sized layouts
+/// are supported, including aggregates and pointers. Constant evaluation is not supported.
 pub unsafe fn read_unaligned<T>(src: *const T) -> T {
     unsafe { crate::intrinsics::read_unaligned(src) }
 }
@@ -100,7 +100,7 @@ pub unsafe fn write_unaligned<T>(dst: *mut T, value: T) {
 /// pointer must be valid and aligned for an initialized value of T. This is
 /// not atomic and does not synchronize threads. The current backend supports
 /// scalar types, same-layout scalar wrappers, and supported aggregate layouts
-/// up to 32 bytes. Aggregate accesses may use several
+/// up to 4096 bytes. Aggregate accesses may use several
 /// volatile operations.
 pub unsafe fn read_volatile<T>(src:*const T)->T {
     // SAFETY: the caller guarantees aligned, initialized readable storage.

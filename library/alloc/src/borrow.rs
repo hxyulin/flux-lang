@@ -115,6 +115,16 @@ where B: PartialEq<C> {
 }
 impl<B: ToOwned + Eq + ?Sized> Eq for Cow<'_, B> {}
 
+impl<T: Clone + PartialEq<U>, U> PartialEq<Vec<U>> for Cow<'_, [T]> {
+    fn eq(&self, other: &Vec<U>) -> bool { **self == *other.as_slice() }
+}
+impl<T: Clone + PartialEq<U>, U> PartialEq<&[U]> for Cow<'_, [T]> {
+    fn eq(&self, other: &&[U]) -> bool { **self == **other }
+}
+impl<T: Clone + PartialEq<U>, U> PartialEq<&mut [U]> for Cow<'_, [T]> {
+    fn eq(&self, other: &&mut [U]) -> bool { **self == **other }
+}
+
 impl PartialEq<str> for Cow<'_, str> {
     fn eq(&self, other: &str) -> bool { **self == *other }
 }

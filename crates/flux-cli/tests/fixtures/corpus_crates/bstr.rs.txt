@@ -1,0 +1,10 @@
+use bstr::{ByteSlice,ByteVec};
+fn main(){
+ let original:Vec<u8>=(0..=255).collect();
+ let escaped=original.escape_bytes().to_string();
+ assert_eq!(Vec::unescape_bytes(&escaped),original);
+ assert_eq!(Vec::unescape_bytes(r"hello\nworld\xFF"),b"hello\nworld\xFF");
+ assert_eq!(Vec::unescape_bytes("snow: λ"),"snow: λ".as_bytes());
+ assert_eq!(b"one two".find(b"two"),Some(4));
+ println!("{} {}",original.len(),Vec::unescape_bytes("abc").to_str().unwrap());
+}

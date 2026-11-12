@@ -673,6 +673,47 @@ impl Ctx<'_> {
                 return Some(p.ty);
             }
         }
+        // An associated-type declaration can constrain this output on the
+        // right side: T::IntoIter::Item = T::Item. When IntoIter is I and
+        // I::Item is independently char, that also establishes T::Item.
+        // Exclude every reverse edge before proving its left side, so the
+        // equality cannot supply its own answer or resolve a competing cycle.
+        let reverse: Vec<_> = self
+            .env_projections
+            .iter()
+            .copied()
+            .filter(|p| p.ty == target && p.alias != alias && !p.is_tautology())
+            .collect();
+        if !target.has_infer() && !reverse.is_empty() {
+            let independent: Vec<_> = self
+                .env_projections
+                .iter()
+                .copied()
+                .filter(|p| p.ty != target)
+                .collect();
+            let proof = flux_solve::traits::RigidSolver::new(
+                self.items,
+                self.sigs,
+                &self.param_env,
+                &independent,
+                &self.unsized_params,
+            );
+            let answers: Vec<_> = reverse
+                .iter()
+                .map(|p| proof.normalize_ty(Ty::alias(p.alias), None))
+                .collect();
+            if let Some(&answer) = answers.first()
+                && !answer.has_params()
+                && !answer.has_aliases()
+                && !answer.has_infer()
+                && !answer.has_error()
+                && !answer.has_opaques()
+                && crate::regions::slots(self.items, answer) == 0
+                && answers.iter().all(|&other| other == answer)
+            {
+                return Some(answer);
+            }
+        }
         let self_ty = self.shallow(alias.args[0]);
         if let TyKind::Infer(var) = self_ty.kind()
             && !self.unknown(var).0
@@ -1506,6 +1547,27 @@ impl Ctx<'_> {
             .iter()
             .zip(args)
             .all(|(p, &a)| p.maybe_unsized || !self.is_unsized(a))
+    }
+
+    /// Whether an inherent candidate's impl bounds permit its receiver.
+    pub(super) fn inherent_bounds_possible(&mut self, function: FunctionId, target: Ty) -> bool {
+        let Some(imp) = self.items.impl_of(function) else {
+            return true;
+        };
+        self.probe(|cx| {
+            let vars: Vec<_> = (0..cx.items.impls[imp].generics.len())
+                .map(|_| cx.new_var(false, TextRange::default()))
+                .collect();
+            let pattern = cx.sigs.impls[imp].subst(&vars);
+            if !cx.unify_impl_type(pattern, target, 0) || !cx.impl_args_sized(imp, &vars) {
+                return false;
+            }
+            let predicates = cx.sigs.impl_predicates.get(imp).map_or(&[][..], |p| &p[..]);
+            predicates.iter().all(|p| {
+                let p = p.subst(&vars);
+                cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(p.trait_ref.args), 0)
+            })
+        })
     }
 
     /// Whether `ty` may implement `t`: through a bound in scope, or an

@@ -1,0 +1,17 @@
+use ahash::{AHashMap,AHashSet,HashMapExt,HashSetExt,RandomState};
+use std::hash::{BuildHasher,Hash,Hasher};
+struct NoHash;
+fn main(){
+ let empty:AHashMap<NoHash,u8>=AHashMap::with_capacity(5);
+ let empty_set:AHashSet<NoHash>=AHashSet::with_capacity(7);
+ let std_map:ahash::HashMap<NoHash,u8>=HashMapExt::with_capacity(3);
+ let std_set:ahash::HashSet<NoHash>=HashSetExt::with_capacity(3);
+ assert!(empty.is_empty());assert!(empty_set.is_empty());assert!(std_map.is_empty());assert!(std_set.is_empty());
+ let seeds=RandomState::with_seeds(1,2,3,4);
+ let mut first=seeds.build_hasher();let mut second=seeds.build_hasher();
+ ("hello",17u32).hash(&mut first);("hello",17u32).hash(&mut second);assert_eq!(first.finish(),second.finish());
+ let mut map=AHashMap::with_hasher(seeds.clone());map.insert("red",3u32);map.insert("blue",5);
+ *map.entry("red").or_insert(0)+=7;assert_eq!(map.get("red"),Some(&10));assert_eq!(map.remove("blue"),Some(5));
+ let mut set=AHashSet::with_hasher(seeds);assert!(set.insert(7u32));assert!(!set.insert(7));assert!(set.contains(&7));
+ println!("{} {} {}",map.len(),map["red"],set.len());
+}

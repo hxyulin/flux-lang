@@ -34,6 +34,11 @@ impl<K, V> HashMap<K, V, crate::hash::RandomState> {
 }
 
 impl<K, V, S> HashMap<K, V, S> {
+    pub fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
+        let mut map = Self::with_hasher(hash_builder);
+        map.reserve(capacity);
+        map
+    }
     pub const fn with_hasher(hash_builder: S) -> Self {
         Self {
             buckets: Vec::new(),
@@ -204,11 +209,6 @@ impl<K, V, S: Default> Default for HashMap<K, V, S> {
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher> HashMap<K, V, S> {
-    pub fn with_capacity_and_hasher(capacity: usize, hash_builder: S) -> Self {
-        let mut map = Self::with_hasher(hash_builder);
-        map.reserve(capacity);
-        map
-    }
     fn find<Q: ?Sized + Eq>(&self, hash: u64, key: &Q) -> Option<usize>
     where
         K: Borrow<Q>,

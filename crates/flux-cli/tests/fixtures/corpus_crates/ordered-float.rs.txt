@@ -1,0 +1,24 @@
+use ordered_float::{NotNan, OrderedFloat};
+use std::collections::{HashSet, hash_map::DefaultHasher};
+use std::hash::{Hash, Hasher};
+fn hash<T:Hash>(value:&T)->u64{let mut hasher=DefaultHasher::new();value.hash(&mut hasher);hasher.finish()}
+fn main(){
+ let nan=OrderedFloat(f64::NAN);
+ let other_nan=OrderedFloat(f64::from_bits(0x7ff8_0000_0000_0001));
+ assert_eq!(nan,other_nan);assert!(nan>OrderedFloat(f64::INFINITY));
+ assert_eq!(hash(&nan),hash(&other_nan));
+ let minus_zero=OrderedFloat(-0.0f64);let plus_zero=OrderedFloat(0.0f64);
+ assert_eq!(minus_zero,plus_zero);assert_eq!(hash(&minus_zero),hash(&plus_zero));
+ let mut set=HashSet::new();assert!(set.insert(minus_zero));assert!(!set.insert(plus_zero));
+ assert!(set.insert(nan));assert!(!set.insert(other_nan));assert_eq!(set.len(),2);
+ let mut values=vec![nan,minus_zero,OrderedFloat(f64::INFINITY),OrderedFloat(-2.0),plus_zero,OrderedFloat(f64::NEG_INFINITY)];
+ values.sort();assert_eq!(values[0],OrderedFloat(f64::NEG_INFINITY));assert_eq!(values[1],OrderedFloat(-2.0));
+ assert_eq!(values[2],plus_zero);assert_eq!(values[3],plus_zero);assert_eq!(values[4],OrderedFloat(f64::INFINITY));assert_eq!(values[5],nan);
+ let left=OrderedFloat(1.5f64);let scalar=2.25f64;
+ let sum=&left+&scalar;assert_eq!(sum,OrderedFloat(3.75));
+ assert_eq!(&left+scalar,sum);assert_eq!(&left+&OrderedFloat(scalar),sum);
+ assert_eq!((&left+&scalar)*OrderedFloat(2.0),OrderedFloat(7.5));
+ let converted:OrderedFloat<f64>=3.5f64.into();assert_eq!(converted.into_inner(),3.5);
+ let finite=NotNan::new(2.5f64).unwrap();assert_eq!(finite.into_inner(),2.5);assert!(NotNan::new(f64::NAN).is_err());
+ println!("{} {} {} {}",set.len(),sum.into_inner(),converted.into_inner(),finite.into_inner());
+}

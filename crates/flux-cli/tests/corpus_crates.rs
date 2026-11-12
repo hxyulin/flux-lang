@@ -281,3 +281,66 @@ fn num_rational_default_graph_matches_rustc() {
         &[("num-bigint", "0.4.8")],
     );
 }
+
+#[test]
+fn num_complex_default_graph_matches_rustc() {
+    compare_registry(
+        "num-complex",
+        "0.4.6",
+        include_str!("fixtures/corpus_crates/num-complex.rs.txt"),
+    );
+}
+
+#[test]
+fn ahash_default_graph_matches_rustc() {
+    compare_registry(
+        "ahash",
+        "0.8.12",
+        include_str!("fixtures/corpus_crates/ahash.rs.txt"),
+    );
+}
+
+#[test]
+fn nix_default_graph_matches_rustc() {
+    compare_registry(
+        "nix",
+        "0.31.3",
+        include_str!("fixtures/corpus_crates/nix.rs.txt"),
+    );
+}
+
+#[test]
+fn ordered_float_default_graph_matches_rustc() {
+    compare_registry(
+        "ordered-float",
+        "5.5.1",
+        include_str!("fixtures/corpus_crates/ordered-float.rs.txt"),
+    );
+}
+
+#[test]
+fn bstr_default_graph_matches_rustc() {
+    compare_registry(
+        "bstr",
+        "1.13.1",
+        include_str!("fixtures/corpus_crates/bstr.rs.txt"),
+    );
+}
+
+#[test]
+fn regex_automata_default_graph_matches_rustc() {
+    compare_registry(
+        "regex-automata",
+        "0.4.18",
+        include_str!("fixtures/corpus_crates/regex-automata.rs.txt"),
+    );
+}
+
+#[test]
+fn ignore_default_graph_matches_rustc() {
+    compare_registry(
+        "ignore",
+        "0.4.33",
+        include_str!("fixtures/corpus_crates/ignore.rs.txt"),
+    );
+}

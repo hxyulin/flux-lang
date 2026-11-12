@@ -1,0 +1,12 @@
+use num_complex::{Complex,ComplexFloat};
+fn infinite<C:ComplexFloat>(value:C)->bool{value.is_infinite()}
+fn finite<C:ComplexFloat>(value:C)->bool{value.is_finite()}
+fn main(){
+ let z=Complex::new(3f64,4f64);let conjugate=z.conj();
+ assert_eq!(z.norm_sqr(),25f64);assert_eq!(z*conjugate,Complex::new(25f64,0f64));
+ assert_eq!(z/z,Complex::new(1f64,0f64));assert_eq!(z.sqrt(),Complex::new(2f64,1f64));
+ assert_eq!(Complex::new(0f32,1f32).powu(4),Complex::new(1f32,0f32));
+ assert!(finite(z));assert!(infinite(Complex::new(f64::INFINITY,0f64)));
+ assert!(!infinite(Complex::new(f64::NAN,0f64)));assert!(!finite(Complex::new(f64::NAN,0f64)));
+ println!("{} {} {}",(z*conjugate).re as u32,finite(z),infinite(Complex::new(f64::INFINITY,0f64)));
+}

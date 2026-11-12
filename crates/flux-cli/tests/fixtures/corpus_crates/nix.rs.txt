@@ -1,0 +1,14 @@
+use nix::{errno::Errno,NixPath};
+use std::path::Path;
+fn main(){
+    let path=Path::new("/tmp/nix-control");
+    let bytes=path.with_nix_path(|p|p.to_bytes().to_vec()).unwrap();
+    assert_eq!(bytes,b"/tmp/nix-control");
+    assert_eq!("bad\0path".with_nix_path(|p|p.to_bytes().len()),Err(Errno::EINVAL));
+    Errno::EIO.set();assert_eq!(Errno::last(),Errno::EIO);
+    assert_eq!(Errno::result(-1i32),Err(Errno::EIO));
+    assert_eq!(Errno::result(7i32),Ok(7));Errno::clear();
+    assert_eq!(Errno::last_raw(),0);
+    assert_eq!(Errno::from_raw(Errno::EINVAL as i32),Errno::EINVAL);
+    println!("{} {}",bytes.len(),Errno::EINVAL.desc());
+}

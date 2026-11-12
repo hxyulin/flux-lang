@@ -694,25 +694,20 @@ fn collect_roots(
                             return Err(d);
                         }
                     }
-                    if hir.items.functions[callee.function].name.as_str() == "read_unaligned"
-                        && !matches!(
-                            callee.args.first().map(|ty| ty.kind()),
-                            Some(TyKind::Int(
-                                flux_ty::IntTy::U8
-                                    | flux_ty::IntTy::U16
-                                    | flux_ty::IntTy::U32
-                                    | flux_ty::IntTy::U64
-                                    | flux_ty::IntTy::U128
-                                    | flux_ty::IntTy::Usize
-                            ))
-                        )
+                    if hir.items.functions[callee.function].intrinsic
+                        == Some(flux_hir::Intrinsic::ReadUnaligned)
                     {
-                        let mut d = Diagnostic::new(
-                            data.terminator.range,
-                            "read_unaligned supports only unsigned integers yet",
-                        );
-                        d.file = hir.items.functions[caller.function].loc.file;
-                        return Err(d);
+                        let ty = callee.args.first().copied().unwrap_or(Ty::ERROR);
+                        let layouts =
+                            crate::layout::Layouts::new(&hir.items, sigs, &mir.discriminants);
+                        if !layouts.of(ty).exact || sigs.is_unsized(ty) {
+                            let mut d = Diagnostic::new(
+                                data.terminator.range,
+                                "read_unaligned requires an exact sized layout",
+                            );
+                            d.file = hir.items.functions[caller.function].loc.file;
+                            return Err(d);
+                        }
                     }
                     if matches!(
                         hir.items.functions[callee.function].intrinsic,
@@ -723,7 +718,9 @@ fn collect_roots(
                         let ty = callee.args.first().copied().unwrap_or(Ty::ERROR);
                         let layouts =
                             crate::layout::Layouts::new(&hir.items, sigs, &mir.discriminants);
-                        let supported = (layouts.of(ty).exact && layouts.of(ty).size <= 32)
+                        // Each eight bytes expands to one volatile access. Keep
+                        // code size bounded while covering ordinary aggregates.
+                        let supported = (layouts.of(ty).exact && layouts.of(ty).size <= 4096)
                             || volatile_scalar(sigs, ty).is_some_and(|scalar| {
                                 let layout = layouts.of(ty);
                                 let scalar_layout = layouts.of(scalar);
@@ -733,7 +730,7 @@ fn collect_roots(
                         if !supported {
                             let mut d = Diagnostic::new(
                                 data.terminator.range,
-                                "volatile operations support only scalars or aggregates up to 32 bytes yet",
+                                "volatile operations support only scalars or aggregates up to 4096 bytes yet",
                             );
                             d.file = hir.items.functions[caller.function].loc.file;
                             return Err(d);

@@ -2421,7 +2421,11 @@ fn callback_const_lifetimes(c: &flux_hir::ArrayLen, out: &mut Vec<LifetimeRef>) 
 
 /// Erased equality with Self is insufficient: a default `&'static T` can
 /// have the same Ty as Self while carrying different regions.
-fn trait_default_self(items: &ItemTree, trait_: flux_hir::TraitId, index: usize) -> bool {
+pub(super) fn trait_default_self(
+    items: &ItemTree,
+    trait_: flux_hir::TraitId,
+    index: usize,
+) -> bool {
     matches!(items.traits[trait_].generics.params.get(index).and_then(|p| p.default.as_ref()),
         Some((TypeRef::Path(path), _)) if path.as_name() == Some(kw::SelfUpper))
 }

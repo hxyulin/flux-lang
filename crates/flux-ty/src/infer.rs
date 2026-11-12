@@ -6051,7 +6051,9 @@ impl Ctx<'_> {
                 Err(_) => {}
             }
         }
-        if inherent_found.is_some() {
+        if inherent_found
+            .is_some_and(|(function, _, target, _)| self.inherent_bounds_possible(function, target))
+        {
             return Ok(inherent_found);
         }
         // A receiver that wraps Self in pointers (`self: Box<Self>`,
@@ -6107,7 +6109,7 @@ impl Ctx<'_> {
             }
         }
         if !traits {
-            return Ok(None);
+            return Ok(inherent_found);
         }
         let mut found = Vec::new();
         for (target, mode, through) in candidates.into_iter().flatten() {
@@ -6178,7 +6180,7 @@ impl Ctx<'_> {
             found.retain(preferred);
         }
         match found.as_slice() {
-            [] => Ok(None),
+            [] => Ok(inherent_found),
             [(function, trait_ref, target, through)] => Ok(Some((
                 *function,
                 trait_ref.map(|t| t.args),

@@ -1,0 +1,11 @@
+use ignore::gitignore::GitignoreBuilder;
+fn main(){
+ let mut builder=GitignoreBuilder::new(".");
+ builder.add_line(None,"*.log").unwrap();builder.add_line(None,"!keep.log").unwrap();builder.add_line(None,"target/").unwrap();
+ let rules=builder.build().unwrap();
+ assert!(rules.matched("app.log",false).is_ignore());
+ assert!(rules.matched("keep.log",false).is_whitelist());
+ assert!(rules.matched("src/main.rs",false).is_none());
+ assert!(rules.matched_path_or_any_parents("target/main.rs",false).is_ignore());
+ println!("{} {}",rules.matched("app.log",false).is_ignore(),rules.matched("keep.log",false).is_whitelist());
+}
