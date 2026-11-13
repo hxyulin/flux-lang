@@ -50,7 +50,8 @@ on arm64 macOS. [Counts and measurement scope](docs/status/compatibility.json).
 
 ![Rust source corpus: 68,253 of 68,253 files parse without syntax diagnostics, 100%; 42 shared rustc failures excluded.](docs/status/rust-corpus.svg)
 
-The corpus contains 68,295 Rust files, 1.27 GB across 1,891 package versions.
+The 2026-11-11 parsing census contains 68,295 Rust files, 1.27 GB across
+1,891 package versions.
 Using each file's inferred package edition, Flux parses 68,253 files without
 syntax diagnostics. Rustc's parse-only check also rejects all 42 remaining
 files. Excluding those files gives **68,253 / 68,253 (100%)**, with no
@@ -59,23 +60,54 @@ were not individually checked with rustc.
 
 All files produced valid, lossless syntax trees, with no panics or time-budget
 failures. Edition inference uses the nearest package manifest; fixture overrides
-and cfg are not applied. These counts measure parsing only. A current
-full-corpus compilation success rate has not been measured.
+and cfg are not applied. These counts measure parsing only. The build survey
+below uses a newer, separately inventoried source cache.
 [Per-file rustc controls](docs/status/rustc-parser-controls.json).
+
+![Crate build coverage: 864 of 1,529 Rustc-eligible default-feature library graphs pass; 20 of 22 selected no-default-feature cases and 6 of 21 selected extra-feature cases pass.](docs/status/crate-builds.svg)
+
+The 2026-11-13 build screen inventories **1,916 package versions across
+1,227 names** on arm64 macOS. It builds cached sources through fresh
+edition-2024 library wrappers, using Rustc release controls and Flux fast-build.
+Both use panic-abort with debug assertions off. Rustc controls pass for
+**1,529 graphs**; Flux builds **864**, reports **664 compilation failures**,
+and retains **1 timeout**, Logos 0.16.1, after a 600-second retry.
+The other 387 versions comprise 175 control-build failures, 61 missing offline
+dependency graphs, 149 Rustc-hosted proc-macro roots, and 2 packages without
+libraries. One recorded failure is a compiler panic in Time 0.3.45.
+[All outcomes and leading diagnostics](docs/status/crate-build-results.json).
+
+The feature matrix adds **46 configurations across 23 selected versions**.
+Of those passing Rustc controls, Flux builds **20 / 22** with default features
+disabled and **6 / 21** with selected extra features. This is a selected matrix,
+not every feature combination. [Configurations and results](docs/status/feature-build-results.json).
+Host cfg remains active, including platform-specific stubs. Timed-out cases get
+a 600-second retry; initial and retry evidence remain separate. Library builds do
+not instantiate every generic API or qualify runtime behavior.
+
+The maintained suite compares **38 native registry consumers** with Rustc in
+debug, fast-build and release modes. All pass, including the new UUID v4/Serde
+case. A separate four-case feature survey includes that same UUID consumer;
+it matches in all three modes. Serde/JSON with Rc, Tokio full, and Time
+formatting/parsing are compile-blocked.
+[Native feature results](docs/status/feature-runtime-results.json).
+
+Additional upstream checks pass **8 Scopeguard unit tests and 5 / 6 doctests**
+using an isolated resolver-2 workspace, with unchanged Rust sources and test
+bodies. One doctest is compile-blocked by selective extern macro imports.
+[Upstream results](docs/status/upstream-test-results.json) also record failures
+with original manifests, legacy lockfiles and dev dependencies.
 
 ![Rayon runtime comparisons: 115 of 115 adapted integration cases match rustc, including unwinding.](docs/status/rayon-runtime.svg)
 
 The recorded Rayon 1.12.0 qualification passes all 115 adapted integration cases,
 including the four unwinding cases. The adapters retain upstream test bodies
-and assertions. Another 24 selected rayon-core panic cases passed in fast-build
-and release modes. The latest validation reran the ordinary consumer and core
-unwind tests successfully, but the collection-unwind rebuild timed out.
-The rand-dependent string cases build the default rand 0.9.5 dependency graph,
-including zerocopy 0.8.63, without upstream source or feature changes.
-These results cover the selected integration cases. The full 217-test unit
-suite and 246 doctests remain unqualified; the latest unit attempt stopped
-during zerocopy compilation. The separate maintained Rayon consumer also matches rustc in debug,
-fast-build and release modes.
+and assertions. That complete adapter census was not rerun by this update.
+The current validation passes the maintained Rayon consumer, five selected
+collection/iterator/sort panic-safety cases, and 24 selected rayon-core panic
+cases in fast-build and release modes. The rand-dependent graph retains
+upstream sources and features. The full 217-test unit suite and 246 doctests
+remain unqualified.
 
 ## Self-hosting
 

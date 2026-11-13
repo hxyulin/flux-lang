@@ -1,0 +1,396 @@
+[
+  {
+    "name": "serde",
+    "version": "1.0.229",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "serde",
+    "version": "1.0.229",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "derive",
+      "rc"
+    ]
+  },
+  {
+    "name": "serde_json",
+    "version": "1.0.154",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "serde_json",
+    "version": "1.0.154",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "preserve_order",
+      "raw_value",
+      "arbitrary_precision"
+    ]
+  },
+  {
+    "name": "tokio",
+    "version": "1.54.1",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "tokio",
+    "version": "1.54.1",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "full"
+    ]
+  },
+  {
+    "name": "futures-util",
+    "version": "0.3.34",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "futures-util",
+    "version": "0.3.34",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "io",
+      "sink",
+      "channel",
+      "async-await-macro"
+    ]
+  },
+  {
+    "name": "chrono",
+    "version": "0.4.45",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "chrono",
+    "version": "0.4.45",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "serde"
+    ]
+  },
+  {
+    "name": "rayon",
+    "version": "1.12.0",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "rayon",
+    "version": "1.12.0",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "web_spin_lock"
+    ]
+  },
+  {
+    "name": "rand",
+    "version": "0.10.3",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "rand",
+    "version": "0.10.3",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "serde",
+      "chacha"
+    ]
+  },
+  {
+    "name": "regex",
+    "version": "1.13.1",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "regex",
+    "version": "1.13.1",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "unicode",
+      "perf"
+    ]
+  },
+  {
+    "name": "hashbrown",
+    "version": "0.17.1",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "hashbrown",
+    "version": "0.17.1",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "serde",
+      "raw-entry"
+    ]
+  },
+  {
+    "name": "bytes",
+    "version": "1.12.1",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "bytes",
+    "version": "1.12.1",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "serde"
+    ]
+  },
+  {
+    "name": "uuid",
+    "version": "1.29.0",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "uuid",
+    "version": "1.29.0",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "v4",
+      "serde"
+    ]
+  },
+  {
+    "name": "indexmap",
+    "version": "2.14.2",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "indexmap",
+    "version": "2.14.2",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "serde"
+    ]
+  },
+  {
+    "name": "smallvec",
+    "version": "1.16.5",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "smallvec",
+    "version": "1.16.5",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "union",
+      "const_generics",
+      "const_new",
+      "serde"
+    ]
+  },
+  {
+    "name": "bitflags",
+    "version": "2.13.2",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "bitflags",
+    "version": "2.13.2",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "serde"
+    ]
+  },
+  {
+    "name": "once_cell",
+    "version": "1.21.4",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "once_cell",
+    "version": "1.21.4",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "parking_lot"
+    ]
+  },
+  {
+    "name": "zerocopy",
+    "version": "0.8.63",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "zerocopy",
+    "version": "0.8.63",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "derive",
+      "simd"
+    ]
+  },
+  {
+    "name": "syn",
+    "version": "3.0.10",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "syn",
+    "version": "3.0.10",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "full",
+      "visit",
+      "visit-mut",
+      "fold",
+      "extra-traits"
+    ]
+  },
+  {
+    "name": "socket2",
+    "version": "0.6.5",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "socket2",
+    "version": "0.6.5",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "all"
+    ]
+  },
+  {
+    "name": "mio",
+    "version": "1.2.4",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "mio",
+    "version": "1.2.4",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "os-poll",
+      "net"
+    ]
+  },
+  {
+    "name": "rustix",
+    "version": "1.1.6",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "rustix",
+    "version": "1.1.6",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "fs",
+      "net",
+      "process",
+      "time"
+    ]
+  },
+  {
+    "name": "time",
+    "version": "0.3.55",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "time",
+    "version": "0.3.55",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "formatting",
+      "parsing",
+      "macros",
+      "serde"
+    ]
+  },
+  {
+    "name": "reqwest",
+    "version": "0.13.5",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "reqwest",
+    "version": "0.13.5",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "json",
+      "query"
+    ]
+  },
+  {
+    "name": "anyhow",
+    "version": "1.0.104",
+    "label": "no-default",
+    "default_features": false,
+    "features": []
+  },
+  {
+    "name": "anyhow",
+    "version": "1.0.104",
+    "label": "selected-features",
+    "default_features": true,
+    "features": [
+      "backtrace"
+    ]
+  }
+]

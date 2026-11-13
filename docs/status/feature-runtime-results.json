@@ -1,0 +1,111 @@
+{
+  "scope": "Rustc debug consumer compared with Flux debug, fast-build and release; panic-abort. Consumers avoid observing debug assertion and overflow differences. A compile-blocked consumer is not a runtime mismatch.",
+  "results": [
+    {
+      "name": "serde-json",
+      "configuration": {
+        "name": "serde-json",
+        "source": "tests/corpus/features/serde-json.rs",
+        "dependencies": [
+          {
+            "name": "serde",
+            "version": "1.0.229",
+            "features": [
+              "derive",
+              "rc"
+            ]
+          },
+          {
+            "name": "serde_json",
+            "version": "1.0.154",
+            "features": [
+              "preserve_order",
+              "raw_value"
+            ]
+          }
+        ]
+      },
+      "status": "flux-build-debug-failure",
+      "source_sha256": "1f23c282e6e3b59004e1c6a9ba6eaad7300faf2421b9c74e206e78391a7290e4",
+      "diagnostics": [
+        "the trait bound `Box<T>: Into<Rc<T>>` is not satisfied",
+        "the trait bound `Box<T>: Into<Arc<T>>` is not satisfied"
+      ]
+    },
+    {
+      "name": "tokio",
+      "configuration": {
+        "name": "tokio",
+        "source": "tests/corpus/features/tokio.rs",
+        "dependencies": [
+          {
+            "name": "tokio",
+            "version": "1.54.1",
+            "features": [
+              "full"
+            ]
+          }
+        ]
+      },
+      "status": "flux-build-debug-failure",
+      "source_sha256": "3437a9d8b8c6bbd86dc2367d2415849a4d4e67c72a1c1873d75b122047e22c3f",
+      "diagnostics": [
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find `UnixDatagram` in `net`",
+        "cannot find type `UnixDatagram` in module `net`"
+      ]
+    },
+    {
+      "name": "uuid",
+      "configuration": {
+        "name": "uuid",
+        "source": "tests/corpus/features/uuid.rs",
+        "dependencies": [
+          {
+            "name": "uuid",
+            "version": "1.29.0",
+            "features": [
+              "v4",
+              "serde"
+            ]
+          },
+          {
+            "name": "serde_json",
+            "version": "1.0.154",
+            "features": []
+          }
+        ]
+      },
+      "status": "pass",
+      "source_sha256": "e8203d8a228b0e495cc71a2ae73306a3cca51381c144a2ed43cd54cd66964206",
+      "diagnostics": []
+    },
+    {
+      "name": "time",
+      "configuration": {
+        "name": "time",
+        "source": "tests/corpus/features/time.rs",
+        "dependencies": [
+          {
+            "name": "time",
+            "version": "0.3.55",
+            "features": [
+              "formatting",
+              "parsing",
+              "macros"
+            ]
+          }
+        ]
+      },
+      "status": "flux-build-debug-failure",
+      "source_sha256": "904b0ffea9c4a27bf04cd40473b49cb478c48cc730580540b558fe4bd9877f3c",
+      "diagnostics": [
+        "the trait bound `NonZero<u16>: FromStr` is not satisfied",
+        "lifetime parameters on traits are not supported yet",
+        "associated type bounds in this context are not supported yet",
+        "the trait bound `&Error: Into<Error>` is not satisfied"
+      ]
+    }
+  ]
+}

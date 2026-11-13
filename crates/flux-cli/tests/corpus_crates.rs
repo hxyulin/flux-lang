@@ -14,17 +14,32 @@ fn compare_registry(name: &str, version: &str, source: &str) {
     compare_registry_dependencies(name, version, source, &[]);
 }
 fn compare_registry_dependencies(name: &str, version: &str, source: &str, extras: &[(&str, &str)]) {
+    let mut dependencies: Vec<(&str, &str, &[&str])> = vec![(name, version, &[])];
+    dependencies.extend(
+        extras
+            .iter()
+            .map(|&(name, version)| (name, version, &[][..])),
+    );
+    compare_registry_feature_dependencies(name, source, &dependencies);
+}
+fn compare_registry_feature_dependencies(
+    name: &str,
+    source: &str,
+    dependencies: &[(&str, &str, &[&str])],
+) {
     let scratch = support::scratch::Scratch::new(
         Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../../out/corpus-crates/{name}")),
     );
     let root = scratch.path();
     std::fs::create_dir(root.join("src")).unwrap();
-    let extra_dependencies: String = extras
+    let dependencies: String = dependencies
         .iter()
-        .map(|(name, version)| format!("{name}=\"={version}\"\n"))
+        .map(|(name, version, features)| {
+            format!("{name}={{version=\"={version}\",features={features:?}}}\n")
+        })
         .collect();
     std::fs::write(root.join("Cargo.toml"), format!(
-        "[workspace]\n[package]\nname=\"corpus-crate-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[dependencies]\n{name}=\"={version}\"\n{extra_dependencies}"
+        "[workspace]\n[package]\nname=\"corpus-crate-consumer\"\nversion=\"0.0.0\"\nedition=\"2024\"\n[dependencies]\n{dependencies}"
     )).unwrap();
     std::fs::write(root.join("src/main.rs"), source).unwrap();
     let manifest = root.join("Cargo.toml");
@@ -454,5 +469,17 @@ fn chrono_default_graph_matches_rustc() {
         "chrono",
         "0.4.45",
         include_str!("fixtures/corpus_crates/chrono.rs.txt"),
+    );
+}
+
+#[test]
+fn uuid_v4_serde_features_match_rustc() {
+    compare_registry_feature_dependencies(
+        "uuid-v4-serde",
+        include_str!("../../../tests/corpus/features/uuid.rs"),
+        &[
+            ("uuid", "1.29.0", &["v4", "serde"]),
+            ("serde_json", "1.0.154", &[]),
+        ],
     );
 }

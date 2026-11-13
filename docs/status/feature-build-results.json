@@ -1,0 +1,584 @@
+{
+  "configurations": "../../tests/corpus/feature-matrix.json",
+  "results": [
+    {
+      "id": "2f17f077f5a98c51",
+      "name": "anyhow",
+      "version": "1.0.104",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "67b1c4b6b5b629ba",
+      "name": "anyhow",
+      "version": "1.0.104",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "backtrace"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "5460885e27215ac1",
+      "name": "bitflags",
+      "version": "2.13.2",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "e72d92feaf21a5ce",
+      "name": "bitflags",
+      "version": "2.13.2",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "serde"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "5bbfeadd7060c1b8",
+      "name": "bytes",
+      "version": "1.12.1",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "1011f3dd925f79e8",
+      "name": "bytes",
+      "version": "1.12.1",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "serde"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "fbc4bf0d6f1ada2e",
+      "name": "chrono",
+      "version": "0.4.45",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "4dd89e0f31a463bd",
+      "name": "chrono",
+      "version": "0.4.45",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "serde"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "e46cbbf63c544ffd",
+      "name": "futures-util",
+      "version": "0.3.34",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "e47a8794a1bb35c9",
+      "name": "futures-util",
+      "version": "0.3.34",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "async-await-macro",
+        "channel",
+        "io",
+        "sink"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "6482c3d36564aa2b",
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "4f6f85101e476579",
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "raw-entry",
+        "serde"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "40efedae98e873a7",
+      "name": "indexmap",
+      "version": "2.14.2",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "8030ff5fac707f34",
+      "name": "indexmap",
+      "version": "2.14.2",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "serde"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "ec5d2c01510a6544",
+      "name": "mio",
+      "version": "1.2.4",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "dbb0e60a9fc0c82d",
+      "name": "mio",
+      "version": "1.2.4",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "net",
+        "os-poll"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find `UnixDatagram` in `net`"
+      ]
+    },
+    {
+      "id": "857abd0c9bdfad58",
+      "name": "once_cell",
+      "version": "1.21.4",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "12c3144bab2f4ef2",
+      "name": "once_cell",
+      "version": "1.21.4",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "parking_lot"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "00cfd7d8d7fa4564",
+      "name": "rand",
+      "version": "0.10.3",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "ac2d6966dd3d8c14",
+      "name": "rand",
+      "version": "0.10.3",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "chacha",
+        "serde"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "the `serde` attribute is not supported yet",
+        "the `serde` attribute is not supported yet"
+      ]
+    },
+    {
+      "id": "053d7e442ff57fb2",
+      "name": "rayon",
+      "version": "1.12.0",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "0b4f212df3cdee82",
+      "name": "rayon",
+      "version": "1.12.0",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "web_spin_lock"
+      ],
+      "status": "offline_dependency",
+      "diagnostics": [
+        "failed to download `wasm_sync v0.1.2`"
+      ]
+    },
+    {
+      "id": "a04976549ea7dec0",
+      "name": "regex",
+      "version": "1.13.1",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "f4d35d1bb62f18b5",
+      "name": "regex",
+      "version": "1.13.1",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "perf",
+        "unicode"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "187e18764345f0e5",
+      "name": "reqwest",
+      "version": "0.13.5",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "flux_failure",
+      "diagnostics": [
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find `UnixDatagram` in `net`"
+      ]
+    },
+    {
+      "id": "c7b4040ac592c0c0",
+      "name": "reqwest",
+      "version": "0.13.5",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "json",
+        "query"
+      ],
+      "status": "offline_dependency",
+      "diagnostics": [
+        "no matching package named `aws-lc-rs` found"
+      ]
+    },
+    {
+      "id": "2cb76822b5987d5e",
+      "name": "rustix",
+      "version": "1.1.6",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "ad3dd4062c60594d",
+      "name": "rustix",
+      "version": "1.1.6",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "fs",
+        "net",
+        "process",
+        "time"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "the trait bound `Cow<CStr>: From<&CStr>` is not satisfied",
+        "no method named `fmt` found for struct `NonZero<T>` in the current scope",
+        "no method named `fmt` found for struct `NonZero<T>` in the current scope"
+      ]
+    },
+    {
+      "id": "6663343aee9be17f",
+      "name": "serde",
+      "version": "1.0.229",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "ce17290d9b113976",
+      "name": "serde",
+      "version": "1.0.229",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "derive",
+        "rc"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "the trait bound `Box<T>: Into<Rc<T>>` is not satisfied",
+        "the trait bound `Box<T>: Into<Arc<T>>` is not satisfied"
+      ]
+    },
+    {
+      "id": "b65c07d63af067ca",
+      "name": "serde_json",
+      "version": "1.0.154",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "rustc_failure",
+      "diagnostics": [
+        "serde_json requires that either `std` (default) or `alloc` feature is enabled",
+        "could not compile `serde_json` (lib) due to 1 previous error"
+      ]
+    },
+    {
+      "id": "42bfd33f44a50fb7",
+      "name": "serde_json",
+      "version": "1.0.154",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "arbitrary_precision",
+        "preserve_order",
+        "raw_value"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "113d14a86d3e04bf",
+      "name": "smallvec",
+      "version": "1.16.5",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "aaad7d6d5f82e521",
+      "name": "smallvec",
+      "version": "1.16.5",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "const_generics",
+        "const_new",
+        "serde",
+        "union"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "64d539f7d81e6d2a",
+      "name": "socket2",
+      "version": "0.6.5",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "d28b95737c7599a7",
+      "name": "socket2",
+      "version": "0.6.5",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "all"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `std::os::unix::net::UnixDatagram`",
+        "unresolved import `std::os::unix::net::UnixListener`",
+        "unresolved import `std::os::unix::net::UnixStream`"
+      ]
+    },
+    {
+      "id": "752317da0a187639",
+      "name": "syn",
+      "version": "3.0.10",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "432fd0866a1e89e0",
+      "name": "syn",
+      "version": "3.0.10",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "extra-traits",
+        "fold",
+        "full",
+        "visit",
+        "visit-mut"
+      ],
+      "status": "pass"
+    },
+    {
+      "id": "27cd48a675723eb4",
+      "name": "time",
+      "version": "0.3.55",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "754f2a180a5c5b42",
+      "name": "time",
+      "version": "0.3.55",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "formatting",
+        "macros",
+        "parsing",
+        "serde"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "f074b589fdee9a0a",
+      "name": "tokio",
+      "version": "1.54.1",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "0034d39fd49b25c5",
+      "name": "tokio",
+      "version": "1.54.1",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "full"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find type `UnixDatagram` in module `net`",
+        "cannot find `UnixDatagram` in `net`"
+      ]
+    },
+    {
+      "id": "536396a3924c806a",
+      "name": "uuid",
+      "version": "1.29.0",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "e65fa69a80163ef7",
+      "name": "uuid",
+      "version": "1.29.0",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "serde",
+        "v4"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "unresolved import `self::core::net`",
+        "type annotations needed",
+        "type annotations needed"
+      ]
+    },
+    {
+      "id": "dbc32d3f49e14e29",
+      "name": "zerocopy",
+      "version": "0.8.63",
+      "label": "no-default",
+      "default_features": false,
+      "selected_features": [],
+      "status": "pass"
+    },
+    {
+      "id": "ec319e9be79b2396",
+      "name": "zerocopy",
+      "version": "0.8.63",
+      "label": "selected-features",
+      "default_features": true,
+      "selected_features": [
+        "derive",
+        "simd"
+      ],
+      "status": "flux_failure",
+      "diagnostics": [
+        "the associated function or constant `read` exists for struct `Ref<&[u8], Unalign<Self>>`, but its trait bounds were not satisfied",
+        "the associated function or constant `read` exists for struct `Ref<&[u8], Unalign<Self>>`, but its trait bounds were not satisfied",
+        "the associated function or constant `read` exists for struct `Ref<&[u8], Unalign<Self>>`, but its trait bounds were not satisfied"
+      ]
+    }
+  ]
+}

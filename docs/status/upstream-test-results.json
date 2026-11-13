@@ -1,0 +1,169 @@
+{
+  "scope": "Selected upstream release tests; original manifests and adapted resolver-2 snapshots reported separately. Rust sources and assertions unchanged.",
+  "results": [
+    {
+      "name": "arrayvec",
+      "version": "0.7.8",
+      "target": "tests",
+      "status": "rustc-list-failure",
+      "configuration": "Original upstream manifest and Rust sources in an isolated copy.",
+      "rustc_test_inventory": [],
+      "flux_test_inventory": [],
+      "diagnostics": [
+        "no matching package named `bencher` found"
+      ],
+      "source_sha256": "31f6f05170058f7d834e6de196071a8935b504694a039c470cd0a0f0c8d7b032"
+    },
+    {
+      "name": "itoa",
+      "version": "1.0.19",
+      "target": "test",
+      "status": "flux-list-failure",
+      "configuration": "Original upstream manifest and Rust sources in an isolated copy.",
+      "rustc_test_inventory": [
+        "test_i128_max",
+        "test_i128_min",
+        "test_i16_0",
+        "test_i16_min",
+        "test_i64_min",
+        "test_max_str_len",
+        "test_u128_0",
+        "test_u128_max",
+        "test_u64_0",
+        "test_u64_half",
+        "test_u64_max"
+      ],
+      "flux_test_inventory": [],
+      "diagnostics": [
+        "the associated function or constant `read` exists for struct `Ref<&[u8], Unalign<Self>>`, but its trait bounds were not satisfied",
+        "the associated function or constant `read` exists for struct `Ref<&[u8], Unalign<Self>>`, but its trait bounds were not satisfied",
+        "the associated function or constant `read` exists for struct `Ref<&[u8], Unalign<Self>>`, but its trait bounds were not satisfied",
+        "cannot find derive macro `KnownLayout` in this scope"
+      ],
+      "source_sha256": "733495bc746c030850ddefead75739a7167fc215d846e749eeffe11d61a5c97d"
+    },
+    {
+      "name": "autocfg",
+      "version": "1.5.1",
+      "target": "tests",
+      "status": "flux-list-failure",
+      "configuration": "Original upstream manifest and Rust sources in an isolated copy.",
+      "rustc_test_inventory": [
+        "autocfg_version",
+        "edition_keyword_try",
+        "editions",
+        "probe_add",
+        "probe_alloc",
+        "probe_as_ref",
+        "probe_bad_sysroot_crate",
+        "probe_cleanup",
+        "probe_constant",
+        "probe_expression",
+        "probe_i128",
+        "probe_no_std",
+        "probe_raw",
+        "probe_std",
+        "probe_sum"
+      ],
+      "flux_test_inventory": [],
+      "diagnostics": [
+        "native planning requires feature resolver 2 or 3"
+      ],
+      "source_sha256": "fdc006f393163d9dc0eaa1d77c6a5d9cda1ae69a8b084c1e24999da861ec94fa"
+    },
+    {
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "target": null,
+      "status": "flux-list-failure",
+      "configuration": "Original upstream manifest and Rust sources in an isolated copy.",
+      "rustc_test_inventory": [
+        "tests::test_defer",
+        "tests::test_defer_success_1",
+        "tests::test_defer_success_2",
+        "tests::test_defer_unwind_1",
+        "tests::test_defer_unwind_2",
+        "tests::test_dropped_once_when_not_run",
+        "tests::test_into_inner",
+        "tests::test_only_dropped_by_closure_when_run"
+      ],
+      "flux_test_inventory": [],
+      "diagnostics": [
+        "native planning requires feature resolver 2 or 3"
+      ],
+      "source_sha256": "6be2970d7c844b3f76dc8ec2e1fa922d7eff420df87737c1b2a24751a4de8963"
+    },
+    {
+      "name": "autocfg",
+      "version": "1.5.1",
+      "target": "tests",
+      "status": "flux-list-failure",
+      "configuration": "Added an isolated workspace with resolver 2; upstream Rust sources and test bodies unchanged.",
+      "rustc_test_inventory": [
+        "autocfg_version",
+        "edition_keyword_try",
+        "editions",
+        "probe_add",
+        "probe_alloc",
+        "probe_as_ref",
+        "probe_bad_sysroot_crate",
+        "probe_cleanup",
+        "probe_constant",
+        "probe_expression",
+        "probe_i128",
+        "probe_no_std",
+        "probe_raw",
+        "probe_std",
+        "probe_sum"
+      ],
+      "flux_test_inventory": [],
+      "diagnostics": [
+        "invalid <snapshot>/autocfg/Cargo.lock: TOML parse error at line 1, column 1"
+      ],
+      "source_sha256": "fdc006f393163d9dc0eaa1d77c6a5d9cda1ae69a8b084c1e24999da861ec94fa"
+    },
+    {
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "target": null,
+      "status": "pass",
+      "configuration": "Added an isolated workspace with resolver 2; upstream Rust sources and test bodies unchanged.",
+      "rustc_test_inventory": [
+        "tests::test_defer",
+        "tests::test_defer_success_1",
+        "tests::test_defer_success_2",
+        "tests::test_defer_unwind_1",
+        "tests::test_defer_unwind_2",
+        "tests::test_dropped_once_when_not_run",
+        "tests::test_into_inner",
+        "tests::test_only_dropped_by_closure_when_run"
+      ],
+      "flux_test_inventory": [
+        "tests::test_defer",
+        "tests::test_defer_success_1",
+        "tests::test_defer_success_2",
+        "tests::test_defer_unwind_1",
+        "tests::test_defer_unwind_2",
+        "tests::test_dropped_once_when_not_run",
+        "tests::test_into_inner",
+        "tests::test_only_dropped_by_closure_when_run"
+      ],
+      "diagnostics": [],
+      "source_sha256": "6be2970d7c844b3f76dc8ec2e1fa922d7eff420df87737c1b2a24751a4de8963"
+    },
+    {
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "target": "doctests",
+      "configuration": "Added an isolated workspace with resolver 2; upstream Rust sources and test bodies unchanged.",
+      "status": "flux-failure",
+      "rustc_pass": 6,
+      "flux_pass": 5,
+      "flux_compile_blocked": 1,
+      "diagnostics": [
+        "selective extern macro imports are not supported yet",
+        "cannot find macro `defer` in this scope"
+      ]
+    }
+  ]
+}

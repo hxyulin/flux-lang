@@ -1,0 +1,71 @@
+[
+  {
+    "name": "serde-json",
+    "source": "tests/corpus/features/serde-json.rs",
+    "dependencies": [
+      {
+        "name": "serde",
+        "version": "1.0.229",
+        "features": [
+          "derive",
+          "rc"
+        ]
+      },
+      {
+        "name": "serde_json",
+        "version": "1.0.154",
+        "features": [
+          "preserve_order",
+          "raw_value"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "tokio",
+    "source": "tests/corpus/features/tokio.rs",
+    "dependencies": [
+      {
+        "name": "tokio",
+        "version": "1.54.1",
+        "features": [
+          "full"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "uuid",
+    "source": "tests/corpus/features/uuid.rs",
+    "dependencies": [
+      {
+        "name": "uuid",
+        "version": "1.29.0",
+        "features": [
+          "v4",
+          "serde"
+        ]
+      },
+      {
+        "name": "serde_json",
+        "version": "1.0.154",
+        "features": []
+      }
+    ]
+  },
+  {
+    "name": "time",
+    "source": "tests/corpus/features/time.rs",
+    "dependencies": [
+      {
+        "name": "time",
+        "version": "0.3.55",
+        "features": [
+          "formatting",
+          "parsing",
+          "macros"
+        ]
+      }
+    ]
+  }
+]
