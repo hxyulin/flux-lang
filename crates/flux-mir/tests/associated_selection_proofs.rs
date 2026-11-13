@@ -13,6 +13,11 @@ fn associated_selection_proofs_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, accepted, source) in [
         (
+            "declaration_bound_proofs",
+            true,
+            include_str!("../../../tests/run/declaration_bound_proofs.rs"),
+        ),
+        (
             "caller_bound_equivalence",
             true,
             include_str!("../../../tests/run/caller_bound_equivalence.rs"),

@@ -1,7 +1,4 @@
-//! Known trait-solver bugs, each checked against rustc's answer. A test
-//! marked `trait solver consolidation` fails today for the reason in its
-//! comment; `cargo test -p flux-ty --test trait_solver -- --ignored` lists
-//! what is still broken. Remove the marker once the bug is fixed.
+//! Trait proof, declaration, and coherence regressions checked against rustc.
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -60,12 +57,9 @@ fn accepts(name: &str, source: &str) {
     assert!(found.is_empty(), "flux {name}: {found:?}");
 }
 
-// Coherence treats a bound that fails for the other impl's parameters as
-// proof that two impls cannot overlap, and counts foreign traits and
-// types as negative evidence. flux accepts both.
+// Failure to prove a generic or upstream bound is not proof of disjointness.
 
 #[test]
-#[ignore = "trait solver consolidation"]
 fn overlapping_blanket_impls() {
     rejects(
         "overlapping_blanket_impls",
@@ -76,7 +70,6 @@ fn overlapping_blanket_impls() {
 }
 
 #[test]
-#[ignore = "trait solver consolidation"]
 fn blanket_impl_overlaps_foreign_type() {
     rejects(
         "blanket_impl_overlaps_foreign_type",
@@ -86,11 +79,9 @@ fn blanket_impl_overlaps_foreign_type() {
     );
 }
 
-// Outside bodies, every `Sized` goal on a parameter holds, even when the
-// parameter is `?Sized`. flux accepts all three.
+// Declaration proofs retain the caller's explicit and implicit Sized rules.
 
 #[test]
-#[ignore = "trait solver consolidation"]
 fn impl_method_adds_sized_bound() {
     rejects(
         "impl_method_adds_sized_bound",
@@ -102,7 +93,6 @@ fn impl_method_adds_sized_bound() {
 }
 
 #[test]
-#[ignore = "trait solver consolidation"]
 fn unsized_parameter_in_signature_bound() {
     rejects(
         "unsized_parameter_in_signature_bound",
@@ -114,7 +104,6 @@ fn unsized_parameter_in_signature_bound() {
 }
 
 #[test]
-#[ignore = "trait solver consolidation"]
 fn drop_impl_requires_sized() {
     rejects(
         "drop_impl_requires_sized",
@@ -125,8 +114,7 @@ fn drop_impl_requires_sized() {
 }
 
 // `u8: Tr` needs `W<u8>: Tr`, which needs `W<W<u8>>: Tr`, without end.
-// Bodies report the overflow; signatures and impl headers stop at a depth
-// limit and report "the trait bound ... is not satisfied" (E0277).
+// Bodies, signatures and impl headers must preserve the overflow result.
 
 const RECURSIVE: &str = "trait Tr { fn m(&self) -> u8 { 1 } }\nstruct W<T>(T);\n\
                          impl<T> Tr for T where W<T>: Tr {}\n";
@@ -152,7 +140,6 @@ fn recursive_impl_in_method_call() {
 }
 
 #[test]
-#[ignore = "trait solver consolidation"]
 fn recursive_impl_in_signature() {
     rejects(
         "recursive_impl_in_signature",
@@ -163,7 +150,6 @@ fn recursive_impl_in_signature() {
 }
 
 #[test]
-#[ignore = "trait solver consolidation"]
 fn recursive_impl_in_impl_where_clause() {
     rejects(
         "recursive_impl_in_impl_where_clause",
@@ -351,5 +337,212 @@ fn rigid_caller_bounds_normalize_both_sides() {
             .original_memberships_only()
             .holds(goal, &mut Vec::new()),
         "declaration proof rewrote its original memberships"
+    );
+}
+
+#[test]
+fn disjoint_local_and_unsized_impls() {
+    accepts(
+        "disjoint_local",
+        "trait Tr{}struct Local;impl<T:Copy>Tr for T{}impl Tr for Local{}",
+    );
+    accepts(
+        "disjoint_generic_local",
+        "trait Tr{}struct Local<T>(T);impl<T:Copy>Tr for T{}impl<T>Tr for Local<T>{}",
+    );
+    accepts(
+        "disjoint_unsized",
+        "trait Tr{}impl<T>Tr for T{}impl Tr for str{}",
+    );
+}
+
+#[test]
+fn implicit_method_and_explicit_drop_sized_requirements() {
+    rejects(
+        "implicit_method_sized",
+        "trait Tr{fn f<T:?Sized>(_:&T);}impl Tr for u8{fn f<T>(_:&T){}}",
+        "E0276",
+        "impl has stricter requirements than trait",
+    );
+    rejects(
+        "explicit_drop_sized",
+        "struct S<T:?Sized>(Box<T>);impl<T:?Sized>Drop for S<T>where T:Sized{fn drop(&mut self){}}",
+        "E0367",
+        "`Drop` impl requires `T: Sized` but the struct it is implemented for does not",
+    );
+    accepts(
+        "matching_unsized_method",
+        "trait Tr{fn f<T:?Sized>(_:&T);}impl Tr for u8{fn f<T:?Sized>(_:&T){}}",
+    );
+    accepts(
+        "matching_unsized_drop",
+        "struct S<T:?Sized>(Box<T>);impl<T:?Sized>Drop for S<T>{fn drop(&mut self){}}",
+    );
+    accepts(
+        "unsized_signature_bound",
+        "trait Tr{}impl<T:?Sized>Tr for Box<T>{}struct Need<X:Tr>(X);fn f<U:?Sized>(_:&Need<Box<U>>){}",
+    );
+    accepts(
+        "permuted_drop_parameters",
+        "struct S<A:?Sized,B>(Box<A>,B);impl<X,Y:?Sized>Drop for S<Y,X>{fn drop(&mut self){}}",
+    );
+    accepts(
+        "sized_from_supertrait",
+        "trait Tr{fn f<T:Copy+?Sized>(_:&T);}impl Tr for u8{fn f<T:Copy>(_:&T){}}",
+    );
+}
+
+#[test]
+fn rigid_overflow_status_is_query_local() {
+    use flux_solve::traits::{Evaluation, RigidSolver};
+    use flux_ty_ir::{Predicate, TraitRef, Ty};
+    let source = "trait Loop{}impl<T>Loop for T where T:Loop{}trait Bound{}fn overflow_caller<T:Bound>(){}struct OverflowNode{next:Option<Box<OverflowNode>>}";
+    assert!(rustc("overflow_query_context", source).status.success());
+    let (_, _, hir) = flux_hir::lower_text("overflow_query.rs", source);
+    let typed = flux_ty::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let (function, _) = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "overflow_caller")
+        .unwrap();
+    let memberships = &typed.sigs.fn_predicates[function];
+    let (loop_trait, data) = hir
+        .items
+        .traits
+        .iter()
+        .find(|(_, t)| t.name.as_str() == "Loop")
+        .unwrap();
+    let recursive = Predicate {
+        self_ty: Ty::BOOL,
+        trait_ref: TraitRef {
+            trait_: loop_trait,
+            name: data.name,
+            args: &[],
+        },
+    };
+    let proof = RigidSolver::new(&hir.items, &typed.sigs, memberships, &[], &[]);
+    let (node, data) = hir
+        .items
+        .structs
+        .iter()
+        .find(|(_, s)| s.name.as_str() == "OverflowNode")
+        .unwrap();
+    let (_, &send) = hir
+        .items
+        .lang_traits
+        .iter()
+        .find(|(name, _)| name.as_str() == "send")
+        .unwrap();
+    let recursive_auto = Predicate {
+        self_ty: Ty::adt(node, data.name, &[]),
+        trait_ref: TraitRef {
+            trait_: send,
+            name: hir.items.traits[send].name,
+            args: &[],
+        },
+    };
+    assert_eq!(proof.evaluate(recursive_auto), Evaluation::Proven);
+    assert_eq!(proof.evaluate(recursive), Evaluation::Overflow);
+    let absent = Predicate {
+        self_ty: Ty::BOOL,
+        ..memberships[0]
+    };
+    assert_eq!(proof.evaluate(absent), Evaluation::Unproven);
+    assert_eq!(proof.evaluate(memberships[0]), Evaluation::Proven);
+    assert_eq!(proof.evaluate(recursive), Evaluation::Overflow);
+    assert_eq!(proof.evaluate(recursive_auto), Evaluation::Proven);
+    assert_eq!(
+        flux_solve::traits::evaluate(&hir.items, &typed.sigs, &[], recursive),
+        Evaluation::Overflow
+    );
+    assert_eq!(
+        flux_solve::traits::evaluate(&hir.items, &typed.sigs, &[], absent),
+        Evaluation::Unproven
+    );
+    assert_eq!(
+        flux_solve::traits::evaluate(&hir.items, &typed.sigs, &[], recursive_auto),
+        Evaluation::Proven
+    );
+}
+
+#[test]
+fn projection_signature_retains_unsized_parameters() {
+    rejects(
+        "unsized_projection_receiver",
+        "trait Tr{type Out;}impl<T>Tr for Box<T>{type Out=();}fn f<U:?Sized>(_:&<Box<U>as Tr>::Out){}",
+        "E0277",
+        "the size for values of type `U` cannot be known at compilation time",
+    );
+    accepts(
+        "unsized_projection_valid",
+        "trait Tr{type Out;}impl<T:?Sized>Tr for Box<T>{type Out=();}fn f<U:?Sized>(_:&<Box<U>as Tr>::Out){}",
+    );
+}
+
+#[test]
+fn inductive_cycle_in_signature_reports_overflow() {
+    rejects(
+        "inductive_cycle_signature",
+        "trait Tr{}impl<T>Tr for T where T:Tr{}struct Need<T:Tr>(T);fn f(_:Need<bool>){}",
+        "E0275",
+        "overflow evaluating the requirement",
+    );
+}
+
+#[test]
+fn fundamental_callable_bounds_preserve_disjointness() {
+    for (name, ty) in [
+        ("char", "char"),
+        ("slice", "&[char]"),
+        ("array", "[char; 4]"),
+        ("foreign_nominal", "Vec<u8>"),
+    ] {
+        accepts(
+            name,
+            &format!("trait Tr{{}}impl<F:Fn(char)->bool>Tr for F{{}}impl Tr for {ty}{{}}"),
+        );
+    }
+    rejects(
+        "callable_reference_stays_open",
+        "trait Tr{}impl<F:Fn(char)->bool>Tr for F{}impl<T>Tr for &T{}",
+        "E0119",
+        "conflicting implementations of trait `Tr`",
+    );
+    rejects(
+        "callable_function_overlaps",
+        "trait Tr{}impl<F:Fn(char)->bool>Tr for F{}impl Tr for fn(char)->bool{}",
+        "E0119",
+        "conflicting implementations of trait `Tr`",
+    );
+}
+
+#[test]
+fn projected_slice_headers_preserve_disjointness() {
+    let header = "trait Ule{type Out;}struct Slice<T:Ule>([T::Out]);";
+    let specific = "impl<T:Ule>AsRef<Slice<T>>for &[T::Out]{fn as_ref(&self)->&Slice<T>{loop{}}}";
+    accepts("projected_slice_disjoint", &format!("{header}{specific}"));
+    rejects(
+        "projected_slice_existing_impl_overlaps",
+        &format!(
+            "{header}impl<T:Ule>AsRef<Slice<T>>for[T::Out]{{fn as_ref(&self)->&Slice<T>{{loop{{}}}}}}{specific}"
+        ),
+        "E0119",
+        "conflicting implementations of trait `AsRef<Slice<_>>`",
+    );
+}
+
+#[test]
+fn generic_trait_objects_retain_declared_callable_capabilities() {
+    accepts(
+        "non_callable_parser_object",
+        "trait Parser<I>{}impl<I,F:FnMut(&mut I)>Parser<I>for F{}impl<I>Parser<I>for Box<dyn Parser<I>>{}",
+    );
+    rejects(
+        "callable_object_actual_overlap",
+        "trait Parser<I>{}impl<I,F:FnMut(&mut I)>Parser<I>for F{}impl<I>Parser<I>for Box<dyn FnMut(&mut I)>{}",
+        "E0119",
+        "conflicting implementations of trait `Parser<_>`",
     );
 }

@@ -18,3 +18,11 @@ independent trait evidence before it uses a conditional associated output.
 
 Inference-time candidate probing remains in `flux-ty`. Recursion limits,
 coherence, and sizedness checks remain separate from caller-bound matching.
+
+Declaration checks carry the original `?Sized` parameter table into the rigid
+solver. Implicit `Sized` predicates are checked alongside written requirements
+when comparing methods, `Drop` impls, and overlapping impl headers.
+`RigidSolver::evaluate` distinguishes a completed proof, an unproven goal, and
+recursion overflow. An unproven goal is not a proof of disjointness. Coherence
+uses orphan-aware negative proofs instead. Overflow does not escape into later
+queries on the same context, and recursive auto traits retain coinductive proofs.

@@ -19,6 +19,57 @@ use crate::ty::{AliasTy, ClosureArgs, GenericArgs, Mutability, OpaqueTy, Ty, TyK
 use crate::{ConstInstance, Instance, Signatures};
 use flux_ty_ir::traits::{Bounds, Predicate, Projection, TraitRef};
 
+/// Result of a rigid proof query. An unproven goal can be absent or ambiguous;
+/// it is never evidence that an implementation cannot exist.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Evaluation {
+    /// The query has a complete proof.
+    Proven,
+    /// The available evidence does not establish a unique proof.
+    Unproven,
+    /// Proof search hit an inductive cycle or exhausted its recursion budget.
+    Overflow,
+}
+
+impl Evaluation {
+    fn from_proof(proven: bool, overflowed: bool) -> Self {
+        if proven {
+            Self::Proven
+        } else if overflowed {
+            Self::Overflow
+        } else {
+            Self::Unproven
+        }
+    }
+}
+
+/// Implicit `Sized` requirements of type parameters, in their owner's indices.
+/// Explicit predicates remain separate so source diagnostics retain their spans.
+pub fn implicit_sized_predicates(
+    items: &ItemTree,
+    sigs: &Signatures,
+    generics: &flux_hir::Generics,
+    first: usize,
+) -> Vec<Predicate> {
+    let Some(sized) = sigs.builtins.sized else {
+        return Vec::new();
+    };
+    generics
+        .params
+        .iter()
+        .enumerate()
+        .filter(|(_, param)| !param.is_const() && !param.maybe_unsized)
+        .map(|(index, param)| Predicate {
+            self_ty: Ty::param((first + index) as u32, param.name),
+            trait_ref: TraitRef {
+                trait_: sized,
+                name: items.traits[sized].name,
+                args: &[],
+            },
+        })
+        .collect()
+}
+
 /// `<self_ty as trait_ref>::name`.
 pub fn alias_of(items: &ItemTree, trait_ref: TraitRef, self_ty: Ty, name: Symbol) -> AliasTy {
     let args: Vec<Ty> = std::iter::once(self_ty)
@@ -251,6 +302,7 @@ pub struct RigidSolver<'a> {
     bound_matching: BoundMatching,
     normalizations: std::cell::RefCell<rustc_hash::FxHashMap<(Ty, Option<AliasTy>), Ty>>,
     proof_cuts: std::cell::Cell<u32>,
+    overflowed: std::cell::Cell<bool>,
     normalizing: std::cell::RefCell<rustc_hash::FxHashSet<(Ty, Option<AliasTy>)>>,
 }
 
@@ -284,6 +336,7 @@ impl<'a> RigidSolver<'a> {
             bound_matching: BoundMatching::Normalized,
             normalizations: Default::default(),
             proof_cuts: std::cell::Cell::new(0),
+            overflowed: std::cell::Cell::new(false),
             normalizing: Default::default(),
         }
     }
@@ -436,6 +489,20 @@ impl<'a> RigidSolver<'a> {
         caller::map_predicate(p, |ty| self.normalize_ty(ty, None))
     }
 
+    /// Evaluate one root requirement without leaking recursion status to the
+    /// next query made in this immutable caller context.
+    pub fn evaluate(&self, goal: Predicate) -> Evaluation {
+        let outer = self.overflowed.replace(false);
+        let proven = self.holds(goal, &mut Vec::new());
+        let overflowed = self.overflowed.replace(outer);
+        Evaluation::from_proof(proven, overflowed)
+    }
+
+    fn record_overflow(&self) {
+        self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
+        self.overflowed.set(true);
+    }
+
     pub fn holds(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> bool {
         if in_env(self.sigs, self.memberships, goal)
             || is_builtin_trait(self.items, goal.trait_ref.trait_, goal.self_ty)
@@ -459,10 +526,13 @@ impl<'a> RigidSolver<'a> {
         }
         if let Some((_, coinductive)) = auto_cycle(self.items, goal, stack) {
             self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
+            if !coinductive {
+                self.overflowed.set(true);
+            }
             return coinductive;
         }
         if stack.len() >= RIGID_RECURSION_LIMIT {
-            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
+            self.record_overflow();
             return false;
         }
         if let TyKind::Closure(_, args) = goal.self_ty.kind() {
@@ -518,7 +588,7 @@ impl<'a> RigidSolver<'a> {
         // fresh goal stack. Bound that path as well as membership recursion.
         let depth = self.depth.get();
         if depth as usize >= RIGID_RECURSION_LIMIT {
-            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
+            self.record_overflow();
             return None;
         }
         self.depth.set(depth + 1);
@@ -529,7 +599,7 @@ impl<'a> RigidSolver<'a> {
 
     fn select_at(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
         if stack.len() >= RIGID_RECURSION_LIMIT || stack.contains(&goal) {
-            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
+            self.record_overflow();
             return None;
         }
         stack.push(goal);
@@ -2058,37 +2128,90 @@ pub fn has_error(ty: Ty) -> bool {
 /// which generic parameters are rigid: from a bound, or from an `impl`
 /// block whose own bounds hold.
 pub fn holds(items: &ItemTree, sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
-    Holds {
+    evaluate(items, sigs, env, goal) == Evaluation::Proven
+}
+
+/// Evaluate a goal without caller projection equalities or a declaration's
+/// unsized-parameter table. Use [`RigidSolver::evaluate`] for scoped proofs.
+pub fn evaluate(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Predicate],
+    goal: Predicate,
+) -> Evaluation {
+    evaluate_in(items, sigs, env, &[], goal)
+}
+
+/// Evaluate using a declaration's unsized-parameter table. Projection
+/// normalization retains the ordinary, globally selected nominal definitions.
+pub fn evaluate_in(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Predicate],
+    unsized_params: &[bool],
+    goal: Predicate,
+) -> Evaluation {
+    evaluate_with(
         items,
         sigs,
         env,
-        stack: Vec::new(),
-        memo: rustc_hash::FxHashMap::default(),
-        cut: usize::MAX,
-        bound_matching: BoundMatching::Normalized,
-    }
-    .holds_at(goal)
+        unsized_params,
+        goal,
+        BoundMatching::Normalized,
+    )
 }
 
-/// Check a projection input written in a bound. Rust does not first rewrite
-/// a parameter's trait arguments using its other bounds in this position.
-/// Receiver projections still normalize, as required by nested type families.
+/// Evaluate a projection input without rewriting a parameter's written trait
+/// arguments, while retaining its declaration's implicit Sized constraints.
+pub fn evaluate_declaration_input(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Predicate],
+    unsized_params: &[bool],
+    goal: Predicate,
+) -> Evaluation {
+    evaluate_with(
+        items,
+        sigs,
+        env,
+        unsized_params,
+        goal,
+        BoundMatching::DeclarationInput,
+    )
+}
+
+fn evaluate_with(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Predicate],
+    unsized_params: &[bool],
+    goal: Predicate,
+    bound_matching: BoundMatching,
+) -> Evaluation {
+    let mut proof = Holds {
+        items,
+        sigs,
+        env,
+        unsized_params,
+        stack: Vec::new(),
+        memo: Default::default(),
+        cut: usize::MAX,
+        overflowed: false,
+        bound_matching,
+    };
+    let proven = proof.holds_at(goal);
+    Evaluation::from_proof(proven, proof.overflowed)
+}
+
+/// Check a projection input without caller Sized information. Declaration
+/// checks should use [`evaluate_declaration_input`] with their parameter table.
 pub fn holds_declaration_input(
     items: &ItemTree,
     sigs: &Signatures,
     env: &[Predicate],
     goal: Predicate,
 ) -> bool {
-    Holds {
-        items,
-        sigs,
-        env,
-        stack: Vec::new(),
-        memo: Default::default(),
-        cut: usize::MAX,
-        bound_matching: BoundMatching::DeclarationInput,
-    }
-    .holds_at(goal)
+    evaluate_declaration_input(items, sigs, env, &[], goal) == Evaluation::Proven
 }
 
 /// Auto-trait cycles are coinductive only while every edge in the cycle
@@ -2107,6 +2230,8 @@ fn auto_cycle(items: &ItemTree, goal: Predicate, stack: &[Predicate]) -> Option<
 /// proved. Types are DAGs (`struct A(B, B)`), so a nested goal recurs
 /// often; each is proved once.
 struct Holds<'a> {
+    unsized_params: &'a [bool],
+    overflowed: bool,
     bound_matching: BoundMatching,
     items: &'a ItemTree,
     sigs: &'a Signatures,
@@ -2161,10 +2286,12 @@ impl Holds<'_> {
         }
         if let Some((start, coinductive)) = auto_cycle(items, goal, &self.stack) {
             self.cut = self.cut.min(start);
+            self.overflowed |= !coinductive;
             return coinductive;
         }
         if self.stack.len() > 256 {
             self.cut = 0;
+            self.overflowed = true;
             return false;
         }
         if let Some(owner) = declared_alias_bound(sigs, goal)
@@ -2172,9 +2299,9 @@ impl Holds<'_> {
         {
             return true;
         }
-        // Outside bodies, a parameter is taken to be sized.
+        // A declaration's parameter table distinguishes implicit Sized from ?Sized.
         if items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
-            return !crate::maybe_unsized(items, sigs, goal.self_ty, &[], env);
+            return !crate::maybe_unsized(items, sigs, goal.self_ty, self.unsized_params, env);
         }
         if is_builtin_trait(items, goal.trait_ref.trait_, goal.self_ty) {
             return true;
@@ -2214,6 +2341,19 @@ impl Holds<'_> {
             let Some(args) = match_impl(items, sigs, imp, goal) else {
                 return false;
             };
+            if items.impls[imp]
+                .generics
+                .params
+                .iter()
+                .zip(&args)
+                .any(|(param, &ty)| {
+                    !param.is_const()
+                        && !param.maybe_unsized
+                        && crate::maybe_unsized(items, sigs, ty, self.unsized_params, env)
+                })
+            {
+                return false;
+            }
             let nested = sigs.impl_predicates.get(imp).into_iter().flatten();
             nested
                 .copied()

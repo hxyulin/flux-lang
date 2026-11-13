@@ -15,12 +15,13 @@ use crate::ty::{AliasTy, Ty, TyKind};
 use crate::{Signatures, TypeScope, resolve_type, wrong_arg_count};
 
 use flux_solve::traits::{
-    RigidSolver, alias_of, alias_predicate, auto_trait_requirements, caller_owner_projections,
-    caller_projections_of, caller_supertrait_projections, drop_impl, elaborate,
-    family_requirements, has_error, holds, impl_type, implied_projections, instantiate_impl_type,
-    is_auto_trait, is_copy, is_rigid, match_impl, match_impl_sized, normalize, normalize_predicate,
-    normalize_projection_rhs, owner_param_count, owner_predicates, predicates_of, projections_of,
-    select_impl, signature_impl_evidence, trait_self_predicate,
+    Evaluation, RigidSolver, alias_of, alias_predicate, auto_trait_requirements,
+    caller_owner_projections, caller_projections_of, caller_supertrait_projections, drop_impl,
+    elaborate, family_requirements, has_error, holds, impl_type, implicit_sized_predicates,
+    implied_projections, instantiate_impl_type, is_auto_trait, is_copy, is_rigid, match_impl,
+    match_impl_sized, normalize, normalize_predicate, normalize_projection_rhs, owner_param_count,
+    owner_predicates, predicates_of, projections_of, select_impl, signature_impl_evidence,
+    trait_self_predicate,
 };
 pub use flux_ty_ir::traits::{
     AssociatedTypeSig, Bounds, Predicate, Projection, TraitDefaults, TraitRef, TraitSig,
@@ -85,6 +86,12 @@ pub fn unmet_message(
 /// [`unmet_message`] for a check outside a body, which names types
 /// and traits as they print.
 fn unmet(items: &ItemTree, p: Predicate) -> String {
+    if items.traits[p.trait_ref.trait_].lang == Some(flux_intern::sym::sized) {
+        return format!(
+            "the size for values of type `{}` cannot be known at compilation time",
+            p.self_ty
+        );
+    }
     unmet_message(
         items,
         p,
@@ -1010,8 +1017,10 @@ pub fn check_impls(
                         ..goal.trait_ref
                     },
                 };
-                if !proof.holds(goal, &mut Vec::new()) {
-                    error(imp.self_range, unmet(items, goal));
+                match proof.evaluate(goal) {
+                    Evaluation::Proven => {}
+                    Evaluation::Unproven => error(imp.self_range, unmet(items, goal)),
+                    Evaluation::Overflow => error(imp.self_range, overflow_message(goal)),
                 }
             }
         }
@@ -1568,6 +1577,19 @@ fn check_method(
     let declared = sigs.fn_predicates.get(required).map_or(&[][..], |p| p);
     env.extend(declared.iter().map(|p| norm_predicate(p.subst(&args))));
     let env = elaborate(sigs, &env);
+    let bound_proof = RigidSolver::new(items, sigs, &env, projections, &parameters);
+    for p in implicit_sized_predicates(items, sigs, &function.generics, first) {
+        if !bound_proof.holds(p, &mut Vec::new()) {
+            let index = match p.self_ty.kind() {
+                TyKind::Param(p) => p.index as usize - first,
+                _ => unreachable!("implicit Sized predicates have parameter receivers"),
+            };
+            error(
+                function.generics.params[index].range,
+                "impl has stricter requirements than trait".to_owned(),
+            );
+        }
+    }
     // A trait's opaque result is an output family. Its implementation may
     // refine the concrete type, but must retain every promised bound and
     // associated output equality.
@@ -1613,7 +1635,7 @@ fn check_method(
         }
     }
     for (written, &p) in function.generics.predicates.iter().zip(own) {
-        if !holds(items, sigs, &env, norm_predicate(p)) {
+        if !bound_proof.holds(norm_predicate(p), &mut Vec::new()) {
             error(
                 written.bound.range,
                 "impl has stricter requirements than trait".to_owned(),
@@ -1678,39 +1700,6 @@ fn coherence_header_ty(items: &ItemTree, sigs: &Signatures, own: flux_hir::Crate
     walk(items, sigs, own, ty, &mut Vec::new())
 }
 
-/// Whether `general`'s bounds rule out the types of `specific`, as
-/// rustc's coherence does for a blanket `impl<T: Copy> Tr for T` and an
-/// `impl Tr for S` with an `S` that is not `Copy`: when `general`'s
-/// header matches `specific`'s, with `specific`'s parameters as rigid
-/// types, and some bound of `general` does not hold for them.
-fn excluded_by_bounds(
-    items: &ItemTree,
-    sigs: &Signatures,
-    general: ImplId,
-    specific: ImplId,
-) -> bool {
-    let (Some(&self_ty), Some(&trait_ref)) =
-        (sigs.impls.get(specific), sigs.impl_traits.get(specific))
-    else {
-        return false;
-    };
-    let goal = trait_ref.with_self(self_ty);
-    let Some(args) = match_impl_sized(items, sigs, general, goal, false) else {
-        return false;
-    };
-    // A parameter not bounded `?Sized` is not an unsized type, as
-    // rustc's implicit `Sized` bounds say: `impl<T: Clone> ToOwned for
-    // T` is not for `str`.
-    if match_impl(items, sigs, general, goal).is_none() {
-        return true;
-    }
-    let env = elaborate(sigs, sigs.impl_predicates.get(specific).map_or(&[], |p| p));
-    let bounds = sigs.impl_predicates.get(general).map_or(&[][..], |p| p);
-    bounds
-        .iter()
-        .any(|p| !holds(items, sigs, &env, p.subst(&args)))
-}
-
 /// Intersected headers retain implicit Sized requirements. A local bound also
 /// cannot hold for an orphan-closed constructor without an existing proof:
 /// downstream crates cannot add that impl (`&[T]`, for example).
@@ -1751,20 +1740,12 @@ fn intersection_excluded_by_bounds(
             .to_vec();
         // Header matching checks implicit Sized separately. The symmetric
         // intersection must carry the same requirement through substitution.
-        if let Some(sized) = sigs.builtins.sized {
-            for (index, param) in items.impls[id].generics.params.iter().enumerate() {
-                if !param.is_const() && !param.maybe_unsized {
-                    bounds.push(Predicate {
-                        self_ty: Ty::param(index as u32, param.name),
-                        trait_ref: TraitRef {
-                            trait_: sized,
-                            name: items.traits[sized].name,
-                            args: &[],
-                        },
-                    });
-                }
-            }
-        }
+        bounds.extend(implicit_sized_predicates(
+            items,
+            sigs,
+            &items.impls[id].generics,
+            0,
+        ));
         bounds
     };
     let a_bounds = bounds_of(a);
@@ -1828,6 +1809,9 @@ fn coherence_goal_impossible(
     fn represented(ty: Ty) -> bool {
         !has_error(ty) && !ty.has_aliases() && !ty.has_opaques()
     }
+    fn known_shape(ty: Ty) -> bool {
+        !has_error(ty) && !ty.has_opaques() && !matches!(ty.kind(), TyKind::Alias(_))
+    }
     fn closed_input(items: &ItemTree, ty: Ty) -> bool {
         match ty.kind() {
             TyKind::Ref(_, inner) => closed_input(items, inner),
@@ -1872,14 +1856,21 @@ fn coherence_goal_impossible(
     {
         return true;
     }
-    if !represented(goal.self_ty)
-        || !goal.trait_ref.args.iter().copied().all(represented)
+    if !known_shape(goal.self_ty)
+        || !goal.trait_ref.args.iter().copied().all(known_shape)
         || active.contains(&goal)
         || holds(items, sigs, &[], goal)
     {
         return false;
     }
-    let local_trait = items.modules[items.traits[goal.trait_ref.trait_].loc.module].krate == own;
+    let trait_module = items.traits[goal.trait_ref.trait_].loc.module;
+    // The compiler's core and alloc are distributed together. Their internal
+    // coherence checks see the same closed set of library implementations.
+    let local_trait = items.modules[trait_module].krate == own
+        || (items.crates[own.0 as usize].is_core && items.is_core(trait_module))
+        // Fn traits are fundamental: stable coherence can rely on a closed
+        // type not implementing them. Bare parameters remain open below.
+        || crate::fn_trait_kind(items, goal.trait_ref.trait_).is_some();
     let has_local_input = std::iter::once(goal.self_ty)
         .chain(goal.trait_ref.args.iter().copied())
         .any(|ty| local_input(items, own, ty));
@@ -1888,31 +1879,37 @@ fn coherence_goal_impossible(
     }
     if std::iter::once(goal.self_ty)
         .chain(goal.trait_ref.args.iter().copied())
-        .any(|ty| ty.has_params() || ty.has_infer())
+        .any(|ty| ty.has_params() || ty.has_infer() || ty.has_aliases())
     {
-        // A nominal constructor containing rigid parameters cannot become a
-        // downstream-owned type. Fundamental wrappers and bare parameters can.
-        // Callable builtin proofs do not apply to a local nominal constructor.
-        // Its generic fields do not make the constructor a closure or function.
-        let local_callable = crate::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
-            && matches!(goal.self_ty.kind(), TyKind::Adt(adt, _)
-                if items.modules[items.structs[adt.strukt].loc.module].krate == own
-                    && !flux_solve::is_lang_struct(items, adt.strukt, "owned_box"));
-        // Conversion lang markers name ordinary indexed traits. They do not
-        // introduce additional compiler-provided structural candidates.
-        let implicit_trait = items.traits[goal.trait_ref.trait_]
-            .lang
-            .is_some_and(|lang| !matches!(lang.as_str(), "From" | "Into"));
+        // Ordinary lang-marked traits (Iterator, From, ...) have no extra
+        // compiler-provided candidates. Only structural and callable builtin
+        // proofs must remain open in addition to the indexed implementations.
+        // Nominal Copy/Clone require an indexed impl, including derives.
+        let implicit_trait = is_auto_trait(items, goal.trait_ref.trait_)
+            || items.traits[goal.trait_ref.trait_]
+                .lang
+                .is_some_and(|lang| {
+                    matches!(lang.as_str(), "sized" | "fn_ptr_trait")
+                        || (matches!(lang.as_str(), "copy" | "clone")
+                            && !matches!(goal.self_ty.kind(), TyKind::Adt(_, _)))
+                })
+            || (crate::fn_trait_kind(items, goal.trait_ref.trait_).is_some()
+                && matches!(
+                    goal.self_ty.kind(),
+                    TyKind::FnDef(_) | TyKind::FnPtr(_) | TyKind::Closure(_, _)
+                ));
         if !std::iter::once(goal.self_ty)
             .chain(goal.trait_ref.args.iter().copied())
             .all(|ty| closed_input(items, ty))
-            || (implicit_trait && !local_callable)
+            || implicit_trait
             || matches!(goal.self_ty.kind(), TyKind::Dynamic(object)
                 if flux_solve::objects::supertraits_of(items, object.trait_)
                     .contains(&goal.trait_ref.trait_))
         {
             return false;
         }
+        // Nested projections retain their outer constructors. A structural
+        // mismatch is disjoint; a matching projected header stays unknown.
         let goal_header: Vec<Ty> = std::iter::once(goal.self_ty)
             .chain(goal.trait_ref.args.iter().copied())
             .collect();
@@ -2106,11 +2103,16 @@ pub fn check_trivial_bounds(
             }) {
                 continue;
             }
-            if !holds(items, sigs, &[], p) {
+            let result = flux_solve::traits::evaluate(items, sigs, &[], p);
+            if result != Evaluation::Proven {
                 diagnostics.push(Diagnostic {
                     file,
                     range: TextRange::new(written.ty_range.start(), written.bound.range.end()),
-                    message: unmet(items, p),
+                    message: if result == Evaluation::Overflow {
+                        overflow_message(p)
+                    } else {
+                        unmet(items, p)
+                    },
                 });
             }
         }
@@ -2783,13 +2785,20 @@ impl<'a, 'd> WfCheck<'a, 'd> {
                 {
                     continue;
                 }
-                if !proof.holds(requirement, &mut Vec::new()) && !proof.holds(goal, &mut Vec::new())
-                {
-                    let leaf = goal;
-                    if !self.reported.contains(&leaf) {
-                        self.reported.push(leaf);
-                        self.report(range, unmet(self.items, leaf));
-                    }
+                let raw = proof.evaluate(requirement);
+                let result = if raw == Evaluation::Proven || requirement == goal {
+                    raw
+                } else {
+                    proof.evaluate(goal)
+                };
+                if result != Evaluation::Proven && !self.reported.contains(&goal) {
+                    self.reported.push(goal);
+                    let message = if raw == Evaluation::Overflow || result == Evaluation::Overflow {
+                        overflow_message(goal)
+                    } else {
+                        unmet(self.items, goal)
+                    };
+                    self.report(range, message);
                 }
                 work.push((goal, depth + 1));
             }
@@ -2895,19 +2904,21 @@ impl<'a, 'd> WfCheck<'a, 'd> {
         let proof = self.solver().original_memberships_only();
         for alias in aliases {
             let goal = normalize_predicate(self.items, self.sigs, alias_predicate(alias));
-            if flux_solve::traits::holds_declaration_input(
+            if let Some((leaf, message)) = scoped_failure(
                 self.items,
                 self.sigs,
-                self.scope.env,
+                &proof,
                 goal,
-            ) || proof.holds(goal, &mut Vec::new())
+                flux_solve::traits::evaluate_declaration_input(
+                    self.items,
+                    self.sigs,
+                    self.scope.env,
+                    &self.scope.unsized_params,
+                    goal,
+                ),
+            ) && !self.reported.contains(&leaf)
             {
-                continue;
-            }
-            let leaf = unmet_leaf(self.items, self.sigs, self.scope.env, goal, 0);
-            if !self.reported.contains(&leaf) {
                 self.reported.push(leaf);
-                let message = unmet(self.items, leaf);
                 self.report(self.span, message);
             }
         }
@@ -2932,11 +2943,19 @@ impl<'a, 'd> WfCheck<'a, 'd> {
                 }
                 seen.push(alias);
                 let goal = normalize_predicate(self.items, self.sigs, alias_predicate(alias));
-                if !holds(self.items, self.sigs, self.scope.env, goal)
-                    && !proof.holds(goal, &mut Vec::new())
-                {
-                    let leaf = unmet_leaf(self.items, self.sigs, self.scope.env, goal, 0);
-                    let message = unmet(self.items, leaf);
+                if let Some((_, message)) = scoped_failure(
+                    self.items,
+                    self.sigs,
+                    &proof,
+                    goal,
+                    flux_solve::traits::evaluate_in(
+                        self.items,
+                        self.sigs,
+                        self.scope.env,
+                        &self.scope.unsized_params,
+                        goal,
+                    ),
+                ) {
                     self.report(range, message);
                 }
             }
@@ -3138,15 +3157,32 @@ fn unmet_struct_bounds(
                         ..p.trait_ref
                     },
                 };
-                if holds(items, sigs, scope.env, p) {
-                    continue;
-                }
-                let leaf = unmet_leaf(items, sigs, scope.env, p, 0);
-                if !reported.contains(&leaf) {
+                let proof = RigidSolver::new(
+                    items,
+                    sigs,
+                    scope.env,
+                    scope.projections,
+                    &scope.unsized_params,
+                );
+                if let Some((leaf, message)) = scoped_failure(
+                    items,
+                    sigs,
+                    &proof,
+                    p,
+                    flux_solve::traits::evaluate_in(
+                        items,
+                        sigs,
+                        scope.env,
+                        &scope.unsized_params,
+                        p,
+                    ),
+                ) && !reported.contains(&leaf)
+                {
                     reported.push(leaf);
-                    out.push((range.whole.unwrap_or(range.bound), unmet(items, leaf)));
+                    out.push((range.whole.unwrap_or(range.bound), message));
                 }
             }
+
             for q in sigs
                 .struct_projections
                 .get(adt.strukt)
@@ -3164,7 +3200,14 @@ fn unmet_struct_bounds(
                         args: Ty::list(&alias.args[1..]),
                     },
                 };
-                if !holds(items, sigs, scope.env, goal) {
+                let proof = RigidSolver::new(
+                    items,
+                    sigs,
+                    scope.env,
+                    scope.projections,
+                    &scope.unsized_params,
+                );
+                if proof.evaluate(goal) != Evaluation::Proven {
                     continue;
                 }
                 let found = normalized(Ty::alias(alias));
@@ -3207,11 +3250,30 @@ fn unmet_struct_bounds(
             let normalized = |t: Ty| normalize(items, sigs, scope.projections, t);
             let goal = alias_predicate(alias.map_args(normalized));
             let goal = normalize_predicate(items, sigs, goal);
+            let proof = RigidSolver::new(
+                items,
+                sigs,
+                scope.env,
+                scope.projections,
+                &scope.unsized_params,
+            );
             let requirements = family_requirements(items, sigs, alias);
             for requirement in requirements.predicates {
                 let requirement = normalize_predicate(items, sigs, requirement);
-                if !holds(items, sigs, scope.env, requirement) {
-                    out.push((range.bound, unmet(items, requirement)));
+                if let Some((_, message)) = scoped_failure(
+                    items,
+                    sigs,
+                    &proof,
+                    requirement,
+                    flux_solve::traits::evaluate_in(
+                        items,
+                        sigs,
+                        scope.env,
+                        &scope.unsized_params,
+                        requirement,
+                    ),
+                ) {
+                    out.push((range.bound, message));
                 }
             }
             for projection in requirements.projections {
@@ -3222,19 +3284,22 @@ fn unmet_struct_bounds(
                     ));
                 }
             }
-            let proof = RigidSolver::new(
+            if let Some((leaf, message)) = scoped_failure(
                 items,
                 sigs,
-                scope.env,
-                scope.projections,
-                &scope.unsized_params,
-            );
-            if !holds(items, sigs, scope.env, goal) && !proof.holds(goal, &mut Vec::new()) {
-                let leaf = unmet_leaf(items, sigs, scope.env, goal, 0);
-                if !reported.contains(&leaf) {
-                    reported.push(leaf);
-                    out.push((range.bound, unmet(items, leaf)));
-                }
+                &proof,
+                goal,
+                flux_solve::traits::evaluate_in(
+                    items,
+                    sigs,
+                    scope.env,
+                    &scope.unsized_params,
+                    goal,
+                ),
+            ) && !reported.contains(&leaf)
+            {
+                reported.push(leaf);
+                out.push((range.bound, message));
             }
         }
         TyKind::Tuple(elements) => {
@@ -3249,6 +3314,70 @@ fn unmet_struct_bounds(
         }
         _ => {}
     }
+}
+
+fn overflow_message(goal: Predicate) -> String {
+    format!("overflow evaluating the requirement `{goal}`")
+}
+
+fn scoped_failure(
+    items: &ItemTree,
+    sigs: &Signatures,
+    proof: &RigidSolver<'_>,
+    goal: Predicate,
+    alternate: Evaluation,
+) -> Option<(Predicate, String)> {
+    if alternate == Evaluation::Proven {
+        return None;
+    }
+    match proof.evaluate(goal) {
+        Evaluation::Proven => None,
+        Evaluation::Overflow => Some((goal, overflow_message(goal))),
+        Evaluation::Unproven if alternate == Evaluation::Overflow => {
+            Some((goal, overflow_message(goal)))
+        }
+        Evaluation::Unproven => {
+            let leaf = unmet_scoped_leaf(items, sigs, proof, goal, 0);
+            Some((leaf, unmet(items, leaf)))
+        }
+    }
+}
+
+fn unmet_scoped_leaf(
+    items: &ItemTree,
+    sigs: &Signatures,
+    proof: &RigidSolver<'_>,
+    goal: Predicate,
+    depth: u32,
+) -> Predicate {
+    if depth > 32 {
+        return goal;
+    }
+    let mut candidates = sigs
+        .impl_index
+        .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
+        .filter_map(|imp| Some((imp, match_impl_sized(items, sigs, imp, goal, false)?)));
+    let (Some((imp, args)), None) = (candidates.next(), candidates.next()) else {
+        return goal;
+    };
+    let implicit = implicit_sized_predicates(items, sigs, &items.impls[imp].generics, 0);
+    for p in implicit
+        .iter()
+        .chain(sigs.impl_predicates.get(imp).into_iter().flatten())
+    {
+        let p = p.subst(&args);
+        let p = Predicate {
+            self_ty: proof.normalize_ty(p.self_ty, None),
+            trait_ref: TraitRef {
+                args: crate::ty::map_list(p.trait_ref.args, |ty| proof.normalize_ty(ty, None)),
+                ..p.trait_ref
+            },
+        };
+        if !proof.holds(p, &mut Vec::new()) {
+            return unmet_scoped_leaf(items, sigs, proof, p, depth + 1);
+        }
+    }
+    goal
 }
 
 /// What makes `goal`, which does not hold given `env`, fail: through the
@@ -3506,8 +3635,6 @@ fn check_overlap(
                 a_ty != Ty::ERROR
                     && !broken_header(items, sigs, a)
                     && unify_headers(&a_header, &b_header).is_some()
-                    && !excluded_by_bounds(items, sigs, a, later)
-                    && !excluded_by_bounds(items, sigs, later, a)
                     && !intersection_excluded_by_bounds(items, sigs, a, later)
             });
             let Some(earlier) = earlier else {
@@ -3788,16 +3915,38 @@ fn check_drop_impls(
                 to_struct[param.index as usize] = Ty::param(i as u32, names[i].name);
             }
         }
+        let struct_unsized =
+            flux_solve::unsized_params(items, None, &items.structs[adt.strukt].generics);
+        let struct_projections = sigs
+            .struct_projections
+            .get(adt.strukt)
+            .map_or(&[][..], |p| &**p);
+        let proof = RigidSolver::new(
+            items,
+            sigs,
+            &struct_env,
+            struct_projections,
+            &struct_unsized,
+        );
+        for p in implicit_sized_predicates(items, sigs, &imp.generics, 0) {
+            if !proof.holds(p.subst(&to_struct), &mut Vec::new()) {
+                error(
+                    imp.def_range,
+                    &format!(
+                        "`Drop` impl requires `{}: Sized` but the struct it is implemented for does not",
+                        p.self_ty
+                    ),
+                );
+            }
+        }
         let predicates = sigs.impl_predicates.get(id).map_or(&[][..], |p| p);
         if predicates.len() == imp.generics.predicates.len() {
             for (written, &p) in imp.generics.predicates.iter().zip(predicates) {
                 // Bounds that hold anyway: `T: Sized`, `i32: Copy`.
-                let sized = items.traits[p.trait_ref.trait_].lang == Some(flux_intern::sym::sized);
                 let has_params =
                     p.self_ty.has_params() || p.trait_ref.args.iter().any(|a| a.has_params());
-                if sized
-                    || !has_params && holds(items, sigs, &[], p)
-                    || has_params && holds(items, sigs, &struct_env, p.subst(&to_struct))
+                if !has_params && proof.holds(p, &mut Vec::new())
+                    || has_params && proof.holds(p.subst(&to_struct), &mut Vec::new())
                 {
                     continue;
                 }
