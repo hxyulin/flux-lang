@@ -1991,6 +1991,11 @@ impl Ctx<'_> {
             AssocItem::Const(c) if !methods => Some(AssocItem::Const(c)),
             _ => None,
         };
+        let in_scope = self.traits_in_scope_with(name);
+        let object_traits = match ty.kind() {
+            TyKind::Dynamic(object) => flux_solve::objects::supertraits_of(items, object.trait_),
+            _ => Vec::new(),
+        };
         let mut found: Vec<(AssocItem, Option<TraitRef>)> = Vec::new();
         if ty.has_params() || matches!(ty.kind(), TyKind::Opaque(_) | TyKind::Dynamic(_)) {
             let alias_bounds = self.alias_bounds(ty);
@@ -1999,6 +2004,16 @@ impl Ctx<'_> {
                 if (p.self_ty == ty || p.self_ty == known)
                     && let Some(f) = wanted(p.trait_ref.trait_)
                 {
+                    // Bounds expose methods without an import on a type
+                    // parameter or an object's principal/supertraits. Bounds
+                    // on projections, opaque types and generic aggregates
+                    // still require the providing trait to be in scope.
+                    if !matches!(ty.kind(), TyKind::Param(_))
+                        && !object_traits.contains(&p.trait_ref.trait_)
+                        && !in_scope.contains(&p.trait_ref.trait_)
+                    {
+                        continue;
+                    }
                     if let Some((_, chosen)) = found.iter_mut().find(|(g, _)| *g == f) {
                         // One method may have several caller-provided trait
                         // argument lists. Keep its identity, but let ordinary
@@ -2028,7 +2043,6 @@ impl Ctx<'_> {
         {
             return found;
         }
-        let in_scope = self.traits_in_scope_with(name);
         for t in in_scope {
             let Some(f) = wanted(t) else {
                 continue;

@@ -447,3 +447,12 @@ fn tokio_util_default_graph_matches_rustc() {
         &[("tokio", "1.54.1")],
     );
 }
+
+#[test]
+fn chrono_default_graph_matches_rustc() {
+    compare_registry(
+        "chrono",
+        "0.4.45",
+        include_str!("fixtures/corpus_crates/chrono.rs.txt"),
+    );
+}

@@ -1,0 +1,14 @@
+#![allow(deprecated)]
+use chrono::{FixedOffset, NaiveDate, TimeZone, Utc};
+fn main() {
+    let offset = FixedOffset::east_opt(19_800).unwrap();
+    let datetime = offset.with_ymd_and_hms(2024,2,29,23,45,6).single().unwrap();
+    assert_eq!(datetime.to_string(), "2024-02-29 23:45:06 +05:30");
+    let naive = NaiveDate::from_ymd_opt(2024,2,29).unwrap();
+    let date = offset.from_local_date(&naive).single().unwrap();
+    assert_eq!(date.to_string(), "2024-02-29+05:30");
+    let utc = datetime.with_timezone(&Utc);
+    assert_eq!(utc.timestamp(),datetime.timestamp());
+    println!("{} {} {}",date,datetime,utc);
+    println!("{}",datetime.format("%Y-%m-%d %H:%M:%S %:z"));
+}

@@ -662,6 +662,12 @@ Carrier detection is conservative when fields or projections can hide a binder;
 scalar inherited callback signatures remain available.
 These lookup candidates do not become assumptions when checking the impl.
 
+Bound methods on associated types, opaque types and generic aggregates require
+the providing trait to be in scope. Direct type parameters expose their bound
+methods without imports, as do trait objects for their principal and supertraits.
+The enclosing trait impl brings its trait into scope inside its methods;
+unrelated bounds do not make conflicting methods visible.
+
 Calls of trait methods are static: each calls the method of the
 `impl` block for its types, chosen when the program is compiled.
 Operators on other types than integers and `bool` call the methods of
