@@ -8694,7 +8694,7 @@ impl<'a> Cx<'a> {
                 } else {
                     self.family_goals.clone()
                 };
-                if !self.family_output_outlives(ty, &vars, bound, &env) {
+                if !self.constrain_family_outlives(ty, &vars, bound, &env, range) {
                     self.errors.push(Diagnostic::new(
                         range,
                         "associated output outlives inputs cannot be proved",

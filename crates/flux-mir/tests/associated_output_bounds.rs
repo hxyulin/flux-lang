@@ -13,6 +13,26 @@ fn associated_output_bounds_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, accepted, source) in [
         (
+            "logos_source_lifetimes",
+            true,
+            include_str!("../../../tests/run/logos_source_lifetimes.rs"),
+        ),
+        (
+            "trait_owner_wrong_lifetime",
+            false,
+            "trait Token<'a>{}enum E<'a,T:Token<'a>>{Value(T),Borrowed(&'a())}trait Callback<'a,'b,T:Token<'a>>{fn get()->E<'b,T>;}fn main(){}",
+        ),
+        (
+            "family_default_self_wrong_lifetime",
+            false,
+            "trait Same<Rhs=Self>{}impl<T>Same for T{}trait G:'static{type Out<'a>:Same<Self::Out<'static>>where Self:'a;}struct S;impl G for S{type Out<'a>=&'a str;}fn main(){}",
+        ),
+        (
+            "associated_source_escape",
+            false,
+            "trait Source{type Slice<'a>where Self:'a;fn slice(&self)->Self::Slice<'_>;}trait Token<'s>{type Source:Source+?Sized+'s;}struct Lexer<'s,T:Token<'s>>{source:&'s T::Source}impl<'s,T:Token<'s>> Lexer<'s,T>{fn escape(&self)-><T::Source as Source>::Slice<'static>{self.source.slice()}}fn main(){}",
+        ),
+        (
             "forward_output",
             true,
             "trait Error{}trait Access<'a>{type Error:Error;}impl<'a,A:Access<'a>+?Sized>Access<'a>for &mut A{type Error=A::Error;}fn main(){}",

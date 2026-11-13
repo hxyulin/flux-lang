@@ -181,7 +181,17 @@ impl<'a> Codec<'a> {
                     return Err("expected split proc-macro punctuation".into());
                 }
                 let i = (tree.punct.len() / 3) as u32;
-                tree.punct.extend([span, ch as u32, u32::from(t.joint)]);
+                // Source adjacency also includes `|arg` and `&value`.
+                // Proc-macro Joint spacing applies only between punctuation,
+                // not between punctuation and an adjacent identifier/literal.
+                let joint = t.joint
+                    && tokens.get(*pos).is_some_and(|next| {
+                        (next.kind.is_punct()
+                            && next.kind != SyntaxKind::UNDERSCORE
+                            && !matches!(next.text.as_str(), "(" | ")" | "{" | "}" | "[" | "]"))
+                            || next.kind == SyntaxKind::LIFETIME_IDENT
+                    });
+                tree.punct.extend([span, ch as u32, u32::from(joint)]);
                 children.push(i << 2 | 2);
             }
         }

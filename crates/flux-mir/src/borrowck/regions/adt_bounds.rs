@@ -685,11 +685,32 @@ pub(crate) fn check_adt_declarations(
         for i in lifetimes.len()..metadata.names.len() {
             lifetimes.push(cx.new_universal(format!("'{i}")));
         }
+        let mut owner_bounds = Vec::new();
         if let Some(flux_hir::Owner::Trait(owner)) = data.owner {
             complete &= sigs.regions.traits.get(owner).is_some_and(|row| {
                 row.names.len() == metadata.owner as usize
                     && metadata.names.get(..row.names.len()) == Some(&row.names[..])
             });
+            let declared = sigs.trait_predicates.get(owner).map_or(&[][..], |p| p);
+            if !declared.is_empty() {
+                if let Some((subjects, traits, _)) =
+                    flux_ty::regions::trait_bound_regions(items, sigs, owner)
+                {
+                    complete &= subjects.len() == declared.len() && traits.len() == declared.len();
+                    owner_bounds.extend(
+                        declared
+                            .iter()
+                            .copied()
+                            .zip(subjects)
+                            .zip(traits)
+                            .map(|((predicate, row), traits)| (predicate, row, traits)),
+                    );
+                    cx.header_predicates
+                        .extend(flux_solve::traits::elaborate(sigs, declared));
+                } else {
+                    complete = false;
+                }
+            }
             let predicate = flux_solve::traits::trait_self_predicate(items, owner);
             let trait_regions = TraitRefRegions {
                 bound: 0,
@@ -729,7 +750,7 @@ pub(crate) fn check_adt_declarations(
                 }
             }
         }
-        let mut pending = Vec::new();
+        let mut pending = owner_bounds;
         for (index, &predicate) in sigs
             .fn_predicates
             .get(function)

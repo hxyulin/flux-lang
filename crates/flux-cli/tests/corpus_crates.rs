@@ -75,7 +75,11 @@ fn compare_registry_feature_dependencies(
         let upstream = Path::new(package["manifest_path"].as_str().unwrap())
             .parent()
             .unwrap();
-        support::inventory::collect(&upstream.join("src"), &mut originals);
+        let sources = upstream.join("src");
+        support::inventory::collect(
+            if sources.is_dir() { &sources } else { upstream },
+            &mut originals,
+        );
         originals.push((
             upstream.join("Cargo.toml"),
             std::fs::read(upstream.join("Cargo.toml")).unwrap(),
@@ -481,5 +485,23 @@ fn uuid_v4_serde_features_match_rustc() {
             ("uuid", "1.29.0", &["v4", "serde"]),
             ("serde_json", "1.0.154", &[]),
         ],
+    );
+}
+
+#[test]
+fn logos_default_graph_matches_rustc() {
+    compare_registry(
+        "logos",
+        "0.16.1",
+        include_str!("../../../tests/corpus/consumers/logos.rs"),
+    );
+}
+
+#[test]
+fn logos_safe_source_graph_matches_rustc() {
+    compare_registry_feature_dependencies(
+        "logos",
+        include_str!("../../../tests/corpus/consumers/logos.rs"),
+        &[("logos", "0.16.1", &["forbid_unsafe"])],
     );
 }

@@ -13,6 +13,21 @@ fn associated_selection_proofs_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, accepted, source) in [
         (
+            "pending_const_call_bounds",
+            true,
+            include_str!("../../../tests/run/pending_const_call_bounds.rs"),
+        ),
+        (
+            "pending_const_wrong_argument",
+            false,
+            "const fn index()->usize{1}fn take<const N:usize>(_:u32){}fn main(){take::<{index()}>(false);}",
+        ),
+        (
+            "pending_const_missing_impl",
+            false,
+            "trait Field<const N:usize>{type Value;}impl Field<0>for(){type Value=u8;}const fn index()->usize{1}fn get<const N:usize>()-><()as Field<N>>::Value where ():Field<N>{loop{}}fn main(){let _=get::<{index()}>();}",
+        ),
+        (
             "associated_source_blanket",
             true,
             include_str!("../../../tests/run/associated_source_blanket.rs"),

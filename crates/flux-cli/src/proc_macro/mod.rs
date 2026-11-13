@@ -433,6 +433,60 @@ mod tests {
     use super::*;
     use flux_syntax::{LexedStr, TextRange, TokenOrigin};
     #[test]
+    fn host_punctuation_spacing_excludes_adjacent_values() {
+        let text = "|arg|{} &value ::path &42 &(value)";
+        let mut db = flux_hir::SourceDb::new();
+        let file = db.add("spacing.rs", text);
+        let lexed = LexedStr::new(text);
+        let tokens = (0..lexed.len())
+            .filter(|&i| !lexed.kind(i).is_trivia())
+            .map(|i| ProcMacroToken {
+                edition: flux_syntax::Edition::E2024,
+                kind: lexed.kind(i),
+                text: lexed.token_text(i).into(),
+                joint: i + 1 < lexed.len() && !lexed.kind(i + 1).is_trivia(),
+                origin: TokenOrigin {
+                    range: lexed.token_range(i),
+                    group: 1,
+                    ctxt: 0,
+                },
+            })
+            .collect();
+        let invocation = ProcMacroInput {
+            invocation_crate: 1,
+            tokens,
+            attributes: None,
+            source: db.shared(file),
+            call: TextRange::new(0, text.len() as u32),
+            range_base: 0,
+            mixed_context: 1,
+            environment: Default::default(),
+            current_dir: Default::default(),
+        };
+        let mut codec = tokens::Codec::new(&invocation).unwrap();
+        let tree = codec.encode(&invocation.tokens).unwrap();
+        let actual: Vec<_> = tree
+            .punct
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|row| (char::from_u32(row[1]).unwrap(), row[2] != 0))
+            .collect();
+        assert_eq!(
+            actual,
+            [
+                ('|', false),
+                ('|', false),
+                ('&', false),
+                (':', true),
+                (':', false),
+                ('&', false),
+                ('&', false)
+            ]
+        );
+    }
+
+    #[test]
     fn only_reviewed_protocol_six_toolchains_are_admitted() {
         for commit in [
             "58cf8f9c35b355199727627d07ae34a4e2846d67",

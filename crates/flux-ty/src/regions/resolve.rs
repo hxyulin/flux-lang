@@ -206,7 +206,26 @@ fn family_contract(
                 .enumerate()
                 .map(|(i, &ty)| {
                     args.and_then(|a| a.types.get(i)).map_or_else(
-                        || vec![Region::Erased; slots(items, ty)].into_boxed_slice(),
+                        || {
+                            // A default `Rhs = Self` on an output bound means
+                            // this exact family occurrence, including its named
+                            // owner and family binders, not erased lifetimes.
+                            let self_default = sigs.trait_defaults.get(bound.trait_)
+                                .and_then(|defaults| defaults.get(i)).copied().flatten()
+                                .is_some_and(|default| matches!(default.kind(), TyKind::Param(p) if p.index == 0));
+                            if self_default
+                                && let TyKind::Alias(alias) = ty.kind()
+                                && matches!(owner, flux_hir::Owner::Trait(id) if id == alias.trait_)
+                                && alias.owner_lifetimes as usize == owner_names.len()
+                                && alias.family_lifetimes as usize == generics.lifetimes.len()
+                                && alias.template_args().iter().all(|&arg| slots(items, arg) == 0)
+                            {
+                                (0..owner_names.len() + generics.lifetimes.len())
+                                    .map(|index| Region::Param(index as u32)).collect()
+                            } else {
+                                vec![Region::Erased; slots(items, ty)].into_boxed_slice()
+                            }
+                        },
                         |written| walker.regions(written, ty),
                     )
                 })

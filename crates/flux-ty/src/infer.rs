@@ -4523,6 +4523,14 @@ impl Ctx<'_> {
         }
     }
 
+    /// Const argument types/values are resolved by the existing body retry.
+    /// Do not normalize signatures or search impls with their error placeholders.
+    fn pending_const_arguments(&self, args: &[Ty]) -> bool {
+        args.iter().any(|ty| ty.has_error())
+            && (!self.lens.missing.borrow().is_empty()
+                || !self.lens.new_arg_tys.borrow().is_empty())
+    }
+
     fn infer_call(&mut self, id: ExprId, callee: ExprId, args: &[ExprId]) -> Ty {
         let found = match self.body.exprs[callee] {
             Expr::Path(Res::Function(function)) => self.select_path_fn(callee, function),
@@ -4568,6 +4576,10 @@ impl Ctx<'_> {
             trait_args.as_deref(),
             self.range(callee),
         );
+        if self.pending_const_arguments(&generic_args) {
+            self.infer_args(args);
+            return Ty::ERROR;
+        }
         let sig = &self.instance_sig(function, &generic_args);
         self.meet_expectation(id, sig.ret);
         // What the function's own arguments make of its return type must
@@ -6326,6 +6338,10 @@ impl Ctx<'_> {
         }
         self.check_fn_trait_method(function, name_range);
         let generic_args = self.instantiate_fn(id, function, Some(base), trait_args, name_range);
+        if self.pending_const_arguments(&generic_args) {
+            self.infer_args(args);
+            return Ty::ERROR;
+        }
         if !self.items.is_visible(data.loc.vis, self.module) {
             self.error(name_range, format!("method `{}` is private", data.name));
         }

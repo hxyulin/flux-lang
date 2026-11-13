@@ -217,7 +217,7 @@ impl Cx<'_> {
         let Some(mut sources) = self.family_outlives_sources(value, row, env) else {
             return false;
         };
-        if sources.contains(&STATIC) {
+        if sources.contains(&STATIC) || sources.contains(&target) {
             return true;
         }
         if sources.is_empty() {
@@ -243,10 +243,23 @@ impl Cx<'_> {
                 independent.push(source);
             }
         }
-        let [source] = independent.as_slice() else {
+        // A longer known bound subsumes shorter bounds on the same output.
+        // Unrelated bounds still require a disjunctive proof; do not choose one.
+        let Some(source) = independent.iter().copied().find(|&source| {
+            independent.iter().all(|&other| {
+                source == other
+                    || match (
+                        self.universal_of.get(&source),
+                        self.universal_of.get(&other),
+                    ) {
+                        (Some(&source), Some(&other)) => self.known(source, other),
+                        _ => false,
+                    }
+            })
+        }) else {
             return false;
         };
-        self.outlives(*source, target, Category::CallArgument, range);
+        self.outlives(source, target, Category::CallArgument, range);
         true
     }
 
@@ -590,10 +603,13 @@ impl Cx<'_> {
                 Outlives::Type(ty, b) => {
                     let b = map(b)?;
                     let vars = self.bound_slots(ty, &args, &types)?;
-                    for v in vars {
-                        self.outlives(v, b, Category::CallArgument, self.call_range);
-                    }
-                    self.type_outlives(self.normalize(ty.subst(&args)), b, self.call_range);
+                    self.stored_type_outlives(
+                        self.normalize(ty.subst(&args)),
+                        &vars,
+                        b,
+                        Category::CallArgument,
+                        self.call_range,
+                    );
                 }
             }
         }
@@ -1092,8 +1108,19 @@ pub(super) fn impl_family_values_match(
                         .iter()
                         .map(|&r| map_output(r))
                         .collect::<Option<_>>()?;
+                    let bound = bound.subst(&args);
+                    let bound = flux_ty::TraitRef {
+                        args: Ty::list(
+                            &bound
+                                .args
+                                .iter()
+                                .map(|&ty| cx.normalize(ty))
+                                .collect::<Vec<_>>(),
+                        ),
+                        ..bound
+                    };
                     let goal = ImplRegionGoal {
-                        predicate: bound.subst(&args).with_self(cx.normalize(value)),
+                        predicate: bound.with_self(cx.normalize(value)),
                         lifetimes: trait_lifetimes,
                         vars,
                         bound: named,

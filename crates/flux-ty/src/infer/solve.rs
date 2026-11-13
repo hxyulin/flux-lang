@@ -1562,6 +1562,8 @@ impl Ctx<'_> {
     /// Unifies `impl` block `imp`'s header, with new variables for its
     /// parameters, with `pred`: those variables, if it unifies.
     fn unify_impl(&mut self, imp: ImplId, pred: Predicate) -> Option<Vec<Ty>> {
+        #[cfg(test)]
+        tests::impl_match_step();
         let (Some(&self_ty), Some(&trait_ref)) =
             (self.sigs.impls.get(imp), self.sigs.impl_traits.get(imp))
         else {
@@ -2628,6 +2630,44 @@ pub(super) mod tests {
     thread_local! {
         static WORK: Cell<Option<usize>> = const { Cell::new(None) };
         static RESOLUTION_WORK: Cell<Option<usize>> = const { Cell::new(None) };
+        static IMPL_MATCH_WORK: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    pub(super) fn impl_match_step() {
+        IMPL_MATCH_WORK.with(|work| {
+            if let Some(count) = work.get() {
+                work.set(Some(count + 1));
+            }
+        });
+    }
+
+    #[test]
+    fn pending_const_arguments_do_not_search_impl_headers() {
+        let mut source = String::from("trait Field<const N:usize>{type Value;}struct S;");
+        for index in 0..64 {
+            source.push_str(&format!("impl Field<{index}>for S{{type Value=u8;}}"));
+        }
+        source.push_str("const fn index()->usize{31}fn get<const N:usize>(_:S)-><S as Field<N>>::Value where S:Field<N>{loop{}}fn main(){let _:u8=get::<{index()}>(S);}");
+        let (_, _, hir) = flux_hir::lower_text("pending_const.rs", &source);
+        assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+        let (sigs, errors) = crate::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (function, (body, source_map)) = hir
+            .bodies
+            .iter()
+            .find(|(id, _)| hir.items.functions[*id].name.as_str() == "main")
+            .unwrap();
+        IMPL_MATCH_WORK.with(|work| work.set(Some(0)));
+        let result = crate::infer_body(&hir.items, &sigs, function, body, source_map);
+        let count = IMPL_MATCH_WORK.with(|work| work.replace(None).unwrap());
+        assert!(
+            !result.missing_lens.is_empty(),
+            "the body must request its const argument"
+        );
+        assert!(
+            count <= 8,
+            "pending const inputs searched {count} impl headers"
+        );
     }
 
     pub(super) fn step() {
