@@ -200,8 +200,11 @@ reported as "not supported yet":
   Structural constants composed of derived-PartialEq structs, enums, tuples and arrays
   are supported. Floating literal patterns are refutable, with signed zeros
   equal and unnamed values including NaNs requiring wildcard coverage. Float
-  constant/range patterns and reference/pointer constants remain unsupported,
-except named shared `&str` patterns. Those compare string contents, including
+  constant/range patterns and reference constants remain unsupported,
+except named shared `&str` patterns. Thin raw-pointer constants with integer
+addresses support equality patterns, including inside structural aggregates.
+Symbolic allocation/function addresses and wide-pointer patterns remain unsupported.
+Named `&str` patterns compare string contents, including
 Unicode and NUL bytes, and remain refutable. They do not make string equality
 callable in constants.
 - **Attributes:** outer `#[cfg(predicate)]` on ordinary items (including
@@ -576,7 +579,9 @@ usize> Stack<T, N>`, `fn sum<const N: usize>(a: [i32; N])`, `trait
 Pick<const I: usize>`) are stable Rust's `min_const_generics`: of an
 integer type, `bool` or `char` (other types are rustc's "`f32` is
 forbidden as the type of a const generic parameter", and one naming
-another parameter E0770). A parameter is a value of its type in
+another parameter E0770). Type aliases to permitted primitive types are resolved
+in the parameter's declaration module, preserving privacy and argument checks.
+A parameter is a value of its type in
 expressions (`N`), an array's length (`[T; N]`, `[x; N]`) and an
 argument of other items (`Stack<T, N>`, `sum::<N>`), but not part of a
 constant expression: `[T; N + 1]` is "generic parameters may not be
@@ -910,6 +915,12 @@ pointer, including unsafe function pointers. Conversion at call boundaries keeps
 Rust's decoded discriminant and payload representation private. These enum forms
 also work inside supported C records. Other payload enums and custom option-like
 enums remain unsupported.
+Transparent structs with one admitted scalar field use that field's C ABI,
+including integer extension, floating-point and pointer registers. Extra fields
+must be alignment-one zero-sized markers. Wrappers around stored references,
+unsupported enums or other aggregates remain unsupported. Conflicting declarations
+of one external symbol retain each declaration's calling signature through typed
+indirect calls when it differs from the module's canonical import.
 Generic C definitions and indirect pointers use the same checks after
 instantiation. Other aggregate representations, vectors, wide pointers and
 unnamed variadic aggregate arguments reject before code generation. Ordinary
@@ -2017,6 +2028,8 @@ their original allocation and element-count metadata.
 All twelve signed and unsigned `NonZero` integer wrappers provide checked and
 unchecked construction, value access, formatting and integer conversions. Their
 layouts reserve zero as a niche, and constant construction validates that range.
+`From` supplies Rust's 35 lossless widening conversions between nonzero integer
+types, including unsigned-to-larger-signed conversions.
 Float primitives provide const `copysign` and `recip`. `String::new` is const;
 `FromUtf8Error` implements Display and Error; Box implements AsRef/AsMut; Arc
 accepts owned boxes of sized values, slices and str. Fuse implements Debug, and
@@ -2045,6 +2058,8 @@ remains unsupported.
 
 The Unix library supplies `fs::read_dir`, owned directory entries, `symlink_metadata`,
 file-type queries, Unix symlink creation and device/inode/change-time metadata queries.
+`fs::DirBuilder` controls recursive creation; Unix `DirBuilderExt::mode` sets
+permission bits filtered by the process umask for each newly created directory.
 Both Darwin and Linux supply recursive directory removal without traversing
 child symlinks. Linux pins directories with file descriptors, opens children
 relative to their parents with `O_NOFOLLOW`, and deletes entries with `unlinkat`.

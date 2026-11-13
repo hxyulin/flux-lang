@@ -524,7 +524,11 @@ fn main() {}
         .items
         .functions
         .iter()
-        .filter_map(|(id, f)| matches!(f.name.as_str(), "required" | "recursive").then_some(id))
+        .filter_map(|(id, f)| {
+            (hir.items.in_main_crate(f.loc.module)
+                && matches!(f.name.as_str(), "required" | "recursive"))
+            .then_some(id)
+        })
         .collect();
     assert_eq!(required.len(), 2);
     let hashes = [(hir.items.main_crate(), [71; 32])];

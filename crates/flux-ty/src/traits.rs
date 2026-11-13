@@ -165,7 +165,15 @@ pub fn trait_ref(
         _ => {}
     }
     let mut args: Vec<Ty> = written.map_or(Vec::new(), |written| {
-        crate::resolve_generic_args(items, module, &data.generics.params, written, scope, errors)
+        crate::resolve_generic_args(
+            items,
+            module,
+            data.loc.module,
+            &data.generics.params,
+            written,
+            scope,
+            errors,
+        )
     });
     let defaults = scope.defaults.and_then(|d| d.get(t)).map_or(&[][..], |d| d);
     let required = data
@@ -521,7 +529,7 @@ fn selected_auto_bound_is_uniform(
         return false;
     };
     let generics = crate::generic_names(items, None, &imp.generics);
-    let consts = crate::generic_consts(items, None, &imp.generics);
+    let consts = crate::generic_consts(items, imp.module, None, &imp.generics);
     let mut errors = Vec::new();
     let raw = resolve_type(
         items,
@@ -1085,7 +1093,11 @@ fn check_type_bounds(
                 .iter()
                 .zip(&ty.generics.params)
                 .any(|(required, defined)| {
-                    crate::param_const_ty(required) != crate::param_const_ty(defined)
+                    crate::param_const_ty(
+                        items,
+                        items.traits[trait_ref.trait_].loc.module,
+                        required,
+                    ) != crate::param_const_ty(items, items.impls[imp].module, defined)
                 }))
     {
         error(
@@ -1164,7 +1176,7 @@ fn check_type_bounds(
         }
         if let (Some(declaration), Some(sized)) = (declaration, sigs.builtins.sized) {
             for (index, parameter) in declaration.generics.params.iter().enumerate() {
-                if crate::param_const_ty(parameter).is_none() && !parameter.maybe_unsized {
+                if !parameter.is_const() && !parameter.maybe_unsized {
                     let goal = Predicate {
                         self_ty: args[1 + trait_ref.args.len() + index],
                         trait_ref: TraitRef {
@@ -1234,7 +1246,7 @@ fn check_type_bounds(
         RigidSolver::new(items, sigs, &env, projections, &declaration_parameters);
     if let Some(sized) = sigs.builtins.sized {
         for (index, parameter) in ty.generics.params.iter().enumerate() {
-            if crate::param_const_ty(parameter).is_none() && !parameter.maybe_unsized {
+            if !parameter.is_const() && !parameter.maybe_unsized {
                 let goal = Predicate {
                     self_ty: args[1 + trait_ref.args.len() + index],
                     trait_ref: TraitRef {

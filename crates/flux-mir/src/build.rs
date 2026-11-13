@@ -659,6 +659,9 @@ fn check_patterns(
                 }
                 Value::Int { bits, .. } => PatternConst::Scalar(bits as i128),
                 Value::Bool(value) => PatternConst::Scalar(value as i128),
+                Value::RawAddr(address) if matches!(ty.kind(), TyKind::RawPtr(_, pointee) if !sigs.is_unsized(pointee)) => {
+                    PatternConst::Scalar(i128::from(address))
+                }
                 Value::Aggregate(fields) => {
                     let types = match ty.kind() {
                         TyKind::Array(elem, _) => vec![elem; fields.len()],

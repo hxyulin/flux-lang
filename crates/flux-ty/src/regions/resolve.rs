@@ -118,7 +118,7 @@ fn family_contract(
     let mut names = owner_names.to_vec();
     names.extend(own_names(generics));
     let type_names = crate::generic_names(items, Some(owner), generics);
-    let constants = crate::generic_consts(items, Some(owner), generics);
+    let constants = crate::generic_consts(items, module, Some(owner), generics);
     let mut predicates = flux_solve::traits::owner_predicates(items, sigs, Some(owner));
     if let Some(schema) = schema {
         predicates.extend(schema.predicates.iter().copied());
@@ -1011,7 +1011,7 @@ fn structs_selected(
             .map(Region::Param)
             .collect();
         let generics: Vec<_> = s.generics.params.iter().map(|p| p.name).collect();
-        let consts = crate::generic_consts(items, None, &s.generics);
+        let consts = crate::generic_consts(items, s.loc.module, None, &s.generics);
         let bounds = sigs.struct_predicates.get(id).map_or(&[][..], |p| p);
         let mut walker = Walker::new(items, s.loc.module, names);
         walker.signatures = Some(sigs);
@@ -1608,7 +1608,7 @@ pub fn function_bound_projection_selections(
     }
     let metadata = sigs.regions.fns.get(id)?;
     let names = crate::generic_names(items, data.owner, &data.generics);
-    let consts = crate::generic_consts(items, data.owner, &data.generics);
+    let consts = crate::generic_consts(items, data.loc.module, data.owner, &data.generics);
     let lens = crate::ArrayLens::new(&sigs.array_lens, &sigs.arg_tys);
     let memberships = flux_solve::traits::predicates_of(items, sigs, id);
     let resolved_bounds = flux_solve::traits::elaborate(sigs, &memberships);

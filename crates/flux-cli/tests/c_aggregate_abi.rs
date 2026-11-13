@@ -99,6 +99,14 @@ fn unsupported_c_shapes_fail_before_machine_code() {
             "extern \"C\" fn identity<T>(x:T)->T{x}fn main(){let _=identity((1u64,2u64));}",
         ),
         (
+            "transparent_reference",
+            "#[repr(transparent)]struct Bad(&'static u32);unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
+        ),
+        (
+            "transparent_rust_aggregate",
+            "struct Inner(u64,u64);#[repr(transparent)]struct Bad(Inner);unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
+        ),
+        (
             "generic_reference",
             "extern \"C\" fn identity<T>(x:T)->T{x}fn main(){let n=7u64;let _=identity(&n);}",
         ),
@@ -159,8 +167,18 @@ fn direct_foreign_declarations_match_native_rustc_off_and_on() {
     let source = "#[repr(C)]struct Words{words:[u64;2]} #[repr(C)]struct Padded{lead:u8,payload:u64,tail:u16}
         #[repr(i8)]#[derive(Clone,Copy)]enum Signed{A=-7,B=101}
         unsafe extern \"C\" {fn sum_words(x:Words)->u64;fn padded(x:Padded)->Padded; fn enum_signed(x:Signed)->Signed; fn nullable(x:Option<extern \"C\" fn(u64)->u64>)->Option<extern \"C\" fn(u64)->u64>;}
+        unsafe extern \"C\" {
+            #[link_name=\"abi_integer_view\"]fn integer_wide(x:u64)->u64;
+            #[link_name=\"abi_integer_view\"]fn integer_narrow(x:u32)->u32;
+            #[link_name=\"abi_byte_view\"]fn byte_signed(x:i8)->i8;
+            #[link_name=\"abi_byte_view\"]fn byte_unsigned(x:u8)->u8;
+        }
         extern \"C\" fn plus(x:u64)->u64{x+13}
-        extern \"C\" fn wrapper()->u64{unsafe{assert_eq!(enum_signed(Signed::B) as i8,-7);assert_eq!(enum_signed(Signed::A) as i8,101); assert_eq!(nullable(None).unwrap()(11),18);assert!(nullable(Some(plus)).is_none());let p=padded(Padded{lead:3,payload:1000,tail:7});sum_words(Words{words:[17,25]})+p.payload+p.lead as u64+p.tail as u64}}
+        extern \"C\" fn wrapper()->u64{unsafe{assert_eq!(integer_wide(40),41);assert_eq!(integer_narrow(41),42);
+            let narrow:unsafe extern \"C\" fn(u32)->u32=integer_narrow;assert_eq!(narrow(42),43);
+            assert_eq!(byte_signed(40),41);assert_eq!(byte_unsigned(41),42);
+            let unsigned:unsafe extern \"C\" fn(u8)->u8=byte_unsigned;assert_eq!(unsigned(42),43);
+            assert_eq!(enum_signed(Signed::B) as i8,-7);assert_eq!(enum_signed(Signed::A) as i8,101); assert_eq!(nullable(None).unwrap()(11),18);assert!(nullable(Some(plus)).is_none());let p=padded(Padded{lead:3,payload:1000,tail:7});sum_words(Words{words:[17,25]})+p.payload+p.lead as u64+p.tail as u64}}
         fn main(){let _=wrapper();}";
     let (_, _, hir) = flux_hir::lower_text("main.rs", source);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);

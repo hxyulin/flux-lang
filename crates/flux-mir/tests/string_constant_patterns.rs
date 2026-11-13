@@ -219,26 +219,27 @@ fn string_constants_match_rustc() {
 }
 
 #[test]
-fn other_reference_and_pointer_patterns_remain_unsupported() {
-    for (name, source) in [
+fn reference_and_symbolic_pointer_patterns_remain_unsupported() {
+    for (name, source, expected) in [
         (
-            "null_pointer",
-            r###"const P:*const u8=std::ptr::null();fn tag(x:*const u8)->u8{match x{P=>1,_=>0}}fn main(){}"###,
+            "symbolic_pointer",
+            r###"static X:u8=0;const P:*const u8=&X;fn tag(x:*const u8)->u8{match x{P=>1,_=>0}}fn main(){}"###,
+            "constant patterns with non-structural or unsupported fields are not supported yet",
         ),
         (
             "scalar_reference",
             r###"const R:&u32=&3;fn tag(x:&u32)->u8{match x{R=>1,_=>0}}fn main(){}"###,
+            "in patterns are not supported yet",
         ),
         (
             "byte_reference",
             r###"const R:&[u8;1]=b"a";fn tag(x:&[u8;1])->u8{match x{R=>1,_=>0}}fn main(){}"###,
+            "in patterns are not supported yet",
         ),
     ] {
         let errors = errors(name, source);
         assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("in patterns are not supported yet")),
+            errors.iter().any(|e| e.contains(expected)),
             "{name}: {errors:?}"
         );
     }

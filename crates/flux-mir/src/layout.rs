@@ -265,6 +265,44 @@ impl<'a> Layouts<'a> {
         layout
     }
 
+    /// The represented field of a transparent struct with exact storage.
+    /// Only alignment-one zero-sized markers may be skipped.
+    pub fn transparent_field(&self, ty: Ty) -> Option<Ty> {
+        let TyKind::Adt(adt, _) = ty.kind() else {
+            return None;
+        };
+        let data = &self.items.structs[adt.strukt];
+        if !data.repr_transparent
+            || self.sigs.is_enum(adt.strukt)
+            || self.sigs.unions.contains(&adt.strukt)
+        {
+            return None;
+        }
+        let actual = self.of(ty);
+        if !actual.exact || actual.uninhabited {
+            return None;
+        }
+        let mut represented = None;
+        for (index, &field) in flux_solve::fields(self.sigs, ty)?.iter().enumerate() {
+            let layout = self.of(field);
+            if !layout.exact {
+                return None;
+            }
+            if layout.is_1zst() {
+                continue;
+            }
+            if represented.is_some()
+                || actual.field_offset(0, index as u32) != 0
+                || layout.size != actual.size
+                || layout.align != actual.align
+            {
+                return None;
+            }
+            represented = Some(field);
+        }
+        represented
+    }
+
     /// Dynamic size is `align_up(prefix + length * stride, align)` for
     /// every represented length-metadata DST, including nested struct tails.
     pub fn length_layout(&self, ty: Ty) -> Option<(u64, u64, u64)> {

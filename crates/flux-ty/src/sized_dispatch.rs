@@ -37,7 +37,8 @@ fn helpers_match(
         .enumerate()
     {
         if a.is_const() != b.is_const()
-            || crate::param_const_ty(a) != crate::param_const_ty(b)
+            || crate::param_const_ty(items, from.loc.module, a)
+                != crate::param_const_ty(items, to.loc.module, b)
             || a.synthetic != b.synthetic
             || a.may_dangle
             || b.may_dangle

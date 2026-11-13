@@ -153,7 +153,12 @@ pub(super) fn extend_signatures(
     let mut defaults = std::mem::take(&mut sigs.trait_defaults);
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
-        let consts = generic_consts(items, Some(Owner::Trait(id)), &Generics::default());
+        let consts = generic_consts(
+            items,
+            t.loc.module,
+            Some(Owner::Trait(id)),
+            &Generics::default(),
+        );
         let scope = TypeScope {
             self_ty: Some(Ty::param(0, kw::SelfUpper)),
             generics: &generics,
@@ -172,6 +177,7 @@ pub(super) fn extend_signatures(
                 Some(resolve_generic_arg(
                     items,
                     t.loc.module,
+                    t.loc.module,
                     Some(p),
                     ty,
                     scope,
@@ -186,7 +192,12 @@ pub(super) fn extend_signatures(
     sigs.trait_defaults = defaults;
     for (id, t) in items.traits.iter().skip(from.traits as usize) {
         let generics = generic_names(items, Some(Owner::Trait(id)), &Generics::default());
-        let consts = generic_consts(items, Some(Owner::Trait(id)), &Generics::default());
+        let consts = generic_consts(
+            items,
+            t.loc.module,
+            Some(Owner::Trait(id)),
+            &Generics::default(),
+        );
         let self_param = Ty::param(0, kw::SelfUpper);
         let bounds = [flux_solve::traits::trait_self_predicate(items, id)];
         let mut errors = Vec::new();
@@ -273,7 +284,7 @@ pub(super) fn extend_signatures(
         for ty in &t.types {
             let owner = Some(Owner::Trait(id));
             let names = generic_names(items, owner, &ty.generics);
-            let consts = generic_consts(items, owner, &ty.generics);
+            let consts = generic_consts(items, t.loc.module, owner, &ty.generics);
             let parameters = unsized_params(items, owner, &ty.generics);
             let family_scope = TypeScope {
                 generics: &names,
@@ -323,7 +334,12 @@ pub(super) fn extend_signatures(
                 traits::AssociatedTypeSig {
                     owner_params: generics.len() as u32,
                     lifetimes: ty.generics.lifetimes.len() as u32,
-                    params: ty.generics.params.iter().map(param_const_ty).collect(),
+                    params: ty
+                        .generics
+                        .params
+                        .iter()
+                        .map(|p| param_const_ty(items, t.loc.module, p))
+                        .collect(),
                     predicates: resolved.predicates.into(),
                     projections: resolved.projections.into(),
                 },
@@ -361,7 +377,12 @@ pub(super) fn extend_signatures(
             sigs.unions.insert(id);
         }
         let generics: Vec<Symbol> = s.generics.params.iter().map(|p| p.name).collect();
-        let consts: Vec<Option<Ty>> = s.generics.params.iter().map(param_const_ty).collect();
+        let consts: Vec<Option<Ty>> = s
+            .generics
+            .params
+            .iter()
+            .map(|p| param_const_ty(items, s.loc.module, p))
+            .collect();
         let unsized_params = unsized_params(items, None, &s.generics);
         let scope = TypeScope {
             self_ty: Some(Ty::adt(id, s.name, &params_of(&s.generics, 0))),
@@ -482,7 +503,12 @@ pub(super) fn extend_signatures(
             continue;
         }
         let generics = generic_names(items, Some(Owner::Impl(id)), &Generics::default());
-        let consts = generic_consts(items, Some(Owner::Impl(id)), &Generics::default());
+        let consts = generic_consts(
+            items,
+            imp.module,
+            Some(Owner::Impl(id)),
+            &Generics::default(),
+        );
         let unsized_params = unsized_params(items, Some(Owner::Impl(id)), &Generics::default());
         let self_ty = sigs.impls[id];
         let scope = TypeScope {
@@ -538,7 +564,7 @@ pub(super) fn extend_signatures(
         for definition in &imp.types {
             let owner = Some(Owner::Impl(id));
             let names = generic_names(items, owner, &definition.generics);
-            let consts = generic_consts(items, owner, &definition.generics);
+            let consts = generic_consts(items, imp.module, owner, &definition.generics);
             let parameters = flux_solve::unsized_params(items, owner, &definition.generics);
             let family_scope = TypeScope {
                 generics: &names,
@@ -581,7 +607,7 @@ pub(super) fn extend_signatures(
                         .generics
                         .params
                         .iter()
-                        .map(param_const_ty)
+                        .map(|p| param_const_ty(items, imp.module, p))
                         .collect(),
                     predicates: resolved.predicates.into(),
                     projections: resolved.projections.into(),
@@ -701,7 +727,12 @@ pub(super) fn extend_signatures(
     }
     for (id, function) in items.functions.iter().skip(from.functions as usize) {
         let generics = generic_names(items, function.owner, &function.generics);
-        let consts = generic_consts(items, function.owner, &function.generics);
+        let consts = generic_consts(
+            items,
+            function.loc.module,
+            function.owner,
+            &function.generics,
+        );
         let unsized_params = unsized_params(items, function.owner, &function.generics);
         let mut errors = Vec::new();
         check_const_params(

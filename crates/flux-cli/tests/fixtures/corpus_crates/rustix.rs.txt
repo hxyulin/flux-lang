@@ -1,0 +1,12 @@
+use rustix::io::{self,Errno};
+fn main(){
+ let error=Errno::from_raw_os_error(9);assert_eq!(error.raw_os_error(),9);
+ let mut attempts=0;
+ let value=io::retry_on_intr(||{attempts+=1;if attempts<3{Err(Errno::INTR)}else{Ok(7u32)}}).unwrap();
+ assert_eq!(attempts,3);assert_eq!(value,7);
+ let file=std::fs::OpenOptions::new().read(true).write(true).open("/dev/null").unwrap();
+ let duplicate=io::dup(&file).unwrap();let mut buf=[0u8;4];
+ assert_eq!(io::read(&duplicate,&mut buf[..]).unwrap(),0);
+ assert_eq!(io::write(&duplicate,b"hello").unwrap(),5);
+ println!("{} {} {}",error.raw_os_error(),attempts,value);
+}

@@ -163,40 +163,63 @@ impl TypeScope<'_> {
 /// The types of the const parameters of an item in `owner` with its own
 /// `generics`, `None` for its type parameters, in the order of
 /// [`generic_names`].
-pub fn generic_consts(items: &ItemTree, owner: Option<Owner>, own: &Generics) -> Vec<Option<Ty>> {
+pub fn generic_consts(
+    items: &ItemTree,
+    module: ModuleId,
+    owner: Option<Owner>,
+    own: &Generics,
+) -> Vec<Option<Ty>> {
     let mut consts = Vec::new();
     if let Some(Owner::Trait(_)) = owner {
         consts.push(None);
     }
-    consts.extend(
-        items
-            .owner_generics(owner)
-            .into_iter()
-            .chain([own])
-            .flat_map(|g| g.params.iter().map(param_const_ty)),
-    );
+    if let Some(owner) = owner
+        && let Some(generics) = items.owner_generics(Some(owner))
+    {
+        let module = match owner {
+            Owner::Impl(id) => items.impls[id].module,
+            Owner::Trait(id) => items.traits[id].loc.module,
+        };
+        consts.extend(
+            generics
+                .params
+                .iter()
+                .map(|p| param_const_ty(items, module, p)),
+        );
+    }
+    consts.extend(own.params.iter().map(|p| param_const_ty(items, module, p)));
     consts
 }
 
-/// The type of a const parameter, `None` for a type parameter.
-pub fn param_const_ty(param: &flux_hir::GenericParam) -> Option<Ty> {
+/// The type of a const parameter, resolved in its declaration module.
+pub fn param_const_ty(
+    items: &ItemTree,
+    module: ModuleId,
+    param: &flux_hir::GenericParam,
+) -> Option<Ty> {
     match &param.kind {
         flux_hir::ParamKind::Type => None,
-        flux_hir::ParamKind::Const { ty, .. } => Some(const_param_ty(ty)),
+        flux_hir::ParamKind::Const { ty, .. } => Some(const_param_ty(items, module, ty)),
     }
 }
 
 /// The type of a const parameter written as `ty`: an integer type,
 /// `bool` or `char` ([`check_const_params`] reports others), or an
 /// error.
-pub fn const_param_ty(ty: &TypeRef) -> Ty {
-    let TypeRef::Path(path) = ty else {
-        return Ty::ERROR;
-    };
-    path.as_name()
-        .and_then(|name| primitive(name).ok())
-        .filter(|t| t.as_int().is_some() || *t == Ty::BOOL || *t == Ty::CHAR)
-        .unwrap_or(Ty::ERROR)
+pub fn const_param_ty(items: &ItemTree, module: ModuleId, ty: &TypeRef) -> Ty {
+    let resolved = resolve_type(
+        items,
+        module,
+        ty,
+        TypeScope::default(),
+        TextRange::default(),
+        &mut Vec::new(),
+    );
+    if resolved.as_int().is_some() || resolved == Ty::BOOL || resolved == Ty::CHAR {
+        resolved
+    } else {
+        Ty::ERROR
+    }
 }
 
 /// rustc's errors for the types of the const parameters of `generics`,
@@ -231,7 +254,10 @@ pub fn check_const_params(
             ));
             continue;
         }
-        if const_param_ty(ty) != Ty::ERROR {
+        if const_param_ty(items, module, ty) != Ty::ERROR {
+            // Resolution may recover an allowed primitive while reporting
+            // privacy or invalid argument errors. Keep those diagnostics.
+            resolve_type(items, module, ty, TypeScope::default(), *ty_range, errors);
             continue;
         }
         // The other primitive types, which flux lacks or which are not
@@ -263,11 +289,6 @@ pub fn check_const_params(
                 *ty_range,
                 format!("`{ty}` is forbidden as the type of a const generic parameter"),
             ));
-        } else if resolved != Ty::ERROR {
-            errors.push((
-                *ty_range,
-                "const parameters of types named through aliases are not supported yet".to_owned(),
-            ));
         } else {
             // Reported where the type is resolved.
             resolve_type(items, module, ty, TypeScope::default(), *ty_range, errors);
@@ -283,6 +304,7 @@ pub fn check_const_params(
 pub fn resolve_generic_arg(
     items: &ItemTree,
     module: ModuleId,
+    declaration_module: ModuleId,
     param: Option<&flux_hir::GenericParam>,
     arg: &TypeRef,
     scope: TypeScope<'_>,
@@ -290,7 +312,9 @@ pub fn resolve_generic_arg(
     errors: &mut Vec<(TextRange, String)>,
 ) -> Ty {
     let want = match param.map(|p| &p.kind) {
-        Some(flux_hir::ParamKind::Const { ty, .. }) => const_param_ty(ty),
+        Some(flux_hir::ParamKind::Const { ty, .. }) => {
+            const_param_ty(items, declaration_module, ty)
+        }
         _ => {
             if let TypeRef::Const(_) = arg {
                 errors.push((
@@ -387,6 +411,7 @@ fn names_nothing(items: &ItemTree, module: ModuleId, arg: &TypeRef, scope: TypeS
 pub fn resolve_generic_args(
     items: &ItemTree,
     module: ModuleId,
+    declaration_module: ModuleId,
     params: &[flux_hir::GenericParam],
     written: &flux_hir::GenericArgs,
     scope: TypeScope<'_>,
@@ -431,7 +456,16 @@ pub fn resolve_generic_args(
         .zip(&written.ranges)
         .enumerate()
         .map(|(i, (arg, &range))| {
-            resolve_generic_arg(items, module, params.get(i), arg, scope, range, errors)
+            resolve_generic_arg(
+                items,
+                module,
+                declaration_module,
+                params.get(i),
+                arg,
+                scope,
+                range,
+                errors,
+            )
         })
         .collect()
 }
@@ -542,7 +576,7 @@ pub(crate) fn fill_type_defaults(
         return;
     }
     let names = generic_names(items, None, generics);
-    let consts = generic_consts(items, None, generics);
+    let consts = generic_consts(items, loc.module, None, generics);
     let unsized_flags = flux_solve::unsized_params(items, None, generics);
     let own = TypeScope {
         generics: &names,
@@ -558,6 +592,7 @@ pub(crate) fn fill_type_defaults(
         let ty = match &generics.params[args.len()].default {
             Some((ty, range)) => resolve_generic_arg(
                 items,
+                loc.module,
                 loc.module,
                 Some(&generics.params[args.len()]),
                 ty,
@@ -616,8 +651,16 @@ pub(super) fn check_type_defaults(
                 bounds: &[],
                 ..scope
             };
-            let resolved =
-                resolve_generic_arg(items, module, Some(param), ty, scope, *range, errors);
+            let resolved = resolve_generic_arg(
+                items,
+                module,
+                module,
+                Some(param),
+                ty,
+                scope,
+                *range,
+                errors,
+            );
             if !param.is_const() {
                 let names = generics.lifetimes.iter().map(|l| Some(l.name)).collect();
                 let mut walker = regions::Walker::new(items, module, names);
@@ -1306,6 +1349,7 @@ pub(crate) fn resolve_family_arguments(
         alias.family_args = Ty::list(&resolve_generic_args(
             items,
             module,
+            items.traits[alias.trait_].loc.module,
             &declaration.generics.params,
             written,
             scope,
@@ -1765,8 +1809,15 @@ pub fn struct_type(
         errors.push((at, message));
         return Ty::ERROR;
     }
-    let mut args =
-        resolve_generic_args(items, module, &def.generics.params, written, scope, errors);
+    let mut args = resolve_generic_args(
+        items,
+        module,
+        def.loc.module,
+        &def.generics.params,
+        written,
+        scope,
+        errors,
+    );
     if args.len() != got {
         let kind = if def.is_enum() { "enum" } else { "struct" };
         errors.push((at, wrong_arg_count(kind, want, args.len())));
@@ -1884,8 +1935,15 @@ pub fn alias_type(
             return Ty::ERROR;
         }
         Some(written) => {
-            let args =
-                resolve_generic_args(items, module, &def.generics.params, written, scope, errors);
+            let args = resolve_generic_args(
+                items,
+                module,
+                def.loc.module,
+                &def.generics.params,
+                written,
+                scope,
+                errors,
+            );
             if let Some(message) = type_arg_count("type alias", &def.generics.params, args.len()) {
                 errors.push((at, message));
                 return Ty::ERROR;

@@ -266,7 +266,7 @@ fn check_alias(
     }
     let mut errors = Vec::new();
     let names = generic_names(items, None, &alias.generics);
-    let consts = generic_consts(items, None, &alias.generics);
+    let consts = generic_consts(items, alias.loc.module, None, &alias.generics);
     let unsized_flags = flux_solve::unsized_params(items, None, &alias.generics);
     let scope = TypeScope {
         generics: &names,
@@ -384,7 +384,12 @@ fn impl_type(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Ty {
     let generics: Vec<Symbol> = imp.generics.params.iter().map(|p| p.name).collect();
-    let consts: Vec<Option<Ty>> = imp.generics.params.iter().map(param_const_ty).collect();
+    let consts: Vec<Option<Ty>> = imp
+        .generics
+        .params
+        .iter()
+        .map(|p| param_const_ty(items, imp.module, p))
+        .collect();
     let mut errors = Vec::new();
     check_const_params(items, imp.module, &imp.generics, &generics, &mut errors);
     diagnostics.extend(errors.into_iter().map(|(range, message)| Diagnostic {
@@ -1189,7 +1194,8 @@ pub enum PatternConst {
 /// Whether a constant of `ty` can be matched structurally. ADTs require
 /// derived PartialEq; a handwritten equality method cannot define patterns.
 /// Enum payloads are checked against the evaluated active variant; references
-/// and pointer constants remain outside this subset.
+/// remain outside this subset. Thin raw-pointer values are checked after
+/// evaluation; only integer-address values can define structural patterns.
 pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> bool {
     fn check(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> bool {
         if depth >= 128 {
@@ -1197,6 +1203,7 @@ pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> b
         }
         match ty.kind() {
             TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Error => true,
+            TyKind::RawPtr(_, pointee) => !sigs.is_unsized(pointee),
             TyKind::Tuple(fields) => fields.iter().all(|&t| check(items, sigs, t, depth + 1)),
             TyKind::Array(elem, len) => {
                 len.as_usize().is_some() && check(items, sigs, elem, depth + 1)

@@ -607,6 +607,11 @@ fn lower_inner(
         .collect();
     let names = |id: flux_hir::ConstId| items.const_name(id);
     let mut ctx = Ctx {
+        external_signatures: module
+            .decls
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.sig.clone()))
+            .collect(),
         panic_strategy: mir.panic_strategy,
         indirect_thunks: FxHashMap::default(),
         generated_functions: Vec::new(),
@@ -1565,6 +1570,9 @@ struct Ctx<'a> {
     named_constants: FxHashMap<flux_hir::ConstId, String>,
     data: Vec<DataObject>,
     data_errors: Vec<Diagnostic>,
+    // Keel requires a single declared signature for each native symbol. Calls
+    // through other source declarations retain their own typed indirect ABI.
+    external_signatures: FxHashMap<String, Signature>,
     /// How values are laid out in memory, as rustc lays them out.
     layouts: Layouts<'a>,
 }
@@ -5023,14 +5031,25 @@ impl Lower<'_, '_, '_> {
                 } else {
                     Convention::RustFast
                 };
-                self.call_abi(
-                    convention,
-                    ret,
-                    args,
-                    dest,
-                    *target,
-                    Call::Direct { callee, location },
-                );
+                let make = if convention.is_c() && items.functions[resolved.function].is_extern {
+                    let source = self.ctx.normalized_signature(resolved);
+                    let signature = c_signature(
+                        self.sigs,
+                        &self.ctx.layouts,
+                        &source,
+                        items.functions[resolved.function].is_variadic,
+                    );
+                    if self.b.function().callee(callee).sig != signature {
+                        let pointer = self.b.ins().symbol_addr(keel_ir::Symbol::Func(callee));
+                        let sig = self.b.import_signature(signature);
+                        Call::Indirect { sig, pointer }
+                    } else {
+                        Call::Direct { callee, location }
+                    }
+                } else {
+                    Call::Direct { callee, location }
+                };
+                self.call_abi(convention, ret, args, dest, *target, make);
             }
             TerminatorKind::CallIndirect {
                 callee,
@@ -5148,16 +5167,16 @@ impl Lower<'_, '_, '_> {
                         }
                         self.b.ins().return_(&[]);
                     }
-                    // A value with no size returns nothing.
-                    None if is_memory(self.sigs, ret) => {
-                        self.b.ins().return_(&[]);
-                    }
                     None if self.convention.is_c()
                         && abi::c_scalar(self.sigs, &self.ctx.layouts, ret).is_some() =>
                     {
                         let scalar = abi::c_scalar(self.sigs, &self.ctx.layouts, ret).unwrap();
                         let value = self.encode_c_scalar(&values, ret, scalar);
                         self.b.ins().return_(&[value]);
+                    }
+                    // A value with no size returns nothing.
+                    None if is_memory(self.sigs, ret) => {
+                        self.b.ins().return_(&[]);
                     }
                     None => {
                         self.b.ins().return_(&values);
@@ -5443,6 +5462,12 @@ impl Lower<'_, '_, '_> {
             sig.params.push(AbiParam::new(Type::Ptr));
         }
         let symbol = instance_symbol(self.ctx.hir, self.ctx.symbols, instance);
+        if function.is_extern
+            && function.abi.is_c()
+            && let Some(canonical) = self.ctx.external_signatures.get(&symbol)
+        {
+            sig = canonical.clone();
+        }
         let callee = self.b.import_function(&symbol, sig);
         self.callees.insert(instance, callee);
         callee

@@ -1,4 +1,18 @@
 
+use std::marker::PhantomData;
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TI8(PhantomData<()>,i8,[u8;0]);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TU8(u8,PhantomData<&'static ()>);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TF32(f32);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TF64(f64);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TPtr(*mut u8);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TNested(TI8);
+
+extern "C" fn local_transparent(x:TI8,y:TU8,z:TF64,p:TPtr)->TNested{
+    assert_eq!(x.1,-91);assert_eq!(y.0,250);assert_eq!(z.0,1.5);
+    // SAFETY: the native callback caller provides its live initialized byte.
+    assert_eq!(unsafe{*p.0},42);TNested(TI8(PhantomData,-103,[]))
+}
+
 #[repr(C)]#[derive(Clone,Copy)]pub enum Mode { A=3, B=19 }
 #[repr(i8)]#[derive(Clone,Copy)]pub enum Signed { A=-7, B=101 }
 #[repr(u16)]#[derive(Clone,Copy)]pub enum Unsigned { A=7, B=65000 }
@@ -45,6 +59,15 @@ fn main() {
     unsafe {
         let lib = dlopen(c"__LIBRARY__".as_ptr(), 2); assert!(!lib.is_null());
 
+
+        let ti:unsafe extern "C" fn(TI8)->TNested=core::mem::transmute(dlsym(lib,c"transparent_i8".as_ptr()));assert_eq!(ti(TI8(PhantomData,-91,[])).0.1,-92);
+        let tu:unsafe extern "C" fn(TU8)->TU8=core::mem::transmute(dlsym(lib,c"transparent_u8".as_ptr()));assert_eq!(tu(TU8(250,PhantomData)).0,251);
+        let tf32:unsafe extern "C" fn(TF32)->TF32=core::mem::transmute(dlsym(lib,c"transparent_f32".as_ptr()));assert_eq!(tf32(TF32(1.25)).0,1.75);
+        let tf64:unsafe extern "C" fn(TF64)->TF64=core::mem::transmute(dlsym(lib,c"transparent_f64".as_ptr()));assert_eq!(tf64(TF64(1.25)).0,1.5);
+        let tp:unsafe extern "C" fn(TPtr)->TPtr=core::mem::transmute(dlsym(lib,c"transparent_ptr".as_ptr()));let mut byte=42;let ptr=&raw mut byte;assert_eq!(tp(TPtr(ptr)).0 as usize,ptr as usize);
+        let pressure:unsafe extern "C" fn(u64,u64,u64,u64,u64,u64,u64,u64,TI8,TU8,TF64,TPtr)->i64=core::mem::transmute(dlsym(lib,c"transparent_pressure".as_ptr()));
+        assert_eq!(pressure(1,2,3,4,5,6,7,8,TI8(PhantomData,-91,[]),TU8(250,PhantomData),TF64(1.5),TPtr(ptr)),238);
+        let callback:unsafe extern "C" fn(extern "C" fn(TI8,TU8,TF64,TPtr)->TNested)->i8=core::mem::transmute(dlsym(lib,c"transparent_callback".as_ptr()));assert_eq!(callback(local_transparent),-103);
         let mode:unsafe extern "C" fn(Mode)->Mode=core::mem::transmute(dlsym(lib,c"enum_mode".as_ptr()));
         assert_eq!(mode(Mode::A) as i32,19); assert_eq!(mode(Mode::B) as i32,3);
         let signed:unsafe extern "C" fn(Signed)->Signed=core::mem::transmute(dlsym(lib,c"enum_signed".as_ptr()));

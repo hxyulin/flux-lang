@@ -3,7 +3,7 @@ pub mod unix {
     /// The Unix extension traits most code imports together.
     pub mod prelude {
         pub use super::ffi::{OsStrExt, OsStringExt};
-        pub use super::fs::{DirEntryExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+        pub use super::fs::{DirBuilderExt, DirEntryExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
         pub use super::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
     }
     /// Native pthread handles of spawned threads.
@@ -58,6 +58,13 @@ pub mod unix {
         }
     }
     pub mod fs {
+        /// Unix permission bits for newly created directories, filtered by umask.
+        pub trait DirBuilderExt {
+            fn mode(&mut self, mode: u32) -> &mut Self;
+        }
+        impl DirBuilderExt for crate::fs::DirBuilder {
+            fn mode(&mut self, mode: u32) -> &mut Self { self.mode = mode; self }
+        }
         /// Unix permission bits and open(2) flags for OpenOptions.
         pub trait OpenOptionsExt {
             fn mode(&mut self, mode: u32) -> &mut Self;

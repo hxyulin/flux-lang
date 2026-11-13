@@ -419,23 +419,48 @@ pub fn set_permissions<P:AsRef<Path>>(path:P,permissions:Permissions)->Result<()
     if unsafe{native::chmod(name.as_ptr() as *const core::ffi::c_char,permissions.mode as native::Mode)}<0{Err(Error::last_os_error())}else{Ok(())}
 }
 pub fn write<P:AsRef<Path>,C:AsRef<[u8]>>(path:P,contents:C)->Result<()>{File::create(path)?.write_all(contents.as_ref())}
-pub fn create_dir<P:AsRef<Path>>(path:P)->Result<()>{
-    let name=c_path(path.as_ref())?;
-    // SAFETY: path is NUL-terminated and 0777 is passed as native mode_t.
-    if unsafe{native::mkdir(name.as_ptr() as *const core::ffi::c_char,0o777 as native::Mode)}<0{Err(Error::last_os_error())}else{Ok(())}
-}
-pub fn create_dir_all<P:AsRef<Path>>(path:P)->Result<()>{create_directories(path.as_ref())}
-fn create_directories(path:&Path)->Result<()>{
-    if path.as_os_str().is_empty(){return Ok(());}
-    let error=match create_dir(path){Ok(())=>return Ok(()),Err(error)=>error};
-    if metadata(path).map(|metadata|metadata.is_dir()).unwrap_or(false){return Ok(());}
-    if error.kind()!=ErrorKind::NotFound{return Err(error);}
-    if let Some(parent)=path.parent(){create_directories(parent)?;}
-    match create_dir(path){
-        Ok(())=>Ok(()),
-        Err(error)=>if metadata(path).map(|metadata|metadata.is_dir()).unwrap_or(false){Ok(())}else{Err(error)},
+/// Options for creating directories, including parents and Unix permissions.
+#[derive(Debug)]
+pub struct DirBuilder { recursive: bool, pub(crate) mode: u32 }
+impl DirBuilder {
+    /// Creates non-recursive options with Unix mode 0o777, filtered by umask.
+    pub fn new() -> Self { Self { recursive: false, mode: 0o777 } }
+    pub fn recursive(&mut self, recursive: bool) -> &mut Self { self.recursive = recursive; self }
+    pub fn create<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        if !self.recursive { return self.mkdir(path); }
+        if path.as_os_str().is_empty() || path.parent().is_none() { return Ok(()); }
+        let mut missing = Vec::new();
+        let mut current = path;
+        loop {
+            match self.mkdir(current) {
+                Ok(()) => break,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists && current.is_dir() => break,
+                Err(error) if error.kind() == ErrorKind::NotFound => missing.push(current),
+                Err(error) => return Err(error),
+            }
+            match current.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() && parent.parent().is_some() => current = parent,
+                _ => break,
+            }
+        }
+        for path in missing.into_iter().rev() {
+            if let Err(error) = self.mkdir(path) {
+                if error.kind() != ErrorKind::AlreadyExists || !path.is_dir() { return Err(error); }
+            }
+        }
+        Ok(())
+    }
+    fn mkdir(&self, path: &Path) -> Result<()> {
+        let name = c_path(path)?;
+        // SAFETY: path is NUL-terminated; mode is converted to native mode_t.
+        if unsafe { native::mkdir(name.as_ptr() as *const core::ffi::c_char, self.mode as native::Mode) } < 0 {
+            Err(Error::last_os_error())
+        } else { Ok(()) }
     }
 }
+pub fn create_dir<P: AsRef<Path>>(path: P) -> Result<()> { DirBuilder::new().create(path) }
+pub fn create_dir_all<P: AsRef<Path>>(path: P) -> Result<()> { DirBuilder::new().recursive(true).create(path) }
 pub fn rename<P:AsRef<Path>,Q:AsRef<Path>>(from:P,to:Q)->Result<()>{
     let from=c_path(from.as_ref())?;let to=c_path(to.as_ref())?;
     // SAFETY: both byte paths are retained NUL-terminated buffers. POSIX rename

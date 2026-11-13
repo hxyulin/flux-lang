@@ -633,7 +633,36 @@ pub(crate) fn impl_method_matches(
                 // A trait parameter can become a compound type in the impl
                 // header. Preserve its bound on each outlives component,
                 // just as type_outlives decomposes the matching obligation.
+                let original = ty;
                 let ty = cx.normalize(ty.subst(&args));
+                let mut map = map_trait;
+                if let Some(rows) = cx.instantiate_sig(original, &[], &mut map, &args, &arg_vars)
+                    && rows.len() == cx.slots(ty) as usize
+                {
+                    // The declaration promises `Self: 'b` even when Self is
+                    // replaced by a reference in this impl. Its represented
+                    // reference lifetimes are bounds too, not only its generic
+                    // type components. Reuse formation rules so projection
+                    // selection inputs do not become stored output lifetimes.
+                    let mut borrowed = vec![region];
+                    borrowed.extend(rows);
+                    let mut implied = Vec::new();
+                    flux_ty::regions::implied_outlives(
+                        items,
+                        sigs,
+                        Ty::new(TyKind::Ref(Mutability::Not, ty)),
+                        &borrowed,
+                        &mut implied,
+                    );
+                    for fact in implied {
+                        match fact {
+                            Outlives::Region(a, b) => cx.known_pairs.push((a, b)),
+                            Outlives::Type(component, bound) => {
+                                cx.known_types.push((component, bound))
+                            }
+                        }
+                    }
+                }
                 for component in flux_ty::regions::outlives_type_components(items, sigs, ty) {
                     cx.known_types.push((component, region));
                 }

@@ -1181,7 +1181,7 @@ impl<'a> Walker<'a> {
     ) -> Vec<Region> {
         let names = params.lifetimes.iter().map(|l| Some(l.name)).collect();
         let generics = crate::generic_names(self.items, None, params);
-        let consts = crate::generic_consts(self.items, None, params);
+        let consts = crate::generic_consts(self.items, module, None, params);
         let scope = TypeScope {
             generics: &generics,
             consts: &consts,
@@ -1308,6 +1308,7 @@ impl<'a> Walker<'a> {
                             crate::resolve::resolve_generic_args(
                                 self.items,
                                 self.module,
+                                def.loc.module,
                                 &def.generics.params,
                                 written,
                                 self.scope,

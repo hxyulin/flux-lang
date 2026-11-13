@@ -344,3 +344,21 @@ fn ignore_default_graph_matches_rustc() {
         include_str!("fixtures/corpus_crates/ignore.rs.txt"),
     );
 }
+
+#[test]
+fn rustix_default_graph_matches_rustc() {
+    compare_registry(
+        "rustix",
+        "1.1.6",
+        include_str!("fixtures/corpus_crates/rustix.rs.txt"),
+    );
+}
+
+#[test]
+fn tempfile_default_graph_matches_rustc() {
+    compare_registry(
+        "tempfile",
+        "3.27.0",
+        include_str!("fixtures/corpus_crates/tempfile.rs.txt"),
+    );
+}

@@ -2000,7 +2000,9 @@ impl Ctx<'_> {
                         .iter()
                         .enumerate()
                         .map(|(i, &ty)| match params.get(i) {
-                            Some(param) => self.resolve_generic_arg_ref(ty, param),
+                            Some(param) => {
+                                self.resolve_generic_arg_ref(ty, param, items.traits[t].loc.module)
+                            }
                             None => self.resolve_type_ref(ty),
                         })
                         .collect();

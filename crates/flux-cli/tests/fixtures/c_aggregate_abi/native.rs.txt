@@ -33,3 +33,28 @@ extern "C" fn plus(x:u64)->u64 { x+7 }
 
 unsafe extern "C" fn unsafe_plus(x:u64)->u64{x+23}
 #[unsafe(no_mangle)]pub extern "C" fn nullable_unsafe(x:Option<unsafe extern "C" fn(u64)->u64>)->Option<unsafe extern "C" fn(u64)->u64>{if x.is_some(){None}else{Some(unsafe_plus)}}
+
+use std::marker::PhantomData;
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TI8(PhantomData<()>,i8,[u8;0]);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TU8(u8,PhantomData<&'static ()>);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TF32(f32);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TF64(f64);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TPtr(*mut u8);
+#[repr(transparent)]#[derive(Clone,Copy)]pub struct TNested(TI8);
+
+#[unsafe(no_mangle)]pub extern "C" fn transparent_i8(x:TI8)->TNested{TNested(TI8(PhantomData,x.1-1,[]))}
+#[unsafe(no_mangle)]pub extern "C" fn transparent_u8(x:TU8)->TU8{TU8(x.0+1,PhantomData)}
+#[unsafe(no_mangle)]pub extern "C" fn transparent_f32(x:TF32)->TF32{TF32(x.0+0.5)}
+#[unsafe(no_mangle)]pub extern "C" fn transparent_f64(x:TF64)->TF64{TF64(x.0+0.25)}
+#[unsafe(no_mangle)]pub extern "C" fn transparent_ptr(x:TPtr)->TPtr{x}
+#[unsafe(no_mangle)]pub extern "C" fn transparent_pressure(a:u64,b:u64,c:u64,d:u64,e:u64,f:u64,g:u64,h:u64,x:TI8,y:TU8,z:TF64,p:TPtr)->i64{
+    // SAFETY: the caller supplies a pointer to a live initialized byte.
+    (a+b+c+d+e+f+g+h)as i64+x.1 as i64+y.0 as i64+z.0 as i64+unsafe{*p.0}as i64
+}
+#[unsafe(no_mangle)]pub extern "C" fn transparent_callback(f:extern "C" fn(TI8,TU8,TF64,TPtr)->TNested)->i8{
+    let mut byte=42;f(TI8(PhantomData,-91,[]),TU8(250,PhantomData),TF64(1.5),TPtr(&raw mut byte)).0.1
+}
+
+// These positive values have identical bits in the native integer register views.
+#[unsafe(no_mangle)]pub extern "C" fn abi_integer_view(x:u64)->u64{x+1}
+#[unsafe(no_mangle)]pub extern "C" fn abi_byte_view(x:u8)->u8{x+1}

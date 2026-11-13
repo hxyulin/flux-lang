@@ -635,6 +635,12 @@ impl Cx<'_> {
                     let at = IntDomain::of(ty).expect("a scalar").encode(*value);
                     DPat::Ctor(Ctor::Range(at, at), Vec::new())
                 }
+                TyKind::RawPtr(_, pointee) if !self.sigs.is_unsized(pointee) => {
+                    let at = IntDomain::of(Ty::int(IntTy::U64))
+                        .expect("pointer address domain")
+                        .encode(*value);
+                    DPat::Ctor(Ctor::Range(at, at), Vec::new())
+                }
                 _ => DPat::Or(Vec::new()),
             },
             crate::PatternConst::Variant {
@@ -772,6 +778,10 @@ impl Cx<'_> {
             TyKind::Int(_) | TyKind::Char => {
                 self.split_ints(IntDomain::of(ty).expect("a scalar"), heads)
             }
+            TyKind::RawPtr(_, pointee) if !self.sigs.is_unsized(pointee) => self.split_ints(
+                IntDomain::of(Ty::int(IntTy::U64)).expect("pointer address domain"),
+                heads,
+            ),
             TyKind::Slice(_) => self.split_slices(heads),
             TyKind::Tuple(_) | TyKind::Ref(..) | TyKind::Array(..) => {
                 if heads.is_empty() {

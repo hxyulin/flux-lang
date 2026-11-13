@@ -204,7 +204,7 @@ pub fn infer_body(
         module: data.loc.module,
         self_ty: self_ty(sigs, data.owner),
         generics: generic_names(items, data.owner, &data.generics),
-        consts: crate::generic_consts(items, data.owner, &data.generics),
+        consts: crate::generic_consts(items, data.loc.module, data.owner, &data.generics),
         is_unsafe: data.is_unsafe,
         // `core`'s panics abort, which constant evaluation does not run.
         const_context: (data.is_const && !data.do_not_const_check).then_some("constant functions"),
@@ -259,7 +259,7 @@ pub fn infer_const(
         module: data.loc.module,
         self_ty: enum_ty.or_else(|| self_ty(sigs, data.owner)),
         generics: generic_names(items, data.owner, &Generics::default()),
-        consts: crate::generic_consts(items, data.owner, &Generics::default()),
+        consts: crate::generic_consts(items, data.loc.module, data.owner, &Generics::default()),
         is_unsafe: false,
         const_context: Some(if data.is_static.is_some() {
             "statics"
@@ -2061,9 +2061,14 @@ impl Ctx<'_> {
     /// The generic arguments of a use of an item, a `kind` with `count`
     /// parameters of its own: those `written`, or new variables created
     /// at `origin`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "const parameter types use declaration scope while arguments use caller scope"
+    )]
     fn own_args(
         &mut self,
         kind: &str,
+        declaration_module: flux_hir::ModuleId,
         params: &[flux_hir::GenericParam],
         default_owner: Option<flux_hir::def_map::Def>,
         written: Option<&SegmentArgs>,
@@ -2089,7 +2094,9 @@ impl Ctx<'_> {
             .types
             .iter()
             .zip(params)
-            .map(|(&ty, param)| self.resolve_generic_arg_ref_in(ty, param, argument))
+            .map(|(&ty, param)| {
+                self.resolve_generic_arg_ref_in(ty, param, declaration_module, argument)
+            })
             .collect();
         if let Some(owner) = default_owner {
             let scope = TypeScope {
@@ -2109,14 +2116,20 @@ impl Ctx<'_> {
 
     /// The generic argument `ty_ref` of the body, for `param`: a type, or
     /// for a const parameter, a constant.
-    fn resolve_generic_arg_ref(&mut self, ty_ref: TypeRefId, param: &flux_hir::GenericParam) -> Ty {
-        self.resolve_generic_arg_ref_in(ty_ref, param, true)
+    fn resolve_generic_arg_ref(
+        &mut self,
+        ty_ref: TypeRefId,
+        param: &flux_hir::GenericParam,
+        declaration_module: flux_hir::ModuleId,
+    ) -> Ty {
+        self.resolve_generic_arg_ref_in(ty_ref, param, declaration_module, true)
     }
 
     fn resolve_generic_arg_ref_in(
         &mut self,
         ty_ref: TypeRefId,
         param: &flux_hir::GenericParam,
+        declaration_module: flux_hir::ModuleId,
         argument: bool,
     ) -> Ty {
         if !param.is_const() {
@@ -2165,6 +2178,7 @@ impl Ctx<'_> {
         let ty = crate::resolve_generic_arg(
             self.items,
             self.module,
+            declaration_module,
             Some(param),
             &self.body.types[ty_ref],
             scope,
@@ -2223,6 +2237,7 @@ impl Ctx<'_> {
         let kind = if def.is_enum() { "enum" } else { "struct" };
         let args = self.own_args(
             kind,
+            def.loc.module,
             &def.generics.params,
             Some(flux_hir::def_map::Def::Struct(strukt)),
             written.as_ref(),
@@ -2281,6 +2296,7 @@ impl Ctx<'_> {
         let params = &self.items.structs[adt.strukt].generics.params;
         let args = self.own_args(
             "struct",
+            self.items.structs[adt.strukt].loc.module,
             params,
             Some(flux_hir::def_map::Def::Struct(adt.strukt)),
             Some(&written),
@@ -2655,6 +2671,7 @@ impl Ctx<'_> {
         let explicit = data.generics.explicit_len();
         let own = self.own_args(
             kind,
+            data.loc.module,
             &data.generics.params[..explicit],
             None,
             written.as_ref(),

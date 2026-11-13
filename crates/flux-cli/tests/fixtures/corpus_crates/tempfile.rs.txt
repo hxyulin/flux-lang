@@ -1,0 +1,11 @@
+use std::io::{Read,Seek,SeekFrom,Write};
+fn main(){
+ let dir=tempfile::tempdir().unwrap();let root=dir.path().to_path_buf();
+ let mut file=tempfile::NamedTempFile::new_in(&root).unwrap();
+ file.write_all(b"temporary data").unwrap();file.seek(SeekFrom::Start(0)).unwrap();
+ let mut text=String::new();file.read_to_string(&mut text).unwrap();assert_eq!(text,"temporary data");
+ let destination=root.join("kept.txt");let mut kept=file.persist(&destination).unwrap();
+ kept.seek(SeekFrom::Start(0)).unwrap();let mut second=String::new();kept.read_to_string(&mut second).unwrap();assert_eq!(text,second);
+ drop(kept);assert!(destination.exists());drop(dir);assert!(!root.exists());
+ println!("{}",text);
+}

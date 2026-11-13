@@ -78,6 +78,29 @@ nonzero_impl!(NonZeroU64, u64, "nonzero_u64");
 nonzero_impl!(NonZeroU128, u128, "nonzero_u128");
 nonzero_impl!(NonZeroUsize, usize, "nonzero_usize");
 
+// Lossless nonzero conversions mirror the primitive From range guarantees.
+macro_rules! nonzero_widen {
+    ($source:ty => $($target:ty),+) => {$(
+        impl From<NonZero<$source>> for NonZero<$target> {
+            fn from(value: NonZero<$source>) -> Self {
+                Self(<$target>::from(value.get()))
+            }
+        }
+    )+};
+}
+nonzero_widen!(u8 => u16,u32,u64,u128,usize);
+nonzero_widen!(u16 => u32,u64,u128,usize);
+nonzero_widen!(u32 => u64,u128);
+nonzero_widen!(u64 => u128);
+nonzero_widen!(i8 => i16,i32,i64,i128,isize);
+nonzero_widen!(i16 => i32,i64,i128,isize);
+nonzero_widen!(i32 => i64,i128);
+nonzero_widen!(i64 => i128);
+nonzero_widen!(u8 => i16,i32,i64,i128,isize);
+nonzero_widen!(u16 => i32,i64,i128);
+nonzero_widen!(u32 => i64,i128);
+nonzero_widen!(u64 => i128);
+
 // Methods whose results stay nonzero, for each signedness.
 macro_rules! nonzero_common {
     ($($name:ident $t:ty),*) => {$(

@@ -74,6 +74,13 @@ pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId
         // enum, which is not generic (reported otherwise).
         let v = ast::Variant::cast(tree.node(data.node)).expect("discriminants point at variants");
         let mut ctx = Ctx::new(items, data.loc.module, None, None);
+        ctx.macro_scope = data.macro_scope;
+        ctx.place = Some(Place {
+            tree,
+            file: data.loc.file,
+            function: None,
+            item_start: data.item_range.start(),
+        });
         ctx.in_impl = true;
         ctx.self_target = Some(ImplTarget::Struct(strukt));
         let root = ctx.lower_opt(v.expr(), v.syntax());
@@ -2058,6 +2065,7 @@ struct Ctx<'a> {
     local_macros: Vec<(Symbol, LocalMacro)>,
     /// How many macro expansions the code being lowered is in.
     expansion_depth: u32,
+    elidable_expansion_root: Option<(*const SyntaxTree, flux_syntax::NodeId)>,
     /// File of the retained expansion currently being lowered.
     expansion_file: Option<FileId>,
     /// A tail macro invocation requires an expression until a block is entered.
@@ -2164,6 +2172,7 @@ impl<'a> Ctx<'a> {
             macro_scope: None,
             local_macros: Vec::new(),
             expansion_depth: 0,
+            elidable_expansion_root: None,
             expansion_file: None,
             macro_tail_is_expr: false,
             ctxt_parents: FxHashMap::default(),
@@ -2457,12 +2466,22 @@ impl<'a> Ctx<'a> {
 
     /// A macro call in expression position.
     fn lower_macro_expr(&mut self, m: ast::MacroExpr<'_>, range: TextRange) -> ExprId {
+        self.lower_macro_expr_optional(m, range, false)
+            .unwrap_or_else(|| self.alloc_expr(Expr::Missing, range))
+    }
+
+    fn lower_macro_expr_optional(
+        &mut self,
+        m: ast::MacroExpr<'_>,
+        range: TextRange,
+        elidable: bool,
+    ) -> Option<ExprId> {
         if macros::is_macro_rules(m.syntax()) {
             self.error(
                 range,
                 "macro definitions are only allowed as statements here",
             );
-            return self.alloc_expr(Expr::Missing, range);
+            return Some(self.alloc_expr(Expr::Missing, range));
         }
         let pin = self.is_builtin_macro(m, crate::Builtin::Pin);
         let offset_of = self.is_builtin_macro(m, crate::Builtin::OffsetOf);
@@ -2471,14 +2490,14 @@ impl<'a> Ctx<'a> {
                 Ok(asm) => Some(asm),
                 Err((at, message)) => {
                     self.error(at, message);
-                    return self.alloc_expr(Expr::Missing, range);
+                    return Some(self.alloc_expr(Expr::Missing, range));
                 }
             }
         } else {
             None
         };
         let Some((parse, file)) = self.expand(m.syntax(), Fragment::Expr) else {
-            return self.alloc_expr(Expr::Missing, range);
+            return Some(self.alloc_expr(Expr::Missing, range));
         };
         let root = parse.tree().root();
         let expr = root.children().find_map(ast::Expr::cast);
@@ -2535,11 +2554,15 @@ impl<'a> Ctx<'a> {
             } else {
                 self.alloc_expr(Expr::Missing, range)
             }
+        } else if elidable {
+            let id = expr.and_then(|expr| self.lower_elidable_expr(expr));
+            self.leave_expansion(expansion);
+            return id;
         } else {
             self.lower_opt(expr, root)
         };
         self.leave_expansion(expansion);
-        id
+        Some(id)
     }
 
     /// A macro call in statement position, `semicolon` if one follows
@@ -2713,6 +2736,16 @@ impl<'a> Ctx<'a> {
                 .map(|(r, m)| Diagnostic::new(*r, m.clone())),
         );
         for attr in attrs.iter() {
+            if self
+                .elidable_expansion_root
+                .is_some_and(|(tree, id)| std::ptr::eq(tree, node.tree()) && id == node.id())
+                && crate::item_tree::attr_name(attr) == Some("cfg")
+                && attr
+                    .meta()
+                    .is_some_and(|meta| meta.unsafe_token().is_none())
+            {
+                continue;
+            }
             if crate::item_tree::attr_name(attr) == Some("cfg")
                 && !crate::item_tree::cfg_position(node)
             {
@@ -3810,14 +3843,33 @@ impl<'a> Ctx<'a> {
         Expr::Missing
     }
 
+    /// An expression-list element may disappear after nested macro expansion.
+    /// Only that root inherits the list's permission; required operands do not.
+    fn lower_elidable_expr(&mut self, expr: ast::Expr<'_>) -> Option<ExprId> {
+        if !crate::item_tree::item_enabled(expr.syntax(), &mut self.diagnostics) {
+            return None;
+        }
+        let syntax = expr.syntax();
+        let previous = self
+            .elidable_expansion_root
+            .replace((syntax.tree() as *const SyntaxTree, syntax.id()));
+        let result = if let ast::Expr::MacroExpr(call) = expr {
+            self.check_attrs(syntax);
+            self.lower_macro_expr_optional(call, syntax.text_range(), true)
+        } else {
+            Some(self.lower_expr(expr))
+        };
+        self.elidable_expansion_root = previous;
+        result
+    }
+
     fn lower_expr_list<'t>(
         &mut self,
         exprs: impl IntoIterator<Item = ast::Expr<'t>>,
     ) -> SliceId<ExprId> {
         let start = self.expr_scratch.len();
         for expr in exprs {
-            if crate::item_tree::item_enabled(expr.syntax(), &mut self.diagnostics) {
-                let expr = self.lower_expr(expr);
+            if let Some(expr) = self.lower_elidable_expr(expr) {
                 self.expr_scratch.push(expr);
             }
         }

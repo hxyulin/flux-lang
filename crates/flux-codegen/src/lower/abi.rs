@@ -164,6 +164,24 @@ fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
 /// still contain decoded discriminants and payloads; call boundaries marshal
 /// through the actual layout rather than exposing those internal leaves.
 pub(super) fn c_scalar(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Ty> {
+    c_scalar_at(sigs, layouts, ty, 0)
+}
+
+fn c_scalar_at(sigs: &Signatures, layouts: &Layouts, ty: Ty, depth: u32) -> Option<Ty> {
+    if depth >= 64 {
+        return None;
+    }
+    if let Some(payload) = layouts.transparent_field(ty) {
+        if c_contains_ref(sigs, payload) || is_fat(sigs, payload) {
+            return None;
+        }
+        let scalar = c_scalar_at(sigs, layouts, payload, depth + 1).or_else(|| {
+            (!c_aggregate(payload) && keel_type(payload).is_some()).then_some(payload)
+        })?;
+        let actual = layouts.of(ty);
+        let physical = layouts.of(scalar);
+        return (actual.size == physical.size && actual.align == physical.align).then_some(scalar);
+    }
     let variants = flux_solve::variants(sigs, ty)?;
     let actual = layouts.of(ty);
     if !actual.exact {
@@ -257,6 +275,14 @@ fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, layouts: &Layouts, 
                         && items.modules[data.loc.module].name.as_str() == "option")
                         || (variants.iter().all(|v| v.is_empty())
                             && (data.repr_c || data.repr.is_some())));
+            }
+            if data.repr_transparent {
+                return !vector
+                    && !c_contains_ref(sigs, ty)
+                    && c_scalar(sigs, layouts, ty).is_some()
+                    && layouts
+                        .transparent_field(ty)
+                        .is_some_and(|payload| c_admitted(items, sigs, layouts, payload));
             }
             data.repr_c
                 && !vector
