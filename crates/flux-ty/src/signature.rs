@@ -1099,7 +1099,10 @@ pub(super) fn extend_signatures(
                 .chain([(sig.ret, function.ret_range)]);
             for (ty, range) in types {
                 let sequence = match ty.kind() {
-                    TyKind::Ref(_, t) | TyKind::RawPtr(_, t) => t.is_unsized(),
+                    TyKind::Ref(_, t) => t.is_unsized(),
+                    TyKind::RawPtr(_, t) => {
+                        t.is_unsized() && !matches!(t.kind(), TyKind::Slice(_) | TyKind::Str)
+                    }
                     _ => false,
                 };
                 if sequence {

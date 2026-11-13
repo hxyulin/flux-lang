@@ -122,13 +122,19 @@ impl Convention {
 /// Keel has natural C layout only; reject shapes it cannot express exactly.
 fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
     let actual = layouts.of(ty);
-    if !actual.exact || is_fat(sigs, ty) {
+    if !actual.exact || (is_fat(sigs, ty) && !c_sequence_pointer(ty)) {
         return None;
     }
     let layout = if let Some(scalar) = c_scalar(sigs, layouts, ty) {
         Layout::Scalar(keel_type(scalar)?)
     } else {
         match ty.kind() {
+            // Rustc classifies raw slice/string pointers as a C aggregate,
+            // rather than two independent scalar parameters. Keel applies the
+            // target's aggregate register and stack rules to this layout.
+            TyKind::RawPtr(..) if c_sequence_pointer(ty) => {
+                Layout::Struct(vec![Layout::Scalar(Type::Ptr), Layout::Scalar(Type::I64)])
+            }
             TyKind::Tuple([]) | TyKind::Never => Layout::Struct(Vec::new()),
             TyKind::Array(elem, count) => Layout::Array(
                 Box::new(c_layout(sigs, layouts, elem)?),
@@ -224,11 +230,16 @@ fn c_scalar_at(sigs: &Signatures, layouts: &Layouts, ty: Ty, depth: u32) -> Opti
     (layout.size() == actual.size && layout.align() == actual.align).then_some(scalar)
 }
 
+fn c_sequence_pointer(ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::RawPtr(_, pointee) if matches!(pointee.kind(), TyKind::Slice(_) | TyKind::Str))
+}
+
 fn c_aggregate(ty: Ty) -> bool {
-    matches!(
-        ty.kind(),
-        TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Array(..)
-    )
+    c_sequence_pointer(ty)
+        || matches!(
+            ty.kind(),
+            TyKind::Adt(..) | TyKind::Tuple(_) | TyKind::Array(..)
+        )
 }
 
 fn c_return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {

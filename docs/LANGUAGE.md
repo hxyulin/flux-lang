@@ -925,8 +925,11 @@ unsupported enums or other aggregates remain unsupported. Conflicting declaratio
 of one external symbol retain each declaration's calling signature through typed
 indirect calls when it differs from the module's canonical import.
 Generic C definitions and indirect pointers use the same checks after
-instantiation. Other aggregate representations, vectors, wide pointers and
-unnamed variadic aggregate arguments reject before code generation. Ordinary
+instantiation. Raw slice and string pointers cross C calls as address/length
+aggregates, including returns and indirect calls. This matches rustc's lowering
+of these FFI-unsafe types; it does not make them portable C declarations. Other
+aggregate representations, vectors, other wide pointers and unnamed variadic
+aggregate arguments reject before code generation. Ordinary
 Rust calls retain their own aggregate convention. Calling either type works as calling the
 function does; through a pointer, in constants and `const fn`s, is an
 error, as in rustc. Function items and safe or unsafe pointers implement

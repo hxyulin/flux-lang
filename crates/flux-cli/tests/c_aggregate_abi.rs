@@ -115,8 +115,8 @@ fn unsupported_c_shapes_fail_before_machine_code() {
             "extern \"C\" fn identity<T>(x:T)->T{x}fn main(){let _=identity(unsafe{core::arch::aarch64::vdup_n_u8(7)});}",
         ),
         (
-            "wide_pointer",
-            "fn main(){let f:unsafe extern \"C\" fn(*const [u8])->u64=unsafe{std::mem::transmute(4096usize)};let s:&[u8]=&[];let _=unsafe{f(s as *const [u8])};}",
+            "trait_object_pointer",
+            "trait Trait{}impl Trait for u8{}fn main(){let f:unsafe extern \"C\" fn(*const dyn Trait)->u64=unsafe{std::mem::transmute(4096usize)};let s:&dyn Trait=&0u8;let _=unsafe{f(s as *const dyn Trait)};}",
         ),
     ] {
         if !case_filter::selected(name) {
