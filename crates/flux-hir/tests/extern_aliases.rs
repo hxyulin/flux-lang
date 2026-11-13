@@ -17,6 +17,8 @@ fn extern_aliases_match_rustc() {
         "mod inner { pub extern crate alloc as heap; } fn f() -> inner::heap::vec::Vec<u8> { inner::heap::vec::Vec::new() }",
         "mod inner { pub extern crate alloc; } fn f() { inner::alloc::vec::Vec::<u8>::new(); }",
         "mod inner { extern crate alloc; fn f() { alloc::vec::Vec::<u8>::new(); } }",
+        "mod inner { extern crate core; use self::core::assert as core; fn f() { core!(true); } }",
+        "extern crate core; use self::core::assert as core; fn f() { core!(true); }",
         "extern crate core as foundation; use foundation::num::NonZeroU32; fn f() -> Option<NonZeroU32> { NonZeroU32::new(1) }",
         "mod control { mod tag { pub struct Tag(pub u8); } use self::{tag::{Tag}}; fn f() -> Tag { Tag(7) } }",
     ];

@@ -11,6 +11,11 @@ pub trait ToOwned {
     type Owned: Borrow<Self>;
 
     fn to_owned(&self) -> Self::Owned;
+
+    /// Replaces `target` with an owned copy of this value.
+    fn clone_into(&self, target: &mut Self::Owned) {
+        *target = self.to_owned();
+    }
 }
 
 impl<T: Clone> ToOwned for T {
@@ -18,6 +23,10 @@ impl<T: Clone> ToOwned for T {
 
     fn to_owned(&self) -> T {
         self.clone()
+    }
+
+    fn clone_into(&self, target: &mut T) {
+        target.clone_from(self);
     }
 }
 

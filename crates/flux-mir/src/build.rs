@@ -4667,7 +4667,13 @@ impl Builder<'_> {
                 }
                 // A value of a function item's or pointer's type.
                 _ => {
-                    let mut callable = self.expr_ty(*callee);
+                    let adjusted = self.types.field_derefs.get(expr).copied().map(|count| {
+                        let overloads = self.overloads_of(expr);
+                        self.lower_place_deref(*callee, count, &overloads)
+                    });
+                    let mut callable = adjusted
+                        .as_ref()
+                        .map_or_else(|| self.expr_ty(*callee), |place| self.place_ty(place));
                     let mut derefs = 0;
                     while let TyKind::Ref(_, pointee) = callable.kind() {
                         callable = pointee;
@@ -4684,7 +4690,9 @@ impl Builder<'_> {
                             self.call(def.function, def.args, args, dest, range);
                         }
                         TyKind::FnPtr(sig) => {
-                            let callee = if derefs == 0 {
+                            let callee = if let Some(place) = adjusted {
+                                self.read(place)
+                            } else if derefs == 0 {
                                 self.lower_operand(*callee)
                             } else {
                                 let place = self.lower_place_deref(*callee, derefs, &[]);

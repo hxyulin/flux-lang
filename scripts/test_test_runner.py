@@ -155,12 +155,15 @@ class Planning(unittest.TestCase):
     def test_internally_parallel_targets_hold_part_of_the_budget(self):
         run = runner.Target("flux-cli", "run", "test", "/flux-cli/tests/run.rs")
         proof = runner.Target("flux-cli", "proof_compatibility", "test", "/flux-cli/tests/proof_compatibility.rs")
+        corpus = runner.Target("flux-cli", "corpus_crates", "test", "/flux-cli/tests/corpus_crates.rs")
         other = runner.Target("flux-mir", "run", "test", "/flux-mir/tests/run.rs")
         self.assertEqual(runner.workers(run, 14, alone=False), 7)
         self.assertEqual(runner.workers(run, 14, alone=True), 14)
         self.assertEqual(runner.workers(run, 1, alone=False), 1)
         self.assertEqual(runner.workers(proof, 14, alone=False), 4)
         self.assertEqual(runner.workers(proof, 2, alone=False), 2)
+        self.assertEqual(runner.workers(corpus, 14, alone=False), 2)
+        self.assertEqual(runner.workers(corpus, 1, alone=True), 1)
         self.assertEqual(runner.workers(other, 14, alone=False), 1)
 
     def write_run(self, directory, name, records):
@@ -512,6 +515,18 @@ class Planning(unittest.TestCase):
             result = runner.run_target(target, executable, args, directory, False)
             self.assertEqual(result["exit_code"], 0)
             self.assertEqual(result["workers"], 7)
+
+    def test_corpus_cases_share_the_reserved_budget(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            executable = directory / "corpus"
+            executable.write_text('#!/bin/sh\ntest "$FLUX_TEST_JOBS" = "1" && test "$2" = "--test-threads=2"\n')
+            executable.chmod(0o755)
+            target = runner.Target("flux-cli", "corpus_crates", "test", str(directory / "tests" / "corpus_crates.rs"))
+            args = argparse.Namespace(jobs=14, workers=2, case=None, filter=None, timeout=5)
+            result = runner.run_target(target, executable, args, directory, False)
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(result["workers"], 2)
 
 
 if __name__ == "__main__":

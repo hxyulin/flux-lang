@@ -2002,6 +2002,7 @@ struct Ctx<'a> {
     /// [`Body::const_blocks`].
     const_blocks: ArenaMap<Expr, ()>,
     items: &'a ItemTree,
+    owner: Option<Owner>,
     /// Lowering a function in an `impl` block, where `Self` means its
     /// type: `self_target`, unless that did not resolve.
     in_impl: bool,
@@ -2121,6 +2122,7 @@ impl<'a> Ctx<'a> {
             block_modules: ArenaMap::new(),
             const_blocks: ArenaMap::new(),
             items,
+            owner,
             module,
             generics,
             const_params,
@@ -3586,6 +3588,33 @@ impl<'a> Ctx<'a> {
         generics
     }
 
+    /// Resolves a concrete associated record constructor in its impl scope.
+    fn self_associated_struct(&self, name: Symbol) -> Option<StructId> {
+        let imp = &self.items.impls[self.owner?.as_impl()?];
+        let ty = &imp.types.iter().find(|ty| ty.name == name)?.ty;
+        let TypeRef::Path(path) = ty else { return None };
+        if path.as_name() == Some(kw::SelfUpper) {
+            return self.self_struct();
+        }
+        let target = match self.items.resolve(imp.module, path, Ns::Types) {
+            Ok(Resolved::Def(Def::Struct(id)))
+            | Err(ResolveError::Private {
+                resolved: Resolved::Def(Def::Struct(id)),
+                ..
+            }) => Some(ImplTarget::Struct(id)),
+            Ok(Resolved::Def(Def::TypeAlias(id)))
+            | Err(ResolveError::Private {
+                resolved: Resolved::Def(Def::TypeAlias(id)),
+                ..
+            }) => self.items.alias_target(id),
+            _ => None,
+        };
+        match target {
+            Some(ImplTarget::Struct(id)) => Some(id),
+            _ => None,
+        }
+    }
+
     /// If the first `len` segments of `path` name a type alias, a type of
     /// the body for them, with the alias's generic arguments.
     fn alias_prefix(&mut self, path: &Path, len: usize, range: TextRange) -> Option<TypeRefId> {
@@ -3598,14 +3627,19 @@ impl<'a> Ctx<'a> {
             args: path.args[..len.min(path.args.len())].into(),
             ..path.clone()
         };
-        let resolved = match self.items.resolve(self.module, &prefix, Ns::Types) {
-            Ok(resolved) => resolved,
-            Err(ResolveError::Private { resolved, .. }) => resolved,
-            Err(_) => return None,
-        };
-        let Resolved::Def(Def::TypeAlias(_)) = resolved else {
-            return None;
-        };
+        let associated = prefix.anchor == PathAnchor::Plain
+            && prefix.segments.len() == 2
+            && prefix.segments[0] == kw::SelfUpper
+            && self.self_associated_struct(prefix.segments[1]).is_some();
+        if !associated {
+            let resolved = match self.items.resolve(self.module, &prefix, Ns::Types) {
+                Ok(resolved) | Err(ResolveError::Private { resolved, .. }) => resolved,
+                Err(_) => return None,
+            };
+            if !matches!(resolved, Resolved::Def(Def::TypeAlias(_))) {
+                return None;
+            }
+        }
         let ty_range = TextRange::new(
             range.start(),
             path.range(len - 1, range).end().max(range.start()),
@@ -3675,8 +3709,16 @@ impl<'a> Ctx<'a> {
             && path.segments[0] == kw::SelfUpper
             && self.in_impl
         {
-            let e = self.self_struct()?;
             let name = path.segments[1];
+            if record
+                && !self
+                    .self_struct()
+                    .is_some_and(|id| self.items.structs[id].variant_named(name).is_some())
+                && let Some(id) = self.self_associated_struct(name)
+            {
+                return Some(found(self.items, id));
+            }
+            let e = self.self_struct()?;
             return match self.items.structs[e].variant_named(name) {
                 Some(v) => Some(Ok((e, v))),
                 None => {

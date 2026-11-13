@@ -32,6 +32,22 @@ pub enum FromBytesWithNulError {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FromBytesUntilNulError(());
 
+impl fmt::Display for FromBytesWithNulError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InteriorNul { position } => crate::write!(f, "data provided contains an interior nul byte at byte position {position}"),
+            Self::NotNulTerminated => f.write_str("data provided is not nul terminated"),
+        }
+    }
+}
+impl crate::error::Error for FromBytesWithNulError {}
+impl fmt::Display for FromBytesUntilNulError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.write_str("data provided does not contain a nul")
+    }
+}
+impl crate::error::Error for FromBytesUntilNulError {}
+
 impl CStr {
     /// Borrows a readable NUL-terminated C string. The caller must ensure the
     /// terminator lies within a live allocation for the returned lifetime.

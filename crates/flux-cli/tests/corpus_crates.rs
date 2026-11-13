@@ -505,3 +505,39 @@ fn logos_safe_source_graph_matches_rustc() {
         &[("logos", "0.16.1", &["forbid_unsafe"])],
     );
 }
+
+#[test]
+fn accesskit_clone_graph_matches_rustc() {
+    compare_registry(
+        "accesskit",
+        "0.25.2",
+        r#"fn main(){let mut source=accesskit::Node::new(accesskit::Role::Button);source.set_label("source");let mut target=accesskit::Node::new(accesskit::Role::Link);target.set_label("old");target.clone_from(&source);assert_eq!(target.role(),source.role());assert_eq!(target.label(),Some("source"));source.set_label("changed");assert_eq!(target.label(),Some("source"));println!("{:?} {:?}",target.role(),target.label());}"#,
+    );
+}
+
+#[test]
+fn cc_command_graph_matches_rustc() {
+    compare_registry(
+        "cc",
+        "1.2.66",
+        r#"fn main(){let mut build=cc::Build::new();build.file("first.c").file("second.c").include("include");let files:Vec<_>=build.get_files().map(|file|file.display().to_string()).collect();assert_eq!(files,["first.c","second.c"]);println!("{files:?}");}"#,
+    );
+}
+
+#[test]
+fn toml_parser_span_graph_matches_rustc() {
+    compare_registry(
+        "toml_parser",
+        "1.1.5+spec-1.1.0",
+        r#"fn main(){let span=toml_parser::Span::new_unchecked(1,3);let span=7usize+(span+2usize);assert_eq!(span.start(),10);assert_eq!(span.end(),12);println!("{} {}",span.start(),span.end());}"#,
+    );
+}
+
+#[test]
+fn libloading_symbol_graph_matches_rustc() {
+    compare_registry(
+        "libloading",
+        "0.8.9",
+        r#"fn main(){unsafe{let library=libloading::Library::new("/usr/lib/libSystem.B.dylib").unwrap();let length:libloading::Symbol<unsafe extern "C" fn(*const u8)->usize>=library.get(b"strlen\0").unwrap();let count=length(c"library".as_ptr() as *const u8);assert_eq!(count,7);println!("{count}");}}"#,
+    );
+}

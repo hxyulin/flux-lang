@@ -621,7 +621,7 @@ impl Ctx<'_> {
                 break Some(found);
             }
             match base.kind() {
-                TyKind::Closure(..) => break None,
+                TyKind::Closure(..) | TyKind::FnPtr(_) => break None,
                 TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_) | TyKind::Dynamic(_) => {
                     base = self.known(base);
                     if let Some(found) = self.fn_bound(base) {
@@ -649,6 +649,11 @@ impl Ctx<'_> {
             }
         };
         match base.kind() {
+            TyKind::FnPtr(sig) => {
+                self.field_derefs.insert(id, derefs);
+                self.record_overloaded_derefs(id, &steps);
+                self.call_value(id, callee, sig, None, args)
+            }
             TyKind::Closure(_, closure_args) if !through_pointer => {
                 let parts = ClosureArgs::split(closure_args);
                 let params = match self.shallow(parts.params()).kind() {

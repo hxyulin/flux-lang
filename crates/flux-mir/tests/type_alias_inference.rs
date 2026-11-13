@@ -8,6 +8,21 @@ fn omitted_alias_arguments_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "associated_record_output",
+            include_str!("../../../tests/run/associated_record_output.rs"),
+            true,
+        ),
+        (
+            "associated_record_wrong_field_type",
+            "struct Pair<T>{value:T}trait Build{type Output;fn build()->Self::Output;}impl Build for usize{type Output=Pair<u64>;fn build()->Self::Output{Self::Output{value:false}}}fn main(){}",
+            false,
+        ),
+        (
+            "associated_record_unknown_field",
+            "struct Pair{value:u64}trait Build{type Output;fn build()->Self::Output;}impl Build for usize{type Output=Pair;fn build()->Self::Output{Self::Output{missing:1}}}fn main(){}",
+            false,
+        ),
+        (
             "omitted",
             "type Items<T>=Vec<T>;fn main(){let mut v=Items::new();v.push(7u8);}",
             true,

@@ -13,6 +13,31 @@ fn associated_selection_proofs_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, accepted, source) in [
         (
+            "caller_bound_equivalence",
+            true,
+            include_str!("../../../tests/run/caller_bound_equivalence.rs"),
+        ),
+        (
+            "deref_function_pointer_call",
+            true,
+            include_str!("../../../tests/run/deref_function_pointer_call.rs"),
+        ),
+        (
+            "deref_unsafe_function_pointer_requires_unsafe",
+            false,
+            "use std::ops::Deref;struct W(unsafe fn());impl Deref for W{type Target=unsafe fn();fn deref(&self)->&Self::Target{&self.0}}unsafe fn f(){}fn main(){let w=W(f);w();}",
+        ),
+        (
+            "supertrait_where_projections",
+            true,
+            include_str!("../../../tests/run/supertrait_where_projections.rs"),
+        ),
+        (
+            "supertrait_where_missing_bound",
+            false,
+            "trait Marker{}trait Base{type Item;}trait Child:Base where Self::Item:Marker{}struct S;impl Base for S{type Item=u8;}impl Child for S{}fn main(){}",
+        ),
+        (
             "pending_const_call_bounds",
             true,
             include_str!("../../../tests/run/pending_const_call_bounds.rs"),

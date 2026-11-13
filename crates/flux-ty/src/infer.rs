@@ -55,7 +55,7 @@ pub struct InferenceResult {
     pub offsets: ArenaMap<Expr, (Ty, Box<[u32]>)>,
     /// How many references a `Field` or `Index` expression's base is
     /// dereferenced through first: one for `r.a` with `r: &S`, or `r[0]`
-    /// with `r: &[i32]`.
+    /// with `r: &[i32]`. Also records callable-pointer autoderefs at a `Call`.
     pub field_derefs: ArenaMap<Expr, u32>,
     /// Indexing expressions whose base, an array, is borrowed and unsized
     /// to a slice for `Index::index` (`a[1..3]`), past the dereferences

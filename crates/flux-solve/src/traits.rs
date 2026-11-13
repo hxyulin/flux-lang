@@ -8,6 +8,10 @@
 //! the generic parameters in scope, which are treated as distinct types
 //! that implement what their bounds say.
 
+mod caller;
+
+use caller::BoundMatching;
+
 use flux_hir::{FunctionId, ImplId, ItemTree, Owner, StructId, TraitId};
 use flux_intern::{Symbol, kw};
 
@@ -244,7 +248,7 @@ pub struct RigidSolver<'a> {
     projections: &'a [Projection],
     unsized_params: &'a [bool],
     depth: std::cell::Cell<u32>,
-    normalized_arguments: bool,
+    bound_matching: BoundMatching,
     normalizations: std::cell::RefCell<rustc_hash::FxHashMap<(Ty, Option<AliasTy>), Ty>>,
     proof_cuts: std::cell::Cell<u32>,
     normalizing: std::cell::RefCell<rustc_hash::FxHashSet<(Ty, Option<AliasTy>)>>,
@@ -277,7 +281,7 @@ impl<'a> RigidSolver<'a> {
             projections,
             unsized_params,
             depth: std::cell::Cell::new(0),
-            normalized_arguments: true,
+            bound_matching: BoundMatching::Normalized,
             normalizations: Default::default(),
             proof_cuts: std::cell::Cell::new(0),
             normalizing: Default::default(),
@@ -288,7 +292,7 @@ impl<'a> RigidSolver<'a> {
     /// facts from other bounds. Value signatures and bodies use the ordinary
     /// context, but these declaration inputs require original memberships.
     pub fn original_memberships_only(mut self) -> Self {
-        self.normalized_arguments = false;
+        self.bound_matching = BoundMatching::Original;
         self.normalizations.get_mut().clear();
         self
     }
@@ -423,15 +427,13 @@ impl<'a> RigidSolver<'a> {
         projections: &[Projection],
         p: Predicate,
     ) -> Predicate {
-        Predicate {
-            self_ty: Self::caller_normalize(items, sigs, projections, p.self_ty, None),
-            trait_ref: TraitRef {
-                args: crate::ty::map_list(p.trait_ref.args, |ty| {
-                    Self::caller_normalize(items, sigs, projections, ty, None)
-                }),
-                ..p.trait_ref
-            },
-        }
+        caller::map_predicate(p, |ty| {
+            Self::caller_normalize(items, sigs, projections, ty, None)
+        })
+    }
+
+    fn normalize_goal(&self, p: Predicate) -> Predicate {
+        caller::map_predicate(p, |ty| self.normalize_ty(ty, None))
     }
 
     pub fn holds(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> bool {
@@ -450,17 +452,9 @@ impl<'a> RigidSolver<'a> {
         {
             return true;
         }
-        if self.normalized_arguments
-            && self.memberships.iter().any(|predicate| {
-                predicate.trait_ref.trait_ == goal.trait_ref.trait_
-                    && (predicate.self_ty.has_aliases()
-                        || predicate.trait_ref.args.iter().any(|ty| ty.has_aliases()))
-                    && self.normalize_ty(predicate.self_ty, None) == goal.self_ty
-                    && crate::ty::map_list(predicate.trait_ref.args, |ty| {
-                        self.normalize_ty(ty, None)
-                    }) == goal.trait_ref.args
-            })
-        {
+        if caller::matches(self.memberships, goal, self.bound_matching, |p| {
+            self.normalize_goal(p)
+        }) {
             return true;
         }
         if let Some((_, coinductive)) = auto_cycle(self.items, goal, stack) {
@@ -512,13 +506,7 @@ impl<'a> RigidSolver<'a> {
         };
         stack.push(goal);
         let proven = nested.into_iter().all(|p| {
-            let p = Predicate {
-                self_ty: self.normalize_ty(p.self_ty, None),
-                trait_ref: TraitRef {
-                    args: crate::ty::map_list(p.trait_ref.args, |ty| self.normalize_ty(ty, None)),
-                    ..p.trait_ref
-                },
-            };
+            let p = self.normalize_goal(p);
             self.holds(p, stack)
         });
         stack.pop();
@@ -575,15 +563,7 @@ impl<'a> RigidSolver<'a> {
             let memberships = self.sigs.impl_predicates.get(imp).into_iter().flatten();
             if !memberships.copied().all(|p| {
                 let p = p.subst(&args);
-                let p = Predicate {
-                    self_ty: self.normalize_ty(p.self_ty, None),
-                    trait_ref: TraitRef {
-                        args: crate::ty::map_list(p.trait_ref.args, |ty| {
-                            self.normalize_ty(ty, None)
-                        }),
-                        ..p.trait_ref
-                    },
-                };
+                let p = self.normalize_goal(p);
                 !has_error(p.self_ty)
                     && !p.trait_ref.args.iter().any(|&ty| has_error(ty))
                     && self.holds(p, stack)
@@ -2085,7 +2065,7 @@ pub fn holds(items: &ItemTree, sigs: &Signatures, env: &[Predicate], goal: Predi
         stack: Vec::new(),
         memo: rustc_hash::FxHashMap::default(),
         cut: usize::MAX,
-        normalize_parameter_arguments: true,
+        bound_matching: BoundMatching::Normalized,
     }
     .holds_at(goal)
 }
@@ -2106,7 +2086,7 @@ pub fn holds_declaration_input(
         stack: Vec::new(),
         memo: Default::default(),
         cut: usize::MAX,
-        normalize_parameter_arguments: false,
+        bound_matching: BoundMatching::DeclarationInput,
     }
     .holds_at(goal)
 }
@@ -2127,7 +2107,7 @@ fn auto_cycle(items: &ItemTree, goal: Predicate, stack: &[Predicate]) -> Option<
 /// proved. Types are DAGs (`struct A(B, B)`), so a nested goal recurs
 /// often; each is proved once.
 struct Holds<'a> {
-    normalize_parameter_arguments: bool,
+    bound_matching: BoundMatching,
     items: &'a ItemTree,
     sigs: &'a Signatures,
     env: &'a [Predicate],
@@ -2174,20 +2154,10 @@ impl Holds<'_> {
         if in_env(sigs, env, goal) {
             return true;
         }
-        if env
-            .iter()
-            .any(|p| p.trait_ref.trait_ == goal.trait_ref.trait_)
-        {
-            let normalized = normalize_predicate(items, sigs, goal);
-            if env.iter().any(|&predicate| {
-                predicate.trait_ref.trait_ == goal.trait_ref.trait_
-                    && (self.normalize_parameter_arguments
-                        || !matches!(predicate.self_ty.kind(), TyKind::Param(_))
-                        || predicate.trait_ref.args == goal.trait_ref.args)
-                    && normalize_predicate(items, sigs, predicate) == normalized
-            }) {
-                return true;
-            }
+        if caller::matches(env, goal, self.bound_matching, |p| {
+            normalize_predicate(items, sigs, p)
+        }) {
+            return true;
         }
         if let Some((start, coinductive)) = auto_cycle(items, goal, &self.stack) {
             self.cut = self.cut.min(start);
@@ -2444,14 +2414,7 @@ pub fn normalize_predicate(items: &ItemTree, sigs: &Signatures, p: Predicate) ->
     if !p.self_ty.has_aliases() && !p.trait_ref.args.iter().any(|a| a.has_aliases()) {
         return p;
     }
-    let args = crate::ty::map_list(p.trait_ref.args, |a| normalize(items, sigs, &[], a));
-    Predicate {
-        self_ty: normalize(items, sigs, &[], p.self_ty),
-        trait_ref: TraitRef {
-            args,
-            ..p.trait_ref
-        },
-    }
+    caller::map_predicate(p, |ty| normalize(items, sigs, &[], ty))
 }
 
 /// Whether `ty: t` holds by the compiler's say, including `Copy` and

@@ -244,6 +244,18 @@ pub(super) fn extend_signatures(
                 projections.extend(bindings);
             }
         }
+        // This trait is not installed in `sigs` yet. Make its already resolved
+        // supertraits available to projections in the where-clause itself.
+        let declared_bounds: Vec<_> = header_bounds
+            .iter()
+            .copied()
+            .chain(supertraits.iter().map(|tr| tr.with_self(self_param)))
+            .collect();
+        let declared_bounds = flux_solve::traits::elaborate(&sigs, &declared_bounds);
+        let scope = TypeScope {
+            bounds: &declared_bounds,
+            ..scope
+        };
         let mut predicates = Vec::new();
         let resolved =
             resolve_predicates(items, &sigs, t.loc.module, &t.generics, scope, &mut errors);

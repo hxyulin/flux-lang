@@ -290,3 +290,66 @@ fn contextual_impl_outputs_require_independent_evidence() {
         assert!(!found.is_empty(), "flux unexpectedly accepted {name}");
     }
 }
+
+/// Caller equalities must compare the goal and the assumption in the same form.
+#[test]
+fn rigid_caller_bounds_normalize_both_sides() {
+    use flux_solve::traits::{self, RigidSolver};
+    use flux_ty_ir::Ty;
+
+    let source =
+        "trait Source{type Out;}trait Mark<A>{}fn caller_proof<T:Source<Out=u32>,U:Mark<u32>>(){}";
+    assert!(rustc("caller_bound_equivalence", source).status.success());
+    let (_, _, hir) = flux_hir::lower_text("caller_bounds.rs", source);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_ty::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let (function, _) = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "caller_proof")
+        .unwrap();
+    let memberships = traits::elaborate(&typed.sigs, &typed.sigs.fn_predicates[function]);
+    let projections = &typed.sigs.fn_projections[function];
+    let assumption = *memberships
+        .iter()
+        .find(|p| p.trait_ref.name.as_str() == "Mark")
+        .unwrap();
+    let mut goal = assumption;
+    goal.trait_ref.args = Ty::list(&[Ty::alias(projections[0].alias)]);
+    let proof = RigidSolver::new(&hir.items, &typed.sigs, &memberships, projections, &[]);
+    assert!(
+        proof.holds(goal, &mut Vec::new()),
+        "equivalent goal was not proven"
+    );
+    let mut wrong = goal;
+    wrong.trait_ref.args = Ty::list(&[Ty::BOOL]);
+    assert!(
+        !proof.holds(wrong, &mut Vec::new()),
+        "wrong argument was proven"
+    );
+    let without_mark: Vec<_> = memberships
+        .iter()
+        .copied()
+        .filter(|p| *p != assumption)
+        .collect();
+    assert!(
+        !RigidSolver::new(&hir.items, &typed.sigs, &without_mark, projections, &[])
+            .holds(goal, &mut Vec::new()),
+        "equality manufactured a missing membership"
+    );
+    let mut reversed = memberships.clone();
+    *reversed.iter_mut().find(|p| **p == assumption).unwrap() = goal;
+    assert!(
+        RigidSolver::new(&hir.items, &typed.sigs, &reversed, projections, &[])
+            .holds(assumption, &mut Vec::new()),
+        "reverse comparison was not proven"
+    );
+    assert!(
+        !proof
+            .original_memberships_only()
+            .holds(goal, &mut Vec::new()),
+        "declaration proof rewrote its original memberships"
+    );
+}

@@ -325,6 +325,11 @@ impl<K: Eq + Hash, V, S: BuildHasher + Default> FromIterator<(K, V)> for HashMap
         map
     }
 }
+impl<K: Eq + Hash, V, const N: usize> From<[(K, V); N]> for HashMap<K, V, RandomState> {
+    fn from(values: [(K, V); N]) -> Self {
+        values.into_iter().collect()
+    }
+}
 impl<K: Eq + Hash, V, S: BuildHasher> Extend<(K, V)> for HashMap<K, V, S> {
     fn extend<I: IntoIterator<Item = (K, V)>>(&mut self, iter: I) {
         for (key, value) in iter {

@@ -2528,6 +2528,7 @@ pub fn trait_bound_schemes(
     let mut own_indices = Vec::new();
     let mut bounds = vec![flux_solve::traits::trait_self_predicate(items, id)];
     bounds.extend_from_slice(own_predicates);
+    let bounds = flux_solve::traits::elaborate(sigs, &bounds);
     let scope = TypeScope {
         self_ty: Some(self_ty),
         generics: &generics,

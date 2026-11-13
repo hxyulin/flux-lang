@@ -337,6 +337,57 @@ pub struct Command {
     directory: Option<PathBuf>, stdin: Option<Stdio>, stdout: Option<Stdio>, stderr: Option<Stdio>,
     before_exec: Vec<crate::boxed::Box<dyn FnMut() -> io::Result<()> + Send + Sync>>,
 }
+
+struct CommandArgv<'a>(&'a Command);
+impl core::fmt::Debug for CommandArgv<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let mut list = f.debug_list();
+        list.entry(&self.0.program);
+        for arg in &self.0.arguments { list.entry(arg); }
+        list.finish()
+    }
+}
+#[derive(Debug)]
+struct CommandEnv<'a> {
+    clear: bool,
+    vars: &'a BTreeMap<OsString, Option<OsString>>,
+}
+impl core::fmt::Debug for Command {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if f.alternate() {
+            let mut debug = f.debug_struct("Command");
+            debug.field("program", &self.program).field("args", &CommandArgv(self));
+            if self.clear_environment || !self.environment.is_empty() {
+                debug.field("env", &CommandEnv { clear: self.clear_environment, vars: &self.environment });
+            }
+            if self.directory.is_some() { debug.field("cwd", &self.directory); }
+            if self.stdin.is_some() { debug.field("stdin", &self.stdin); }
+            if self.stdout.is_some() { debug.field("stdout", &self.stdout); }
+            if self.stderr.is_some() { debug.field("stderr", &self.stderr); }
+            #[cfg(target_os = "linux")]
+            debug.field("create_pidfd", &false);
+            return debug.finish();
+        }
+        if let Some(directory) = &self.directory { core::write!(f, "cd {directory:?} && ")?; }
+        if self.clear_environment {
+            f.write_str("env -i ")?;
+        } else {
+            let mut removed = false;
+            for (key, value) in &self.environment {
+                if value.is_none() {
+                    if !removed { f.write_str("env ")?; removed = true; }
+                    core::write!(f, "-u {} ", key.to_string_lossy())?;
+                }
+            }
+        }
+        for (key, value) in &self.environment {
+            if let Some(value) = value { core::write!(f, "{}={value:?} ", key.to_string_lossy())?; }
+        }
+        core::fmt::Debug::fmt(&self.program, f)?;
+        for arg in &self.arguments { core::write!(f, " {arg:?}")?; }
+        Ok(())
+    }
+}
 impl Command {
     pub fn new<S: AsRef<OsStr>>(program: S) -> Self { Self { program: program.as_ref().to_os_string(), arguments: Vec::new(), environment: BTreeMap::new(), clear_environment: false, directory: None, stdin: None, stdout: None, stderr: None, before_exec: Vec::new() } }
     pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self { self.arguments.push(arg.as_ref().to_os_string()); self }

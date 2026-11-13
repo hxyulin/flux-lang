@@ -1117,6 +1117,11 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 if remaining & (1 << bit) == 0 {
                     continue;
                 }
+                // `extern crate` and `use path::{self}` bind only a type
+                // name. A macro with that same name can be imported separately.
+                if module_only && ns != Ns::Types {
+                    continue;
+                }
                 let def = match items.resolve(u.module, &u.path, ns) {
                     Ok(Resolved::Def(def)) => def,
                     Ok(Resolved::Primitive(name)) if ns == Ns::Types => Def::Primitive(name),

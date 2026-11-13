@@ -133,6 +133,8 @@ def workers(target: Target, jobs: int, alone: bool) -> int:
         return jobs if alone else max(1, jobs // 2)
     if target.package == "flux-cli" and target.name == "proof_compatibility":
         return min(jobs, 4)
+    if target.package == "flux-cli" and target.name == "corpus_crates":
+        return min(jobs, 2)
     return 1
 
 
@@ -463,7 +465,7 @@ def run_target(target: Target, executable: Path, args: argparse.Namespace,
             command += ["-k", args.filter]
     else:
         cwd = Path(target.source).parent.parent
-        threads = budget if target.name == "proof_compatibility" else 1
+        threads = budget if target.name in ("proof_compatibility", "corpus_crates") else 1
         command = [str(executable), "--nocapture", f"--test-threads={threads}"]
         if args.filter:
             command.append(args.filter)
