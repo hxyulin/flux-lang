@@ -674,7 +674,7 @@ impl Ctx<'_> {
             }
             // Canonicalizing a tautology's inputs must not turn it into a
             // rewrite back to the same projection under its original key.
-            if p.ty == Ty::alias(p.alias) {
+            if p.ty == target || p.ty == Ty::alias(p.alias) {
                 continue;
             }
             let key = p.alias.map_args(|ty| self.known(ty));

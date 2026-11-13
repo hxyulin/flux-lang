@@ -4238,7 +4238,8 @@ impl<'a> Ctx<'a> {
         if let Some(tail) = tail {
             let at = self.stmt_scratch.len();
             let expansion = match tail {
-                ast::Expr::MacroExpr(m) if m.attrs().next().is_none() => {
+                ast::Expr::MacroExpr(m) => {
+                    self.check_attrs(m.syntax());
                     self.lower_macro_stmts(m, false, true)
                 }
                 expr => StmtExpansion::Expr(self.lower_expr(expr)),

@@ -717,8 +717,17 @@ impl Cx<'_> {
         // blanket impl. For example, `&T: IntoIterator` does not imply that
         // `&T: Iterator`, although the latter would select IntoIterator's
         // blanket impl. Keep the original abstract occurrence in that case.
-        let abstract_owner =
-            selected.is_none() && assumptions.iter().any(|known| known.predicate == goal);
+        let requirement = ImplRegionGoal {
+            predicate: goal,
+            lifetimes: owner.to_vec(),
+            vars: inputs.to_vec(),
+            bound: Vec::new(),
+        };
+        let abstract_owner = selected.is_none()
+            && (assumptions.iter().any(|known| known.predicate == goal)
+                || self
+                    .associated_output_bounds(&requirement, &assumptions, depth + 1)
+                    .is_some_and(|bounds| bounds.iter().any(|known| known.predicate == goal)));
         if abstract_owner
             && !self.impl_prove_super(
                 &ImplRegionGoal {

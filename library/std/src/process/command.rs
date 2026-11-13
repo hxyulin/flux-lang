@@ -50,6 +50,14 @@ mod native {
         #[cfg(target_os = "linux")]
         pub fn pipe2(descriptors: *mut i32, flags: i32) -> i32;
         pub fn fcntl(descriptor: i32, command: i32, ...) -> i32;
+        pub fn fork() -> i32;
+        pub fn dup2(source: i32, target: i32) -> i32;
+        pub fn chdir(path: *const c_char) -> i32;
+        pub fn execve(path: *const c_char, arguments: *const *mut c_char, environment: *const *mut c_char) -> i32;
+        pub fn signal(signal: i32, handler: usize) -> usize;
+        pub fn read(fd: i32, buffer: *mut c_void, count: usize) -> isize;
+        pub fn write(fd: i32, buffer: *const c_void, count: usize) -> isize;
+        pub fn _exit(status: i32) -> !;
         pub fn poll(descriptors: *mut PollFd, count: PollCount, timeout: i32) -> i32;
         pub fn waitpid(pid: i32, status: *mut i32, options: i32) -> i32;
         pub fn kill(pid: i32, signal: i32) -> i32;
@@ -327,9 +335,10 @@ impl<'a> ExactSizeIterator for CommandEnvs<'a> { fn len(&self) -> usize { self.i
 pub struct Command {
     program: OsString, arguments: Vec<OsString>, environment: BTreeMap<OsString, Option<OsString>>, clear_environment: bool,
     directory: Option<PathBuf>, stdin: Option<Stdio>, stdout: Option<Stdio>, stderr: Option<Stdio>,
+    before_exec: Vec<crate::boxed::Box<dyn FnMut() -> io::Result<()> + Send + Sync>>,
 }
 impl Command {
-    pub fn new<S: AsRef<OsStr>>(program: S) -> Self { Self { program: program.as_ref().to_os_string(), arguments: Vec::new(), environment: BTreeMap::new(), clear_environment: false, directory: None, stdin: None, stdout: None, stderr: None } }
+    pub fn new<S: AsRef<OsStr>>(program: S) -> Self { Self { program: program.as_ref().to_os_string(), arguments: Vec::new(), environment: BTreeMap::new(), clear_environment: false, directory: None, stdin: None, stdout: None, stderr: None, before_exec: Vec::new() } }
     pub fn arg<S: AsRef<OsStr>>(&mut self, arg: S) -> &mut Self { self.arguments.push(arg.as_ref().to_os_string()); self }
     pub fn args<I, S>(&mut self, args: I) -> &mut Self where I: IntoIterator<Item = S>, S: AsRef<OsStr> { for arg in args { self.arg(arg); } self }
     pub fn env<K: AsRef<OsStr>, V: AsRef<OsStr>>(&mut self, key: K, value: V) -> &mut Self { self.environment.insert(key.as_ref().to_os_string(), Some(value.as_ref().to_os_string())); self }
@@ -349,6 +358,120 @@ impl Command {
     pub fn spawn(&mut self) -> io::Result<Child> { self.spawn_inner(false) }
     pub fn status(&mut self) -> io::Result<ExitStatus> { self.spawn()?.wait() }
     pub fn output(&mut self) -> io::Result<Output> { self.spawn_inner(true)?.wait_with_output() }
+
+    /// Registers a child-side hook. The caller must make it async-signal-safe.
+    pub(crate) unsafe fn before_exec<F>(&mut self, callback: F) -> &mut Self
+    where F: FnMut() -> io::Result<()> + Send + Sync + 'static {
+        self.before_exec.push(crate::boxed::Box::new(callback));
+        self
+    }
+
+    fn spawn_with_callbacks(&mut self, programs: &[CString], arguments: &[*mut c_char], environment: &[*mut c_char], cwd: Option<&CString>, streams: [&Option<File>; 3], search: bool) -> io::Result<i32> {
+        // Prepare all owned buffers before fork. The child uses libc calls and
+        // caller-supplied hooks, then execs or exits without running destructors.
+        let mut shell_arguments = Vec::new();
+        for program in programs {
+            let mut argv = Vec::new();
+            argv.push(c"/bin/sh".as_ptr() as *mut c_char);
+            argv.push(program.as_ptr() as *mut c_char);
+            argv.extend_from_slice(&arguments[1..]);
+            shell_arguments.push(argv);
+        }
+        let (mut read, write) = pipe_pair()?;
+        // SAFETY: no Rust runtime operations are performed in the child except
+        // the hooks whose caller guarantees async-signal-safety.
+        let pid = unsafe { native::fork() };
+        if pid < 0 { return Err(Error::last_os_error()); }
+        if pid == 0 {
+            let mut code = 0;
+            for (target, file) in streams.iter().enumerate() {
+                if let Some(file) = file {
+                    // SAFETY: each stream owns a live descriptor above stderr.
+                    if unsafe { native::dup2(file.raw_fd(), target as i32) } < 0 {
+                        code = Error::last_os_error().raw_os_error().unwrap_or(22);
+                        break;
+                    }
+                }
+            }
+            if code == 0 {
+                if let Some(cwd) = cwd {
+                    // SAFETY: the parent prepared this live NUL-terminated path.
+                    if unsafe { native::chdir(cwd.as_ptr()) } != 0 { code = Error::last_os_error().raw_os_error().unwrap_or(22); }
+                }
+            }
+            if code == 0 {
+                // SAFETY: SIG_DFL is zero on supported Unix hosts. Child programs
+                // receive the same default SIGPIPE policy as posix_spawn.
+                if unsafe { native::signal(13, 0) } == usize::MAX { code = Error::last_os_error().raw_os_error().unwrap_or(22); }
+            }
+            let mut hook_failed = false;
+            if code == 0 {
+                for callback in &mut self.before_exec {
+                    if let Err(error) = callback() {
+                        code = error.raw_os_error().unwrap_or(22);
+                        hook_failed = true;
+                        break;
+                    }
+                }
+            }
+            if code == 0 && !hook_failed {
+                let mut denied = false;
+                for (index, program) in programs.iter().enumerate() {
+                    // SAFETY: all strings and terminated pointer lists were
+                    // prepared before fork and remain live through execve.
+                    unsafe { native::execve(program.as_ptr(), arguments.as_ptr(), environment.as_ptr()); }
+                    code = Error::last_os_error().raw_os_error().unwrap_or(22);
+                    if code == 8 {
+                        // SAFETY: shell argv was prepared before fork and is
+                        // terminated by the original argument list's null.
+                        unsafe { native::execve(c"/bin/sh".as_ptr(), shell_arguments[index].as_ptr(), environment.as_ptr()); }
+                        code = Error::last_os_error().raw_os_error().unwrap_or(22);
+                        break;
+                    }
+                    if !search || (code != 2 && code != 20 && code != 13) { break; }
+                    denied |= code == 13;
+                }
+                if search && denied && (code == 2 || code == 20) { code = 13; }
+            }
+            let bytes = code.to_ne_bytes();
+            let mut sent = 0;
+            while sent < bytes.len() {
+                // SAFETY: the pipe is live and this bounded buffer was created
+                // on the stack. Its four-byte message is below PIPE_BUF.
+                let count = unsafe { native::write(write.raw_fd(), bytes.as_ptr().add(sent) as *const c_void, bytes.len() - sent) };
+                if count > 0 { sent += count as usize; }
+                else if count < 0 && Error::last_os_error().raw_os_error() == Some(4) { continue; }
+                else { break; }
+            }
+            // SAFETY: exit the fork child directly without Rust cleanup.
+            unsafe { native::_exit(127) }
+        }
+        drop(write);
+        let mut bytes = [0u8; 4];
+        let mut received = 0;
+        while received < bytes.len() {
+            match read.read(&mut bytes[received..]) {
+                Ok(0) if received == 0 => return Ok(pid),
+                Ok(0) => break,
+                Ok(count) => received += count,
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    // SAFETY: on a broken handshake, terminate and reap our child.
+                    unsafe { native::kill(pid, 9); }
+                    let mut status = 0;
+                    // SAFETY: pid is our unreaped child and status is writable.
+                    unsafe { native::waitpid(pid, &mut status, 0); }
+                    return Err(error);
+                }
+            }
+        }
+        let mut status = 0;
+        // SAFETY: a reported setup/exec failure always exits the owned child.
+        while unsafe { native::waitpid(pid, &mut status, 0) } < 0 {
+            if Error::last_os_error().raw_os_error() != Some(4) { break; }
+        }
+        Err(Error::from_raw_os_error(if received == bytes.len() { i32::from_ne_bytes(bytes) } else { 5 }))
+    }
 
     fn resolved_directory(&self) -> io::Result<PathBuf> {
         match &self.directory {
@@ -401,6 +524,11 @@ impl Command {
                 let executable = if script.is_absolute() { script.clone() } else { self.resolved_directory()?.join(&script) };
                 paths.push((executable, script));
             }
+        }
+        if !self.before_exec.is_empty() {
+            let programs: Vec<CString> = paths.iter().map(|(path, _)| c_string(path.as_os_str())).collect::<io::Result<_>>()?;
+            let pid = self.spawn_with_callbacks(&programs, &argument_pointers, &environment_pointers, cwd.as_ref(), [&input, &output, &error], search_path)?;
+            return Ok(Child { stdin: parent_input.map(|file| ChildStdin { file }), stdout: parent_output.map(|file| ChildStdout { file }), stderr: parent_error.map(|file| ChildStderr { file }), pid, status: None });
         }
         let mut denied = false;
         for (path, script) in paths {

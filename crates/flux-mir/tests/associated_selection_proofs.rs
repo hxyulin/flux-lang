@@ -13,6 +13,16 @@ fn associated_selection_proofs_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, accepted, source) in [
         (
+            "associated_source_blanket",
+            true,
+            include_str!("../../../tests/run/associated_source_blanket.rs"),
+        ),
+        (
+            "associated_source_escape",
+            false,
+            "use std::ops::Deref; trait Source { type Slice<'a> where Self:'a; fn slice(&self)->Self::Slice<'_>; } impl<T> Source for T where T:Deref,T::Target:Source { type Slice<'a>=<T::Target as Source>::Slice<'a> where T:'a; fn slice(&self)->Self::Slice<'_>{self.deref().slice()} } trait Token {type Source:Source+?Sized;} fn escape<T:Token>(s:&T::Source)-><T::Source as Source>::Slice<'static> {s.slice()} fn main(){}",
+        ),
+        (
             "nested_receiver",
             true,
             "trait First{type Out;}trait Second<T>{type Out;}trait Third{type Out;}trait State{type Out:Copy;}impl First for u32{type Out=u64;}impl Second<u16> for u64{type Out=u8;}impl Third for u16{type Out=<<u32 as First>::Out as Second<u16>>::Out;}impl State for u16{type Out=<u16 as Third>::Out;}fn main(){}",

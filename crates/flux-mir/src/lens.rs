@@ -68,11 +68,16 @@ fn eval_lens_from(
     let mut pending: Vec<ConstId> = wanted.to_vec();
     while !pending.is_empty() {
         let typed = infer_consts(hir, sigs.clone(), loaded, required_functions);
-        let incomplete_signatures = typed
-            .sigs
-            .structs
-            .iter()
-            .any(|(_, fields)| fields.iter().any(|ty| ty.has_error()));
+        let incomplete_signatures =
+            typed
+                .sigs
+                .structs
+                .iter()
+                .any(|(_, fields)| fields.iter().any(|ty| ty.has_error()))
+                || typed.sigs.fns.iter().any(|(_, sig)| {
+                    sig.ret.has_error() || sig.params.iter().any(|ty| ty.has_error())
+                })
+                || typed.sigs.consts.iter().any(|(_, ty)| ty.has_error());
         let clean = typed.consts.iter().all(|(_, r)| r.diagnostics.is_empty())
             && typed.bodies.iter().all(|(_, r)| r.diagnostics.is_empty());
         let mut consts = ArenaMap::new();

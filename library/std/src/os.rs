@@ -2,6 +2,9 @@
 pub mod unix {
     /// The Unix extension traits most code imports together.
     pub mod prelude {
+        pub use super::thread::JoinHandleExt;
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+        pub use super::process::{CommandExt, ExitStatusExt};
         pub use super::ffi::{OsStrExt, OsStringExt};
         pub use super::fs::{DirBuilderExt, DirEntryExt, FileExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
         pub use super::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
@@ -23,7 +26,23 @@ pub mod unix {
         }
     }
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
-    pub mod process { pub use crate::process::command::ExitStatusExt; }
+    pub mod process {
+        pub use crate::process::command::ExitStatusExt;
+        pub trait CommandExt {
+            /// Runs before exec in the forked child, after stream/cwd setup.
+            /// # Safety
+            /// The callback must only perform async-signal-safe operations.
+            unsafe fn pre_exec<F>(&mut self, callback: F) -> &mut Self
+            where F: FnMut() -> crate::io::Result<()> + Send + Sync + 'static;
+        }
+        impl CommandExt for crate::process::Command {
+            unsafe fn pre_exec<F>(&mut self, callback: F) -> &mut Self
+            where F: FnMut() -> crate::io::Result<()> + Send + Sync + 'static {
+                // SAFETY: the caller guarantees the hook is safe after fork.
+                unsafe { self.before_exec(callback) }
+            }
+        }
+    }
     pub mod ffi {
         mod private {
             pub trait Sealed {}
@@ -422,6 +441,8 @@ pub mod fd {
         )*};
     }
     as_fd_by_raw!(crate::fs::File, crate::io::Stdin, crate::io::Stdout, crate::io::Stderr);
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
+    as_fd_by_raw!(crate::process::ChildStdin, crate::process::ChildStdout, crate::process::ChildStderr);
     impl<'a> AsFd for crate::io::StdinLock<'a> {
         // SAFETY: standard input stays open for the process.
         fn as_fd(&self) -> BorrowedFd<'_> { unsafe { BorrowedFd::borrow_raw(0) } }

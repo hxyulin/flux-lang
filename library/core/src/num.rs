@@ -41,6 +41,17 @@ impl<T:NonZeroPrimitive+crate::fmt::Debug> crate::fmt::Debug for NonZero<T>{
 impl<T:NonZeroPrimitive+crate::fmt::Display> crate::fmt::Display for NonZero<T>{
  fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result{crate::fmt::Display::fmt(&self.0,f)}
 }
+macro_rules! nonzero_fmt {
+    ($($trait:ident),*) => {$(
+        impl<T: NonZeroPrimitive + crate::fmt::$trait> crate::fmt::$trait for NonZero<T> {
+            fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+                crate::fmt::$trait::fmt(&self.0, f)
+            }
+        }
+    )*};
+}
+nonzero_fmt!(Binary, Octal, LowerHex, UpperHex);
+
 macro_rules! nonzero_impl {
     ($name:ident, $t:ty, $lang:literal) => {
         pub type $name=NonZero<$t>;

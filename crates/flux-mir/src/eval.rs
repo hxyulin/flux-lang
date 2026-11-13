@@ -698,7 +698,7 @@ impl<'a> Evaluator<'a> {
             (TyKind::Slice(element), Some(Value::Aggregate(elements))) => {
                 Ty::array(element, elements.len() as u64)
             }
-            (TyKind::Str, Some(Value::Aggregate(elements))) => {
+            (TyKind::Str | TyKind::CStr, Some(Value::Aggregate(elements))) => {
                 Ty::array(Ty::int(IntTy::U8), elements.len() as u64)
             }
             _ => ty,
@@ -1071,7 +1071,7 @@ impl<'a> Evaluator<'a> {
             let len = fields.len() as u64;
             from = match from.kind() {
                 TyKind::Slice(elem) => Ty::array(elem, len),
-                TyKind::Str => Ty::array(Ty::int(IntTy::U8), len),
+                TyKind::Str | TyKind::CStr => Ty::array(Ty::int(IntTy::U8), len),
                 _ => from,
             };
             if self
@@ -1120,6 +1120,32 @@ impl<'a> Evaluator<'a> {
                 range,
                 depth + 1,
             ),
+            TyKind::CStr => {
+                let count = len.ok_or_else(|| unsupported_view(range))?;
+                let result = self.memory_value(
+                    value,
+                    from,
+                    offset,
+                    Ty::array(Ty::int(IntTy::U8), count),
+                    range,
+                    depth + 1,
+                )?;
+                let Value::Aggregate(bytes) = &result else {
+                    return Err(unsupported_view(range));
+                };
+                if bytes.is_empty()
+                    || bytes.iter().enumerate().any(|(index, byte)| {
+                        !matches!(byte, Value::Int { bits, ty: IntTy::U8 }
+                        if (*bits == 0) == (index + 1 == bytes.len()))
+                    })
+                {
+                    return Err(error(
+                        range,
+                        "invalid nul-terminated constant reference".into(),
+                    ));
+                }
+                Ok(result)
+            }
             TyKind::Str => {
                 let result = self.memory_value(
                     value,

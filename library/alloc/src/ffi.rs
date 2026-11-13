@@ -1,5 +1,5 @@
 //! Owned NUL-terminated C strings with checked construction.
-use crate::borrow::{Borrow, ToOwned};
+use crate::borrow::{Borrow, Cow, ToOwned};
 use crate::boxed::Box;
 use crate::string::String;
 use crate::vec::Vec;
@@ -245,4 +245,17 @@ impl CStr {
     pub fn to_string_lossy(&self) -> crate::borrow::Cow<'_, str> { String::from_utf8_lossy(self.to_bytes()) }
     /// The boxed C string as an owned one.
     pub fn into_c_string(self: Box<CStr>) -> CString { CString::from(self) }
+}
+
+impl<'a> From<&'a CStr> for Cow<'a, CStr> {
+    fn from(value: &'a CStr) -> Self { Cow::Borrowed(value) }
+}
+impl<'a> From<&'a CString> for Cow<'a, CStr> {
+    fn from(value: &'a CString) -> Self { Cow::Borrowed(value.as_c_str()) }
+}
+impl From<CString> for Cow<'_, CStr> {
+    fn from(value: CString) -> Self { Cow::Owned(value) }
+}
+impl From<Cow<'_, CStr>> for CString {
+    fn from(value: Cow<'_, CStr>) -> Self { value.into_owned() }
 }

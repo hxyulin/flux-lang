@@ -41,10 +41,11 @@ impl CStr {
         unsafe { c_str_from_ptr(pointer as *const u8) }
     }
     /// The C string `bytes` is, which must end in its only NUL.
-    pub fn from_bytes_with_nul(bytes: &[u8]) -> Result<&CStr, FromBytesWithNulError> {
+    pub const fn from_bytes_with_nul(bytes: &[u8]) -> Result<&CStr, FromBytesWithNulError> {
         match nul_position(bytes) {
             Some(position) if position + 1 == bytes.len() => {
-                Ok(unsafe { c_str_from_ptr(bytes.as_ptr()) })
+                // SAFETY: the scan established a sole trailing NUL.
+                Ok(unsafe { Self::from_bytes_with_nul_unchecked(bytes) })
             }
             Some(position) => Err(FromBytesWithNulError::InteriorNul { position }),
             None => Err(FromBytesWithNulError::NotNulTerminated),
@@ -52,9 +53,14 @@ impl CStr {
     }
 
     /// The C string at the start of `bytes`, up to its first NUL.
-    pub fn from_bytes_until_nul(bytes: &[u8]) -> Result<&CStr, FromBytesUntilNulError> {
+    pub const fn from_bytes_until_nul(bytes: &[u8]) -> Result<&CStr, FromBytesUntilNulError> {
         match nul_position(bytes) {
-            Some(_) => Ok(unsafe { c_str_from_ptr(bytes.as_ptr()) }),
+            Some(position) => {
+                // SAFETY: the first NUL lies within bytes. The prefix includes
+                // that terminator and contains no earlier NUL.
+                let prefix = unsafe { slice_from_raw_parts(bytes.as_ptr(), position + 1) };
+                Ok(unsafe { Self::from_bytes_with_nul_unchecked(prefix) })
+            }
             None => Err(FromBytesUntilNulError(())),
         }
     }
@@ -102,7 +108,7 @@ impl CStr {
 }
 
 /// Where the first NUL in `bytes` is, if there is one.
-fn nul_position(bytes: &[u8]) -> Option<usize> {
+const fn nul_position(bytes: &[u8]) -> Option<usize> {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == 0 {
