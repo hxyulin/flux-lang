@@ -116,12 +116,12 @@ fn packed_borrows_match_rustc() {
         (
             "aligned_payload",
             "#[repr(align(8))]struct A(u8);#[repr(packed)]struct P(A);fn main(){}",
-            false,
+            true,
         ),
         (
             "transitive_aligned_payload",
             "#[repr(align(8))]struct A(u8);struct B(A);#[repr(packed)]struct P(B);fn main(){}",
-            false,
+            true,
         ),
         (
             "aligned_pointer",

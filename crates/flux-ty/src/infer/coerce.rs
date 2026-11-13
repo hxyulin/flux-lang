@@ -4,6 +4,8 @@ use super::{
     VarValue, plural, solve,
 };
 
+type TypeEqualities = Vec<(Ty, Ty)>;
+
 impl Ctx<'_> {
     pub(super) fn pinned_pointees(&mut self, actual: Ty, expected: Ty) -> Option<(Ty, Ty)> {
         flux_solve::pin_pointer(self.items, self.shallow(actual))?;
@@ -41,15 +43,13 @@ impl Ctx<'_> {
                 }
                 return;
             }
-            if let Some((source, object)) = flux_solve::transparent_object_unsize(
-                self.items,
-                &self.sigs.structs,
-                self.shallow(source),
-                self.shallow(target),
-            ) && let TyKind::Dynamic(dynamic) = object.kind()
-                && !self.can_unify(source, object)
+            if let Some((source, object, equalities)) = self.object_unsize(source, target)
+                && let TyKind::Dynamic(dynamic) = object.kind()
+                && (source.is_dyn() || !self.can_unify(source, object))
             {
-                if self.unsize_to_dyn(source, object, dynamic, blamed) {
+                if self.unsize_to_dyn(source, object, dynamic, blamed)
+                    && equalities.into_iter().all(|(a, b)| self.unify(a, b))
+                {
                     self.unsizes.insert(expr, expected);
                 } else {
                     self.mismatch(expected, actual, self.range(blamed));
@@ -125,19 +125,16 @@ impl Ctx<'_> {
                 }
                 _ => None,
             }
-            && let Some((pointee, target)) = flux_solve::transparent_object_unsize(
-                self.items,
-                &self.sigs.structs,
-                self.shallow(pointee),
-                self.shallow(target),
-            )
+            && let Some((pointee, target, equalities)) = self.object_unsize(pointee, target)
             && let TyKind::Dynamic(d) = target.kind()
             && (from == to || from == Mutability::Mut)
         {
             let target = self.shallow(target);
             let pointee = self.shallow(pointee);
             if !self.can_unify(pointee, target) {
-                if self.unsize_to_dyn(pointee, target, d, blamed) {
+                if self.unsize_to_dyn(pointee, target, d, blamed)
+                    && equalities.into_iter().all(|(a, b)| self.unify(a, b))
+                {
                     if from == Mutability::Mut && !raw {
                         self.reborrows.insert(expr, to);
                     }
@@ -164,6 +161,21 @@ impl Ctx<'_> {
             }
             return;
         }
+        if let (Some(from), Some(to)) = (
+            crate::nonnull_pointee(self.items, self.shallow(actual)),
+            crate::nonnull_pointee(self.items, self.shallow(expected)),
+        ) && let Some((source, target, equalities)) = self.object_unsize(from, to)
+            && let TyKind::Dynamic(object) = target.kind()
+        {
+            if self.unsize_to_dyn(source, target, object, blamed)
+                && equalities.into_iter().all(|(a, b)| self.unify(a, b))
+            {
+                self.unsizes.insert(expr, expected);
+            } else {
+                self.mismatch(expected, actual, self.range(blamed));
+            }
+            return;
+        }
         // A `Box<[T; N]>` or `Box<T>` where a `Box<[T]>` or `Box<dyn
         // Tr>` is wanted: rustc's `CoerceUnsized` of boxes.
         if let (Some(p), Some(q)) = (
@@ -180,12 +192,12 @@ impl Ctx<'_> {
                 }
                 return;
             }
-            if !q.is_dyn()
-                && let Some((source, target)) =
-                    flux_solve::transparent_object_unsize(self.items, &self.sigs.structs, p, q)
+            if let Some((source, target, equalities)) = self.object_unsize(p, q)
                 && let TyKind::Dynamic(object) = target.kind()
             {
-                if self.unsize_to_dyn(source, target, object, blamed) {
+                if self.unsize_to_dyn(source, target, object, blamed)
+                    && equalities.into_iter().all(|(a, b)| self.unify(a, b))
+                {
                     self.unsizes.insert(expr, expected);
                 } else {
                     let range = self.range(blamed);
@@ -216,11 +228,14 @@ impl Ctx<'_> {
             }
         }
         // Arc and Rc object coercions transfer one owner without touching counts.
-        if let Some((source, object)) =
+        if let Some((source, target)) =
             crate::shared_pointees(self.items, self.shallow(actual), self.shallow(expected))
+            && let Some((source, object, equalities)) = self.object_unsize(source, target)
             && let TyKind::Dynamic(d) = object.kind()
         {
-            if self.unsize_to_dyn(source, object, d, blamed) {
+            if self.unsize_to_dyn(source, object, d, blamed)
+                && equalities.into_iter().all(|(a, b)| self.unify(a, b))
+            {
                 self.unsizes.insert(expr, expected);
             } else {
                 let range = self.range(blamed);
@@ -652,12 +667,8 @@ impl Ctx<'_> {
             if let Some(equalities) = self.array_unsize(source, target) {
                 return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
             }
-            if let Some((source, object)) = flux_solve::transparent_object_unsize(
-                self.items,
-                &self.sigs.structs,
-                self.shallow(source),
-                self.shallow(target),
-            ) && let TyKind::Dynamic(dynamic) = object.kind()
+            if let Some((source, object, _)) = self.object_unsize(source, target)
+                && let TyKind::Dynamic(dynamic) = object.kind()
             {
                 return match source.kind() {
                     TyKind::Dynamic(from) => {
@@ -670,6 +681,7 @@ impl Ctx<'_> {
             }
         }
         if let Some((source, target)) = crate::shared_pointees(self.items, actual, expected)
+            && let Some((source, target, _)) = self.object_unsize(source, target)
             && let TyKind::Dynamic(object) = target.kind()
         {
             return match source.kind() {
@@ -694,6 +706,14 @@ impl Ctx<'_> {
         {
             return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
         }
+        if let (Some(from), Some(to)) = (
+            crate::nonnull_pointee(self.items, actual),
+            crate::nonnull_pointee(self.items, expected),
+        ) && let Some((source, target, _)) = self.object_unsize(from, to)
+            && let TyKind::Dynamic(object) = target.kind()
+        {
+            return self.can_unsize_object_tail(source, target, object);
+        }
         if let (Some(p), Some(q)) = (
             flux_solve::box_pointee(actual),
             flux_solve::box_pointee(expected),
@@ -702,11 +722,10 @@ impl Ctx<'_> {
             if let Some(equalities) = self.array_unsize(p, q) {
                 return equalities.into_iter().all(|(a, b)| self.can_unify(a, b));
             }
-            if !q.is_dyn()
-                && let Some((source, _)) =
-                    flux_solve::transparent_object_unsize(self.items, &self.sigs.structs, p, q)
+            if let Some((source, object, _)) = self.object_unsize(p, q)
+                && let TyKind::Dynamic(dynamic) = object.kind()
             {
-                return !self.sigs.is_unsized(source);
+                return self.can_unsize_object_tail(source, object, dynamic);
             }
             match (p.kind(), q.kind()) {
                 (TyKind::Array(elem, _), TyKind::Slice(wanted)) => {
@@ -751,12 +770,7 @@ impl Ctx<'_> {
             ) if (from == to || from == Mutability::Mut)
                 && !(matches!(actual.kind(), TyKind::RawPtr(..))
                     && matches!(expected.kind(), TyKind::Ref(..)))
-                && let Some((pointee, object)) = flux_solve::transparent_object_unsize(
-                    self.items,
-                    &self.sigs.structs,
-                    self.shallow(pointee),
-                    self.shallow(object),
-                )
+                && let Some((pointee, object, _)) = self.object_unsize(pointee, object)
                 && let TyKind::Dynamic(d) = object.kind()
                 && !self.can_unify(pointee, object) =>
             {
@@ -845,9 +859,60 @@ impl Ctx<'_> {
         self.can_unify(actual, expected)
     }
 
+    fn can_unsize_object_tail(&mut self, source: Ty, target: Ty, object: crate::DynTy) -> bool {
+        match source.kind() {
+            TyKind::Dynamic(from) => {
+                flux_solve::objects::supertraits_of(self.items, from.trait_)
+                    .contains(&object.trait_)
+                    && crate::objects::retains_auto_traits(self.sigs, source, target)
+            }
+            _ => !self.is_unsized(source) && self.may_implement(source, object.trait_),
+        }
+    }
+
+    /// Probe prefixes without committing inference, then let the coercion
+    /// commit the equalities only when the terminal object coercion succeeds.
+    fn object_unsize(&mut self, mut from: Ty, mut to: Ty) -> Option<(Ty, Ty, TypeEqualities)> {
+        let mut equalities = Vec::new();
+        for _ in 0..256 {
+            from = self.shallow(from);
+            to = self.shallow(to);
+            if to.is_dyn() {
+                return Some((from, to, equalities));
+            }
+            match (from.kind(), to.kind()) {
+                (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => {
+                    let (source, target) = (
+                        flux_solve::fields(self.sigs, from)?,
+                        flux_solve::fields(self.sigs, to)?,
+                    );
+                    let last = source.len().checked_sub(1)?;
+                    if source.len() != target.len()
+                        || !source[..last]
+                            .iter()
+                            .zip(&target[..last])
+                            .all(|(&a, &b)| self.can_unify(a, b))
+                    {
+                        return None;
+                    }
+                    equalities.extend(
+                        source[..last]
+                            .iter()
+                            .copied()
+                            .zip(target[..last].iter().copied()),
+                    );
+                    from = source[last];
+                    to = target[last];
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
     /// Collect every equality required by structural array unsizing. Probes
     /// only inspect these; coercions must commit prefix and element equalities.
-    pub(super) fn array_unsize(&mut self, mut from: Ty, mut to: Ty) -> Option<Vec<(Ty, Ty)>> {
+    pub(super) fn array_unsize(&mut self, mut from: Ty, mut to: Ty) -> Option<TypeEqualities> {
         let mut equalities = Vec::new();
         for _ in 0..256 {
             from = self.shallow(from);

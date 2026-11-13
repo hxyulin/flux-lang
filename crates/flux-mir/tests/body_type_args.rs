@@ -67,6 +67,21 @@ fn body_type_arguments_match_rustc() {
         ("static", "fn f(x: &i32) { id::<&'static i32>(x); }", false),
         ("static_ok", "fn f() { id::<&'static i32>(&1); }", true),
         (
+            "local_selected_static",
+            "trait Ref{type Out;}impl<'a>Ref for &'a i32{type Out=&'a i32;}fn f(x:&i32){let _:<&'static i32 as Ref>::Out=x;}",
+            false,
+        ),
+        (
+            "local_alias_static",
+            "trait Ref{type Out;}impl<'a>Ref for &'a i32{type Out=&'a i32;}type StaticProjection=<&'static i32 as Ref>::Out;fn f(x:&i32){let _:StaticProjection=x;}",
+            false,
+        ),
+        (
+            "mixed_static_named_annotation",
+            "fn f<'a>(x:&'a i32){let _:(&'static i32,&'a i32)=(&0,x);}",
+            true,
+        ),
+        (
             "elided",
             "fn f(x: &i32) { id::<&'_ i32>(x); id::<&i32>(x); id::<_>(x); }",
             true,
@@ -230,8 +245,12 @@ fn body_lifetime_boundaries_remain_closed() {
             "lifetimes in function item values",
         ),
         (
+            "fn f() { let _ = id::<&'static i32>; }",
+            "lifetimes in function item values",
+        ),
+        (
             "trait Ref { type Out; } impl<'a> Ref for &'a i32 { type Out = &'a i32; } fn f(x: &i32) { id::<<&'static i32 as Ref>::Out>(x); }",
-            "lifetimes in associated type annotations",
+            "escapes",
         ),
         (
             "trait Ref { type Out; } impl<'a> Ref for &'a i32 { type Out = &'a i32; } type Alias = <&'static i32 as Ref>::Out; fn f(x: &i32) { id::<Alias>(x); }",

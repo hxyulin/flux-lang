@@ -15,7 +15,15 @@ use std::time::Duration;
 
 // The bidirectional format is explicitly a prototype, not a stable Rust API.
 // Accept a reviewed schema only; do not send mismatched bytes to a host dylib.
+// Persisted host descriptors use the original reviewed schema identity.
 const SUPPORTED_COMMIT: &str = "58cf8f9c35b355199727627d07ae34a4e2846d67";
+const SUPPORTED_RUSTC_COMMITS: &[&str] =
+    &[SUPPORTED_COMMIT, "0ef1bc386059596dada8fb65b50425aab2ea637a"];
+fn reviewed_rustc(rustc: &str) -> bool {
+    SUPPORTED_RUSTC_COMMITS
+        .iter()
+        .any(|&commit| rustc.contains(commit))
+}
 const TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_FRAME: usize = 32 * 1024 * 1024;
 
@@ -70,7 +78,7 @@ pub fn exports(
 
 /// Discover once for the matching toolchain, then share across one preparation.
 pub(crate) fn rustc_server(rustc: &str) -> Result<PathBuf, String> {
-    if !rustc.contains(SUPPORTED_COMMIT) {
+    if !reviewed_rustc(rustc) {
         return Err("proc-macro server protocol is not supported for this rustc commit".into());
     }
     let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
@@ -424,6 +432,19 @@ impl Session {
 mod tests {
     use super::*;
     use flux_syntax::{LexedStr, TextRange, TokenOrigin};
+    #[test]
+    fn only_reviewed_protocol_six_toolchains_are_admitted() {
+        for commit in [
+            "58cf8f9c35b355199727627d07ae34a4e2846d67",
+            "0ef1bc386059596dada8fb65b50425aab2ea637a",
+        ] {
+            assert!(reviewed_rustc(&format!("commit-hash: {commit}\n")));
+        }
+        assert!(!reviewed_rustc(
+            "commit-hash: 0000000000000000000000000000000000000000\n"
+        ));
+        assert!(!reviewed_rustc("release: 1.100.0\n"));
+    }
     #[test]
     fn real_serde_derive_expansions_parse() {
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");

@@ -106,6 +106,52 @@ impl Cx<'_> {
             if at != row.len() {
                 return None;
             }
+            if flux_solve::is_lang_struct(self.items, adt.strukt, "coroutine")
+                && self.items.traits[goal.predicate.trait_ref.trait_]
+                    .lang
+                    .is_some_and(|lang| matches!(lang.as_str(), "send" | "sync"))
+            {
+                let TyKind::Closure(id, closure_args) = args.first()?.kind() else {
+                    return None;
+                };
+                let parts = flux_ty::ClosureArgs::split(closure_args);
+                let stored = self.sigs.coroutine_witnesses.get(&id)?;
+                if requirements.len() != stored.len() + 1 {
+                    return None;
+                }
+                let predicates: Vec<_> = env.iter().map(|goal| goal.predicate).collect();
+                for (&template, requirement) in stored.iter().zip(requirements) {
+                    if requirement.self_ty != template.subst(parts.parent)
+                        || !self.saved_auto_trait_rows_independent(
+                            *requirement,
+                            &mut FxHashSet::default(),
+                            0,
+                        )
+                        || self.requires_lifetime_proof(*requirement, &mut FxHashSet::default(), 0)
+                        || !flux_solve::traits::RigidSolver::new(
+                            self.items,
+                            self.sigs,
+                            &predicates,
+                            &self.env,
+                            &self.unsized_params,
+                        )
+                        .holds(*requirement, &mut Vec::new())
+                    {
+                        // Saved types have no signature occurrence rows. Only
+                        // region-independent proofs can use their type witness.
+                        return None;
+                    }
+                }
+                // Captures do have occurrence rows: a closure's row is exactly
+                // its capture tuple's row. Keep these for lifetime-sensitive impls.
+                return self.auto_component_goals(
+                    &requirements[stored.len()..],
+                    &[parts.upvars],
+                    &arg_rows[..1],
+                    env,
+                    depth,
+                );
+            }
             if flux_solve::is_lang_struct(self.items, adt.strukt, "phantom_data") {
                 return self.auto_component_goals(requirements, args, &arg_rows, env, depth);
             }
@@ -164,6 +210,30 @@ impl Cx<'_> {
             return None;
         }
         self.auto_component_goals(requirements, &components, &rows, env, depth)
+    }
+
+    /// A saved-state witness records types, not the local occurrence rows.
+    /// Structural decomposition can discard a reference's own lifetime, but
+    /// selected impl headers may constrain it even without explicit bounds.
+    fn saved_auto_trait_rows_independent(
+        &mut self,
+        goal: flux_ty::Predicate,
+        seen: &mut FxHashSet<flux_ty::Predicate>,
+        depth: u32,
+    ) -> bool {
+        if depth > 64 {
+            return false;
+        }
+        if !seen.insert(goal) {
+            return true;
+        }
+        if let Some(requirements) = self.structural_requirements(goal) {
+            requirements.into_iter().all(|requirement| {
+                self.saved_auto_trait_rows_independent(requirement, seen, depth + 1)
+            })
+        } else {
+            self.slots(goal.self_ty) == 0
+        }
     }
 
     fn auto_component_goals(

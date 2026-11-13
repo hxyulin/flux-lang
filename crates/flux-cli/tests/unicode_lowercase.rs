@@ -9,7 +9,7 @@ mod actual;
 
 #[test]
 fn lowercase_all_scalars_and_contexts_match_rustc() {
-    assert_eq!(std::char::UNICODE_VERSION, (17, 0, 0));
+    assert_eq!(std::char::UNICODE_VERSION, (18, 0, 0));
     for code in 0..=0x10ffffu32 {
         let Some(value) = char::from_u32(code) else {
             continue;

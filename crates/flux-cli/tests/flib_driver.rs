@@ -127,15 +127,17 @@ pub trait Sub: Super {}
         String::from_utf8_lossy(&oracle.stderr)
     );
     std::fs::remove_file(s.path().join("dep.rs")).unwrap();
-    for (name, source, message) in [
+    for (name, source, accepted, message) in [
         (
             "packed",
             "#[repr(packed)] pub struct Bad(dep::Aligned);",
+            true,
             "packed",
         ),
         (
             "supertrait",
             "pub struct Local<'a>(&'a u32); impl dep::Super for Local<'static> {} impl<'a> dep::Sub for Local<'a> {}",
+            false,
             "supertrait lifetime requirements",
         ),
     ] {
@@ -151,7 +153,8 @@ pub trait Sub: Super {}
             ]),
             "declaration-oracle",
         );
-        assert!(!oracle.status.success(), "rustc accepted {name}");
+        assert_eq!(oracle.status.success(), accepted, "rustc {name}");
+        let artifact = format!("{name}.flib");
         let output = flib_support::run(
             Command::new(env!("CARGO_BIN_EXE_fluxc"))
                 .current_dir(s.path())
@@ -164,15 +167,15 @@ pub trait Sub: Super {}
                     "--extern",
                     "dep=dep.flib",
                     "-o",
-                    "bad.flib",
+                    &artifact,
                 ]),
             "declaration-flux",
         );
         let errors = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            !output.status.success() && errors.contains(message),
-            "{name}: {errors}"
-        );
-        assert!(!s.path().join("bad.flib").exists());
+        assert_eq!(output.status.success(), accepted, "{name}: {errors}");
+        if !accepted {
+            assert!(errors.contains(message), "{name}: {errors}");
+        }
+        assert_eq!(s.path().join(artifact).exists(), accepted);
     }
 }

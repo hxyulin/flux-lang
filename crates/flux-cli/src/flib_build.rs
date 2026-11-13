@@ -150,6 +150,7 @@ pub(crate) fn compile_native(
     state.db.set_debug_assertions(options.debug_assertions());
     state.db.set_panic_strategy(options.panic_strategy);
     state.db.set_crate_cfg(root, input.cfg.clone())?;
+    state.db.override_crate_output(root)?;
     if let Some(directory) = &input.compilation_dir {
         state.db.set_crate_directory(root, directory.clone())?;
     }

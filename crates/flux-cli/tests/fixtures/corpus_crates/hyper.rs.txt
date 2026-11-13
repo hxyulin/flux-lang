@@ -1,0 +1,27 @@
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+#[derive(Clone)]
+struct Message(Arc<AtomicUsize>);
+impl Drop for Message { fn drop(&mut self) { self.0.fetch_add(1, Ordering::SeqCst); } }
+fn main() {
+    let drops = Arc::new(AtomicUsize::new(0));
+    let (sender, first) = tokio::sync::broadcast::channel::<Message>(8);
+    let second = sender.subscribe();
+    for _ in 0..6 { assert!(sender.send(Message(drops.clone())).is_ok()); }
+    drop(first);
+    assert_eq!(drops.load(Ordering::SeqCst), 0);
+    drop(second);
+    assert_eq!(drops.load(Ordering::SeqCst), 6);
+    assert!(sender.send(Message(drops.clone())).is_err());
+    assert_eq!(drops.load(Ordering::SeqCst), 7);
+    drop(sender);
+    assert_eq!(drops.load(Ordering::SeqCst), 7);
+    let lagged = Arc::new(AtomicUsize::new(0));
+    let (sender, receiver) = tokio::sync::broadcast::channel::<Message>(2);
+    for _ in 0..5 { assert!(sender.send(Message(lagged.clone())).is_ok()); }
+    assert_eq!(lagged.load(Ordering::SeqCst), 3);
+    drop(receiver);
+    assert_eq!(lagged.load(Ordering::SeqCst), 5);
+    drop(sender);
+    assert_eq!(lagged.load(Ordering::SeqCst), 5);
+    println!("{} {}", hyper::StatusCode::OK.as_u16(), drops.load(Ordering::SeqCst));
+}

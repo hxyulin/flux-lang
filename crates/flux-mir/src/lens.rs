@@ -12,7 +12,9 @@ use flux_ty::{ClosureOwner, LibraryTypes, Signatures, TypedFile};
 
 /// Type-checks `hir`, evaluating the constants array lengths name.
 pub fn check_file(hir: &Hir) -> TypedFile {
-    flux_ty::check_file_with(hir, &eval_lens)
+    let mut typed = flux_ty::check_file_with(hir, &eval_lens);
+    crate::auto_traits::fulfill(hir, &mut typed, None, &[]);
+    typed
 }
 
 /// Checks source with decoded dependency interfaces, MIR and constant values.
@@ -23,7 +25,7 @@ pub fn check_file_from(
     imported: &ImportedMir,
     required_functions: &[FunctionId],
 ) -> TypedFile {
-    flux_ty::check_from(hir, loaded, required_functions, &|hir, sigs, wanted| {
+    let mut typed = flux_ty::check_from(hir, loaded, required_functions, &|hir, sigs, wanted| {
         eval_lens_from(
             hir,
             sigs,
@@ -32,7 +34,9 @@ pub fn check_file_from(
             Some(imported),
             required_functions,
         )
-    })
+    });
+    crate::auto_traits::fulfill(hir, &mut typed, Some(imported), required_functions);
+    typed
 }
 
 /// The values of `wanted`, each `None` if its evaluation failed (the

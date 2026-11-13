@@ -7,6 +7,7 @@ mod case_filter;
 fn family_types_and_constants_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-gat-types-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
+    let mut mismatches = Vec::new();
     for (name, source, accepted) in [
         (
             "relaxed_output",
@@ -224,6 +225,16 @@ fn family_types_and_constants_match_rustc() {
             true,
         ),
         (
+            "body_family_placeholder_noninjective",
+            "trait P{type A<T>;}struct S;impl P for S{type A<T>=u8;}fn main(){let _x:<S as P>::A<_>=7u8;}",
+            false,
+        ),
+        (
+            "body_family_placeholder_mismatch",
+            "trait P{type A<T>;}struct S;impl P for S{type A<T>=(T,);}fn main(){let x:<S as P>::A<_>=(7u16,);let _:u8=x.0;}",
+            false,
+        ),
+        (
             "dyn_generic_family",
             "trait P{type A<T>;}fn f(_: &dyn P){}fn main(){}",
             false,
@@ -262,6 +273,16 @@ fn family_types_and_constants_match_rustc() {
             "explicit_anonymous_lifetime",
             "trait P{type A<'a> where Self:'a;}struct S;impl P for S{type A<'a>=u8 where Self:'a;}fn main(){let _:<S as P>::A<'_>=7;}",
             true,
+        ),
+        (
+            "anonymous_lifetime_with_type_bound",
+            "trait P{type A<'a,T:Copy>where Self:'a;}struct S;impl P for S{type A<'a,T:Copy>=T where Self:'a;}fn main(){let _:<S as P>::A<'_,u8>=7;}",
+            true,
+        ),
+        (
+            "family_lifetime_static_requirement",
+            "trait P{type A<'a>where 'a:'static;}struct S;impl P for S{type A<'a>=u8 where 'a:'static;}fn f<'a>(){let _:<S as P>::A<'a>=7;}fn main(){}",
+            false,
         ),
         (
             "weakened_implicit_sized",
@@ -340,12 +361,10 @@ fn family_types_and_constants_match_rustc() {
         let (_, _, hir) = flux_hir::lower_text(&path, source);
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_ty::check_file(&hir);
-        assert_eq!(
-            typed.diagnostics.is_empty(),
-            accepted,
-            "{name}: {:?}",
-            typed.diagnostics
-        );
+        if typed.diagnostics.is_empty() != accepted {
+            mismatches.push(format!("{name}: {:?}", typed.diagnostics));
+        }
     }
     std::fs::remove_dir_all(root).unwrap();
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
 }

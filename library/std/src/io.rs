@@ -181,7 +181,7 @@ fn error_kind(code: i32) -> ErrorKind {
         66 => ErrorKind::DirectoryNotEmpty,
         69 => ErrorKind::QuotaExceeded,
         70 => ErrorKind::StaleNetworkFileHandle,
-        78 => ErrorKind::Unsupported,
+        45 | 78 => ErrorKind::Unsupported,
         102 => ErrorKind::Unsupported,
         _ => ErrorKind::Uncategorized,
     }

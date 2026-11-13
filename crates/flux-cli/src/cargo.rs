@@ -501,9 +501,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
     }
     // Cargo's messages leave out link arguments; its saved script output has them.
     if let Some(script) = plan.build_scripts.get(&package.id) {
-        let path = script.out_dir.with_file_name("output");
-        let output = std::fs::read_to_string(&path)
-            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let output = saved_script_output(&script.out_dir)?;
         let directory = package
             .manifest_path
             .parent()
@@ -1081,6 +1079,19 @@ pub(crate) fn binary_link_arg(
 }
 
 /// The link arguments for binary `name` in a build script's standard output.
+fn saved_script_output(out_dir: &std::path::Path) -> Result<String, String> {
+    let current = out_dir.with_file_name("run").join("stdout");
+    let (path, result) = match std::fs::read_to_string(&current) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let legacy = out_dir.with_file_name("output");
+            let result = std::fs::read_to_string(&legacy);
+            (legacy, result)
+        }
+        result => (current, result),
+    };
+    result.map_err(|error| format!("cannot read {}: {error}", path.display()))
+}
+
 fn script_link_args(output: &str, name: &str) -> Result<Vec<String>, String> {
     let mut arguments = Vec::new();
     for line in output.lines() {
@@ -1131,6 +1142,26 @@ pub(crate) fn link_arguments(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn saved_script_output_supports_both_cargo_layouts() {
+        let root = std::env::temp_dir().join(format!("flux-script-output-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("run")).unwrap();
+        let out = root.join("out");
+        let legacy = root.join("output");
+        let current = root.join("run/stdout");
+        std::fs::write(&legacy, "legacy").unwrap();
+        assert_eq!(super::saved_script_output(&out).unwrap(), "legacy");
+        std::fs::write(&current, "current").unwrap();
+        assert_eq!(super::saved_script_output(&out).unwrap(), "current");
+        std::fs::write(&current, [0xff]).unwrap();
+        assert!(
+            super::saved_script_output(&out)
+                .unwrap_err()
+                .contains("run/stdout")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn profile_panic_strategy_defaults_and_explicit_modes() {
         use flux_syntax::PanicStrategy::{Abort, Unwind};

@@ -1042,13 +1042,16 @@ fn impl_header_match(
             if *stored != bound {
                 return None;
             }
-            let goal = cx.impl_region_goal(
+            let goal = cx.impl_region_goal_with_inputs(
                 bound.with_self(Ty::alias(alias)),
                 &[],
                 tables,
                 &root.lifetimes,
                 &args,
                 &root.vars,
+                None,
+                false,
+                Some(&env),
             )?;
             if !cx.impl_super_goals_with_inputs(goal, &mut goals, 0, Some(&env)) {
                 return None;
@@ -1694,7 +1697,32 @@ impl<'a> Cx<'a> {
         let Some(type_vars) = binding.types.into_iter().collect::<Option<Vec<_>>>() else {
             return false;
         };
-        self.instantiated_aliases_proven(value, &impl_args, &type_vars, env, depth + 1)
+        let Some(lifetimes) = binding.lifetimes.into_iter().collect::<Option<Vec<_>>>() else {
+            return false;
+        };
+        let Some(block) = self.sigs.regions.impls.get(imp) else {
+            return false;
+        };
+        let selections = block
+            .type_selections
+            .iter()
+            .find(|(name, _)| *name == template.name)
+            .map_or(&[][..], |(_, selections)| selections.as_ref());
+        self.associated_value_selections_with_args(
+            value,
+            block
+                .types
+                .iter()
+                .find(|(name, _)| *name == template.name)
+                .map(|(_, table)| table.as_ref()),
+            selections,
+            &lifetimes,
+            &impl_args,
+            &type_vars,
+            env,
+            &mut FxHashMap::default(),
+            depth + 1,
+        )
     }
 
     /// Instantiate an impl bound without inventing lifetimes for missing
@@ -2107,6 +2135,10 @@ impl<'a> Cx<'a> {
             // including static references nested in equality RHS tuples.
             if !self.impl_aliases_known(p.ty, &args)
                 && !self.impl_aliases_proven(p.ty, &args, env, 0)
+                // The required RHS can select an associated value through
+                // Self's original occurrence row, including a reference Self.
+                // Retain that row instead of reconstructing erased inputs.
+                && !self.instantiated_aliases_proven(p.ty, &args, &goal.vars, env, 0)
             {
                 return None;
             }
@@ -2562,7 +2594,6 @@ impl<'a> Cx<'a> {
                 }
             }
         }
-        let mut proven = Vec::new();
         for (k, &p) in self
             .sigs
             .impl_predicates
@@ -2589,7 +2620,6 @@ impl<'a> Cx<'a> {
             if !self.impl_prove_super(&next, env, depth + 1) {
                 return false;
             }
-            proven.push(next);
         }
         for (p, table) in self
             .sigs
@@ -2599,7 +2629,9 @@ impl<'a> Cx<'a> {
             .iter()
             .zip(block.projections.iter())
         {
-            if !self.impl_aliases_known(p.ty, &args) {
+            if !self.impl_aliases_known(p.ty, &args)
+                && !self.instantiated_aliases_proven(p.ty, &args, &type_vars, env, depth + 1)
+            {
                 return false;
             }
             let Some(expected) = self.instantiate_sig(p.ty, table, &mut { map }, &args, &type_vars)
@@ -2626,25 +2658,17 @@ impl<'a> Cx<'a> {
             let TyKind::Alias(alias) = actual_ty.kind() else {
                 return false;
             };
-            let alias_vars = match proven.iter().find(|g| {
-                g.predicate.trait_ref.trait_ == alias.trait_
-                    && alias.args.first() == Some(&g.predicate.self_ty)
-                    && alias.args.get(1..) == Some(g.predicate.trait_ref.args)
-            }) {
-                Some(g) => g.vars.clone(),
-                None => {
-                    let mut vars = Vec::new();
-                    for &ty in p.alias.args {
-                        let Some(v) =
-                            self.instantiate_sig(ty, &[], &mut { map }, &args, &type_vars)
-                        else {
-                            return false;
-                        };
-                        vars.push(v);
-                    }
-                    vars
-                }
-            };
+            // Equal erased input types can still have distinct occurrence
+            // rows. Reconstruct this equality's original input arguments,
+            // rather than borrow the first erased-equal membership's row.
+            let mut alias_vars = Vec::new();
+            for &ty in p.alias.args {
+                let Some(vars) = self.instantiate_sig(ty, &[], &mut { map }, &args, &type_vars)
+                else {
+                    return false;
+                };
+                alias_vars.push(vars);
+            }
             let Some(actual) = self.normalize_regions(alias, &alias_vars, depth + 1) else {
                 return false;
             };
@@ -2991,16 +3015,16 @@ impl<'a> Cx<'a> {
                         continue;
                     }
                     let late = table.iter().any(|r| matches!(r, Region::Late(_)));
-                    let only = table
-                        .iter()
-                        .all(|r| matches!(r, Region::Late(_) | Region::Static));
-                    if !late || !only {
-                        continue;
-                    }
-                    let mut map = |_| Some(STATIC);
+                    let mut map = |region| match region {
+                        Region::Static | Region::Late(_) => Some(STATIC),
+                        Region::Param(index) if (index as usize) < r.names.len() => Some(1 + index),
+                        _ => None,
+                    };
                     if let Some(vars) = self.instantiate_sig(p.ty, table, &mut map, &[], &[]) {
                         self.env_regions.push((p.alias, vars));
-                        self.env_late.push((p.alias, table.clone()));
+                        if late {
+                            self.env_late.push((p.alias, table.clone()));
+                        }
                     }
                 }
             }
@@ -4424,6 +4448,14 @@ impl<'a> Cx<'a> {
                 &mut eqs,
             );
         }
+        // Impl lifetime parameters are existential at a selection. A binder
+        // mentioned only in bounds (or not used at all) has no header slot to
+        // bind it, but its fresh region still has to satisfy every impl bound.
+        for lifetime in &mut binding.lifetimes {
+            if lifetime.is_none() {
+                *lifetime = Some(self.fresh());
+            }
+        }
         for (a, b) in eqs {
             self.equate(a, b, self.proving, range);
         }
@@ -5000,6 +5032,45 @@ impl<'a> Cx<'a> {
         (ty, vars)
     }
 
+    /// Relate unchanged prefix fields independently, then return only the
+    /// terminal concrete/object occurrence rows. A borrowed prefix does not
+    /// constrain an unrelated erased tail's object bound.
+    #[allow(clippy::too_many_arguments)]
+    fn object_tail_regions(
+        &mut self,
+        mut source: Ty,
+        source_vars: &[Var],
+        mut target: Ty,
+        target_vars: &[Var],
+        variance: Variance,
+        category: Category,
+        range: TextRange,
+    ) -> Option<(Ty, Slots, Ty, Slots)> {
+        flux_solve::object_unsize(self.sigs, source, target)?;
+        let mut source_vars: Slots = source_vars.iter().copied().collect();
+        let mut target_vars: Slots = target_vars.iter().copied().collect();
+        for _ in 0..256 {
+            if target.is_dyn() {
+                return Some((source, source_vars, target, target_vars));
+            }
+            let fields = flux_solve::fields(self.sigs, target)?;
+            let last = fields.len().checked_sub(1)?;
+            for index in 0..last {
+                let (from, from_vars) =
+                    self.field_regions(source, &source_vars, None, index as u32);
+                let (to, to_vars) = self.field_regions(target, &target_vars, None, index as u32);
+                self.relate_types(from, &from_vars, to, &to_vars, variance, category, range);
+            }
+            let (from, from_vars) = self.field_regions(source, &source_vars, None, last as u32);
+            let (to, to_vars) = self.field_regions(target, &target_vars, None, last as u32);
+            source = from;
+            target = to;
+            source_vars = from_vars;
+            target_vars = to_vars;
+        }
+        None
+    }
+
     /// Field `field` (of variant `variant`) of a value of struct or enum
     /// type `ty` with slots `vars`: its type and slots.
     fn field_regions(
@@ -5238,13 +5309,22 @@ impl<'a> Cx<'a> {
                 if matches!(to.kind(), TyKind::Ref(_, p) | TyKind::RawPtr(_, p) if self.sigs.metadata(p) == flux_ty::Metadata::VTable)
                     || flux_solve::box_pointee(*to)
                         .or_else(|| flux_ty::shared_pointee(self.items, *to))
+                        .or_else(|| flux_ty::nonnull_pointee(self.items, *to))
+                        .or_else(|| flux_solve::pin_pointee(self.items, *to))
                         .is_some_and(|p| self.sigs.metadata(p) == flux_ty::Metadata::VTable) =>
             {
                 let (op_ty, vars) = self.operand_regions(op);
+                // Pin contributes no own region slots: its pointer field keeps
+                // the exact reference/owned-pointer occurrence row. An explicit
+                // object coercion may shorten that pointer's object bound.
+                let op_ty = flux_solve::pin_pointer(self.items, op_ty).unwrap_or(op_ty);
+                let dest_ty = flux_solve::pin_pointer(self.items, dest_ty).unwrap_or(dest_ty);
+                let target_pointer = flux_solve::pin_pointer(self.items, *to).unwrap_or(*to);
+                let to = &target_pointer;
                 // The reference's own region relates; then the object's
                 // bound is what the value holds must outlive (or, upcast,
                 // what the object's bound must).
-                let (pointee, inner, bound) = match (op_ty.kind(), dest_ty.kind()) {
+                let (pointee, inner, _bound) = match (op_ty.kind(), dest_ty.kind()) {
                     (TyKind::Ref(_, pointee), TyKind::Ref(..)) => {
                         if let (Some(&from), Some(&to)) = (vars.first(), dest_vars.first()) {
                             self.outlives(from, to, category, range);
@@ -5265,7 +5345,8 @@ impl<'a> Cx<'a> {
                     }
                     // A box's slots are its value's.
                     _ if let Some(pointee) = flux_solve::box_pointee(op_ty)
-                        .or_else(|| flux_ty::shared_pointee(self.items, op_ty)) =>
+                        .or_else(|| flux_ty::shared_pointee(self.items, op_ty))
+                        .or_else(|| flux_ty::nonnull_pointee(self.items, op_ty)) =>
                     {
                         (pointee, &vars[..], dest_vars.first().copied())
                     }
@@ -5277,19 +5358,47 @@ impl<'a> Cx<'a> {
                 let object = match to.kind() {
                     TyKind::Ref(_, object) | TyKind::RawPtr(_, object) => Some(object),
                     _ => flux_solve::box_pointee(*to)
-                        .or_else(|| flux_ty::shared_pointee(self.items, *to)),
+                        .or_else(|| flux_ty::shared_pointee(self.items, *to))
+                        .or_else(|| flux_ty::nonnull_pointee(self.items, *to)),
                 };
-                let (pointee, object) = match object.and_then(|object| {
-                    flux_solve::transparent_object_unsize(
-                        self.items,
-                        &self.sigs.structs,
+                let offset = usize::from(matches!(dest_ty.kind(), TyKind::Ref(..)));
+                let target_rows = dest_vars.get(offset..).unwrap_or(&[]);
+                let variance = if matches!(
+                    op_ty.kind(),
+                    TyKind::Ref(Mutability::Mut, _) | TyKind::RawPtr(Mutability::Mut, _)
+                ) {
+                    Variance::Invariant
+                } else {
+                    Variance::Covariant
+                };
+                let Some((pointee, inner_rows, object, object_rows)) = object.and_then(|object| {
+                    self.object_tail_regions(
                         pointee,
+                        inner,
                         object,
+                        target_rows,
+                        variance,
+                        category,
+                        range,
                     )
-                }) {
-                    Some((source, target)) => (source, Some(target)),
-                    None => (pointee, object),
+                }) else {
+                    self.errors.push(Diagnostic::new(
+                        range,
+                        "object tail lifetime rows are not represented at this coercion",
+                    ));
+                    return;
                 };
+                let inner = &inner_rows[..];
+                let bound = object_rows.first().copied();
+                let mut tail_dest_vars: Slots = dest_vars
+                    .get(..offset)
+                    .unwrap_or(&[])
+                    .iter()
+                    .copied()
+                    .collect();
+                tail_dest_vars.extend_from_slice(&object_rows);
+                let dest_vars = tail_dest_vars;
+                let object = Some(object);
                 let mut callable_principal_checked = false;
                 if let Some(object) = object
                     && let TyKind::Dynamic(d) = object.kind()
@@ -7624,7 +7733,10 @@ impl<'a> Cx<'a> {
         if !seen.insert(goal) {
             return false;
         }
-        if depth > 8 {
+        // Nested coroutine witnesses and their structural containers can be
+        // deep without introducing a lifetime condition. Exhaustion remains
+        // conservative, and the seen set terminates repeated predicates.
+        if depth > 64 {
             return true;
         }
         if self.trait_has_ranked_super(goal.trait_ref.trait_, &mut FxHashSet::default()) {
@@ -8551,6 +8663,29 @@ impl<'a> Cx<'a> {
             if vars.len() != self.slots(ty) as usize {
                 self.type_outlives(ty, bound, range);
                 continue;
+            }
+            if let TyKind::Adt(adt, args) = ty.kind()
+                && flux_solve::is_lang_struct(self.items, adt.strukt, "coroutine")
+                && let Some(&capture) = args.first()
+                && let TyKind::Closure(id, closure_args) = capture.kind()
+                && let Some(stored) = self.sigs.coroutine_witnesses.get(&id)
+            {
+                let parts = flux_ty::ClosureArgs::split(closure_args);
+                let stored: Vec<_> = stored.iter().map(|ty| ty.subst(parts.parent)).collect();
+                // Capture rows are represented by the closure argument. Saved
+                // types without slots need only type-outlives proof. Keep the
+                // existing conservative route when saved local rows are absent.
+                if stored.iter().all(|&ty| self.slots(ty) == 0)
+                    && let Some(capture_row) = vars.get(..self.slots(capture) as usize)
+                {
+                    pending.push((capture, capture_row.to_vec(), active.clone()));
+                    pending.extend(
+                        stored
+                            .into_iter()
+                            .map(|ty| (ty, Vec::new(), active.clone())),
+                    );
+                    continue;
+                }
             }
             if matches!(ty.kind(), TyKind::Alias(alias) if flux_ty::regions::has_projection_inputs(self.items, alias))
             {

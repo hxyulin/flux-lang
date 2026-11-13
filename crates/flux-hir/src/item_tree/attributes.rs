@@ -68,6 +68,7 @@ pub(super) fn check_inner_attrs(
     attrs: AstChildren<'_, ast::Attr<'_>>,
     is_core: bool,
     crate_root: bool,
+    output_overridden: bool,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let attrs = crate::cfg::Attrs::new(attrs);
@@ -125,11 +126,30 @@ pub(super) fn check_inner_attrs(
                 Some(value)
                     if name == "crate_type" && matches!(value.as_str(), "lib" | "rlib" | "bin") => {
                 }
-                Some(_) if name == "crate_type" => unsupported(
-                    diagnostics,
+                Some(value)
+                    if name == "crate_type"
+                        && matches!(
+                            value.as_str(),
+                            "dylib" | "staticlib" | "cdylib" | "proc-macro"
+                        )
+                        && output_overridden => {}
+                Some(value)
+                    if name == "crate_type"
+                        && matches!(
+                            value.as_str(),
+                            "dylib" | "staticlib" | "cdylib" | "proc-macro"
+                        ) =>
+                {
+                    unsupported(
+                        diagnostics,
+                        attr.syntax().text_range(),
+                        "this crate output kind",
+                    )
+                }
+                Some(_) if name == "crate_type" => diagnostics.push(Diagnostic::new(
                     attr.syntax().text_range(),
-                    "this crate output kind",
-                ),
+                    "invalid `crate_type` value",
+                )),
                 _ => diagnostics.push(Diagnostic::new(
                     attr.syntax().text_range(),
                     format!("malformed `{name}` attribute input"),

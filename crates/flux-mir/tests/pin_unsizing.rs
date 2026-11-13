@@ -33,6 +33,11 @@ fn pinned_unsizing_matches_rustc() {
             false,
         ),
         (
+            "boxed_constructor_requires_unpin",
+            "use core::pin::Pin;trait Tr{}impl Tr for u32{}fn main(){let _:Pin<Box<dyn Tr>>=Pin::new(Box::new(7u32));}",
+            false,
+        ),
+        (
             "boxed_new_requires_unpin",
             "use core::pin::Pin;trait Tr{}impl Tr for u32{}fn main(){let _:Pin<Box<dyn Tr>>=Pin::new(Box::new(7u32));}",
             false,

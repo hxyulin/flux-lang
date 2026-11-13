@@ -69,8 +69,8 @@ enum Command {
     Build {
         file: PathBuf,
         /// Compile an executable or a private Fluxlib library.
-        #[arg(long, value_enum, default_value = "bin")]
-        crate_type: CrateType,
+        #[arg(long, value_enum)]
+        crate_type: Option<CrateType>,
         /// Explicit crate identity name.
         #[arg(long)]
         crate_name: Option<String>,
@@ -503,7 +503,7 @@ fn run(command: Command) -> Result<bool, String> {
         } => {
             let options = options.resolve();
             let name = crate_name.unwrap_or_else(|| build::crate_name(&file));
-            if crate_type == CrateType::Lib {
+            if crate_type == Some(CrateType::Lib) {
                 let output = output.unwrap_or_else(|| PathBuf::from(format!("{name}.flib")));
                 flib_build::library(&file, &output, &name, options, metadata_only, &externs)
             } else {
@@ -511,7 +511,7 @@ fn run(command: Command) -> Result<bool, String> {
                     return Err("metadata-only output requires --crate-type lib".into());
                 }
                 let output = output.unwrap_or_else(|| PathBuf::from(&name));
-                if !externs.is_empty() {
+                if !externs.is_empty() || crate_type.is_some() {
                     return flib_build::compile(
                         &build::SourceInput::standalone(&file, &name),
                         &output,

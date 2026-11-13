@@ -237,7 +237,7 @@ fn dst_wrapper_acceptance_matches_rustc() {
 }
 
 #[test]
-fn wrapped_trait_objects_fail_explicitly() {
+fn wrapped_trait_object_declarations_match_rustc() {
     let dir = std::env::temp_dir().join(format!("flux-dst-vtable-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for (name, code) in [
@@ -268,12 +268,12 @@ fn wrapped_trait_objects_fail_explicitly() {
             .arg(&source)
             .output()
             .unwrap();
-        assert!(!flux.status.success());
-        let diagnostic = String::from_utf8_lossy(&flux.stderr);
         assert!(
-            diagnostic.contains("trait object tails in structs are not supported yet"),
-            "{name}: {diagnostic}"
+            flux.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&flux.stderr)
         );
+        let diagnostic = String::from_utf8_lossy(&flux.stderr);
         assert!(!diagnostic.contains("panicked"), "{name}: {diagnostic}");
     }
     std::fs::remove_dir_all(dir).unwrap();

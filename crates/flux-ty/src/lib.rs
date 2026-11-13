@@ -65,10 +65,10 @@ pub use flux_ty_ir::{
     GenericArgs, InferVar, Instance, IntTy, LenValues, Metadata, Mutability, OpaqueSig, OpaqueTy,
     ParamTy, Signatures, Ty, TyKind, fn_trait, fn_trait_kind, params_of, subst_list, symbol_list,
 };
-use flux_ty_ir::{impl_index, in_scope, mentions_param, metadata, overlap, ty};
+use flux_ty_ir::{impl_index, in_scope, mentions_param, overlap, ty};
 pub use infer::{
-    BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, InferenceResult, Method,
-    OverloadedDeref, c_char_ptr, c_str_ref, infer_body, infer_const,
+    BuiltinMethod, Capture, CaptureMode, CaptureProj, ClosureInfo, DeferredAutoTrait,
+    InferenceResult, Method, OverloadedDeref, c_char_ptr, c_str_ref, infer_body, infer_const,
 };
 pub use traits::{Predicate, Projection, TraitRef, TraitSig};
 
@@ -1164,6 +1164,11 @@ fn check(
     }
     Diagnostic::sort(&mut warnings);
     warnings.dedup_by(|a, b| a.file == b.file && a.range == b.range && a.message == b.message);
+    sigs.pending_auto_trait_proofs = bodies
+        .iter()
+        .map(|(_, result)| result)
+        .chain(consts.iter().map(|(_, result)| result))
+        .any(|result| !result.deferred_auto_traits.is_empty());
     TypedFile {
         sigs,
         bodies,

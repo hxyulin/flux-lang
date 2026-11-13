@@ -2,6 +2,9 @@
 //! Field/variant order is wire-significant. Based on rust-analyzer at rustc
 //! 58cf8f9c35b355199727627d07ae34a4e2846d67 (MIT OR Apache-2.0):
 //! <https://github.com/rust-lang/rust/tree/58cf8f9c35b355199727627d07ae34a4e2846d67/src/tools/rust-analyzer/crates/proc-macro-api>
+//! Also reviewed at rustc 0ef1bc386059596dada8fb65b50425aab2ea637a. Protocol 6
+//! keeps these declarations and flat-token/span encodings; upstream changes only
+//! map hashers and equivalent array flattening, with no wire field/order changes.
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap as HashMap, BTreeSet as HashSet};
 use std::ops::Range;

@@ -248,6 +248,7 @@ fn collect_roots(
     // complete traversal result, including empty answers, but still process
     // reification and recursion depth separately for every use below.
     let mut static_functions: FxHashMap<flux_hir::ConstId, Vec<Instance>> = FxHashMap::default();
+    let object_layouts = crate::layout::Layouts::new(items, sigs, &mir.discriminants);
     // All statics are emitted, but an ordinary constant becomes a root only
     // when reachable code uses it. Otherwise an unused pointer could trigger
     // unbounded monomorphization of a function that is never called.
@@ -325,7 +326,7 @@ fn collect_roots(
                 }
             };
         // A generic wrapper can acquire a vtable tail only at this instance.
-        // Reject that unrepresented dynamic layout before intrinsic expansion.
+        // Validate its represented prefix chain before intrinsic expansion.
         let mut types: Vec<_> = body
             .locals
             .values()
@@ -338,12 +339,12 @@ fn collect_roots(
             }
             if matches!(ty.kind(), TyKind::Adt(..))
                 && sigs.metadata(ty) == flux_ty::Metadata::VTable
-                && flux_solve::transparent_object_tail(items, &sigs.structs, ty).is_none()
+                && object_layouts.vtable_layout(ty).is_none()
             {
                 let owner = &items.functions[body.owner.unwrap_or(caller.function)];
                 let mut error = Diagnostic::new(
                     owner.def_range,
-                    "trait object tails in structs are not supported yet",
+                    "this trait object tail layout is not supported yet",
                 );
                 error.file = owner.loc.file;
                 return Err(error);
@@ -365,12 +366,8 @@ fn collect_roots(
                     let mut vtables = Vec::new();
                     if let (Some(concrete), Some(object)) =
                         (pointee(items, from), pointee(items, to))
-                        && let Some((concrete, object)) = flux_solve::transparent_object_unsize(
-                            items,
-                            &sigs.structs,
-                            concrete,
-                            object,
-                        )
+                        && let Some((concrete, object)) =
+                            flux_solve::object_unsize(sigs, concrete, object)
                         && object.is_dyn()
                         && !concrete.is_dyn()
                     {
@@ -871,16 +868,18 @@ pub(crate) fn value_functions<'a>(
                 object,
                 ..
             } => {
-                let mut pending = vec![*object];
+                let (concrete, object) = flux_solve::object_unsize(sigs, *concrete, *object)
+                    .unwrap_or((*concrete, *object));
+                let mut pending = vec![object];
                 let mut seen = FxHashSet::default();
                 while let Some(object) = pending.pop() {
                     if !seen.insert(object) {
                         continue;
                     }
-                    if let Some(drop) = crate::vtable::drop_entry(items, sigs, *concrete) {
+                    if let Some(drop) = crate::vtable::drop_entry(items, sigs, concrete) {
                         out.push(drop);
                     }
-                    for entry in crate::vtable::entries(items, sigs, object, *concrete) {
+                    for entry in crate::vtable::entries(items, sigs, object, concrete) {
                         match entry {
                             crate::vtable::Entry::Method(instance) => out.push(instance),
                             crate::vtable::Entry::Super(object) => pending.push(object),
@@ -2112,6 +2111,16 @@ fn drop_fn(items: &ItemTree) -> Option<FunctionId> {
     items.traits[t].function(items, drop)
 }
 
+fn dynamic_drop_fn(items: &ItemTree) -> FunctionId {
+    items
+        .functions
+        .iter()
+        .find_map(|(id, data)| {
+            (data.intrinsic == Some(flux_hir::Intrinsic::DropInPlace)).then_some(id)
+        })
+        .expect("embedded drop_in_place intrinsic")
+}
+
 /// What dropping a value runs: its `Drop` impls, the parts of it whose
 /// types have one, in the order dropping it runs them.
 enum Glue {
@@ -2119,6 +2128,8 @@ enum Glue {
     Value(Vec<Glue>),
     /// `Drop::drop(&mut place)`, for a `place` of type `ty`.
     Drop(Place, Ty),
+    /// The terminal object's full destructor through its vtable.
+    Dynamic(Place, Ty),
     /// Move the whole unaligned field before invoking its destructor.
     Unaligned(Place, Ty, Vec<Glue>),
     /// For an enum at `place`, the glue of the variant it holds.
@@ -2154,6 +2165,7 @@ fn glue_types(glue: &[Glue], out: &mut Vec<Ty>) {
     for part in glue {
         match part {
             Glue::Drop(_, ty) => out.push(*ty),
+            Glue::Dynamic(..) => {}
             Glue::Variants(_, _, variants) => {
                 for variant in variants {
                     glue_types(variant, out);
@@ -2201,6 +2213,10 @@ fn drop_glue_inner<const GROUPED: bool>(
     out: &mut Vec<Glue>,
 ) {
     match ty.kind() {
+        TyKind::Dynamic(_) => {
+            out.push(Glue::Dynamic(place, ty));
+            return;
+        }
         TyKind::Adt(adt, _) if flux_solve::is_lang_struct(items, adt.strukt, "manually_drop") => {
             return;
         }
@@ -2385,16 +2401,21 @@ impl Expand<'_> {
                 );
                 (statements, kind)
             }
-            Glue::Drop(place, ty) => {
+            Glue::Drop(place, ty) | Glue::Dynamic(place, ty) => {
+                let dynamic = matches!(part, Glue::Dynamic(..));
                 let pointer = self.body.locals.alloc(LocalDecl {
-                    ty: Ty::new(TyKind::Ref(Mutability::Mut, *ty)),
+                    ty: Ty::new(if dynamic {
+                        TyKind::RawPtr(Mutability::Mut, *ty)
+                    } else {
+                        TyKind::Ref(Mutability::Mut, *ty)
+                    }),
                     kind: LocalKind::Temp,
                 });
                 let borrow = Statement {
                     kind: StatementKind::Assign(
                         pointer.into(),
                         Rvalue::Ref {
-                            raw: false,
+                            raw: dynamic,
                             mutability: Mutability::Mut,
                             place: place.clone(),
                             two_phase: false,
@@ -2403,7 +2424,11 @@ impl Expand<'_> {
                     range: self.range,
                 };
                 let call = TerminatorKind::Call {
-                    func: self.drop,
+                    func: if dynamic {
+                        dynamic_drop_fn(self.items)
+                    } else {
+                        self.drop
+                    },
                     generic_args: Ty::list(&[*ty]),
                     args: vec![Operand::Move(pointer.into())],
                     dest: self.unit.into(),
@@ -2525,6 +2550,7 @@ impl Glue {
         match self {
             Glue::Value(glue) => Glue::Value(glue.iter().map(|g| g.reindex(from, to)).collect()),
             Glue::Drop(p, ty) => Glue::Drop(place(p), *ty),
+            Glue::Dynamic(p, ty) => Glue::Dynamic(place(p), *ty),
             Glue::Unaligned(p, ty, glue) => Glue::Unaligned(
                 place(p),
                 *ty,

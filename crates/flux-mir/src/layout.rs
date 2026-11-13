@@ -234,6 +234,20 @@ fn align_to(value: u64, align: u64) -> u64 {
     value.next_multiple_of(align.max(1))
 }
 
+/// Runtime layout layers outside a terminal trait object, outermost first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VTableLayout {
+    pub layers: Vec<VTableLayer>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VTableLayer {
+    pub tail_field: u32,
+    pub prefix_size: u64,
+    pub prefix_align: u64,
+    pub pack: Option<u64>,
+}
+
 /// Computes and caches the layouts of monomorphic types.
 pub struct Layouts<'a> {
     items: &'a ItemTree,
@@ -325,6 +339,47 @@ impl<'a> Layouts<'a> {
             }
             _ => None,
         }
+    }
+
+    /// The static prefixes used to rebuild a vtable-bearing DST's runtime
+    /// layout. Fold layers in reverse using the child's dynamic size/alignment;
+    /// each tail starts at `align_up(prefix_size, child_align)`.
+    pub fn vtable_layout(&self, mut ty: Ty) -> Option<VTableLayout> {
+        let mut layers = Vec::new();
+        let mut seen = Vec::new();
+        for _ in 0..256 {
+            if ty.is_dyn() {
+                return Some(VTableLayout { layers });
+            }
+            if seen.contains(&ty) {
+                return None;
+            }
+            seen.push(ty);
+            let TyKind::Adt(adt, _) = ty.kind() else {
+                return None;
+            };
+            if self.sigs.is_enum(adt.strukt) || self.sigs.unions.contains(&adt.strukt) {
+                return None;
+            }
+            let fields = flux_solve::fields(self.sigs, ty)?;
+            let last = fields.len().checked_sub(1)?;
+            if fields[..last]
+                .iter()
+                .any(|&field| self.sigs.is_unsized(field) || !self.of(field).exact)
+            {
+                return None;
+            }
+            let layout = self.of(ty);
+            let data = &self.items.structs[adt.strukt];
+            layers.push(VTableLayer {
+                tail_field: u32::try_from(last).ok()?,
+                prefix_size: layout.field_offset(0, last as u32),
+                prefix_align: layout.align,
+                pack: data.repr_pack.map(u64::from),
+            });
+            ty = fields[last];
+        }
+        None
     }
 
     /// The discriminant of `variant` of `strukt`, as bits of its type.

@@ -362,3 +362,88 @@ fn tempfile_default_graph_matches_rustc() {
         include_str!("fixtures/corpus_crates/tempfile.rs.txt"),
     );
 }
+
+#[test]
+fn cargo_metadata_default_graph_matches_rustc() {
+    compare_registry_dependencies(
+        "cargo_metadata",
+        "0.23.1",
+        include_str!("fixtures/corpus_crates/cargo_metadata.rs.txt"),
+        &[("serde_json", "1.0.154")],
+    );
+}
+
+#[test]
+fn hyper_default_graph_matches_rustc() {
+    compare_registry_dependencies(
+        "hyper",
+        "1.12.0",
+        include_str!("fixtures/corpus_crates/hyper.rs.txt"),
+        &[("tokio", "1.54.1")],
+    );
+}
+
+#[test]
+fn env_logger_default_graph_matches_rustc() {
+    compare_registry_dependencies(
+        "env_logger",
+        "0.11.11",
+        include_str!("fixtures/corpus_crates/env_logger.rs.txt"),
+        &[("log", "0.4.35")],
+    );
+}
+
+#[test]
+fn bincode_default_graph_matches_rustc() {
+    compare_registry(
+        "bincode",
+        "1.3.3",
+        include_str!("fixtures/corpus_crates/bincode.rs.txt"),
+    );
+}
+
+#[test]
+fn flume_default_graph_matches_rustc() {
+    compare_registry(
+        "flume",
+        "0.12.0",
+        include_str!("fixtures/corpus_crates/flume.rs.txt"),
+    );
+}
+
+#[test]
+fn nom_default_graph_matches_rustc() {
+    compare_registry(
+        "nom",
+        "8.0.0",
+        include_str!("fixtures/corpus_crates/nom.rs.txt"),
+    );
+}
+
+#[test]
+fn toml_default_graph_matches_rustc() {
+    compare_registry(
+        "toml",
+        "0.8.23",
+        include_str!("fixtures/corpus_crates/toml.rs.txt"),
+    );
+}
+
+#[test]
+fn petgraph_default_graph_matches_rustc() {
+    compare_registry(
+        "petgraph",
+        "0.8.3",
+        include_str!("fixtures/corpus_crates/petgraph.rs.txt"),
+    );
+}
+
+#[test]
+fn tokio_util_default_graph_matches_rustc() {
+    compare_registry_dependencies(
+        "tokio-util",
+        "0.7.20",
+        include_str!("fixtures/corpus_crates/tokio_util.rs.txt"),
+        &[("tokio", "1.54.1")],
+    );
+}

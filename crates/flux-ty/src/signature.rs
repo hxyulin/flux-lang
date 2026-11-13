@@ -480,11 +480,8 @@ pub(super) fn extend_signatures(
                 }
                 if maybe_unsized(items, &sigs, ty, &parameters, &bounds) {
                     let valid_tail = !data.is_enum() && !data.is_union && index + 1 == fields.len();
-                    let tail = sigs.structural_tail(ty);
                     let message = if !valid_tail {
                         Some("only the last field of a struct may be unsized")
-                    } else if matches!(tail.kind(), TyKind::Dynamic(_)) {
-                        Some("trait object tails in structs are not supported yet")
                     } else {
                         None
                     };

@@ -746,15 +746,6 @@ pub(crate) fn check_recursive_layouts(
     let mut exhausted = vec![false; ids.len()];
     for (index, id) in ids.iter().enumerate() {
         let body = &closures[&(*id, ClosureKind::FnOnce)];
-        let awaits: Vec<_> = body
-            .blocks
-            .iter()
-            .filter_map(|(block, data)| {
-                matches!(data.terminator.kind, TerminatorKind::Call { func, .. }
-                if hir.items.functions[func].intrinsic == Some(Intrinsic::CoroutineAwait))
-                .then_some(block)
-            })
-            .collect();
         let mut types = Vec::new();
         // The closure's captured arguments exist even before its first poll.
         if let Some((_, local)) = body.locals.iter().find(|(_, l)| l.kind == LocalKind::Param)
@@ -762,17 +753,11 @@ pub(crate) fn check_recursive_layouts(
         {
             types.extend(ClosureArgs::split(args).upvar_types().iter().copied());
         }
-        if !awaits.is_empty() {
-            let live =
-                crate::borrowck::liveness_where(body, &vec![true; body.locals.len()], true, None);
-            for block in awaits {
-                types.extend(
-                    live[block.index()]
-                        .iter()
-                        .map(|&local| body.locals[Local::from_raw(local)].ty),
-                );
-            }
-        }
+        let Some(storage) = crate::auto_traits::suspension_storage(hir, sigs, body) else {
+            exhausted[index] = true;
+            continue;
+        };
+        types.extend(storage);
         let mut pending: Vec<_> = types.into_iter().map(|ty| (ty, 0)).collect();
         let mut seen = FxHashSet::default();
         while let Some((ty, depth)) = pending.pop() {

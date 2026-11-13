@@ -1,0 +1,23 @@
+fn main() {
+    let input = r#"
+title = "flux"
+ports = [8000, 8001, 8002]
+ratio = 1.25
+[owner]
+name = "Ada"
+active = true
+"#;
+    let value: toml::Value = toml::from_str(input).unwrap();
+    assert_eq!(value["title"].as_str(), Some("flux"));
+    assert_eq!(value["ports"].as_array().unwrap().len(), 3);
+    assert_eq!(value["ports"][1].as_integer(), Some(8001));
+    assert_eq!(value["ratio"].as_float(), Some(1.25));
+    assert_eq!(value["owner"]["name"].as_str(), Some("Ada"));
+    assert_eq!(value["owner"]["active"].as_bool(), Some(true));
+    let compact = toml::to_string(&value).unwrap();
+    let pretty = toml::to_string_pretty(&value).unwrap();
+    assert_eq!(toml::from_str::<toml::Value>(&compact).unwrap(), value);
+    assert_eq!(toml::from_str::<toml::Value>(&pretty).unwrap(), value);
+    assert!(toml::from_str::<toml::Value>("value = [1,").is_err());
+    println!("toml {} {} {}", value["title"].as_str().unwrap(), value["ports"][1].as_integer().unwrap(), value["owner"]["active"].as_bool().unwrap());
+}

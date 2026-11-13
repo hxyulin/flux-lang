@@ -1530,6 +1530,18 @@ pub struct Windows<'a, T> {
     size: usize,
 }
 
+impl<T> Clone for Windows<'_, T> {
+    fn clone(&self) -> Self {
+        Self { v: self.v, size: self.size }
+    }
+}
+
+impl<T: crate::fmt::Debug> crate::fmt::Debug for Windows<'_, T> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("Windows").field("v", &self.v).field("size", &self.size).finish()
+    }
+}
+
 impl<'a, T> Iterator for Windows<'a, T> {
     type Item = &'a [T];
     const __TRUSTED_LEN: bool = true;

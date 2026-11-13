@@ -365,6 +365,7 @@ impl Collector<'_> {
             source.attrs(),
             is_core,
             crate_root,
+            self.db.crate_output_overridden(file),
             &mut self.items.diagnostics,
         );
         let items: Vec<NodeId> = source.items().map(|i| i.syntax().id()).collect();
@@ -1577,7 +1578,13 @@ impl Collector<'_> {
             *macro_use |= crate::cfg::Attrs::new(list.attrs()).iter().any(|attr| {
                 attr_name(attr) == Some("macro_use") && super::attributes::bare_attr(attr)
             });
-            check_inner_attrs(list.attrs(), false, false, &mut self.items.diagnostics);
+            check_inner_attrs(
+                list.attrs(),
+                false,
+                false,
+                false,
+                &mut self.items.diagnostics,
+            );
             let items: Vec<NodeId> = list.items().map(|i| i.syntax().id()).collect();
             self.collect_items(
                 Ctx {
@@ -3114,6 +3121,9 @@ impl Collector<'_> {
                 .and_then(ast::GenericParamList::cast)
             {
                 for param in list.generic_params() {
+                    if !item_enabled(param.syntax(), &mut Vec::new()) {
+                        continue;
+                    }
                     let (name, is_const) = match param {
                         ast::GenericParam::TypeParam(p) => (p.name(), false),
                         ast::GenericParam::ConstParam(p) => (p.name(), true),

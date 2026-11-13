@@ -29,6 +29,20 @@ struct Outer {
     tail: [u64; 2],
 }
 static DROPS: AtomicUsize = AtomicUsize::new(0);
+static ALIGNED_DROPS: AtomicUsize = AtomicUsize::new(0);
+#[repr(align(16))]
+struct Aligned(u64);
+impl Drop for Aligned {
+    fn drop(&mut self) {
+        assert_eq!((self as *mut Self as usize) % align_of::<Self>(), 0);
+        ALIGNED_DROPS.fetch_add(self.0 as usize, Ordering::Relaxed);
+    }
+}
+#[repr(C, packed)]
+struct PackedAligned {
+    tag: u8,
+    payload: Aligned,
+}
 struct Leaf(u64);
 impl Drop for Leaf {
     fn drop(&mut self) {
@@ -172,6 +186,15 @@ fn main() {
         };
     }
     assert_eq!(DROPS.load(Ordering::Relaxed), 20);
+    {
+        let mut packed = PackedAligned { tag: 3, payload: Aligned(11) };
+        assert_eq!(size_of::<PackedAligned>(), 17);
+        assert_eq!(align_of::<PackedAligned>(), 1);
+        assert_eq!({ packed.payload.0 }, 11);
+        packed.payload.0 = 13;
+        assert_eq!(addr_of!(packed.payload) as usize - addr_of!(packed) as usize, 1);
+    }
+    assert_eq!(ALIGNED_DROPS.load(Ordering::Relaxed), 13);
     println!(
         "packed {} {} {}",
         size_of::<Outer>(),

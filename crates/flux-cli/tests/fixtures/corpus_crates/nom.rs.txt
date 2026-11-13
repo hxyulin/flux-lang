@@ -1,0 +1,10 @@
+use nom::{Parser, IResult, character::complete::char, multi::many0};
+fn parse(input: &str) -> IResult<&str, Vec<char>> {
+    many0(char('a')).parse(input)
+}
+fn main() {
+    let (remaining, values) = parse("aaa!").unwrap();
+    assert_eq!(remaining, "!");
+    assert_eq!(values, vec!['a', 'a', 'a']);
+    println!("nom {} {}", values.len(), remaining);
+}

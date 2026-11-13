@@ -26,9 +26,22 @@ pub use closure::{Capture, CaptureMode, CaptureProj, ClosureInfo};
 
 use solve::{CallSite, Obligation};
 
+/// A local Send/Sync requirement whose coroutine storage must be checked by MIR.
+#[derive(Debug, Clone)]
+pub struct DeferredAutoTrait {
+    pub predicate: Predicate,
+    pub root: Predicate,
+    pub range: TextRange,
+    pub caller_bounds: Box<[Predicate]>,
+    pub caller_projections: Box<[crate::Projection]>,
+    pub unsized_params: Box<[bool]>,
+}
+
 /// The types of one body.
 #[derive(Debug, Clone)]
 pub struct InferenceResult {
+    /// Unfulfilled goals prevent native compilation and metadata publication.
+    pub deferred_auto_traits: Vec<DeferredAutoTrait>,
     /// The type of every expression, except the callee of a direct call
     /// (`f` in `f(x)`), which has no value of its own.
     pub expr_types: ArenaMap<Expr, Ty>,
@@ -450,6 +463,8 @@ impl<'a> Ctx<'a> {
             try_conversions: ArenaMap::new(),
             pat_types: ArenaMap::new(),
             let_annotations: ArenaMap::new(),
+            type_modules: ArenaMap::new(),
+            body_aliases: ArenaMap::new(),
             pat_derefs: ArenaMap::new(),
             pat_refs: ArenaMap::new(),
             mode_errors: Vec::new(),
@@ -471,6 +486,7 @@ impl<'a> Ctx<'a> {
             projections: Vec::new(),
             normalizing: Vec::new(),
             obligations: Vec::new(),
+            deferred_auto_traits: Vec::new(),
             auto_trait_paths: Vec::new(),
             reported_unmet: FxHashSet::default(),
             written_wf: FxHashSet::default(),
@@ -659,6 +675,11 @@ struct Ctx<'a> {
     try_conversions: ArenaMap<Expr, (FunctionId, Vec<Ty>)>,
     pat_types: ArenaMap<Pat, Ty>,
     let_annotations: ArenaMap<Pat, (TypeRefId, Ty)>,
+    /// Exact lexical scope for deferred region walks of written types.
+    type_modules: ArenaMap<flux_hir::TypeRef, flux_hir::ModuleId>,
+    /// Qualified type roots before normalization, with their original body
+    /// inference variables. Region replay must not re-create fresh `_` inputs.
+    body_aliases: ArenaMap<flux_hir::TypeRef, crate::AliasTy>,
     pat_derefs: ArenaMap<Pat, u32>,
     pat_refs: ArenaMap<Pat, Mutability>,
     /// Binding modifiers and reference patterns written where a pattern
@@ -703,6 +724,7 @@ struct Ctx<'a> {
     normalizing: Vec<crate::ty::AliasTy>,
     /// Trait obligations not yet met.
     obligations: Vec<Obligation>,
+    deferred_auto_traits: Vec<Obligation>,
     auto_trait_paths: Vec<(Predicate, Option<u32>)>,
     /// Unmet obligations reported, by range and message.
     reported_unmet: FxHashSet<(TextRange, String)>,
@@ -1177,7 +1199,28 @@ impl Ctx<'_> {
                 }
             }
         }
-        // A Box, Arc or Rc, possibly pinned, of an unsized type is wanted: its constructor still
+        // Pin::from has an unknown pointer type before its argument is inferred.
+        // Keep that argument free to select the sized owner before unsizing.
+        if let Some(&expected) = self.expected.get(expr)
+            && let Some(pointee) = flux_solve::pin_pointee(self.items, self.known(expected))
+            && self.sigs.is_unsized(pointee)
+            && let Some(pointer) = flux_solve::pin_pointer(self.items, self.shallow(ty))
+            && matches!(self.shallow(pointer).kind(), TyKind::Infer(_))
+            && matches!(self.body.exprs[expr], Expr::Call { callee, .. }
+            if self.calls.get(callee).is_some_and(|(function, _)| {
+                let data = &self.items.functions[*function];
+                let owner = match data.owner {
+                    Some(flux_hir::Owner::Trait(trait_)) => Some(trait_),
+                    Some(flux_hir::Owner::Impl(imp)) => self.sigs.impl_traits.get(imp).map(|tr| tr.trait_),
+                    None => None,
+                };
+                data.name.as_str() == "from"
+                    && owner.is_some_and(|trait_| self.items.traits[trait_].lang.is_some_and(|lang| lang.as_str() == "From"))
+            }))
+        {
+            return;
+        }
+        // A Box, Arc, Rc or NonNull, possibly pinned, of an unsized type is wanted: its constructor still
         // makes a sized owner, coerced after, as rustc only hints
         // its arguments with what is wanted.
         if let Some(&expected) = self.expected.get(expr)
@@ -1186,6 +1229,10 @@ impl Ctx<'_> {
                     .zip(flux_solve::box_pointee(self.shallow(ty)))
                     .or_else(|| {
                         crate::shared_pointees(self.items, self.shallow(expected), self.shallow(ty))
+                    })
+                    .or_else(|| {
+                        crate::nonnull_pointee(self.items, self.shallow(expected))
+                            .zip(crate::nonnull_pointee(self.items, self.shallow(ty)))
                     })
             })
             && self.sigs.is_unsized(self.shallow(e))
@@ -1413,6 +1460,7 @@ impl Ctx<'_> {
     }
 
     fn resolve_body_type(&mut self, ty_ref: TypeRefId, local: bool, argument: bool) -> Ty {
+        self.type_modules.insert(ty_ref, self.module);
         let range = self
             .source_map
             .types
@@ -1462,6 +1510,12 @@ impl Ctx<'_> {
         );
         self.check_written_lifetimes(ty_ref, ty, local, argument);
         let ty = self.fill_placeholders(ty, range);
+        if ty.has_infer()
+            && matches!(&self.body.types[ty_ref], flux_hir::TypeRef::Path(path) if path.qself.is_some())
+            && let TyKind::Alias(alias) = ty.kind()
+        {
+            self.body_aliases.insert(ty_ref, alias);
+        }
         if ty.has_aliases() {
             let body = self.body;
             self.require_alias_traits(ty, Some(&body.types[ty_ref]), range);
@@ -1741,6 +1795,8 @@ impl Ctx<'_> {
             .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
         let mut walker = crate::regions::Walker::new(self.items, self.module, names);
         walker.body = true;
+        walker.signatures = Some(self.sigs);
+        walker.caller_projections = &self.caller_projections;
         walker.infer_objects = true;
         walker.infer_unknown_owners = true;
         walker.self_regions = self
@@ -1841,6 +1897,18 @@ impl Ctx<'_> {
         found
     }
 
+    fn inferred_body_alias(&mut self, written: TypeRefId) -> Option<crate::AliasTy> {
+        let alias = *self.body_aliases.get(written)?;
+        let known = self.known(Ty::alias(alias));
+        if known.has_infer() {
+            return None;
+        }
+        match known.kind() {
+            TyKind::Alias(alias) => Some(alias),
+            _ => None,
+        }
+    }
+
     /// The slots of `ty`, the body's type `written` resolved.
     fn written_type_regions(
         &mut self,
@@ -1852,7 +1920,14 @@ impl Ctx<'_> {
         if self.unrepresented_lifetimes(&found) {
             return None;
         }
+        let inferred = self.inferred_body_alias(written);
         let mut walker = self.body_walker();
+        walker.inferred_root_alias = inferred;
+        walker.module = self
+            .type_modules
+            .get(written)
+            .copied()
+            .unwrap_or(self.module);
         let regions = walker.regions(&self.body.types[written], ty);
         let errors = walker.errors;
         self.report_walker_errors(errors);
@@ -3875,7 +3950,7 @@ impl Ctx<'_> {
                 // `&x as &dyn Tr`, `p as *const dyn Tr`: an unsizing
                 // coercion.
                 if let TyKind::Ref(_, object) | TyKind::RawPtr(_, object) = to.kind()
-                    && (object.is_dyn()
+                    && (self.sigs.metadata(object) == crate::Metadata::VTable
                         || matches!(to.kind(), TyKind::RawPtr(..))
                             && match self.shallow(from).kind() {
                                 TyKind::Ref(_, source) | TyKind::RawPtr(_, source) => {
@@ -6329,8 +6404,10 @@ impl Ctx<'_> {
             // as it is, the overloaded indexing in it.
             let range = self.range(receiver);
             self.make_derefs_mutable(id, range);
-            let overloaded = self.overloaded_derefs.get(id).map_or(0, |s| s.len() as u32);
-            self.mutable_place_in(receiver, false, range, derefs > overloaded);
+            // Built-in Box dereferences still own the indexed value. Only a
+            // real reference boundary stops conversion to IndexMut.
+            let through_ref = self.derefs_through_ref(id, receiver, derefs);
+            self.mutable_place_in(receiver, false, range, through_ref);
         }
         self.methods.insert(
             id,
@@ -7054,6 +7131,20 @@ impl Ctx<'_> {
         );
     }
 
+    fn resolve_auto_trait_predicate(
+        &mut self,
+        pred: Predicate,
+        reported: &mut FxHashSet<InferVar>,
+    ) -> Predicate {
+        Predicate {
+            self_ty: self.resolve(pred.self_ty, reported),
+            trait_ref: crate::TraitRef {
+                args: crate::ty::map_list(pred.trait_ref.args, |ty| self.resolve(ty, reported)),
+                ..pred.trait_ref
+            },
+        }
+    }
+
     // Finishing.
 
     fn finish(mut self) -> InferenceResult {
@@ -7129,6 +7220,26 @@ impl Ctx<'_> {
                 self.set_var(InferVar(index as u32), VarValue::Known(fallback));
             }
         }
+        // A contextual `as _` can learn its function-pointer target only
+        // after the enclosing iterator or result type has been constrained.
+        // Reify before resolving the item's generic arguments or reporting
+        // ambiguous obligations, using the ordinary ABI and binder checks.
+        self.select_obligations();
+        let deferred = std::mem::take(&mut self.deferred);
+        for check in deferred {
+            if let Deferred::Cast { expr, from, to } = check
+                && matches!(
+                    self.shallow(from).kind(),
+                    TyKind::FnDef(_) | TyKind::FnPtr(_)
+                )
+                && matches!(self.shallow(to).kind(), TyKind::FnPtr(_))
+                && let Expr::Cast { expr: operand, .. } = self.body.exprs[expr]
+            {
+                self.coerce(from, to, operand);
+                continue;
+            }
+            self.deferred.push(check);
+        }
         self.finish_obligations(&mut reported);
         // Expected types and trait selection get first choice of a cast's
         // target. An otherwise unconstrained raw pointee keeps the source
@@ -7188,6 +7299,13 @@ impl Ctx<'_> {
             let function = *function;
             let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
             self.check_sized_args(expr, function, args);
+            if self.items.functions[function].ctor.is_some()
+                && self
+                    .sigs
+                    .is_unsized(self.sigs.fns[function].ret.subst(args))
+            {
+                self.error(self.range(expr), "constructor arguments must be sized");
+            }
             calls.insert(expr, Instance { function, args });
         }
         // Lifetimes are separate from erased `Ty`. Preserve the slots of each
@@ -7419,8 +7537,17 @@ impl Ctx<'_> {
                 .owner_fn
                 .and_then(|f| self.sigs.regions.fns.get(f))
                 .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
-            let mut walker = crate::regions::Walker::new(self.items, self.module, names);
+            let module = self
+                .type_modules
+                .get(written)
+                .copied()
+                .unwrap_or(self.module);
+            let inferred = self.inferred_body_alias(written);
+            let mut walker = crate::regions::Walker::new(self.items, module, names);
+            walker.inferred_root_alias = inferred;
             walker.body = true;
+            walker.signatures = Some(self.sigs);
+            walker.caller_projections = &self.caller_projections;
             walker.infer_objects = true;
             walker.scope = TypeScope {
                 self_ty: self.self_ty,
@@ -7433,11 +7560,8 @@ impl Ctx<'_> {
             };
             let regions = walker.regions(&self.body.types[written], ty);
             for (range, message) in walker.errors {
-                // Resolution already checked written lifetimes. This pass may
-                // additionally find an unmappable projection hidden in an alias.
-                if message != crate::regions::BODY_PROJECTION_LIFETIMES {
-                    continue;
-                }
+                // Normalization may reveal a selected projection only after
+                // inference. Preserve its lifetime and membership errors too.
                 if !self
                     .diagnostics
                     .iter()
@@ -7519,7 +7643,37 @@ impl Ctx<'_> {
         for (expr, &ty) in reifications.iter() {
             reified.insert(expr, self.resolve(ty, &mut reported));
         }
+        let mut deferred_auto_traits = Vec::new();
+        let pending = std::mem::take(&mut self.deferred_auto_traits);
+        if !pending.is_empty() {
+            let caller_bounds: Box<[_]> = self
+                .param_env
+                .clone()
+                .into_iter()
+                .map(|p| self.resolve_auto_trait_predicate(p, &mut reported))
+                .collect();
+            let caller_projections: Box<[_]> = self
+                .caller_projections
+                .clone()
+                .into_iter()
+                .map(|p| crate::Projection {
+                    alias: p.alias.map_args(|ty| self.resolve(ty, &mut reported)),
+                    ty: self.resolve(p.ty, &mut reported),
+                })
+                .collect();
+            for goal in pending {
+                deferred_auto_traits.push(DeferredAutoTrait {
+                    predicate: self.resolve_auto_trait_predicate(goal.pred, &mut reported),
+                    root: self.resolve_auto_trait_predicate(goal.root, &mut reported),
+                    range: goal.range,
+                    caller_bounds: caller_bounds.clone(),
+                    caller_projections: caller_projections.clone(),
+                    unsized_params: self.unsized_params.clone().into_boxed_slice(),
+                });
+            }
+        }
         InferenceResult {
+            deferred_auto_traits,
             never_coercions,
             closures,
             expr_types: self.expr_types,

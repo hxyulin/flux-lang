@@ -758,6 +758,11 @@ impl Signatures {
     /// Writes semantic records owned by the encoder's crate selection.
     /// Lookup indexes and process-local runtime type IDs are rebuilt on load.
     pub fn encode_flib(&self, e: &mut Encoder) -> Result<(), Error> {
+        if self.pending_auto_trait_proofs {
+            return Err(Error::new(
+                "coroutine auto-trait proofs must be checked before export",
+            ));
+        }
         if self.cyclic {
             return Err(Error::new("cyclic signatures cannot be exported"));
         }

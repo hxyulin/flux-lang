@@ -936,10 +936,9 @@ impl str {
     #[deprecated(note = "superseded by `trim_end_matches`")]
     pub fn trim_right_matches<P: Pattern>(&self, pat: P) -> &str { self.trim_end_matches(pat) }
 
-    /// The string's characters, each escaped as `char::escape_debug` would,
-    /// except that only a leading combining character is escaped.
+    /// The string's characters, each escaped as `char::escape_debug` would.
     pub fn escape_debug(&self) -> EscapeDebug<'_> {
-        EscapeDebug { chars: self.chars(), current: None, first: true }
+        EscapeDebug { chars: self.chars(), current: None }
     }
     /// The string's characters, each escaped as `char::escape_default`.
     pub fn escape_default(&self) -> EscapeDefault<'_> {
@@ -989,7 +988,7 @@ impl crate::iter::FusedIterator for SplitAsciiWhitespace<'_> {}
 
 /// What [`str::escape_debug`] gives.
 #[derive(Clone)]
-pub struct EscapeDebug<'a> { chars: Chars<'a>, current: Option<crate::char::EscapeDebug>, first: bool }
+pub struct EscapeDebug<'a> { chars: Chars<'a>, current: Option<crate::char::EscapeDebug> }
 impl<'a> Iterator for EscapeDebug<'a> {
     type Item = char;
     fn next(&mut self) -> Option<char> {
@@ -998,16 +997,7 @@ impl<'a> Iterator for EscapeDebug<'a> {
                 if let Some(c) = current.next() { return Some(c); }
             }
             let c = self.chars.next()?;
-            // Only a leading grapheme extender is escaped, as std does.
-            let literal = match crate::fmt::escape_debug(c, true, true) {
-                None => true,
-                Some(crate::fmt::Escape::Backslash(_)) => false,
-                Some(crate::fmt::Escape::Unicode(_)) => {
-                    !self.first && crate::unicode::is_grapheme_extended(c) && crate::unicode::is_printable(c)
-                }
-            };
-            self.first = false;
-            self.current = Some(if literal { crate::char::EscapeDebug::literal(c) } else { c.escape_debug() });
+            self.current = Some(c.escape_debug());
         }
     }
 }

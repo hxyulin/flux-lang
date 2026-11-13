@@ -593,6 +593,12 @@ impl<'a> RigidSolver<'a> {
             let equalities = self.sigs.impl_projections.get(imp).into_iter().flatten();
             if !equalities.copied().all(|p| {
                 let p = p.subst(&args);
+                // A substituted equality such as B::Item = A::Item is
+                // already proven when A and B are the same iterator. Guarding
+                // its RHS would otherwise hide declaration normalization.
+                if p.is_tautology() {
+                    return true;
+                }
                 let lhs = self.normalize_ty(Ty::alias(p.alias), None);
                 let rhs = self.normalize_rhs(p);
                 !has_error(lhs) && !has_error(rhs) && lhs == rhs
@@ -2265,6 +2271,36 @@ pub fn is_auto_trait(items: &ItemTree, t: TraitId) -> bool {
     })
 }
 
+/// Whether a Send/Sync goal needs a checked coroutine storage witness.
+/// This is a deferral query, never evidence that the goal holds.
+pub fn requires_coroutine_witness(items: &ItemTree, sigs: &Signatures, goal: Predicate) -> bool {
+    let send_sync = items.traits[goal.trait_ref.trait_]
+        .lang
+        .is_some_and(|lang| matches!(lang.as_str(), "send" | "sync"));
+    if !send_sync {
+        return false;
+    }
+    let mut ty = goal.self_ty;
+    for _ in 0..128 {
+        match ty.kind() {
+            TyKind::Adt(adt, args) if crate::is_lang_struct(items, adt.strukt, "coroutine") => {
+                return args.first().is_some_and(|closure| match closure.kind() {
+                    TyKind::Closure(id, _) => !sigs.coroutine_witnesses.contains_key(&id),
+                    _ => false,
+                });
+            }
+            TyKind::Opaque(opaque) if items.functions[opaque.function].is_async => {
+                let Some(hidden) = sigs.hidden.get(&(opaque.function, opaque.index)) else {
+                    return true;
+                };
+                ty = hidden.subst(opaque.args);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// Structural auto-trait obligations. Explicit impls replace structural
 /// propagation for the entire ADT, including instantiations whose impl
 /// bounds fail. Unknown parameters and raw pointers have no candidate.
@@ -2285,6 +2321,9 @@ pub fn auto_trait_requirements(
     let ref_unwind_safe = items.traits[t]
         .lang
         .is_some_and(|l| l.as_str() == "ref_unwind_safe");
+    let send_sync = items.traits[t]
+        .lang
+        .is_some_and(|lang| matches!(lang.as_str(), "send" | "sync"));
     let types = match goal.self_ty.kind() {
         TyKind::Int(_)
         | TyKind::Float(_)
@@ -2303,7 +2342,7 @@ pub fn auto_trait_requirements(
         TyKind::Dynamic(object) if object.auto_traits.iter().any(|bound| bound.trait_ == t) => {
             Vec::new()
         }
-        TyKind::Opaque(opaque) if !items.functions[opaque.function].is_async => {
+        TyKind::Opaque(opaque) if !items.functions[opaque.function].is_async || send_sync => {
             let hidden = sigs
                 .hidden
                 .get(&(opaque.function, opaque.index))?
@@ -2342,6 +2381,19 @@ pub fn auto_trait_requirements(
         // Keep the tuple itself as an obligation: during inference it may
         // still be a variable, and must not look like an empty capture list.
         TyKind::Closure(_, args) => vec![ClosureArgs::split(args).upvars],
+        TyKind::Adt(adt, args)
+            if send_sync && crate::is_lang_struct(items, adt.strukt, "coroutine") =>
+        {
+            let TyKind::Closure(id, closure_args) = args.first()?.kind() else {
+                return None;
+            };
+            let stored = sigs.coroutine_witnesses.get(&id)?;
+            let closure = ClosureArgs::split(closure_args);
+            let mut types: Vec<_> = stored.iter().map(|ty| ty.subst(closure.parent)).collect();
+            // Captures exist before the first poll, even if no await is reached.
+            types.push(closure.upvars);
+            types
+        }
         TyKind::Adt(adt, args) => {
             if items.trait_impls.get(&t).into_iter().flatten().any(|&imp| {
                 matches!(sigs.impls.get(imp).map(|ty| ty.kind()), Some(TyKind::Adt(a, _)) if a.strukt == adt.strukt)

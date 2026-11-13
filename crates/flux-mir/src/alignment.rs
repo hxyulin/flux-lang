@@ -131,47 +131,12 @@ pub(crate) fn check(body: &Body, items: &ItemTree, sigs: &Signatures) -> Vec<Dia
     errors
 }
 
-/// Rust forbids an explicitly aligned type anywhere in a packed by-value field.
+/// Packed unsized tails cannot be moved into aligned storage for destruction.
 pub(crate) fn check_declarations(
     items: &ItemTree,
     sigs: &Signatures,
     first: u32,
 ) -> Vec<Diagnostic> {
-    fn aligned(
-        items: &ItemTree,
-        sigs: &Signatures,
-        ty: Ty,
-        active: &mut Vec<flux_hir::StructId>,
-    ) -> bool {
-        match ty.kind() {
-            TyKind::Array(elem, _) | TyKind::Slice(elem) => aligned(items, sigs, elem, active),
-            TyKind::Tuple(fields) => fields
-                .iter()
-                .any(|&field| aligned(items, sigs, field, active)),
-            TyKind::Adt(adt, _) => {
-                if items.structs[adt.strukt].repr_align > 1 {
-                    return true;
-                }
-                if active.contains(&adt.strukt) {
-                    return false;
-                }
-                active.push(adt.strukt);
-                let found = flux_solve::fields(sigs, ty).is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .any(|&field| aligned(items, sigs, field, active))
-                }) || flux_solve::variants(sigs, ty).is_some_and(|variants| {
-                    variants
-                        .iter()
-                        .flat_map(|fields| fields.iter())
-                        .any(|&field| aligned(items, sigs, field, active))
-                });
-                active.pop();
-                found
-            }
-            _ => false,
-        }
-    }
     fn tail_needs_drop(
         items: &ItemTree,
         sigs: &Signatures,
@@ -216,20 +181,6 @@ pub(crate) fn check_declarations(
                 error.file = data.loc.file;
                 errors.push(error);
             }
-        }
-        if data.repr_pack.is_some()
-            && sigs.structs.get(id).is_some_and(|fields| {
-                fields
-                    .iter()
-                    .any(|&field| aligned(items, sigs, field, &mut vec![id]))
-            })
-        {
-            let mut error = Diagnostic::new(
-                data.def_range,
-                "packed type cannot transitively contain an aligned type",
-            );
-            error.file = data.loc.file;
-            errors.push(error);
         }
     }
     errors

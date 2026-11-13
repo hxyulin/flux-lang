@@ -132,6 +132,23 @@ fn build_file_inner(
             ..FileMir::default()
         };
     }
+    if typed.sigs.pending_auto_trait_proofs
+        || typed
+            .bodies
+            .iter()
+            .map(|(_, result)| result)
+            .chain(typed.consts.iter().map(|(_, result)| result))
+            .any(|result| !result.deferred_auto_traits.is_empty())
+    {
+        return FileMir {
+            panic_strategy: strategy,
+            diagnostics: vec![flux_hir::Diagnostic::new(
+                Default::default(),
+                "coroutine auto-trait proofs must be checked before MIR compilation",
+            )],
+            ..FileMir::default()
+        };
+    }
     // Signatures are final once type checking is done.
     let _queries = flux_solve::remember_solver_queries(&hir.items, &typed.sigs);
     let _fields = flux_solve::remember_field_types(&typed.sigs);
@@ -336,7 +353,12 @@ fn build_file_inner(
                 found.extend(errors);
                 requirements.insert(*c, required);
             }
-            diagnostics.extend(check(body, data.loc.file, data.is_const, &requirements).0);
+            // Interfaces retain even uncallable constructor MIR. TY rejects
+            // taking unsized by-value constructors; their synthetic bodies are
+            // not executable const functions.
+            let executable_const = data.is_const
+                && !(data.ctor.is_some() && typed.sigs.is_unsized(typed.sigs.fns[id].ret));
+            diagnostics.extend(check(body, data.loc.file, executable_const, &requirements).0);
             diagnostics.extend(found);
         }
     }
@@ -3780,6 +3802,18 @@ impl Builder<'_> {
                 let value = self.promotable_in(body, types, *value, active)?;
                 Some(Value::Aggregate(vec![value; count].into()))
             }
+            Expr::Closure {
+                is_async: false, ..
+            } if matches!(ty.kind(), TyKind::Closure(..))
+                && types
+                    .closures
+                    .get(expr)
+                    .is_some_and(|closure| closure.captures.is_empty()) =>
+            {
+                // Construction has no effects or borrowed environment. The
+                // closure body still runs only when the promoted value is called.
+                Some(Value::Aggregate(Default::default()))
+            }
             Expr::Tuple(fields) | Expr::Array(fields) => {
                 let values: Option<Vec<Value>> = body.lists[*fields]
                     .iter()
@@ -4517,7 +4551,12 @@ impl Builder<'_> {
                 if *source == flux_hir::LoopSource::Block {
                     self.lower_into(*loop_body, dest);
                 } else {
-                    self.lower_operand(*loop_body);
+                    // A loop body is a temporary scope for each iteration.
+                    // Pre-2024 tail expressions may outlive the body's block
+                    // locals, but must end before the next iteration begins.
+                    self.scoped(ScopeKind::Temps, range, |b| {
+                        b.lower_operand(*loop_body);
+                    });
                 }
                 self.loops.remove(expr);
                 self.goto(

@@ -37,6 +37,7 @@
 //! not conflict with other uses of what they borrow.
 
 mod alignment;
+mod auto_traits;
 mod bitset;
 pub mod borrowck;
 mod build;

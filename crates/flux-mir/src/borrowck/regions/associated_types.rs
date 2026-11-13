@@ -255,8 +255,43 @@ impl Cx<'_> {
         used: &mut FxHashMap<AliasTy, usize>,
         depth: u32,
     ) -> bool {
+        self.associated_value_selections_with_args(
+            ty,
+            table,
+            selections,
+            lifetimes,
+            &[],
+            &[],
+            env,
+            used,
+            depth,
+        )
+    }
+
+    /// Replay a selected impl's written occurrences with its exact bound
+    /// lifetimes and substituted generic rows. The selection keys stay in
+    /// declaration form so repeated erased-equal occurrences remain distinct.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "selection replay keeps declaration tables and selected occurrence rows separate"
+    )]
+    pub(super) fn associated_value_selections_with_args(
+        &mut self,
+        ty: Ty,
+        table: Option<&[Region]>,
+        selections: &[flux_ty::regions::ProjectionSelection],
+        lifetimes: &[Var],
+        args: &[Ty],
+        arg_vars: &[Vec<Var>],
+        env: &[ImplRegionGoal],
+        used: &mut FxHashMap<AliasTy, usize>,
+        depth: u32,
+    ) -> bool {
         if depth > 32 {
             return false;
+        }
+        if !args.is_empty() && matches!(ty.kind(), TyKind::Param(_)) {
+            return self.instantiated_aliases_proven(ty, args, arg_vars, env, depth + 1);
         }
         if let TyKind::FnPtr(signature) = ty.kind()
             && let Some(recipe) = signature.regions.filter(|r| !r.projections.is_empty())
@@ -269,8 +304,12 @@ impl Cx<'_> {
                 Region::Param(i) => lifetimes.get(i as usize).copied(),
                 _ => None,
             };
-            let Some(own) = self.instantiate_sig(ty, table, &mut map, &[], &[]) else {
+            let Some(own) = self.instantiate_sig(ty, table, &mut map, args, arg_vars) else {
                 return false;
+            };
+            let signature = match (if args.is_empty() { ty } else { ty.subst(args) }).kind() {
+                TyKind::FnPtr(signature) => signature,
+                _ => return false,
             };
             let bound: Vec<_> = (0..recipe.bound)
                 .map(|i| self.new_universal(format!("'pointer{i}")))
@@ -296,11 +335,13 @@ impl Cx<'_> {
         for child in children {
             let end = at + flux_ty::regions::slots(self.items, child);
             let row = table.and_then(|row| row.get(at..end));
-            if !self.associated_value_selections(
+            if !self.associated_value_selections_with_args(
                 child,
                 row,
                 selections,
                 lifetimes,
+                args,
+                arg_vars,
                 env,
                 used,
                 depth + 1,
@@ -326,10 +367,14 @@ impl Cx<'_> {
         };
         for (k, &arg) in alias.args.iter().enumerate() {
             let table = selection.and_then(|s| s.args.get(k)).map_or(&[][..], |t| t);
-            let Some(v) = self.instantiate_sig(arg, table, &mut map, &[], &[]) else {
+            let Some(v) = self.instantiate_sig(arg, table, &mut map, args, arg_vars) else {
                 return false;
             };
-            let instance = self.normalize(arg);
+            let instance = self.normalize(if args.is_empty() {
+                arg
+            } else {
+                arg.subst(args)
+            });
             if v.len() != self.slots(instance) as usize {
                 return false;
             }
@@ -343,18 +388,24 @@ impl Cx<'_> {
         else {
             return false;
         };
-        if !self.impl_prove_super(
+        self.impl_prove_super(
             &ImplRegionGoal {
                 lifetimes: owner_lifetimes,
                 predicate: flux_ty::Predicate {
-                    self_ty: self.normalize(alias.args[0]),
+                    self_ty: self.normalize(if args.is_empty() {
+                        alias.args[0]
+                    } else {
+                        alias.args[0].subst(args)
+                    }),
                     trait_ref: flux_ty::TraitRef {
                         trait_: alias.trait_,
                         name: alias.trait_name,
                         args: Ty::list(
                             &alias.args[1..]
                                 .iter()
-                                .map(|&t| self.normalize(t))
+                                .map(|&t| {
+                                    self.normalize(if args.is_empty() { t } else { t.subst(args) })
+                                })
                                 .collect::<Vec<_>>(),
                         ),
                     },
@@ -364,9 +415,6 @@ impl Cx<'_> {
             },
             env,
             0,
-        ) {
-            return false;
-        }
-        true
+        )
     }
 }

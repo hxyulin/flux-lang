@@ -3,8 +3,7 @@ use super::{
     ArgTys, ConstId, Def, Diagnostic, FloatTy, FnSigTy, FunctionId, Generics, Hir, ImplTarget,
     IntTy, ItemTree, LayeredArenaMap, LenValues, ModuleId, Mutability, Ns, OpaqueTy, Owner, Path,
     Predicate, ResolveError, Resolved, Signatures, Struct, StructId, Symbol, TextRange, TraitRef,
-    Ty, TyKind, TypeRef, fn_regions, kw, metadata, objects, params_of_names, regions, sym, traits,
-    ty,
+    Ty, TyKind, TypeRef, fn_regions, kw, objects, params_of_names, regions, sym, traits, ty,
 };
 
 /// What the names in a type mean besides items: `Self`, if anything,
@@ -1843,21 +1842,7 @@ pub fn struct_type(
         errors.push((at, unsized_error(arg)));
         return Ty::ERROR;
     }
-    let ty = Ty::adt(strukt, def.name, &args);
-    let tail = metadata::tail(scope.struct_fields, ty, |id| items.structs[id].is_enum());
-    if matches!(tail.kind(), TyKind::Dynamic(_))
-        && scope
-            .struct_fields
-            .and_then(|fields| metadata::transparent_object_tail(items, fields, ty))
-            .is_none()
-    {
-        errors.push((
-            at,
-            "trait object tails in structs are not supported yet".into(),
-        ));
-        return Ty::ERROR;
-    }
-    ty
+    Ty::adt(strukt, def.name, &args)
 }
 
 /// A nominal type's implicit Sized arguments still apply through aliases and

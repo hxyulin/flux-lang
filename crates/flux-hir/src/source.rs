@@ -89,6 +89,7 @@ pub struct SourceDb {
     /// The first file at each path: crates can have thousands of files.
     by_path: rustc_hash::FxHashMap<PathBuf, FileId>,
     next_include_offset: u32,
+    crate_output_overrides: rustc_hash::FxHashSet<FileId>,
     compilation_dirs: rustc_hash::FxHashMap<FileId, PathBuf>,
     proc_macros: rustc_hash::FxHashMap<FileId, Vec<crate::ProcMacro>>,
     metadata_proc_macros: bool,
@@ -554,6 +555,7 @@ impl SourceDb {
             files: self.files.clone(),
             by_path: self.by_path.clone(),
             next_include_offset: self.next_include_offset,
+            crate_output_overrides: self.crate_output_overrides.clone(),
             compilation_dirs: self.compilation_dirs.clone(),
             proc_macros: self.proc_macros.clone(),
             metadata_proc_macros: self.metadata_proc_macros,
@@ -584,6 +586,7 @@ impl SourceDb {
             files,
             by_path,
             next_include_offset,
+            crate_output_overrides: Default::default(),
             compilation_dirs: Default::default(),
             proc_macros: Default::default(),
             metadata_proc_macros: false,
@@ -682,6 +685,29 @@ impl SourceDb {
         self.environments.get(&root).cloned()
     }
 
+    /// Records an output kind chosen explicitly by the driver. Valid source
+    /// `crate_type` attributes then do not select additional outputs.
+    pub fn override_crate_output(&mut self, root: FileId) -> Result<(), String> {
+        let source = self
+            .files
+            .get(root.0 as usize)
+            .ok_or_else(|| "unknown crate source".to_owned())?;
+        if source.expansion_of.is_some()
+            || source.path.starts_with(CORE_ROOT)
+            || source.path.starts_with(ALLOC_ROOT)
+            || source.path.starts_with(STD_ROOT)
+            || source.path.starts_with(PROC_MACRO_ROOT)
+        {
+            return Err("expected a physical crate root".into());
+        }
+        self.crate_output_overrides.insert(root);
+        Ok(())
+    }
+
+    pub(crate) fn crate_output_overridden(&self, root: FileId) -> bool {
+        self.crate_output_overrides.contains(&root)
+    }
+
     /// Sets a physical root's compilation inputs before lowering its source
     /// graph. Embedded libraries keep their own configuration and cannot be
     /// changed through a user crate's inputs.
@@ -745,6 +771,9 @@ impl SourceDb {
         let id = FileId(self.files.len() as u32);
         self.files.push(Arc::new(source));
         self.configured.insert((file, cfg), id);
+        if self.crate_output_overridden(file) {
+            self.crate_output_overrides.insert(id);
+        }
         id
     }
 

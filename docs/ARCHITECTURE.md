@@ -619,6 +619,15 @@ expansion's for the items it makes; `Const::anon`), of type
 `min_const_generics` rules (no generic parameters, no generic `Self`)
 are checked as it is collected.
 
+The MIR lens also completes coroutine `Send` and `Sync` proofs. Type inference
+records deferred goals with their original caller bounds and projection
+equalities. The lens lowers the required closure templates and records their
+initialized suspension storage in `Signatures::coroutine_witnesses`. Captures
+exist before the first poll; an await's output does not exist at suspension.
+The solver then proves each deferred goal from the checked storage and captures.
+Missing witnesses leave proofs pending and prevent interface export. Imported
+closure MIR reconstructs these facts without adding metadata records.
+
 Constants in types are types too: a length or const generic argument
 is a `TyKind::Value` (a value and its type), a const parameter is a
 `TyKind::Param` like a type parameter (the item's `generic_consts`
@@ -1110,7 +1119,10 @@ executable. No C compiler or system linker is involved.
   and its supertraits, the type's `impl` block's or the provided one
   (empty for one with `where Self: Sized`). Unsizing to a trait object
   emits the vtable, once per type and object; upcasting loads the
-  supertrait's from the object's. A call of a trait's method whose
+  supertrait's from the object's. Struct tails retain the enclosing allocation's
+  base address and the terminal object's vtable. Dynamic size, alignment and
+  field offsets fold the enclosing prefixes around that terminal layout.
+  A call of a trait's method whose
   `Self` is a trait object is a *virtual call*: it loads the method
   from its slot and calls it through the pointer, passing the receiver
   as the value's address alone, as the method's `&self` takes it.

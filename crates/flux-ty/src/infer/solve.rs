@@ -314,6 +314,7 @@ impl Ctx<'_> {
         let (vars, undo) = (self.vars.len(), self.undo.len());
         let floor = std::mem::replace(&mut self.undo_floor, vars);
         let projections = self.projections.len();
+        let deferred_auto_traits = self.deferred_auto_traits.len();
         let result = f(self);
         for (var, value) in self.undo.drain(undo..).rev() {
             self.vars[var as usize].0 = value;
@@ -321,6 +322,7 @@ impl Ctx<'_> {
         self.vars.truncate(vars);
         self.undo_floor = floor;
         self.projections.truncate(projections);
+        self.deferred_auto_traits.truncate(deferred_auto_traits);
         result
     }
 
@@ -340,8 +342,10 @@ impl Ctx<'_> {
             for ob in pending.drain(..) {
                 // Flags reject nested inference variables without traversing
                 // their potentially shared type DAG to resolve them first.
+                let self_ty =
+                    self.coroutine_auto_trait_type(ob.pred.self_ty, ob.pred.trait_ref.trait_);
                 let pred = Predicate {
-                    self_ty: self.shallow(ob.pred.self_ty),
+                    self_ty,
                     trait_ref: TraitRef {
                         args: crate::ty::map_list(ob.pred.trait_ref.args, |a| self.shallow(a)),
                         ..ob.pred.trait_ref
@@ -384,7 +388,20 @@ impl Ctx<'_> {
                 if stable && expanded.contains(&key) {
                     continue;
                 }
-                match self.select_predicate(ob.pred, ob.const_output) {
+                if flux_solve::traits::requires_coroutine_witness(self.items, self.sigs, pred) {
+                    // This is an actual obligation, not a speculative candidate.
+                    // MIR must publish a witness and prove it before export.
+                    self.deferred_auto_traits.push(Obligation { pred, ..ob });
+                    progress = true;
+                    continue;
+                }
+                match self.select_predicate(
+                    Predicate {
+                        self_ty: pred.self_ty,
+                        ..ob.pred
+                    },
+                    ob.const_output,
+                ) {
                     Selection::Met(nested) => {
                         if stable {
                             expanded.insert(key);
@@ -568,6 +585,20 @@ impl Ctx<'_> {
                     return Ty::ERROR;
                 }
                 if unknown {
+                    // A rigid owner keeps its family projection key during
+                    // inference. Relating M::Output<?T> to M::Output<Vec<U>>
+                    // can then infer T before a closure body needs its type.
+                    // An unknown owner still needs a delayed projection: its
+                    // eventual impl may erase or transform the family input.
+                    if !alias.family_args.is_empty()
+                        && alias.args.iter().all(|&arg| !self.has_unknown(arg))
+                        && matches!(
+                            alias.args[0].kind(),
+                            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
+                        )
+                    {
+                        return Ty::alias(alias);
+                    }
                     let var = self.new_var(false, origin);
                     self.projections.push(PendingProjection {
                         alias,
@@ -1269,6 +1300,31 @@ impl Ctx<'_> {
         true
     }
 
+    // Resolve the closure owner hidden behind the coroutine constructor's C
+    // inference variable. Captures may remain open; no witness is invented.
+    // Other goals keep the existing root-only inference fast path.
+    fn coroutine_auto_trait_type(&mut self, ty: Ty, trait_: TraitId) -> Ty {
+        let ty = self.shallow(ty);
+        if self.items.traits[trait_]
+            .lang
+            .is_some_and(|lang| matches!(lang.as_str(), "send" | "sync"))
+            && matches!(ty.kind(), TyKind::Adt(adt, _) if flux_solve::is_lang_struct(self.items, adt.strukt, "coroutine"))
+        {
+            self.known(ty)
+        } else {
+            ty
+        }
+    }
+
+    fn unresolved_coroutine_capture(&self, ty: Ty, trait_: TraitId) -> bool {
+        self.items.traits[trait_]
+            .lang
+            .is_some_and(|lang| matches!(lang.as_str(), "send" | "sync"))
+            && matches!(ty.kind(), TyKind::Adt(adt, args)
+                if flux_solve::is_lang_struct(self.items, adt.strukt, "coroutine")
+                    && args.first().is_some_and(|capture| matches!(capture.kind(), TyKind::Infer(_))))
+    }
+
     fn select_predicate(&mut self, pred: Predicate, const_output: Option<Ty>) -> Selection {
         #[cfg(test)]
         tests::step();
@@ -1283,6 +1339,9 @@ impl Ctx<'_> {
             return Selection::Ambiguous;
         }
         let t = pred.trait_ref.trait_;
+        if self.unresolved_coroutine_capture(self_ty, t) {
+            return Selection::Ambiguous;
+        }
         if flux_solve::traits::is_auto_trait(self.items, t)
             && matches!(self_ty.kind(), TyKind::Infer(_))
         {
@@ -1689,7 +1748,10 @@ impl Ctx<'_> {
     ) -> bool {
         #[cfg(test)]
         tests::step();
-        let ty = self.shallow(ty);
+        let ty = self.coroutine_auto_trait_type(ty, t);
+        if self.unresolved_coroutine_capture(ty, t) {
+            return true;
+        }
         if ty == Ty::ERROR
             || matches!(ty.kind(), TyKind::Infer(v) if !self.unknown(v).0 && !self.float_var(v))
         {
@@ -1700,6 +1762,21 @@ impl Ctx<'_> {
             return true;
         }
         // Deep enough, or (from `has_impl_header`) bounds aside.
+        if flux_solve::traits::requires_coroutine_witness(
+            self.items,
+            self.sigs,
+            Predicate {
+                self_ty: ty,
+                trait_ref: TraitRef {
+                    trait_: t,
+                    name: self.items.traits[t].name,
+                    args: Ty::list(args.unwrap_or(&[])),
+                },
+            },
+        ) {
+            // A candidate can wait for MIR; committing its bound records a goal.
+            return true;
+        }
         let check_bounds = depth < 64;
         if self.items.traits[t].lang == Some(flux_intern::sym::sized) {
             return !self.is_unsized(ty);

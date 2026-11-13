@@ -230,6 +230,7 @@ fn compile_inner(
                 db.load_with_edition(&source.file, source.edition)?
             };
             db.set_crate_cfg(source_root, source.cfg.clone())?;
+            db.override_crate_output(source_root)?;
             if let Some(directory) = &source.compilation_dir {
                 db.set_crate_directory(source_root, directory.clone())?;
             }

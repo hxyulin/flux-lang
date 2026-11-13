@@ -2097,6 +2097,9 @@ pub(crate) fn cfg_position(p: SyntaxNode<'_>) -> bool {
                 | SyntaxKind::VARIANT
                 | SyntaxKind::PARAM
                 | SyntaxKind::SELF_PARAM
+                | SyntaxKind::TYPE_PARAM
+                | SyntaxKind::CONST_PARAM
+                | SyntaxKind::LIFETIME_PARAM
         )
         || ast::Expr::can_cast(p.kind())
             && p.parent().is_some_and(|parent| {
@@ -3798,6 +3801,9 @@ fn binder_names(
     let list = list?;
     let mut names = Vec::new();
     for param in list.generic_params() {
+        if !item_enabled(param.syntax(), diagnostics) {
+            continue;
+        }
         match param {
             ast::GenericParam::LifetimeParam(l) => {
                 let lifetime = lower_lifetime(l.lifetime()?);
@@ -3840,7 +3846,7 @@ fn binder_names(
                     }
                     let shadows = node.children().filter_map(ast::GenericParamList::cast).any(|g| {
                         g.syntax() != list.syntax() && g.generic_params().any(|p| {
-                            matches!(p, ast::GenericParam::LifetimeParam(p)
+                            item_enabled(p.syntax(), &mut Vec::new()) && matches!(p, ast::GenericParam::LifetimeParam(p)
                                 if p.lifetime().is_some_and(|l| lifetime_name(l.text()) == lifetime.name))
                         })
                     });

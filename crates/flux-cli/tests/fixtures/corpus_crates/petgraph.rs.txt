@@ -1,0 +1,13 @@
+use petgraph::{Graph, dot::Dot, visit::{IntoNeighbors, UndirectedAdaptor}};
+fn main() {
+    let mut graph = Graph::<u8, u8>::new();
+    let a = graph.add_node(3);
+    let b = graph.add_node(7);
+    graph.add_edge(a, b, 11);
+    let neighbors: Vec<_> = UndirectedAdaptor(&graph).neighbors(a).collect();
+    assert_eq!(neighbors, vec![b]);
+    assert_eq!(graph.edge_count(), 1);
+    let dot = format!("{:?}", Dot::new(&graph));
+    assert!(dot.contains("digraph"));
+    println!("petgraph {} {}", graph.node_count(), graph.edge_count());
+}

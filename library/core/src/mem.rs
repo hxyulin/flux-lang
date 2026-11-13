@@ -135,17 +135,9 @@ impl<T: ?Sized> ManuallyDrop<T> {
     }
 }
 
-// rustc's ManuallyDrop holds its value in a MaybeDangling wrapper, which its
-// derived Debug shows.
-struct MaybeDangling<'a, T: ?Sized>(&'a T);
-impl<T: ?Sized + crate::fmt::Debug> crate::fmt::Debug for MaybeDangling<'_, T> {
-    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-        f.debug_tuple("MaybeDangling").field(&self.0).finish()
-    }
-}
 impl<T: ?Sized + crate::fmt::Debug> crate::fmt::Debug for ManuallyDrop<T> {
     fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
-        f.debug_struct("ManuallyDrop").field("value", &MaybeDangling(&self.value)).finish()
+        f.debug_struct("ManuallyDrop").field("value", &&self.value).finish()
     }
 }
 impl<T: crate::default::Default> crate::default::Default for ManuallyDrop<T> {

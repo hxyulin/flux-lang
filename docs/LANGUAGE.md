@@ -768,7 +768,10 @@ into named constant slices. Their original allocation and byte offset are retain
 Raw trait-object constants can hold null or one-past data pointers without reading
 the pointee; references retain alignment, bounds and validity checks. Normal
 `Sync` and constant validity checks still apply. Boxed trait-object constant evaluation remains
-unsupported. Non-callable objects retain lifetime rows inside principal type
+unsupported. Structs may end in a trait object, including nested generic tails.
+Structural unsizing preserves prefix fields through references, raw pointers,
+Box, Arc, Rc, Pin and NonNull. Dynamic layout and destruction include every
+prefix before the terminal object. Non-callable objects retain lifetime rows inside principal type
 arguments and associated equalities, including borrowed iterator items. Those
 arguments are invariant independently of the object lifetime bound. Explicit
 trait lifetime arguments use their occurrence rows. A quantified principal such
@@ -2111,16 +2114,18 @@ Async blocks and async move blocks produce futures with stable heap storage.
 Await accepts Future values, preserves live locals, and resumes at the suspended
 await after Pending. Cancellation follows the saved scope-cleanup path, including
 partially moved values and conditional drop flags. Nested futures and borrowed
-outputs retain their capture and output region constraints. These futures are
-conservatively !Send, !Sync and !Unpin. Async functions, including generic
+outputs retain their capture and output region constraints. Send and Sync are
+proved from captures and initialized state retained across suspension. The
+output type alone does not determine those markers or require the future to
+borrow its output's lifetime. Futures remain !Unpin. Saved-state proofs without
+the required lifetime occurrence rows remain conservative. Async functions, including generic
 functions, inherent methods and trait methods, return an opaque Future whose
 Output is the written return type. Calls move every argument into the future;
 parameter patterns and the body run when it is polled. Unused arguments remain
 owned until completion or cancellation. Input lifetimes are captured in every
 supported edition, including edition 2018. Inline recursive future storage is
 rejected; boxed recursion is supported. Async closures and custom IntoFuture
-conversions remain unsupported. This implementation does not establish
-allocation-free async frames or automatic Send/Sync inference.
+conversions remain unsupported.
 
 AArch64 assembly accepts input-only `in(reg)` and `in(vreg)` operands alongside
 tied `inout` operands. Inputs may be expressions and are evaluated once in source

@@ -943,9 +943,11 @@ impl<'a> Reach<'a> {
                 {
                     let from = body.operand_ty(op, self.sigs);
                     let concrete = super::pointee_of(from)
-                        .or_else(|| flux_ty::shared_pointee(self.items, from));
-                    let object =
-                        super::pointee_of(*to).or_else(|| flux_ty::shared_pointee(self.items, *to));
+                        .or_else(|| flux_ty::shared_pointee(self.items, from))
+                        .or_else(|| flux_ty::nonnull_pointee(self.items, from));
+                    let object = super::pointee_of(*to)
+                        .or_else(|| flux_ty::shared_pointee(self.items, *to))
+                        .or_else(|| flux_ty::nonnull_pointee(self.items, *to));
                     if let (Some(concrete), Some(object)) = (concrete, object) {
                         self.vtable(object, concrete);
                     }
@@ -972,6 +974,8 @@ impl<'a> Reach<'a> {
     }
 
     fn vtable(&mut self, object: Ty, concrete: Ty) {
+        let (concrete, object) =
+            flux_solve::object_unsize(self.sigs, concrete, object).unwrap_or((concrete, object));
         if !object.is_dyn() || concrete.is_dyn() {
             return;
         }

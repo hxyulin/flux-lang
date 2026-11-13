@@ -147,10 +147,11 @@ fn with_remembered<R>(
 /// `args` make them known.
 pub fn field_types(sigs: &Signatures, strukt: StructId, args: &[Ty]) -> &'static [Ty] {
     let fields = sigs.structs[strukt];
-    if args.is_empty() {
-        return fields;
-    }
-    let fields = ty::map_list(fields, |t| t.subst(args));
+    let fields = if args.is_empty() {
+        fields
+    } else {
+        ty::map_list(fields, |t| t.subst(args))
+    };
     if !fields.iter().any(|f| f.has_aliases()) {
         return fields;
     }
@@ -435,6 +436,29 @@ pub fn array_unsize(sigs: &Signatures, from: Ty, to: Ty) -> Option<(Ty, Ty)> {
                     return None;
                 }
                 pair = (from[last], to[last]);
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The concrete and object tails of structural object unsizing. Every prefix
+/// field keeps its type; only the substituted final field may change.
+pub fn object_unsize(sigs: &Signatures, mut from: Ty, mut to: Ty) -> Option<(Ty, Ty)> {
+    for _ in 0..256 {
+        if to.is_dyn() {
+            return Some((from, to));
+        }
+        match (from.kind(), to.kind()) {
+            (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => {
+                let (source, target) = (fields(sigs, from)?, fields(sigs, to)?);
+                let last = source.len().checked_sub(1)?;
+                if source.len() != target.len() || source[..last] != target[..last] {
+                    return None;
+                }
+                from = source[last];
+                to = target[last];
             }
             _ => return None,
         }

@@ -442,6 +442,28 @@ pub(crate) fn held_locals(
     sigs: &Signatures,
     tracked: &[bool],
 ) -> Vec<(BitSet, BitSet)> {
+    held_locals_at(body, sigs, tracked, true)
+}
+
+/// Initialized storage just before each terminator. In particular a suspended
+/// call's output does not exist yet, even if live in its normal successor.
+pub(crate) fn held_before_terminators(
+    body: &Body,
+    sigs: &Signatures,
+    tracked: &[bool],
+) -> Vec<BitSet> {
+    held_locals_at(body, sigs, tracked, false)
+        .into_iter()
+        .map(|(_, held)| held)
+        .collect()
+}
+
+fn held_locals_at(
+    body: &Body,
+    sigs: &Signatures,
+    tracked: &[bool],
+    terminator_effects: bool,
+) -> Vec<(BitSet, BitSet)> {
     use crate::init::{MovePaths, State, analyze, statement_events, terminator_events};
     let paths = MovePaths::new(body, sigs, |local| tracked[local.index()]);
     let entries = analyze(body, &paths, true);
@@ -470,8 +492,10 @@ pub(crate) fn held_locals(
                     paths.apply(&mut state, &event, true);
                 }
             }
-            for event in terminator_events(&data.terminator.kind) {
-                paths.apply(&mut state, &event, true);
+            if terminator_effects {
+                for event in terminator_events(&data.terminator.kind) {
+                    paths.apply(&mut state, &event, true);
+                }
             }
             (before, held(&state))
         })

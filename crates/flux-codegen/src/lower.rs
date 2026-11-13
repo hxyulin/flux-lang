@@ -2187,6 +2187,8 @@ impl Ctx<'_> {
     /// has `ptr::drop_in_place`), its size and alignment, then its
     /// slots.
     fn vtable(&mut self, object: Ty, concrete: Ty) -> String {
+        let (concrete, object) = flux_solve::object_unsize(&self.typed.sigs, concrete, object)
+            .unwrap_or((concrete, object));
         if let Some(name) = self.vtables.get(&(object, concrete)) {
             return name.clone();
         }
@@ -2696,6 +2698,7 @@ impl Lower<'_, '_, '_> {
                 len: self.variable_lists[self.vars[place.local.index()]].len(),
             },
         };
+        let mut metadata = None;
         for (i, &elem) in place.projection.iter().enumerate() {
             let elem_ty = ty.project(elem, sigs);
             location = match (elem, location) {
@@ -2713,6 +2716,8 @@ impl Lower<'_, '_, '_> {
                 }
                 (ProjectionElem::Field(field), Location::Memory(address)) => {
                     let layout = self.ctx.layouts.of(ty.ty);
+                    let dynamic_offset = metadata
+                        .and_then(|metadata| self.vtable_field_offset(ty.ty, field, metadata));
                     let offset = layout.field_offset(ty.variant.unwrap_or(0), field);
                     if matches!(
                         ty.ty.kind(),
@@ -2723,7 +2728,14 @@ impl Lower<'_, '_, '_> {
                             .and_modify(|a| *a = (*a).min(layout.align))
                             .or_insert(layout.align);
                     }
-                    Location::Memory(self.offset(address, offset))
+                    let address = if let Some(offset) = dynamic_offset {
+                        let result = self.b.ins().ptradd(address, offset);
+                        self.address_align.insert(result, 1);
+                        result
+                    } else {
+                        self.offset(address, offset)
+                    };
+                    Location::Memory(address)
                 }
                 (ProjectionElem::Downcast(variant), Location::Vars { local, start, .. }) => {
                     let variants =
@@ -2743,8 +2755,10 @@ impl Lower<'_, '_, '_> {
                     Location::Memory(address)
                 }
                 (ProjectionElem::Deref | ProjectionElem::BoxDeref, location) => {
-                    let pointer = self.load(location, ty.ty)[0];
-                    Location::Memory(pointer)
+                    let values = self.load(location, ty.ty);
+                    metadata = (self.sigs.metadata(elem_ty.ty) == flux_ty::Metadata::VTable)
+                        .then(|| values[1]);
+                    Location::Memory(values[0])
                 }
                 (ProjectionElem::Index(index), Location::Memory(address)) => {
                     let size = self.ctx.layouts.of(elem_ty.ty).size;
@@ -2941,6 +2955,13 @@ impl Lower<'_, '_, '_> {
         let (location, ty) = self.locate(place);
         match location {
             Location::Vars { local, start, len } => {
+                // Every declared leaf must be written; zip must not hide an
+                // unresolved field shape by truncating or leaving stale values.
+                assert_eq!(
+                    values.len(),
+                    len,
+                    "lowered value for {ty} has the wrong leaf count"
+                );
                 for (i, &value) in (start..start + len).zip(values) {
                     let var = self.variable_lists[self.vars[local.index()]][i];
                     self.b.def_var(var, value);
@@ -3907,11 +3928,12 @@ impl Lower<'_, '_, '_> {
                     flux_ty::shared_pointee(&self.ctx.hir.items, *to).expect("Arc or Rc target");
                 // Header and data addresses survive the ownership transfer.
                 let values = self.operand(operand);
-                let metadata = match (source.kind(), target.kind()) {
-                    (TyKind::Array(_, len), TyKind::Slice(_)) => {
+                let object_pair = flux_solve::object_unsize(self.sigs, source, target);
+                let metadata = match (source.kind(), target.kind(), object_pair) {
+                    (TyKind::Array(_, len), TyKind::Slice(_), _) => {
                         self.int_const(u128::from(array_len(len)), IntTy::Usize)
                     }
-                    (_, TyKind::Dynamic(_)) if source.is_dyn() => {
+                    (_, _, Some((source, target))) if source.is_dyn() => {
                         if flux_ty::objects::same_principal(source, target)
                             || flux_ty::objects::is_auto_object(&self.ctx.hir.items, target)
                         {
@@ -3931,7 +3953,7 @@ impl Lower<'_, '_, '_> {
                             address_flags(&self.address_align, address, Type::Ptr),
                         )
                     }
-                    (_, TyKind::Dynamic(_)) => {
+                    (_, _, Some((source, target))) => {
                         let name = self.ctx.vtable(target, source);
                         let data = self.b.import_data(&name);
                         self.b.ins().symbol_addr(keel_ir::Symbol::Data(data))
@@ -3941,19 +3963,21 @@ impl Lower<'_, '_, '_> {
                 smallvec![values[0], values[1], metadata]
             }
             Rvalue::Unsize(operand, to)
-                if is_dyn_ptr(self.sigs, *to) || is_dyn_box(self.sigs, *to) =>
+                if is_dyn_ptr(self.sigs, *to)
+                    || is_dyn_box(self.sigs, *to)
+                    || flux_ty::nonnull_pointee(&self.ctx.hir.items, *to)
+                        .is_some_and(|p| self.sigs.metadata(p) == flux_ty::Metadata::VTable) =>
             {
                 let from = self.body.operand_ty(operand, self.sigs);
-                let (Some(pointee_of), Some(object)) = (pointee_of(from), pointee_of(*to)) else {
+                let source = pointee_of(from)
+                    .or_else(|| flux_ty::nonnull_pointee(&self.ctx.hir.items, from));
+                let target =
+                    pointee_of(*to).or_else(|| flux_ty::nonnull_pointee(&self.ctx.hir.items, *to));
+                let (Some(pointee_of), Some(object)) = (source, target) else {
                     unreachable!("unsizing is of pointers")
                 };
-                let (pointee_of, object) = flux_solve::transparent_object_unsize(
-                    &self.ctx.hir.items,
-                    &self.sigs.structs,
-                    pointee_of,
-                    object,
-                )
-                .expect("validated transparent object unsizing");
+                let (pointee_of, object) = flux_solve::object_unsize(self.sigs, pointee_of, object)
+                    .expect("validated structural object unsizing");
                 let leaves = self.operand(operand);
                 // Weakening a raw pointer's mutability retains the same
                 // object and vtable; it is not a supertrait upcast.
@@ -5987,6 +6011,66 @@ impl Lower<'_, '_, '_> {
         }
     }
 
+    fn align_up_dynamic(&mut self, size: Value, align: Value) -> Value {
+        let one = self.b.ins().iconst(Type::I64, 1);
+        let mask = self.b.ins().isub(align, one);
+        let padded = self.b.ins().iadd(size, mask);
+        let inverse = self.b.ins().bnot(mask);
+        self.b.ins().and(padded, inverse)
+    }
+
+    fn effective_tail_align(&mut self, align: Value, pack: Option<u64>) -> Value {
+        if let Some(pack) = pack {
+            let cap = self.b.ins().iconst(Type::I64, pack as i64);
+            let above = self.b.ins().icmp(IntCC::Ugt, align, cap);
+            self.b.ins().select(above, cap, align)
+        } else {
+            align
+        }
+    }
+
+    /// Vtables describe the terminal concrete type; enclosing DST prefixes
+    /// contribute their own padding and alignment without moving the base.
+    fn vtable_layout_values(
+        &mut self,
+        vtable: Value,
+        layers: &[flux_mir::layout::VTableLayer],
+    ) -> (Value, Value) {
+        let size_at = self.offset(vtable, 8);
+        let mut size = self
+            .b
+            .ins()
+            .load_with_flags(Type::I64, size_at, aligned(Type::I64));
+        let align_at = self.offset(vtable, 16);
+        let mut align = self
+            .b
+            .ins()
+            .load_with_flags(Type::I64, align_at, aligned(Type::I64));
+        for layer in layers.iter().rev() {
+            let tail_align = self.effective_tail_align(align, layer.pack);
+            let prefix = self.b.ins().iconst(Type::I64, layer.prefix_size as i64);
+            let offset = self.align_up_dynamic(prefix, tail_align);
+            let prefix_align = self.b.ins().iconst(Type::I64, layer.prefix_align as i64);
+            let larger = self.b.ins().icmp(IntCC::Ugt, tail_align, prefix_align);
+            align = self.b.ins().select(larger, tail_align, prefix_align);
+            let end = self.b.ins().iadd(offset, size);
+            size = self.align_up_dynamic(end, align);
+        }
+        (size, align)
+    }
+
+    fn vtable_field_offset(&mut self, ty: Ty, field: u32, vtable: Value) -> Option<Value> {
+        let layout = self.ctx.layouts.vtable_layout(ty)?;
+        let layer = layout.layers.first()?;
+        if layer.tail_field != field {
+            return None;
+        }
+        let (_, align) = self.vtable_layout_values(vtable, &layout.layers[1..]);
+        let align = self.effective_tail_align(align, layer.pack);
+        let prefix = self.b.ins().iconst(Type::I64, layer.prefix_size as i64);
+        Some(self.align_up_dynamic(prefix, align))
+    }
+
     /// `size_of_val`, `align_of_val` or `drop_in_place` of a trait
     /// object, which `mono` leaves to code generation: the vtable's
     /// size or alignment word, or a call of its drop function, if it has
@@ -6007,11 +6091,25 @@ impl Lower<'_, '_, '_> {
         };
         match name.as_str() {
             "size_of_val" => {
-                let size = word(self, 1, Type::I64);
+                let pointee = pointee_of(self.body.operand_ty(&args[0], self.sigs))
+                    .expect("size_of_val pointer");
+                let layers = self
+                    .ctx
+                    .layouts
+                    .vtable_layout(pointee)
+                    .expect("validated dynamic layout");
+                let (size, _) = self.vtable_layout_values(vtable, &layers.layers);
                 self.write(dest, &[size]);
             }
             "align_of_val" => {
-                let align = word(self, 2, Type::I64);
+                let pointee = pointee_of(self.body.operand_ty(&args[0], self.sigs))
+                    .expect("align_of_val pointer");
+                let layers = self
+                    .ctx
+                    .layouts
+                    .vtable_layout(pointee)
+                    .expect("validated dynamic layout");
+                let (_, align) = self.vtable_layout_values(vtable, &layers.layers);
                 self.write(dest, &[align]);
             }
             _ => {

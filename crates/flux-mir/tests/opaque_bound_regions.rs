@@ -121,12 +121,12 @@ fn opaque_bound_regions_match_rustc() {
             ),
             (
                 "projected_callback",
-                "trait Stream{type Token;}struct Input;impl Stream for Input{type Token=&'static u32;}fn identity<T>(x:T)->T{x}fn apply<T,F:Fn(T)->T>(f:F,x:T)->T{f(x)}fn f(x:&'static u32)->&'static u32{apply(identity::<<Input as Stream>::Token>,x)}fn main(){}",
+                "trait Stream{type Token;}struct Input;impl Stream for Input{type Token=&'static u32;}fn identity<T>(x:T)->T{x}fn apply<T,F:Fn(T)->T>(f:F,x:T)->T{f(x)}fn f(x:&'static u32)->&'static u32{apply(identity::<<Input as Stream>::Token> as fn(&'static u32)->&'static u32,x)}fn main(){}",
                 true,
             ),
             (
                 "projected_callback_escape",
-                "trait Stream{type Token;}struct Input;impl Stream for Input{type Token=&'static u32;}fn identity<T>(x:T)->T{x}fn apply<T,F:Fn(T)->T>(f:F,x:T)->T{f(x)}fn f<'a>(x:&'a u32)->&'static u32{apply(identity::<<Input as Stream>::Token>,x)}fn main(){}",
+                "trait Stream{type Token;}struct Input;impl Stream for Input{type Token=&'static u32;}fn identity<T>(x:T)->T{x}fn apply<T,F:Fn(T)->T>(f:F,x:T)->T{f(x)}fn f<'a>(x:&'a u32)->&'static u32{apply(identity::<<Input as Stream>::Token> as fn(&'static u32)->&'static u32,x)}fn main(){}",
                 false,
             ),
             (

@@ -2,6 +2,41 @@
 #[path = "../../../tests/support/cases.rs"]
 #[allow(dead_code, reason = "oracle uses case selection only")]
 mod case_filter;
+
+#[test]
+fn empty_trait_selected_owner_keeps_explicit_guard() {
+    let source = "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}trait Host<T:'static>where u32:Mark<<Owner<T>as Family<'static>>::Output>{}fn main(){}";
+    let root = std::env::temp_dir().join(format!("flux-empty-family-owner-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("empty.rs");
+    std::fs::write(&path, source).unwrap();
+    let reference = std::process::Command::new("rustc")
+        .args(["--edition=2024", "--emit=metadata"])
+        .arg(&path)
+        .arg("-o")
+        .arg(root.join("empty.rmeta"))
+        .output()
+        .unwrap();
+    assert!(
+        reference.status.success(),
+        "{}",
+        String::from_utf8_lossy(&reference.stderr)
+    );
+    let (_, _, hir) = flux_hir::lower_text(&path, source);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    // This valid Rust form has no method declaration at which to replay the
+    // selected owner prerequisites. Keep the existing explicit subset error.
+    assert!(
+        typed.diagnostics.iter().any(|error| {
+            error.message == "lifetimes in the generic arguments of bounds are not supported yet"
+        }),
+        "{:?}",
+        typed.diagnostics
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn forwarded_family_outlives_matches_rustc() {
     let root = std::env::temp_dir().join(format!("flux-family-outlives-{}", std::process::id()));
@@ -256,6 +291,11 @@ fn forwarded_family_outlives_matches_rustc() {
             "selected_argument_trait_owner_present",
             "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<'a,T:'static>Family<'a>for Owner<T>{type Output=u32;}trait Mark<R>{}trait Host<T:'static>where u32:Mark<<Owner<T>as Family<'static>>::Output>{fn method();}",
             true,
+        ),
+        (
+            "selected_argument_trait_wrong_owner_lifetime",
+            "struct Owner<T>(T);trait Family<'a>{type Output:'a;}impl<T:'static>Family<'static>for Owner<T>{type Output=u32;}trait Mark<R>{}trait Host<'a,T:'static>where u32:Mark<<Owner<T>as Family<'a>>::Output>{fn method();}",
+            false,
         ),
     ] {
         if !case_filter::selected(name) {

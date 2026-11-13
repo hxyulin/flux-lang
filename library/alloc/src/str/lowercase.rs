@@ -1,5 +1,5 @@
 //! Unicode default lowercase, including the language-independent Final_Sigma rule.
-//! Mapping/property facts derive from Rust's Unicode 17.0.0 tables; the sigma
+//! Mapping/property facts derive from Rust's Unicode 18.0.0 tables; the sigma
 //! context follows Unicode's default casing algorithm, as Rust alloc/str.rs does.
 use crate::string::String;
 

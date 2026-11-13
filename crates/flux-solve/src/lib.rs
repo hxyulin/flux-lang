@@ -20,8 +20,8 @@ pub mod traits;
 pub mod type_identity;
 
 pub use struct_fields::{
-    FieldTypesScope, array_unsize, contents, field_types, fields, remember_field_types,
-    variant_fields, variants,
+    FieldTypesScope, array_unsize, contents, field_types, fields, object_unsize,
+    remember_field_types, variant_fields, variants,
 };
 
 use flux_arena::LayeredArenaMap;

@@ -43,4 +43,7 @@ fn main() {
         println!("{:?}", c);
     }
     println!("{:?}", "a\u{ffff}b\u{301}c\u{200b}d\u{e000}\u{1f600}");
+    for text in ["\u{301}", "a\u{301}", "\u{301}a", "a\u{301}b", "\u{ff9e}", "a\u{ff9e}", "\u{897}", "a\u{897}"] {
+        println!("{:?} {}", text, text.escape_debug());
+    }
 }

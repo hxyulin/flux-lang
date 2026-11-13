@@ -3792,7 +3792,9 @@ impl<'a> Evaluator<'a> {
                         "NonNull unsizing in constants is not supported yet".into(),
                     ));
                 }
-                if flux_solve::box_pointee(to).is_some_and(|ty| ty.is_dyn()) {
+                if flux_solve::box_pointee(to)
+                    .is_some_and(|ty| self.sigs.metadata(ty) == flux_ty::Metadata::VTable)
+                {
                     return Err(error(
                         range,
                         "boxed trait object constant evaluation is not supported yet".into(),
@@ -3801,7 +3803,9 @@ impl<'a> Evaluator<'a> {
                 if let Some(view) = self.frame_slice_view(&value, from, to, range)? {
                     return Ok(view);
                 }
-                if let Some(object) = pointer_pointee(to).filter(|ty| ty.is_dyn()) {
+                if let Some(object) = pointer_pointee(to)
+                    .filter(|&ty| self.sigs.metadata(ty) == flux_ty::Metadata::VTable)
+                {
                     let mutable = match to.kind() {
                         TyKind::Ref(m, _) | TyKind::RawPtr(m, _) => m,
                         _ => unreachable!(),
@@ -3825,7 +3829,9 @@ impl<'a> Evaluator<'a> {
                         | Value::PointerOffset { .. } => {
                             let concrete =
                                 pointer_pointee(from).ok_or_else(|| unsupported_view(range))?;
-                            if concrete.is_dyn() {
+                            if self.sigs.metadata(concrete) == flux_ty::Metadata::VTable
+                                || flux_solve::object_unsize(self.sigs, concrete, object).is_none()
+                            {
                                 return Err(unsupported_view(range));
                             }
                             Ok(Value::DynPointer {
@@ -3838,7 +3844,9 @@ impl<'a> Evaluator<'a> {
                         Value::RawAddr(_) if matches!(to.kind(), TyKind::RawPtr(..)) => {
                             let concrete =
                                 pointer_pointee(from).ok_or_else(|| unsupported_view(range))?;
-                            if concrete.is_dyn() {
+                            if self.sigs.metadata(concrete) == flux_ty::Metadata::VTable
+                                || flux_solve::object_unsize(self.sigs, concrete, object).is_none()
+                            {
                                 return Err(unsupported_view(range));
                             }
                             Ok(Value::DynPointer {

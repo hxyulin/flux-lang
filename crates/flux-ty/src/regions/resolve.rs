@@ -792,7 +792,7 @@ pub(crate) fn resolve_regions(
             &t.generics,
             t.supertraits.iter(),
             items.is_core(t.loc.module),
-            !t.generics.lifetimes.is_empty(),
+            !t.generics.lifetimes.is_empty() || method_checked_projection_arguments(t),
             &mut list,
         );
         for ty in &t.types {
@@ -3414,6 +3414,34 @@ fn bounds_outlives(
         outlives_params(items, sigs, ty, r, out);
     }
     errors.append(&mut walker.errors);
+}
+
+/// Admit only projection arguments checked at the owner's method declarations.
+fn method_checked_projection_arguments(declaration: &flux_hir::Trait) -> bool {
+    // Every method, including unused required methods, has its owner's bound
+    // selections checked by MIR's signature projection declaration pass.
+    // Empty traits have no such proof site and retain the legacy gate.
+    if declaration.functions.is_empty() || !declaration.supertraits.is_empty() {
+        return false;
+    }
+    declaration.generics.predicates.iter().all(|predicate| {
+        predicate.bound.bound_lifetimes.is_empty()
+            && predicate.bound.path.args.iter().flatten().all(|args| {
+                !args.parenthesized
+                    && args.lifetimes.is_empty()
+                    && args.bindings.is_empty()
+                    && args.bounds.is_empty()
+                    && args.types.iter().all(|ty| {
+                        let mut named = Vec::new();
+                        lifetimes_in(ty, &mut named);
+                        named.is_empty()
+                            || (named.iter().all(|name| name.is_static())
+                                && matches!(ty, TypeRef::Path(path)
+                                    if path.qself.as_ref().is_some_and(|owner| owner.trait_.is_some())
+                                        && path.args.iter().all(Option::is_none)))
+                    })
+            })
+    })
 }
 
 /// Preserve existing subset guards for type arguments and Fn bounds.

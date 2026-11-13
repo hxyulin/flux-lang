@@ -269,6 +269,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn original_rustc_schema_descriptor_remains_readable() {
+        let mut e = Encoder::new();
+        MAGIC.to_vec().encode(&mut e).unwrap();
+        std::env::consts::ARCH.encode(&mut e).unwrap();
+        std::env::consts::OS.encode(&mut e).unwrap();
+        1u8.encode(&mut e).unwrap();
+        "58cf8f9c35b355199727627d07ae34a4e2846d67"
+            .encode(&mut e)
+            .unwrap();
+        for name in ["/reviewed/old/server", "/reviewed/old/macro.dylib"] {
+            PathBuf::from(name).encode(&mut e).unwrap();
+            [7u8; 32].as_slice().encode(&mut e).unwrap();
+        }
+        "identity".encode(&mut e).unwrap();
+        let bytes = e.into_bytes();
+        let (identity, name) = HostIdentity::decode(&bytes).unwrap();
+        assert_eq!(name, "identity");
+        assert_eq!(identity.descriptor(&name).unwrap(), bytes);
+    }
+
+    #[test]
     fn host_hash_follows_rewrites_of_the_same_size() {
         let directory = std::env::temp_dir().join(format!("flux-host-hash-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();

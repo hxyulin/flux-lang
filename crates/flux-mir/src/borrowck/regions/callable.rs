@@ -164,12 +164,46 @@ impl Cx<'_> {
             if (0..before).any(|old| below[old as usize] && !allowed(placeholder, old)) {
                 invalid = true;
             }
-            let upper: Vec<_> = implied
+            let mut upper: Vec<_> = implied
                 .iter()
                 .filter_map(|&(a, b)| (a < before && allowed(b, placeholder)).then_some(a))
                 .collect();
+            // Static is a redundant upper whenever input well-formedness
+            // already bounds this placeholder by a nonstatic caller region.
+            // Another quantified placeholder is not a fixed caller upper.
+            // Keep all admitted input edges; do not strengthen that bounded
+            // domain into a requirement to outlive static as well.
+            if upper
+                .iter()
+                .any(|&region| region != STATIC && !bound.contains(&region))
+            {
+                upper.retain(|&region| region != STATIC);
+            }
+            // Covering any admitted fixed upper is sufficient: the input
+            // placeholder is below all of them. Follow only older nodes and
+            // never use a current quantified placeholder to establish coverage.
+            let mut covered = vec![false; before as usize];
+            let mut pending: Vec<_> = upper
+                .iter()
+                .copied()
+                .filter(|region| !bound.contains(region))
+                .collect();
+            while let Some(region) = pending.pop() {
+                if region >= before
+                    || bound.contains(&region)
+                    || std::mem::replace(&mut covered[region as usize], true)
+                {
+                    continue;
+                }
+                pending.extend(
+                    reverse[region as usize]
+                        .iter()
+                        .copied()
+                        .filter(|parent| *parent < before && !bound.contains(parent)),
+                );
+            }
             for old in 1..before {
-                if above[old as usize] && !allowed(old, placeholder) {
+                if above[old as usize] && !allowed(old, placeholder) && !covered[old as usize] {
                     if upper.is_empty() {
                         promote.push((old, STATIC));
                     } else {

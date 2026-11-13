@@ -166,6 +166,11 @@ pub(crate) struct Walker<'a> {
     pub scope: TypeScope<'a>,
     /// Completed impl signatures for concrete qualified projection occurrences.
     pub signatures: Option<&'a Signatures>,
+    /// Original caller equalities, before concrete impl selection.
+    pub caller_projections: &'a [crate::Projection],
+    /// A qualified body root retains the original inference variables until
+    /// they are solved. Consume it before walking nested projection inputs.
+    pub inferred_root_alias: Option<crate::AliasTy>,
     /// Selection inputs stay invariant even when normalization erases them.
     pub selected_inputs: Vec<(crate::AliasTy, Box<[Region]>)>,
     /// Local annotations cannot yet map associated projections' written lifetimes.
@@ -216,6 +221,8 @@ impl<'a> Walker<'a> {
             inherited_self_types: &[],
             scope: TypeScope::default(),
             signatures: None,
+            caller_projections: &[],
+            inferred_root_alias: None,
             selected_inputs: Vec::new(),
             body: false,
             infer_objects: false,
@@ -574,22 +581,94 @@ impl<'a> Walker<'a> {
         if path.qself.is_some()
             && let Some(sigs) = self.signatures
         {
-            let raw = crate::resolve_type(
-                self.items,
-                self.module,
-                &TypeRef::Path(path.clone()),
-                self.scope,
-                path.range(0, TextRange::default()),
-                &mut Vec::new(),
-            );
+            let raw = self
+                .inferred_root_alias
+                .take()
+                .map(Ty::alias)
+                .unwrap_or_else(|| {
+                    crate::resolve_type(
+                        self.items,
+                        self.module,
+                        &TypeRef::Path(path.clone()),
+                        self.scope,
+                        path.range(0, TextRange::default()),
+                        &mut Vec::new(),
+                    )
+                });
+            if self.body
+                && let TyKind::Alias(alias) = raw.kind()
+                && raw != ty
+                && selected::closed_type_projection(self.items, sigs, alias, ty)
+            {
+                let mut inputs = Vec::new();
+                self.projection_inputs(path, alias, &mut inputs);
+                if inputs.len() == alias.family_lifetimes as usize {
+                    return;
+                }
+            }
+            if self.body
+                && let TyKind::Alias(alias) = raw.kind()
+                && raw != ty
+                && selected::generic_zero_row_projection(
+                    self.items,
+                    sigs,
+                    alias,
+                    ty,
+                    self.scope,
+                    self.caller_projections,
+                )
+            {
+                let mut inputs = Vec::new();
+                self.projection_inputs(path, alias, &mut inputs);
+                if inputs.is_empty() {
+                    return;
+                }
+            }
             if let TyKind::Alias(alias) = raw.kind()
+                && raw != ty
                 && !has_declared_projection_inputs(alias)
+                && alias.args.iter().all(|&input| {
+                    slots(self.items, input) == 0 && !input.has_aliases() && !input.has_opaques()
+                })
+                && slots(self.items, ty) == 0
+                && !ty.has_aliases()
+                && !ty.has_opaques()
+                && self
+                    .caller_projections
+                    .iter()
+                    .any(|p| p.alias == alias && p.ty == ty)
+                && self.scope.bounds.contains(&crate::Predicate {
+                    self_ty: alias.args[0],
+                    trait_ref: crate::TraitRef {
+                        trait_: alias.trait_,
+                        name: alias.trait_name,
+                        args: &alias.args[1..],
+                    },
+                })
+            {
+                // This exact caller equality supplies the abstract output type;
+                // no impl or output lifetime is inferred from empty input rows.
+                // A type parameter remains a parameter after this substitution.
+                let mut inputs = Vec::new();
+                self.projection_inputs(path, alias, &mut inputs);
+                if inputs.is_empty() {
+                    return;
+                }
+            }
+            if let TyKind::Alias(alias) = raw.kind()
+                && (!has_declared_projection_inputs(alias)
+                    || (self.body && is_closed_region_free(self.items, ty)))
                 && flux_solve::traits::normalize(self.items, sigs, &[], raw) == ty
                 && raw != ty
             {
                 let mut inputs = Vec::new();
                 self.projection_inputs(path, alias, &mut inputs);
-                if let Some(row) = selected::projection(self.items, sigs, alias, &inputs) {
+                let row = if self.body && is_closed_region_free(self.items, ty) {
+                    selected::closed_projection(self.items, sigs, alias, &inputs)
+                } else {
+                    selected::projection(self.items, sigs, alias, &inputs)
+                };
+                if let Some(row) = row {
                     self.selected_inputs.push((alias, inputs.into()));
                     out.extend(row);
                 } else {
@@ -867,6 +946,7 @@ impl<'a> Walker<'a> {
                     == Some(alias.trait_)
             })
             .cloned();
+        let explicit_owner = owner_path.is_some();
         let candidates: Vec<_> = self
             .projection_owners
             .iter()
@@ -880,13 +960,31 @@ impl<'a> Walker<'a> {
                 None
             }
         });
-        let inherited = if owner_path.is_none() {
+        let written_self = match &path.qself {
+            Some(q) => matches!(&q.ty, TypeRef::Path(p) if p.as_name() == Some(kw::SelfUpper)),
+            None => path.segments.first() == Some(&kw::SelfUpper),
+        };
+        let reuse_self_owner = !explicit_owner
+            && written_self
+            && self.scope.self_ty == Some(alias.args[0])
+            && self
+                .self_projection_owner
+                .as_ref()
+                .is_some_and(|(trait_, lifetimes)| {
+                    *trait_ == alias.trait_ && lifetimes.len() == alias.owner_lifetimes as usize
+                });
+        let inherited = if owner_path.is_none() && !reuse_self_owner {
             self.inherited_projection_inputs(alias)
         } else {
             None
         };
         if alias.owner_lifetimes != 0 {
-            if let Some((lifetimes, _)) = &inherited {
+            if reuse_self_owner && let Some((_, lifetimes)) = &self.self_projection_owner {
+                // An implicit Self owner reuses the resolved impl header.
+                // In particular, its anonymous lifetime is not elided again
+                // under an associated output or method return's elision scope.
+                out.extend(lifetimes.iter().copied());
+            } else if let Some((lifetimes, _)) = &inherited {
                 out.extend(lifetimes.iter().copied());
             } else if let Some(owner) = &owner_path {
                 self.trait_lifetimes(owner, alias.trait_, false, out);
@@ -1461,6 +1559,9 @@ pub(crate) fn lifetimes_in(ty: &TypeRef, out: &mut Vec<LifetimeRef>) {
             }
             if let Some(qself) = &path.qself {
                 lifetimes_in(&qself.ty, out);
+                if let Some(owner) = &qself.trait_ {
+                    lifetimes_in(&TypeRef::Path(owner.clone()), out);
+                }
             }
         }
         TypeRef::Tuple(list) => list.iter().for_each(|t| lifetimes_in(t, out)),
@@ -2137,6 +2238,40 @@ pub fn outlives_type_components(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
             ),
             // A const array length is a generic argument, not borrowed data.
             TyKind::Array(elem, _) => visit(items, sigs, projected, elem, active, expanded, out),
+            TyKind::Adt(adt, args)
+                if flux_solve::is_lang_struct(items, adt.strukt, "coroutine")
+                    && let Some(&closure_ty) = args.first()
+                    && let TyKind::Closure(id, closure_args) = closure_ty.kind()
+                    && let Some(stored) = sigs.coroutine_witnesses.get(&id)
+                    && stored.iter().all(|ty| {
+                        slots(items, ty.subst(ClosureArgs::split(closure_args).parent)) == 0
+                    }) =>
+            {
+                // Output R is only a facade marker, never stored future data.
+                // Captures and checked suspension storage determine whether
+                // the future's owned types outlive a requested object bound.
+                let closure = ClosureArgs::split(closure_args);
+                visit(
+                    items,
+                    sigs,
+                    projected,
+                    closure.upvars,
+                    active,
+                    expanded,
+                    out,
+                );
+                for &ty in *stored {
+                    visit(
+                        items,
+                        sigs,
+                        projected,
+                        ty.subst(closure.parent),
+                        active,
+                        expanded,
+                        out,
+                    );
+                }
+            }
             TyKind::Adt(adt, args) => {
                 // A symbolic const argument is represented by Param too, but
                 // it stores no borrowed value.

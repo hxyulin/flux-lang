@@ -14,8 +14,8 @@ fn nightly_syntax_matches_rustc_parse_only() {
             "impl<T> Trait for T { default unsafe extern \"C\" fn f() {} }",
         ),
         (
-            "box_patterns",
-            "fn f(box x: Box<u8>) { match x { box (a | b) => {} } }",
+            "deref_patterns",
+            "fn f(deref!(x): Box<u8>) { match x { deref!(a | b) => {} } }",
         ),
         (
             "identifiers",

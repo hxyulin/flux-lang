@@ -1,0 +1,18 @@
+use std::collections::BTreeMap;
+fn main() {
+    let value = (7u32, vec![11u16, 29], String::from("roundtrip"));
+    let bytes = bincode::serialize(&value).unwrap();
+    let decoded: (u32, Vec<u16>, String) = bincode::deserialize(&bytes).unwrap();
+    assert_eq!(decoded, value);
+    let text = bincode::serialize("borrowed").unwrap();
+    let borrowed: &str = bincode::deserialize(&text).unwrap();
+    assert_eq!(borrowed, "borrowed");
+    let mut map = BTreeMap::new();
+    map.insert(String::from("a"), 13u32);
+    map.insert(String::from("b"), 27);
+    let encoded = bincode::serialize(&map).unwrap();
+    let restored: BTreeMap<String, u32> = bincode::deserialize(&encoded).unwrap();
+    assert_eq!(restored, map);
+    println!("{:?}", bytes);
+    println!("{} {}", borrowed, restored.len());
+}

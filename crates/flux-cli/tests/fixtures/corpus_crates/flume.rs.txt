@@ -1,0 +1,16 @@
+fn main() {
+    let (sender, receiver) = flume::bounded(2);
+    sender.send(11u32).unwrap();
+    sender.send(29).unwrap();
+    assert!(sender.try_send(31).is_err());
+    let selected = flume::Selector::new().recv(&receiver, |value| value.unwrap()).wait();
+    assert_eq!(selected, 11);
+    assert_eq!(receiver.recv().unwrap(), 29);
+    let second = sender.clone();
+    let thread = std::thread::spawn(move || { second.send(37).unwrap(); });
+    assert_eq!(receiver.recv().unwrap(), 37);
+    thread.join().unwrap();
+    drop(sender);
+    assert!(receiver.recv().is_err());
+    println!("{} {}", selected, receiver.len());
+}

@@ -3,9 +3,9 @@ use super::{
     AstChildren, AstNode, Defaults, Diagnostic, GenericParam, Generics, IN_BOUNDS, ImplTraitSite,
     LifetimeParam, OutlivesPredicate, ParamKind, Path, Relaxed, Symbol, TextRange, TypeOutlives,
     TypeRef, WherePredicate, apply_bound_binder, ast, attr_name, binder_names, check_attr,
-    check_attrs, expanded_type, lower_array_len, lower_bounds, lower_const_arg, lower_dyn,
-    lower_fn_ptr, lower_generic_path, lower_impl_trait, lower_lifetime, reject_impl_trait,
-    reject_impl_trait_in_path, unsupported,
+    check_attrs, expanded_type, item_enabled, lower_array_len, lower_bounds, lower_const_arg,
+    lower_dyn, lower_fn_ptr, lower_generic_path, lower_impl_trait, lower_lifetime,
+    reject_impl_trait, reject_impl_trait_in_path, unsupported,
 };
 
 /// An item's generic parameter list and `where` clause: lifetime and
@@ -211,6 +211,9 @@ fn collect_generics_as_written(
         )
     };
     for param in list.generic_params() {
+        if !item_enabled(param.syntax(), diagnostics) {
+            continue;
+        }
         let range = param.syntax().text_range();
         match param {
             ast::GenericParam::TypeParam(param) => {

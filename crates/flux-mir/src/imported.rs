@@ -218,6 +218,33 @@ impl ImportedMir {
             .map(|(&key, body)| (key, body))
     }
 
+    /// Owners whose checked templates construct a private source coroutine.
+    /// This scans borrowed records once; unrelated bodies are never cloned.
+    pub(crate) fn coroutine_owners(
+        &self,
+        items: &flux_hir::ItemTree,
+    ) -> rustc_hash::FxHashSet<ClosureOwner> {
+        let mut owners = rustc_hash::FxHashSet::default();
+        for mir in std::iter::once(&self.mir).chain(self.builtins.iter().map(|mir| mir.as_ref())) {
+            for (id, body) in mir.bodies.iter() {
+                if crate::auto_traits::constructs_coroutine(items, body) {
+                    owners.insert(ClosureOwner::Function(id));
+                }
+            }
+            for (id, body) in mir.consts.iter() {
+                if crate::auto_traits::constructs_coroutine(items, body) {
+                    owners.insert(ClosureOwner::Const(id));
+                }
+            }
+            for ((id, _), body) in &mir.closures {
+                if crate::auto_traits::constructs_coroutine(items, body) {
+                    owners.insert(id.owner);
+                }
+            }
+        }
+        owners
+    }
+
     /// Values and bodies needed by constant evaluation and instance collection.
     pub fn mir(&self) -> &FileMir {
         &self.mir

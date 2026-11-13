@@ -1,5 +1,5 @@
 //! Drop glue with normal and exceptional continuations.
-use super::{Glue, GlueLen, drop_fn, drop_glue_inner};
+use super::{Glue, GlueLen, drop_fn, drop_glue_inner, dynamic_drop_fn};
 use crate::{
     BasicBlock, BasicBlockData, BinOp, Body, Constant, Local, LocalDecl, LocalKind, Operand,
     Rvalue, Statement, StatementKind, Terminator, TerminatorKind, UnwindAction,
@@ -210,12 +210,17 @@ impl Expand<'_> {
     fn part(&mut self, part: &Glue, target: BasicBlock, unwind: UnwindAction) -> BasicBlock {
         match part {
             Glue::Value(glue) => self.value(glue, target, unwind),
-            Glue::Drop(place, ty) => {
-                let pointer = self.local(Ty::new(TyKind::Ref(Mutability::Mut, *ty)));
+            Glue::Drop(place, ty) | Glue::Dynamic(place, ty) => {
+                let dynamic = matches!(part, Glue::Dynamic(..));
+                let pointer = self.local(Ty::new(if dynamic {
+                    TyKind::RawPtr(Mutability::Mut, *ty)
+                } else {
+                    TyKind::Ref(Mutability::Mut, *ty)
+                }));
                 let borrow = self.assign(
                     pointer,
                     Rvalue::Ref {
-                        raw: false,
+                        raw: dynamic,
                         mutability: Mutability::Mut,
                         place: place.clone(),
                         two_phase: false,
@@ -224,7 +229,11 @@ impl Expand<'_> {
                 self.push(
                     vec![borrow],
                     TerminatorKind::Call {
-                        func: self.drop,
+                        func: if dynamic {
+                            dynamic_drop_fn(self.items)
+                        } else {
+                            self.drop
+                        },
                         generic_args: Ty::list(&[*ty]),
                         args: vec![Operand::Move(pointer.into())],
                         dest: self.unit.into(),

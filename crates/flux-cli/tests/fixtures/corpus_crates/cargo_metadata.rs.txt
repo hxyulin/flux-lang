@@ -1,0 +1,9 @@
+fn main() {
+    let normal: cargo_metadata::DepKindInfo = serde_json::from_str(r#"{"kind":null,"target":null}"#).unwrap();
+    assert_eq!(normal.kind, cargo_metadata::DependencyKind::Normal);
+    assert!(normal.target.is_none());
+    let build: cargo_metadata::DepKindInfo = serde_json::from_str(r#"{"kind":"build","target":"cfg(unix)"}"#).unwrap();
+    assert_eq!(build.kind, cargo_metadata::DependencyKind::Build);
+    assert_eq!(build.target.unwrap().to_string(), "cfg(unix)");
+    println!("{:?} {:?}", normal.kind, build.kind);
+}

@@ -1,0 +1,114 @@
+use std::future::{Future, ready};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::task::{Context, Poll, Waker};
+use tokio::sync::mpsc;
+use tokio_util::sync::{PollSender, ReusableBoxFuture};
+
+fn reserve(sender: &mut PollSender<u32>, context: &mut Context<'_>) {
+    match sender.poll_reserve(context) {
+        Poll::Ready(Ok(())) => {}
+        _ => panic!("expected capacity"),
+    }
+}
+fn closed(sender: &mut PollSender<u32>, context: &mut Context<'_>) {
+    match sender.poll_reserve(context) {
+        Poll::Ready(Err(error)) => assert_eq!(error.into_inner(), None),
+        _ => panic!("expected closed channel"),
+    }
+}
+struct Step {
+    value: u32,
+    pending: bool,
+    drops: Arc<AtomicUsize>,
+}
+impl Future for Step {
+    type Output = u32;
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<u32> {
+        let this = self.get_mut();
+        if this.pending {
+            this.pending = false;
+            context.waker().wake_by_ref();
+            Poll::Pending
+        } else { Poll::Ready(this.value) }
+    }
+}
+impl Drop for Step {
+    fn drop(&mut self) { self.drops.fetch_add(1, Ordering::SeqCst); }
+}
+struct Large { words: [u64; 32] }
+impl Future for Large {
+    type Output = u32;
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<u32> {
+        Poll::Ready(self.words[0] as u32)
+    }
+}
+fn main() {
+    let mut context = Context::from_waker(Waker::noop());
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut sender = PollSender::new(tx);
+    assert!(sender.get_ref().is_some());
+    reserve(&mut sender, &mut context);
+    sender.send_item(11).unwrap();
+    assert!(sender.poll_reserve(&mut context).is_pending());
+    assert!(sender.abort_send());
+    assert!(sender.poll_reserve(&mut context).is_pending());
+    assert_eq!(rx.try_recv().unwrap(), 11);
+    reserve(&mut sender, &mut context);
+    sender.send_item(22).unwrap();
+    assert_eq!(rx.try_recv().unwrap(), 22);
+    reserve(&mut sender, &mut context);
+    assert!(sender.abort_send());
+    reserve(&mut sender, &mut context);
+    sender.close();
+    assert!(sender.is_closed());
+    assert!(sender.get_ref().is_none());
+    sender.send_item(33).unwrap();
+    closed(&mut sender, &mut context);
+    assert_eq!(sender.send_item(44).unwrap_err().into_inner(), Some(44));
+    assert_eq!(rx.try_recv().unwrap(), 33);
+    drop(sender);
+    assert_eq!(rx.try_recv().unwrap_err(), mpsc::error::TryRecvError::Disconnected);
+
+    let (tx, rx) = mpsc::channel(1);
+    let mut sender = PollSender::new(tx);
+    drop(rx);
+    closed(&mut sender, &mut context);
+    assert!(sender.is_closed());
+    assert_eq!(sender.send_item(55).unwrap_err().into_inner(), Some(55));
+
+    let (tx, mut rx) = mpsc::channel(1);
+    let mut sender = PollSender::new(tx);
+    reserve(&mut sender, &mut context);
+    sender.send_item(7).unwrap();
+    assert!(sender.poll_reserve(&mut context).is_pending());
+    sender.close();
+    closed(&mut sender, &mut context);
+    assert_eq!(rx.try_recv().unwrap(), 7);
+    assert_eq!(rx.try_recv().unwrap_err(), mpsc::error::TryRecvError::Disconnected);
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let mut future = ReusableBoxFuture::new(Step { value: 7, pending: true, drops: drops.clone() });
+    assert!(future.poll(&mut context).is_pending());
+    assert!(future.try_set(Step { value: 9, pending: true, drops: drops.clone() }).is_ok());
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert!(future.poll(&mut context).is_pending());
+    assert_eq!(future.poll(&mut context), Poll::Ready(9));
+    future.set(ready(13));
+    assert_eq!(drops.load(Ordering::SeqCst), 2);
+    assert_eq!(future.poll(&mut context), Poll::Ready(13));
+    assert!(future.try_set(ready(17)).is_ok());
+    assert_eq!(future.get_pin().poll(&mut context), Poll::Ready(17));
+    let mut large = match future.try_set(Large { words: [99; 32] }) {
+        Err(future) => future,
+        Ok(()) => panic!("different layouts must not reuse"),
+    };
+    assert_eq!(Pin::new(&mut large).poll(&mut context), Poll::Ready(99));
+    future.set(Step { value: 23, pending: true, drops: drops.clone() });
+    assert!(future.poll(&mut context).is_pending());
+    assert_eq!(future.poll(&mut context), Poll::Ready(23));
+    drop(future);
+    assert_eq!(drops.load(Ordering::SeqCst), 3);
+    println!("tokio-util default: sender 11 22 33 closed; reusable 9 13 17 23 drops 3");
+}

@@ -145,6 +145,12 @@ pub struct Signatures {
     /// generic parameters, once the function's body is inferred: what
     /// code generation sees (`flux_solve::traits::reveal`).
     pub hidden: rustc_hash::FxHashMap<(FunctionId, u32), Ty>,
+    /// Checked suspension-live storage templates, indexed by closure owner.
+    /// Missing differs from a checked future with no saved locals.
+    pub coroutine_witnesses: rustc_hash::FxHashMap<ty::ClosureId, ty::GenericArgs>,
+    /// Local inference still requires MIR-backed Send/Sync proofs. This state
+    /// must be cleared by proof fulfillment before exporting an interface.
+    pub pending_auto_trait_proofs: bool,
     /// The defaults of each trait's parameters.
     pub trait_defaults: traits::TraitDefaults,
     /// The `impl` blocks of each trait by the constructor of their type.
@@ -233,6 +239,8 @@ impl Signatures {
             impl_families: self.impl_families.clone(),
             opaques: self.opaques.clone(),
             hidden: self.hidden.clone(),
+            coroutine_witnesses: self.coroutine_witnesses.clone(),
+            pending_auto_trait_proofs: self.pending_auto_trait_proofs,
             trait_defaults: self.trait_defaults.clone(),
             impl_index: Default::default(),
             traits_in_scope: Default::default(),

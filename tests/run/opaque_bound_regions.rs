@@ -102,7 +102,7 @@ fn projected_parser_cases() {
     let borrowed_function = identity::<<Input<'_> as Stream>::Token>;
     let borrowed_callback = apply(borrowed_function, &left);
     assert_eq!(borrowed_callback as *const u32, &left as *const u32);
-    let function = identity::<<StaticInput as Stream>::Token>;
+    let function: fn(&'static u32) -> &'static u32 = identity::<<StaticInput as Stream>::Token>;
     let callback = apply(function, &STATIC_COUNT);
     assert_eq!(callback as *const u32, &STATIC_COUNT as *const u32);
     println!("projected opaque {} {} {}", a, b, callback);

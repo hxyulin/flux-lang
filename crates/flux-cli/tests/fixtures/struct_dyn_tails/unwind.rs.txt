@@ -1,0 +1,29 @@
+use std::sync::{Arc, Mutex};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+trait Value { fn value(&self) -> u32; }
+struct Probe(u8, Arc<Mutex<Vec<u8>>>);
+impl Drop for Probe { fn drop(&mut self) { self.1.lock().unwrap().push(self.0); } }
+#[repr(align(64))]
+struct Tail(Probe);
+impl Value for Tail { fn value(&self) -> u32 { 7 } }
+struct Header<T: ?Sized> { panic: bool, prefix: Probe, tail: T }
+impl<T: ?Sized> Drop for Header<T> {
+    fn drop(&mut self) {
+        self.prefix.1.lock().unwrap().push(0);
+        if self.panic { panic!("header drop"); }
+    }
+}
+fn main() {
+    std::panic::set_hook(Box::new(|_| {}));
+    for destructor_panics in [false, true] {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let value: Box<Header<dyn Value>> = Box::new(Header { panic: destructor_panics, prefix: Probe(1, log.clone()), tail: Tail(Probe(2, log.clone())) });
+            assert_eq!(value.tail.value(), 7);
+            if destructor_panics { drop(value); } else { panic!("outer unwind"); }
+        }));
+        assert!(result.is_err());
+        assert_eq!(*log.lock().unwrap(), vec![0,1,2]);
+        println!("{:?}", *log.lock().unwrap());
+    }
+}
