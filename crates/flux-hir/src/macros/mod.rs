@@ -425,7 +425,16 @@ pub(crate) fn resolve_predecessor(
     path: &crate::Path,
     ns: crate::def_map::Ns,
 ) -> Option<crate::def_map::Resolved> {
-    resolve_predecessor_inner(items, module, path, ns, &[], 0)
+    if items.def_map.scopes.len() >= items.modules.len() {
+        return items.resolve(module, path, ns).ok();
+    }
+    // There is no completed predecessor scope in a standalone source graph.
+    // Following local glob imports here only enumerates paths that cannot
+    // resolve, and cyclic glob graphs can produce factorial work.
+    if items.crates.len() <= 1 {
+        return None;
+    }
+    resolve_predecessor_inner(items, module, path, ns, &[], 0, None)
 }
 
 fn resolve_predecessor_inner(
@@ -435,6 +444,7 @@ fn resolve_predecessor_inner(
     ns: crate::def_map::Ns,
     followed: &[usize],
     depth: u32,
+    globs: Option<bool>,
 ) -> Option<crate::def_map::Resolved> {
     if depth >= RECURSION_LIMIT {
         return None;
@@ -509,6 +519,27 @@ fn resolve_predecessor_inner(
             let Some(external) = items.loaded_extern_crate(first, lookup_module) else {
                 // Dependency scopes are complete before this crate's scopes.
                 // Resolve each imported glob independently and retain ambiguity.
+                // Only failed prefix lookups need the glob seed scan. Normal
+                // dependency paths must not scan the crate's entire import list.
+                let globs = globs.unwrap_or_else(|| {
+                    items.uses.iter().any(|import| {
+                        matches!(import.kind, crate::item_tree::UseKind::Glob)
+                            && items.modules[import.module].krate == krate
+                            && resolve_predecessor_inner(
+                                items,
+                                import.module,
+                                &import.path,
+                                crate::def_map::Ns::Types,
+                                &[],
+                                0,
+                                Some(false),
+                            )
+                            .is_some()
+                    })
+                });
+                if !globs {
+                    return None;
+                }
                 let mut found = None;
                 let mut current = lookup_module;
                 loop {
@@ -544,6 +575,7 @@ fn resolve_predecessor_inner(
                             ns,
                             &followed,
                             depth + 1,
+                            Some(globs),
                         ) {
                             if found.is_some_and(|previous| previous != resolved) {
                                 return None;

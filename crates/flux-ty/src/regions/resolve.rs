@@ -402,7 +402,11 @@ fn resolve_trait_families(
             let output:Vec<_>=family.bounds.iter().zip(resolved).collect();
             let implied:Vec<_>=sigs.traits.get(id).into_iter().flat_map(|t|t.implied.iter()).filter(|p|matches!(p.alias.args.first().map(|t|t.kind()),Some(TyKind::Alias(alias))if alias.trait_==id && alias.name==family.name)).copied().collect();
             let bindings=family.bounds.iter().enumerate().flat_map(|(index,b)| {let args=b.path.args(b.path.segments.len().saturating_sub(1));args.into_iter().flat_map(move |args|args.bindings.iter().map(move |binding|(binding,Some(args),index as u32)))});
-            let projections:Vec<_>=bindings.zip(implied).map(|((binding,args,index),projection)|(binding,args,projection,index)).collect();
+            // Failed output bounds compact the resolved list. Source indices no
+            // longer identify its binders; diagnostics already explain the failure.
+            let projections:Vec<_>=if output.len() == family.bounds.len() {
+                bindings.zip(implied).map(|((binding,args,index),projection)|(binding,args,projection,index)).collect()
+            } else { Vec::new() };
             let mut contract = family_contract(items,sigs,data.loc.module,flux_hir::Owner::Trait(id),owner_names,&family.generics,Ty::param(0,kw::SelfUpper),None,None,&family.lifetime_bounds,&output,&projections,schema,&mut list);
             // Generic associated outputs are Sized unless explicitly relaxed.
             if let Some(sized) = sigs.builtins.sized
@@ -2640,6 +2644,11 @@ fn bound_regions_with_walker(
 ) -> (Tables, Box<[TraitRefRegions]>, Tables) {
     walker.elided = output_elision.unwrap_or(Elided::NotAllowed);
     let written = &generics.predicates;
+    // Resolution omits invalid predicates. Their remaining projection rows
+    // cannot be paired with source indices after such an omission.
+    if predicates.len() != written.len() {
+        return (Box::default(), Box::default(), Box::default());
+    }
     let selfs: Tables = if predicates.len() == written.len() {
         written
             .iter()
