@@ -924,13 +924,16 @@ C aggregate calls support repr(C) records and recursively nested fixed arrays
 whose physical offsets, padding, size and alignment match Keel's natural layout.
 Fieldless enums with an explicit C or integer representation cross calls as
 their physical integer tag. Core `Option<fn(...)>` crosses as a nullable function
-pointer, including unsafe function pointers. Conversion at call boundaries keeps
+pointer, including unsafe function pointers. Thin references and transparent
+wrappers around scalars, references, NonNull and NonZero use their scalar ABI.
+Their core Option forms use the same scalar representation with zero for None.
+Conversion at call boundaries keeps
 Rust's decoded discriminant and payload representation private. These enum forms
 also work inside supported C records. Other payload enums and custom option-like
 enums remain unsupported.
 Transparent structs with one admitted scalar field use that field's C ABI,
 including integer extension, floating-point and pointer registers. Extra fields
-must be alignment-one zero-sized markers. Wrappers around stored references,
+must be alignment-one zero-sized markers. Wrappers around wide references,
 unsupported enums or other aggregates remain unsupported. Conflicting declarations
 of one external symbol retain each declaration's calling signature through typed
 indirect calls when it differs from the module's canonical import.
@@ -2146,6 +2149,7 @@ AArch64 assembly accepts input-only `in(reg)` and `in(vreg)` operands alongside
 tied `inout` operands. Inputs may be expressions and are evaluated once in source
 order without writeback. Scalar and vector transports preserve their bits; pure
 assembly still requires an output. Separate `out` and `lateout` operands use the same output transport.
+Discarded output operands (`_`) are reported as unsupported before MIR lowering.
 
 
 Explicit register operands support `in`, `out`, `lateout`, `inout`, and
@@ -2348,3 +2352,13 @@ Float literals can call in-scope trait methods before their concrete type is
 known. Trait obligations and later constraints can select `f32` or `f64` before
 numeric defaults apply. Type-level constant evaluation retries layout-dependent
 calls after independent constants resolve the field types they need.
+
+Type-position macro expansions retain anonymous constants, including const generic
+arguments in qualified trait calls and constants inside nested type macros.
+Boxed strings convert into boxed bytes without reallocating. Generic Box<T> to
+Rc<T> conversion supports unsized payloads and retains their metadata without
+cloning the value. Error objects with Send or Send + Sync support borrowed and
+owned downcasts. Pointer addr_eq compares data addresses without metadata.
+Core and std share IP and socket-address types through core::net. Parsing and
+formatting those values do not allocate; name resolution and socket ownership
+remain in std::net.

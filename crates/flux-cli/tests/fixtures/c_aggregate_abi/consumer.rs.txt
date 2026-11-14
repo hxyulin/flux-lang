@@ -41,6 +41,14 @@ fn rust_words(value: Words) -> Words { value }
 #[repr(C)]
 struct Node { next: *const [Node; 1] }
 extern "C" fn inspect_node(value: Node) -> u64 { if value.next.is_null() { 42 } else { 0 } }
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct Token(core::ptr::NonNull<u8>);
+unsafe fn invoke<A, R>(address: *mut u8, argument: A) -> R {
+    // SAFETY: callers supply the native symbol with exactly this signature.
+    let callback: unsafe extern "C" fn(A) -> R = unsafe { core::mem::transmute(address) };
+    unsafe { callback(argument) }
+}
 fn main() {
     assert_eq!(inspect_node(Node { next: core::ptr::null() }), 42);
     let indirect: extern "C" fn(Node) -> u64 = inspect_node;
@@ -60,6 +68,27 @@ fn main() {
         let lib = dlopen(c"__LIBRARY__".as_ptr(), 2); assert!(!lib.is_null());
 
 
+        let nullable = dlsym(lib, c"nullable_token".as_ptr());
+        let mut byte = 7u8;
+        let token = Token(core::ptr::NonNull::from(&mut byte));
+        let got: Option<Token> = invoke(nullable, Some(token));
+        assert_eq!(got.unwrap().0.as_ptr(), token.0.as_ptr());
+        let got: Option<Token> = invoke(nullable, None::<Token>);
+        assert!(got.is_none());
+        let borrowed = dlsym(lib, c"borrowed_word".as_ptr());
+        let got: u64 = invoke(borrowed, &41u64);
+        assert_eq!(got, 42);
+        let nonzero = dlsym(lib, c"nullable_nonzero".as_ptr());
+        let got: Option<core::num::NonZeroU8> = invoke(nonzero, core::num::NonZeroU8::new(201));
+        assert_eq!(got.unwrap().get(), 201);
+        let got: Option<core::num::NonZeroU8> = invoke(nonzero, None::<core::num::NonZeroU8>);
+        assert!(got.is_none());
+        let reference = dlsym(lib, c"nullable_reference".as_ptr());
+        let word = 91u64;
+        let got: Option<&u64> = invoke(reference, Some(&word));
+        assert_eq!(*got.unwrap(), 91);
+        let got: Option<&u64> = invoke(reference, None::<&u64>);
+        assert!(got.is_none());
         let ti:unsafe extern "C" fn(TI8)->TNested=core::mem::transmute(dlsym(lib,c"transparent_i8".as_ptr()));assert_eq!(ti(TI8(PhantomData,-91,[])).0.1,-92);
         let tu:unsafe extern "C" fn(TU8)->TU8=core::mem::transmute(dlsym(lib,c"transparent_u8".as_ptr()));assert_eq!(tu(TU8(250,PhantomData)).0,251);
         let tf32:unsafe extern "C" fn(TF32)->TF32=core::mem::transmute(dlsym(lib,c"transparent_f32".as_ptr()));assert_eq!(tf32(TF32(1.25)).0,1.75);

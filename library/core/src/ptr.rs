@@ -59,6 +59,11 @@ pub fn eq<T: ?Sized>(a: *const T, b: *const T) -> bool {
     a == b
 }
 
+/// Compares data addresses, ignoring slice lengths or vtables.
+pub fn addr_eq<T: ?Sized, U: ?Sized>(a: *const T, b: *const U) -> bool {
+    a as *const () == b as *const ()
+}
+
 /// Hashes a pointer's address and, for a wide pointer, its metadata.
 pub fn hash<T: ?Sized, H: crate::hash::Hasher>(hashee: *const T, state: &mut H) {
     state.write_usize(hashee as *const () as usize);
@@ -601,6 +606,7 @@ fn alignment_offset(address: usize, stride: usize, align: usize) -> usize {
 /// pointer, as rustc lays it out (`#[rustc_layout_scalar_valid_range_start(1)]`
 /// there; its `lang` name here).
 #[lang = "non_null"]
+#[repr(transparent)]
 pub struct NonNull<T: ?Sized> {
     pointer: *const T,
 }

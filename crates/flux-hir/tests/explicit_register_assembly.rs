@@ -80,3 +80,21 @@ fn explicit_register_identity_survives_metadata() {
         decoder.finish().unwrap();
     }
 }
+
+#[test]
+fn discarded_assembly_outputs_report_the_unsupported_shape() {
+    for assembly in [
+        "\"/* {0} */\", out(reg) _",
+        "\"/* {0} */\", inout(reg) 1usize => _",
+    ] {
+        let source = format!("fn main() {{ unsafe {{ core::arch::asm!({assembly}); }} }}");
+        let (_, _, hir) = flux_hir::lower_text("discarded.rs", &source);
+        assert!(
+            hir.diagnostics
+                .iter()
+                .any(|error| error.message == "discarded assembly outputs are not supported yet"),
+            "{:?}",
+            hir.diagnostics
+        );
+    }
+}

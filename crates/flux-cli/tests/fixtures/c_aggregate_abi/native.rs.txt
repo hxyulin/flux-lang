@@ -58,3 +58,15 @@ use std::marker::PhantomData;
 // These positive values have identical bits in the native integer register views.
 #[unsafe(no_mangle)]pub extern "C" fn abi_integer_view(x:u64)->u64{x+1}
 #[unsafe(no_mangle)]pub extern "C" fn abi_byte_view(x:u8)->u8{x+1}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Token(core::ptr::NonNull<u8>);
+#[unsafe(no_mangle)]
+pub extern "C" fn nullable_token(value: Option<Token>) -> Option<Token> { value }
+#[unsafe(no_mangle)]
+pub extern "C" fn borrowed_word(value: &u64) -> u64 { *value + 1 }
+#[unsafe(no_mangle)]
+pub extern "C" fn nullable_nonzero(value: Option<core::num::NonZeroU8>) -> Option<core::num::NonZeroU8> { value }
+#[unsafe(no_mangle)]
+pub extern "C" fn nullable_reference(value: Option<&u64>) -> Option<&u64> { value }

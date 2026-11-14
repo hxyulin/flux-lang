@@ -534,6 +534,14 @@ impl<'a> Layouts<'a> {
                 {
                     layout.niche = Some(nonzero_niche(integer.bits()));
                 }
+                if lang("non_null") {
+                    layout.niche = Some(Niche {
+                        offset: 0,
+                        bytes: 8,
+                        start: 1,
+                        end: u64::MAX as u128,
+                    });
+                }
                 return layout;
             }
             // Potentially unsized tails retain their position even in sized

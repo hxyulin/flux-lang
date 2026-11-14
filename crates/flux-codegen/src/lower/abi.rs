@@ -178,7 +178,7 @@ fn c_scalar_at(sigs: &Signatures, layouts: &Layouts, ty: Ty, depth: u32) -> Opti
         return None;
     }
     if let Some(payload) = layouts.transparent_field(ty) {
-        if c_contains_ref(sigs, payload) || is_fat(sigs, payload) {
+        if is_fat(sigs, payload) {
             return None;
         }
         let scalar = c_scalar_at(sigs, layouts, payload, depth + 1).or_else(|| {
@@ -214,15 +214,19 @@ fn c_scalar_at(sigs: &Signatures, layouts: &Layouts, ty: Ty, depth: u32) -> Opti
         })
     } else if variants.len() == 2
         && tag.offset == 0
-        && tag.bytes == 8
         && matches!(tag.encoding, super::TagEncoding::Niche { first, last, start: 0, .. } if first == last)
         && variants.iter().filter(|v| v.is_empty()).count() == 1
     {
         let payload = variants.iter().find(|v| !v.is_empty())?;
-        if payload.len() != 1 || !matches!(payload[0].kind(), TyKind::FnPtr(_)) {
+        let [payload] = payload else {
             return None;
-        }
-        super::address_leaf()
+        };
+        // A zero niche in a single scalar payload preserves its ABI, including
+        // transparent wrappers around NonNull, NonZero and references.
+        c_scalar_at(sigs, layouts, *payload, depth + 1).or_else(|| {
+            (!c_aggregate(*payload) && !is_fat(sigs, *payload) && keel_type(*payload).is_some())
+                .then_some(*payload)
+        })?
     } else {
         return None;
     };
@@ -289,7 +293,6 @@ fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, layouts: &Layouts, 
             }
             if data.repr_transparent {
                 return !vector
-                    && !c_contains_ref(sigs, ty)
                     && c_scalar(sigs, layouts, ty).is_some()
                     && layouts
                         .transparent_field(ty)
@@ -311,20 +314,6 @@ fn c_admitted(items: &flux_hir::ItemTree, sigs: &Signatures, layouts: &Layouts, 
     }
 }
 
-fn c_contains_ref(sigs: &Signatures, ty: Ty) -> bool {
-    match ty.kind() {
-        TyKind::Ref(..) => true,
-        // Only stored values cross the ABI. Raw-pointer pointees are neither
-        // passed nor inspected, and may form recursive type graphs.
-        TyKind::RawPtr(..) => false,
-        TyKind::Array(ty, _) | TyKind::Slice(ty) => c_contains_ref(sigs, ty),
-        TyKind::Adt(..) => flux_solve::contents(sigs, ty)
-            .is_some_and(|fields| fields.iter().any(|&ty| c_contains_ref(sigs, ty))),
-        TyKind::Tuple(fields) => fields.iter().any(|&ty| c_contains_ref(sigs, ty)),
-        _ => false,
-    }
-}
-
 pub(super) fn check_c_abi(
     hir: &Hir,
     typed: &TypedFile,
@@ -333,11 +322,10 @@ pub(super) fn check_c_abi(
 ) -> Vec<Diagnostic> {
     let layouts = Layouts::new(&hir.items, &typed.sigs, &mir.discriminants);
     let supported = |sig: &FnSig| {
-        !sig.params.iter().any(|&ty| c_contains_ref(&typed.sigs, ty))
-            && sig.params.iter().copied().chain([sig.ret]).all(|ty| {
-                c_admitted(&hir.items, &typed.sigs, &layouts, ty)
-                    && c_layout(&typed.sigs, &layouts, ty).is_some()
-            })
+        sig.params.iter().copied().chain([sig.ret]).all(|ty| {
+            c_admitted(&hir.items, &typed.sigs, &layouts, ty)
+                && c_layout(&typed.sigs, &layouts, ty).is_some()
+        })
     };
     let mut errors = Vec::new();
     let mut add = |file, range| {

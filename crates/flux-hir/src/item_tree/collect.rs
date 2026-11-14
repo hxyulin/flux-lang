@@ -507,9 +507,21 @@ impl Collector<'_> {
         }
         with_macro_types(|| {
             let mut diagnostics = Vec::new();
-            expand_types(syntax, &mut diagnostics, &mut |call, diagnostics| {
-                self.expand_type_call(ctx, call, diagnostics)
-            });
+            expand_types(
+                syntax,
+                Some(ctx.file),
+                &mut diagnostics,
+                &mut |call, file, diagnostics| {
+                    self.expand_type_call(
+                        Ctx {
+                            file: file.unwrap_or(ctx.file),
+                            ..ctx
+                        },
+                        call,
+                        diagnostics,
+                    )
+                },
+            );
             self.items.diagnostics.extend(diagnostics);
             self.expanding_types = true;
             self.collect_item(ctx, node);
@@ -523,7 +535,13 @@ impl Collector<'_> {
         ctx: Ctx,
         call: SyntaxNode<'_>,
         diagnostics: &mut Vec<Diagnostic>,
-    ) -> Option<flux_syntax::Parse> {
+    ) -> Option<(flux_syntax::Parse, Option<FileId>)> {
+        if let Some(cached) = self.items.body_expansions.get(&(ctx.file, call.id())) {
+            return Some((
+                self.items.files[&cached.file].parse.clone(),
+                Some(cached.file),
+            ));
+        }
         let path = call.children().find_map(ast::Path::cast)?;
         let def = match macros::resolve::<()>(self.items, path, &[], self.macro_scope, ctx.module) {
             Ok(macros::Resolved::Def(id)) => id,
@@ -534,7 +552,8 @@ impl Collector<'_> {
             }
         };
         self.record_macro_path(ctx, path, def);
-        let def = &self.items.macros[def];
+        let definition = def;
+        let def = &self.items.macros[definition];
         let site = macros::CallSite {
             read_text: crate::source::SourceDb::read_include_str,
             scope: self.macro_scope,
@@ -550,7 +569,28 @@ impl Collector<'_> {
             flux_syntax::parser::Fragment::Type,
             diagnostics,
         )?;
-        Some(expansion.parse)
+        let file = self
+            .db
+            .add_expansion(expansion.parse, self.real_file(ctx.file));
+        self.items
+            .expansion_files
+            .insert(file, self.real_file(ctx.file));
+        self.items
+            .expansion_sites
+            .insert(file, (ctx.file, call.id()));
+        self.items.body_expansions.insert(
+            (ctx.file, call.id()),
+            BodyExpansion {
+                definition,
+                file,
+                ctxts: expansion.ctxts,
+                fragment: flux_syntax::parser::Fragment::Type,
+                anon_consts: true,
+            },
+        );
+        let shared = self.db.shared(file);
+        self.items.insert_file(file, Arc::clone(&shared));
+        Some((shared.parse.clone(), Some(file)))
     }
 
     fn collect_item(&mut self, ctx: Ctx, node: NodeId) {
@@ -2041,8 +2081,18 @@ impl Collector<'_> {
             let mut diagnostics = Vec::new();
             expand_types(
                 shared.parse.tree().root(),
+                Some(ctx.file),
                 &mut diagnostics,
-                &mut |call, diagnostics| self.expand_type_call(ctx, call, diagnostics),
+                &mut |call, file, diagnostics| {
+                    self.expand_type_call(
+                        Ctx {
+                            file: file.unwrap_or(ctx.file),
+                            ..ctx
+                        },
+                        call,
+                        diagnostics,
+                    )
+                },
             );
             self.items.diagnostics.extend(diagnostics);
             match owner {
@@ -2725,7 +2775,15 @@ impl Collector<'_> {
                 macro_scope: self.macro_scope,
             });
         }
-        if node.kind() == SyntaxKind::MACRO_EXPR {
+        if node.kind() == SyntaxKind::MACRO_TYPE
+            && self
+                .items
+                .body_expansions
+                .contains_key(&(ctx.file, node.id()))
+        {
+            return;
+        }
+        if matches!(node.kind(), SyntaxKind::MACRO_EXPR | SyntaxKind::MACRO_TYPE) {
             if macros::is_macro_rules(node) {
                 let start = self.items.diagnostics.len();
                 let previous = self.macro_scope;
@@ -2760,7 +2818,9 @@ impl Collector<'_> {
                 return;
             };
             let def = self.items.macros[id].clone();
-            let fragment = if node.parent().is_some_and(|p| {
+            let fragment = if node.kind() == SyntaxKind::MACRO_TYPE {
+                flux_syntax::parser::Fragment::Type
+            } else if node.parent().is_some_and(|p| {
                 matches!(p.kind(), SyntaxKind::EXPR_STMT)
                     || (matches!(p.kind(), SyntaxKind::BLOCK_EXPR | SyntaxKind::MACRO_STMTS)
                         && !node.children().any(|c| c.kind() == SyntaxKind::ATTR))
@@ -3078,7 +3138,10 @@ impl Collector<'_> {
         if !root.descendants().any(|n| {
             matches!(
                 n.kind(),
-                SyntaxKind::ARRAY_TYPE | SyntaxKind::ARRAY_EXPR | SyntaxKind::CONST_ARG
+                SyntaxKind::ARRAY_TYPE
+                    | SyntaxKind::ARRAY_EXPR
+                    | SyntaxKind::CONST_ARG
+                    | SyntaxKind::MACRO_TYPE
             )
         }) {
             return;
@@ -3170,6 +3233,15 @@ impl Collector<'_> {
                 _ => {}
             }
         }
+        if kind == SyntaxKind::MACRO_TYPE
+            && let Some(expansion) = self.items.body_expansions.get(&(file, node.id()))
+        {
+            let expanded = expansion.file;
+            let shared = self.db.shared(expanded);
+            self.anon_walk(expanded, shared.parse.tree().root(), scope, counts);
+            *scope = outer;
+            return;
+        }
         match kind {
             SyntaxKind::BLOCK_EXPR => {
                 if let Some(&module) = self.items.block_modules.get(&(file, node.id())) {
@@ -3222,7 +3294,12 @@ impl Collector<'_> {
         counts: &mut rustc_hash::FxHashMap<Symbol, u32>,
     ) {
         let expr = const_expr_root(expr);
-        if !is_anon_const(expr) {
+        if !is_anon_const(expr)
+            || self
+                .items
+                .anon_consts
+                .contains_key(&(file, expr.syntax().id()))
+        {
             return;
         }
         let range = expr.syntax().text_range();

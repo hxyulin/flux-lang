@@ -2322,6 +2322,15 @@ impl<'a> Ctx<'a> {
         node: SyntaxNode<'_>,
         fragment: Fragment,
     ) -> Option<(Cow<'a, Parse>, Option<FileId>)> {
+        self.expand_in(node, fragment, self.syntax_file(node))
+    }
+
+    fn expand_in(
+        &mut self,
+        node: SyntaxNode<'_>,
+        fragment: Fragment,
+        file: Option<FileId>,
+    ) -> Option<(Cow<'a, Parse>, Option<FileId>)> {
         let path = node.children().find_map(ast::Path::cast)?;
         let resolved = macros::resolve(
             self.items,
@@ -2353,9 +2362,7 @@ impl<'a> Ctx<'a> {
             module: self.module,
             real_file: self.real_file(),
         };
-        let file = self.syntax_file(node);
-        if matches!(fragment, Fragment::Expr | Fragment::Stmts)
-            && let Some(cached) = file.and_then(|f| self.items.body_expansions.get(&(f, node.id())))
+        if let Some(cached) = file.and_then(|f| self.items.body_expansions.get(&(f, node.id())))
             && cached.fragment == fragment
         {
             let collected = &self.items.macros[cached.definition];
@@ -2376,7 +2383,11 @@ impl<'a> Ctx<'a> {
                 self.ctxt_parents.insert(new, (old, local));
             }
             let parse = &self.items.files[&cached.file].parse;
-            self.expand_types_in(parse.tree().root());
+            if fragment != Fragment::Type {
+                let outer = self.expansion_file.replace(cached.file);
+                self.expand_types_in(parse.tree().root());
+                self.expansion_file = outer;
+            }
             return Some((Cow::Borrowed(parse), Some(cached.file)));
         }
         let expansion = macros::expand(&def, node, &site, fragment, &mut self.diagnostics)?;
@@ -2400,16 +2411,21 @@ impl<'a> Ctx<'a> {
     /// `lower_type` to find.
     fn expand_types_in(&mut self, node: SyntaxNode<'_>) {
         let mut diagnostics = Vec::new();
-        expand_types(node, &mut diagnostics, &mut |call, _| {
-            self.expansion_depth += 1;
-            crate::item_tree::body_expansion(1);
-            let parse = self
-                .expand(call, Fragment::Type)
-                .map(|(parse, _)| parse.into_owned());
-            self.expansion_depth -= 1;
-            crate::item_tree::body_expansion(-1);
-            parse
-        });
+        expand_types(
+            node,
+            self.syntax_file(node),
+            &mut diagnostics,
+            &mut |call, file, _| {
+                let outer = std::mem::replace(&mut self.expansion_file, file);
+                self.expansion_depth += 1;
+                let parse = self
+                    .expand_in(call, Fragment::Type, file)
+                    .map(|(parse, file)| (parse.into_owned(), file));
+                self.expansion_depth -= 1;
+                self.expansion_file = outer;
+                parse
+            },
+        );
         self.diagnostics.extend(diagnostics);
     }
 

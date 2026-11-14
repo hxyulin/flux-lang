@@ -3475,12 +3475,22 @@ pub(crate) fn with_macro_types<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
+// The file identity stays separate from the parse: callers may borrow or clone
+// the retained tree, but its anonymous constants always use the retained file.
+type TypeExpander<'a> = dyn FnMut(
+        SyntaxNode<'_>,
+        Option<FileId>,
+        &mut Vec<Diagnostic>,
+    ) -> Option<(flux_syntax::Parse, Option<FileId>)>
+    + 'a;
+
 /// Expands the macro calls in type position in `node` with `expand`,
 /// for [`lower_type`] to find.
 pub(crate) fn expand_types(
     node: SyntaxNode<'_>,
+    file: Option<FileId>,
     diagnostics: &mut Vec<Diagnostic>,
-    expand: &mut dyn FnMut(SyntaxNode<'_>, &mut Vec<Diagnostic>) -> Option<flux_syntax::Parse>,
+    expand: &mut TypeExpander<'_>,
 ) {
     if !node
         .descendants()
@@ -3490,8 +3500,9 @@ pub(crate) fn expand_types(
     }
     fn walk(
         node: SyntaxNode<'_>,
+        file: Option<FileId>,
         diagnostics: &mut Vec<Diagnostic>,
-        expand: &mut dyn FnMut(SyntaxNode<'_>, &mut Vec<Diagnostic>) -> Option<flux_syntax::Parse>,
+        expand: &mut TypeExpander<'_>,
     ) {
         // Collection reports malformed attributes. This preliminary walk
         // only decides which subtrees may contain macros to expand.
@@ -3499,10 +3510,11 @@ pub(crate) fn expand_types(
             return;
         }
         if node.kind() == SyntaxKind::MACRO_TYPE {
-            let ty = match expand(node, diagnostics) {
-                Some(parse) => {
+            let ty = match expand(node, file, diagnostics) {
+                Some((parse, expanded_file)) => {
+                    let _file = expanded_file.map(TypesFile::enter);
                     let root = parse.tree().root();
-                    walk(root, diagnostics, expand);
+                    walk(root, expanded_file, diagnostics, expand);
                     lower_type(root.children().find_map(ast::Type::cast), diagnostics)
                 }
                 None => TypeRef::Error,
@@ -3510,11 +3522,11 @@ pub(crate) fn expand_types(
             MACRO_TYPES.with(|m| m.borrow_mut().insert(macro_type_key(node), ty));
         } else {
             for child in node.children() {
-                walk(child, diagnostics, expand);
+                walk(child, file, diagnostics, expand);
             }
         }
     }
-    walk(node, diagnostics, expand);
+    walk(node, file, diagnostics, expand);
 }
 
 thread_local! {

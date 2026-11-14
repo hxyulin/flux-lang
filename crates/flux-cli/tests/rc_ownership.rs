@@ -333,3 +333,37 @@ fn weak_owners_survive_payload_destruction() {
     assert!(catch_unwind(AssertUnwindSafe(|| drop(owner))).is_err());
     assert!(weak.upgrade().is_none());
 }
+
+#[test]
+fn boxed_unsized_payloads_move_without_cloning() {
+    use std::cell::Cell;
+    trait Payload {
+        fn value(&self) -> u32;
+    }
+    #[repr(align(64))]
+    struct Aligned<'a>(&'a Cell<u32>);
+    impl Payload for Aligned<'_> {
+        fn value(&self) -> u32 {
+            42
+        }
+    }
+    impl Drop for Aligned<'_> {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+    fn convert<T: ?Sized>(value: Box<T>) -> rc::Rc<T> {
+        value.into()
+    }
+    let drops = Cell::new(0);
+    let value = convert(Box::new(Aligned(&drops)) as Box<dyn Payload>);
+    assert_eq!(value.value(), 42);
+    assert_eq!(rc::Rc::as_ptr(&value) as *const () as usize % 64, 0);
+    let weak = rc::Rc::downgrade(&value);
+    drop(value);
+    assert_eq!(drops.get(), 1);
+    assert!(weak.upgrade().is_none());
+    drop(weak);
+    assert_eq!(&*convert(Box::<str>::from("utf8 ✓")), "utf8 ✓");
+    assert_eq!(convert(vec![(); 7].into_boxed_slice()).len(), 7);
+}

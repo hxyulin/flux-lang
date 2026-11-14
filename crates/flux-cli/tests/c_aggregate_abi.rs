@@ -100,15 +100,15 @@ fn unsupported_c_shapes_fail_before_machine_code() {
         ),
         (
             "transparent_reference",
-            "#[repr(transparent)]struct Bad(&'static u32);unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
+            "#[repr(transparent)]struct Bad(&'static str);unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
         ),
         (
             "transparent_rust_aggregate",
             "struct Inner(u64,u64);#[repr(transparent)]struct Bad(Inner);unsafe extern \"C\"{fn take(x:Bad);}fn main(){}",
         ),
         (
-            "generic_reference",
-            "extern \"C\" fn identity<T>(x:T)->T{x}fn main(){let n=7u64;let _=identity(&n);}",
+            "generic_fat_reference",
+            "extern \"C\" fn identity<T>(x:T)->T{x}fn main(){let n=[7u64;2];let _=identity(&n[..]);}",
         ),
         (
             "neon_vector",

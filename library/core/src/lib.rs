@@ -37,6 +37,7 @@ pub mod io;
 pub mod iter;
 pub mod marker;
 pub mod mem;
+pub mod net;
 pub mod num;
 pub mod ops;
 pub mod option;

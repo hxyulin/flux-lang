@@ -37,3 +37,19 @@ impl dyn Error + 'static {
         } else { None }
     }
 }
+
+macro_rules! auto_error_downcast {
+    ($object:ty) => {
+        impl $object {
+            pub fn is<T: Error + 'static>(&self) -> bool { <dyn Error>::is::<T>(self) }
+            pub fn downcast_ref<T: Error + 'static>(&self) -> Option<&T> {
+                <dyn Error>::downcast_ref::<T>(self)
+            }
+            pub fn downcast_mut<T: Error + 'static>(&mut self) -> Option<&mut T> {
+                <dyn Error>::downcast_mut::<T>(self)
+            }
+        }
+    };
+}
+auto_error_downcast!(dyn Error + Send);
+auto_error_downcast!(dyn Error + Send + Sync);

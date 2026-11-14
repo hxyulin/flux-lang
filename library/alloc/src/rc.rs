@@ -355,19 +355,28 @@ impl From<&crate::string::String> for Rc<str> {
         Rc::from(value.as_str())
     }
 }
-impl From<crate::boxed::Box<str>> for Rc<str> {
-    fn from(value: crate::boxed::Box<str>) -> Rc<str> {
-        Rc::from(&*value)
-    }
-}
-impl<T> From<crate::boxed::Box<[T]>> for Rc<[T]> {
-    fn from(value: crate::boxed::Box<[T]>) -> Rc<[T]> {
-        Rc::from(value.into_vec())
-    }
-}
-impl<T> From<crate::boxed::Box<T>> for Rc<T> {
+impl<T: ?Sized> From<crate::boxed::Box<T>> for Rc<T> {
     fn from(value: crate::boxed::Box<T>) -> Rc<T> {
-        Rc::new(*value)
+        let layout = Layout::for_value(&*value);
+        let (ptr, raw) = allocate(layout);
+        let source = crate::boxed::Box::into_raw(value);
+        // SAFETY: allocate reserves aligned storage for the entire payload.
+        // Moving bytes transfers ownership without cloning or dropping T. The
+        // compiler's raw pointer representation stores its data pointer first;
+        // replace that word while retaining slice length or vtable metadata.
+        unsafe {
+            ptr::copy_nonoverlapping(source as *const u8, raw, layout.size());
+            let mut data = source;
+            ptr::write(&raw mut data as *mut *mut u8, raw);
+            if layout.size() != 0 {
+                dealloc(source as *mut u8, layout);
+            }
+            Rc {
+                ptr,
+                data: NonNull::new_unchecked(data),
+                owner: PhantomData,
+            }
+        }
     }
 }
 impl<'a, B: crate::borrow::ToOwned + ?Sized> From<crate::borrow::Cow<'a, B>> for Rc<B>

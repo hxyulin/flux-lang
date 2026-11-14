@@ -26,6 +26,12 @@ fn compare(name: &str, source: &str, accepted: bool) {
             errors.extend(flux_mir::build_file(&hir, &typed).diagnostics);
         }
     }
+    assert!(
+        errors
+            .iter()
+            .all(|error| !error.message.contains("internal compiler error")),
+        "{name}: {errors:?}"
+    );
     std::fs::remove_dir_all(root).unwrap();
     assert_eq!(errors.is_empty(), accepted, "flux {name}: {errors:?}");
 }
@@ -1277,5 +1283,31 @@ fn deferred_operator_inputs_remain_constrained() {
         "operator_later_primitive",
         "fn f(){let x=Default::default();let y=x+1;let _:i32=x;let _:i32=y;}",
         true,
+    );
+}
+
+#[test]
+fn type_macros_keep_const_argument_identity() {
+    compare(
+        "type_macro_const",
+        r#"
+struct Family<const N: u8>;
+const fn select(_: &str) -> u8 { 6 }
+trait Send<R> { fn send() -> R; }
+impl Send<u32> for Family<6> { fn send() -> u32 { 42 } }
+macro_rules! family { () => { Family<{ select("selector") }> }; }
+macro_rules! outer { () => { <family!() as Send<_>>::send() }; }
+fn call() -> u32 { outer!() }
+"#,
+        true,
+    );
+    compare(
+        "type_macro_bad_const",
+        r#"
+struct Family<const N: u8>;
+macro_rules! family { () => { Family<{ panic!("bad const") }> }; }
+fn call(_: family!()) {}
+"#,
+        false,
     );
 }

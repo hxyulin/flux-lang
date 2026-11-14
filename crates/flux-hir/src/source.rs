@@ -440,6 +440,7 @@ const CORE_FILES: &[(&str, &str)] = &[
     ("io.rs", include_str!("../../../library/core/src/io.rs")),
     ("iter.rs", include_str!("../../../library/core/src/iter.rs")),
     ("mem.rs", include_str!("../../../library/core/src/mem.rs")),
+    ("net.rs", include_str!("../../../library/core/src/net.rs")),
     ("num.rs", include_str!("../../../library/core/src/num.rs")),
     ("ops.rs", include_str!("../../../library/core/src/ops.rs")),
     (

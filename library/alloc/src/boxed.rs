@@ -160,6 +160,14 @@ impl<T: Clone> Clone for Box<[T]> {
     }
 }
 
+impl Box<str> {
+    /// Reuses the string allocation as its UTF-8 byte slice.
+    pub fn into_boxed_bytes(self) -> Box<[u8]> {
+        // SAFETY: str and [u8] have identical size, alignment and length metadata.
+        unsafe { Box::from_raw(Box::into_raw(self) as *mut [u8]) }
+    }
+}
+
 impl Clone for Box<str> {
     fn clone(&self) -> Box<str> {
         Box::from(&**self)
@@ -422,3 +430,21 @@ macro_rules! any_downcast {
 any_downcast!(dyn core::any::Any);
 any_downcast!(dyn core::any::Any + core::marker::Send);
 any_downcast!(dyn core::any::Any + core::marker::Send + core::marker::Sync);
+
+macro_rules! error_downcast {
+    ($object:ty $(, $bound:path)*) => {
+        impl Box<$object> {
+            /// Takes ownership of a matching error without reallocating it.
+            pub fn downcast<T: core::error::Error + 'static $(+ $bound)*>(self) -> Result<Box<T>, Self> {
+                if self.is::<T>() {
+                    let pointer = Box::into_raw(self) as *mut T;
+                    // SAFETY: Error's sealed type identity proves the payload is T.
+                    Ok(unsafe { Box::from_raw(pointer) })
+                } else { Err(self) }
+            }
+        }
+    };
+}
+error_downcast!(dyn core::error::Error);
+error_downcast!(dyn core::error::Error + Send, Send);
+error_downcast!(dyn core::error::Error + Send + Sync, Send, Sync);
