@@ -1311,3 +1311,22 @@ fn call(_: family!()) {}
         false,
     );
 }
+
+#[test]
+fn byte_offsets_keep_constant_allocation_bounds() {
+    compare(
+        "byte_past_end",
+        "static DATA:[u8;2]=[1,2]; const BAD:*const u8=unsafe{DATA.as_ptr().byte_add(3)}; fn use_it(){let _=BAD;}",
+        false,
+    );
+    compare(
+        "byte_before_start",
+        "static DATA:[u8;2]=[1,2]; const BAD:*const [u8]=unsafe{(&DATA as *const [u8]).byte_sub(1)}; fn use_it(){let _=BAD;}",
+        false,
+    );
+    compare(
+        "byte_one_past_and_back",
+        "static DATA:[u8;2]=[1,2]; const GOOD:*const [u8]=unsafe{(&DATA as *const [u8]).byte_add(2).byte_sub(2)}; const LENGTH:usize=GOOD.len();",
+        true,
+    );
+}

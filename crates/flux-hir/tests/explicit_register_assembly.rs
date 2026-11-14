@@ -82,19 +82,46 @@ fn explicit_register_identity_survives_metadata() {
 }
 
 #[test]
-fn discarded_assembly_outputs_report_the_unsupported_shape() {
-    for assembly in [
-        "\"/* {0} */\", out(reg) _",
-        "\"/* {0} */\", inout(reg) 1usize => _",
+fn discarded_outputs_require_a_live_output_for_pure_assembly() {
+    let root = std::env::temp_dir().join(format!("flux-discarded-asm-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    for (name, accepted, assembly) in [
+        ("output", true, "\"/* {0} */\", out(reg) _"),
+        ("split", true, "\"/* {0} */\", inout(reg) 1usize => _"),
+        (
+            "pure_output",
+            false,
+            "\"/* {0} */\", out(reg) _, options(pure, nomem)",
+        ),
+        (
+            "pure_split",
+            false,
+            "\"/* {0} */\", inout(reg) 1usize => _, options(pure, nomem)",
+        ),
     ] {
         let source = format!("fn main() {{ unsafe {{ core::arch::asm!({assembly}); }} }}");
-        let (_, _, hir) = flux_hir::lower_text("discarded.rs", &source);
-        assert!(
-            hir.diagnostics
-                .iter()
-                .any(|error| error.message == "discarded assembly outputs are not supported yet"),
-            "{:?}",
+        let path = root.join(format!("{name}.rs"));
+        std::fs::write(&path, &source).unwrap();
+        let oracle = Command::new("rustc")
+            .args(["--edition=2024", "--emit=metadata"])
+            .arg(&path)
+            .arg("-o")
+            .arg(root.join(format!("{name}.rmeta")))
+            .output()
+            .unwrap();
+        assert_eq!(
+            oracle.status.success(),
+            accepted,
+            "{name}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let (_, _, hir) = flux_hir::lower_text(&path, &source);
+        assert_eq!(
+            hir.diagnostics.is_empty(),
+            accepted,
+            "{name}: {:?}",
             hir.diagnostics
         );
     }
+    std::fs::remove_dir_all(root).unwrap();
 }

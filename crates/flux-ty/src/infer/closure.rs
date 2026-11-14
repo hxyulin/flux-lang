@@ -1353,8 +1353,8 @@ impl Ctx<'_> {
         match &body.exprs[expr] {
             Expr::Pin(inner) => self.consume(*inner, uses),
             Expr::InlineAsm(asm) => {
-                for (_, output) in &asm.outputs {
-                    self.borrow(*output, None, uses);
+                for output in asm.outputs.iter().filter_map(|(_, output)| *output) {
+                    self.borrow(output, None, uses);
                 }
                 for (&operand, register) in
                     body.lists[asm.operands].iter().zip(asm.registers.iter())
@@ -1993,7 +1993,7 @@ fn expr_bindings(body: &flux_hir::Body, expr: ExprId, out: &mut FxHashSet<Bindin
             }
             Expr::InlineAsm(asm) => {
                 stack.extend(body.lists[asm.operands].iter().copied());
-                stack.extend(asm.outputs.iter().map(|(_, expr)| *expr));
+                stack.extend(asm.outputs.iter().filter_map(|(_, expr)| *expr));
             }
             Expr::Pin(inner) => stack.push(*inner),
             Expr::Repeat { value, .. } => stack.push(*value),

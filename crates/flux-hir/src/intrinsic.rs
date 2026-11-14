@@ -154,6 +154,8 @@ intrinsics! {
     PtrAdd => "ptr_add",
     PtrSub => "ptr_sub",
     PtrOffset => "ptr_offset",
+    PtrByteAdd => "ptr_byte_add",
+    PtrByteSub => "ptr_byte_sub",
     SliceFromRawPartsMut => "slice_from_raw_parts_mut",
     RawSliceFromParts => "raw_slice_from_parts",
     RawSliceFromPartsMut => "raw_slice_from_parts_mut",

@@ -4095,14 +4095,18 @@ impl Builder<'_> {
                         .iter()
                         .find(|(i, _)| *i as usize == index)
                         .map(|(_, expr)| *expr);
-                    let separate_input = output.map(|_| {
+                    let separate_input = output.filter(|_| !register.output_only()).map(|_| {
                         let input = self.lower_operand(operand);
                         let snapshot = self.temp(self.own_ty(operand));
                         // Output-place evaluation may change the input's source.
                         self.assign(&snapshot.into(), Rvalue::Use(input), range);
                         self.read(snapshot.into())
                     });
-                    let place = self.lower_place(output.unwrap_or(operand));
+                    let place = match output {
+                        Some(None) => self.temp(self.own_ty(operand)).into(),
+                        Some(Some(output)) => self.lower_place(output),
+                        None => self.lower_place(operand),
+                    };
                     let ty = self.place_ty(&place);
                     let snapshot = self.temp(ty);
                     let input = if register.output_only() {

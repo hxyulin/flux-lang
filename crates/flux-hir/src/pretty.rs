@@ -538,7 +538,10 @@ impl Printer<'_> {
                         asm.outputs.iter().find(|(index, _)| *index as usize == i)
                     {
                         self.out.push_str(" => ");
-                        self.expr(*output);
+                        match output {
+                            Some(output) => self.expr(*output),
+                            None => self.out.push('_'),
+                        }
                     }
                 }
                 self.out.push(')');

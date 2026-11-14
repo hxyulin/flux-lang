@@ -2552,20 +2552,57 @@ impl<'a> Ctx<'a> {
         } else if let Some(asm) = asm {
             if let Some(ast::Expr::TupleExpr(tuple)) = expr {
                 let mut fields = tuple.fields();
-                let operands = self.lower_expr_list(fields.by_ref().take(asm.registers.len()));
-                let outputs = asm
-                    .outputs
-                    .iter()
-                    .zip(fields)
-                    .map(|((index, _), expr)| (*index, self.lower_expr(expr)))
-                    .collect();
+                let mut outputs = Vec::new();
+                let mut operands = Vec::new();
+                for (index, (expr, register)) in fields
+                    .by_ref()
+                    .take(asm.registers.len())
+                    .zip(asm.registers.iter())
+                    .enumerate()
+                {
+                    let operand =
+                        if register.output_only() && matches!(expr, ast::Expr::UnderscoreExpr(_)) {
+                            outputs.push((index as u32, None));
+                            // Discards still reserve a register. Its value is unobserved;
+                            // a scalar seed chooses the register bank without a place.
+                            let seed = match register.class() {
+                                crate::AsmRegister::Vreg | crate::AsmRegister::XmmReg => {
+                                    Literal::Float {
+                                        text: Symbol::intern("0.0"),
+                                        suffix: Some(sym::f64),
+                                    }
+                                }
+                                class => Literal::Int {
+                                    value: 0,
+                                    suffix: Some(if class == crate::AsmRegister::RegByte {
+                                        sym::u8
+                                    } else {
+                                        sym::u64
+                                    }),
+                                },
+                            };
+                            self.alloc_expr(Expr::Literal(seed), expr.syntax().text_range())
+                        } else {
+                            self.lower_expr(expr)
+                        };
+                    operands.push(operand);
+                }
+                let operands = self.lists.alloc(operands);
+                for ((index, _), expr) in asm.outputs.iter().zip(fields) {
+                    let output = if matches!(expr, ast::Expr::UnderscoreExpr(_)) {
+                        None
+                    } else {
+                        Some(self.lower_expr(expr))
+                    };
+                    outputs.push((*index, output));
+                }
                 self.alloc_expr(
                     Expr::InlineAsm(crate::InlineAsm {
                         template: asm.template,
                         registers: asm.registers,
                         options: asm.options,
                         operands,
-                        outputs,
+                        outputs: outputs.into(),
                     }),
                     range,
                 )

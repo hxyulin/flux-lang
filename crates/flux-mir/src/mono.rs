@@ -1874,7 +1874,11 @@ pub fn expand_intrinsics(
                 };
                 (dest, Rvalue::Use(Operand::Const(constant)))
             }
-            (name @ ("ptr_add" | "ptr_sub" | "ptr_offset"), [ptr, count]) => {
+            (
+                name @ ("ptr_add" | "ptr_sub" | "ptr_offset" | "ptr_byte_add" | "ptr_byte_sub"),
+                [ptr, count],
+            ) => {
+                let bytewise = matches!(name, "ptr_byte_add" | "ptr_byte_sub");
                 let usize_ty = Ty::int(flux_ty::IntTy::Usize);
                 let mut temp = |ty, value| {
                     let local = body.locals.alloc(LocalDecl {
@@ -1887,21 +1891,38 @@ pub fn expand_intrinsics(
                     });
                     Operand::Move(local.into())
                 };
-                let address = temp(usize_ty, Rvalue::Cast(ptr.clone(), usize_ty));
+                // Address arithmetic reads only the thin data pointer. Casting
+                // a wide pointer straight to usize would retain metadata leaves.
+                let data = if bytewise {
+                    let thin = Ty::raw_ptr(flux_ty::Mutability::Not, Ty::int(flux_ty::IntTy::U8));
+                    temp(thin, Rvalue::Cast(ptr.clone(), thin))
+                } else {
+                    ptr.clone()
+                };
+                let address = temp(usize_ty, Rvalue::Cast(data, usize_ty));
                 let count = temp(usize_ty, Rvalue::Cast(count.clone(), usize_ty));
                 let size = Operand::Const(Constant::Int {
-                    bits: u128::from(layouts.of(arg_ty).size),
+                    bits: if bytewise {
+                        1
+                    } else {
+                        u128::from(layouts.of(arg_ty).size)
+                    },
                     ty: flux_ty::IntTy::Usize,
                 });
                 let bytes = temp(usize_ty, Rvalue::BinaryOp(crate::BinOp::Mul, count, size));
-                let op = if name == "ptr_sub" {
+                let op = if matches!(name, "ptr_sub" | "ptr_byte_sub") {
                     crate::BinOp::Sub
                 } else {
                     crate::BinOp::Add
                 };
                 let address = temp(usize_ty, Rvalue::BinaryOp(op, address, bytes));
                 let ty = body.place_ty(&dest, sigs);
-                (dest, Rvalue::Cast(address, ty))
+                let value = if bytewise {
+                    Rvalue::WithAddr(ptr.clone(), address)
+                } else {
+                    Rvalue::Cast(address, ty)
+                };
+                (dest, value)
             }
             ("read", [src]) => {
                 let src = pointer(body, src);

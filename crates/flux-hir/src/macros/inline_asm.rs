@@ -208,12 +208,6 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                     "only integer literals are supported as assembly constants".into(),
                 ));
             }
-            if n == 1 && tokens[at].kind == T![_] {
-                return Err((
-                    tokens[at].range(),
-                    "discarded assembly outputs are not supported yet".into(),
-                ));
-            }
             expressions.push(tokens[at..at + n].to_vec());
             if register.fixed().is_some() && name.is_some() {
                 return Err((range, "explicit register operands cannot have names".into()));
@@ -249,12 +243,6 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                 let n = parser::fragment_len(&input, at, parser::Fragment::Expr)
                     .filter(|&n| n > 0)
                     .ok_or((range, "expected an assembly output place".into()))?;
-                if n == 1 && tokens[at].kind == T![_] {
-                    return Err((
-                        tokens[at].range(),
-                        "discarded assembly outputs are not supported yet".into(),
-                    ));
-                }
                 outputs.push(((registers.len() - 1) as u32, tokens[at..at + n].to_vec()));
                 at += n;
             }
@@ -278,7 +266,15 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
             "`pure` assembly requires `nomem` or `readonly`".into(),
         ));
     }
-    if options.pure && registers.iter().all(|register| register.input_only()) {
+    if options.pure
+        && registers.iter().enumerate().all(|(index, register)| {
+            let output = outputs
+                .iter()
+                .find(|(i, _)| *i as usize == index)
+                .map_or(&expressions[index], |(_, output)| output);
+            register.input_only() || matches!(&output[..], [token] if token.kind == T![_])
+        })
+    {
         return Err((range, "`pure` assembly requires an output".into()));
     }
     let template = template(&text, &names, &registers, range)?;

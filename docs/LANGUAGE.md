@@ -2149,7 +2149,9 @@ AArch64 assembly accepts input-only `in(reg)` and `in(vreg)` operands alongside
 tied `inout` operands. Inputs may be expressions and are evaluated once in source
 order without writeback. Scalar and vector transports preserve their bits; pure
 assembly still requires an output. Separate `out` and `lateout` operands use the same output transport.
-Discarded output operands (`_`) are reported as unsupported before MIR lowering.
+Discarded output operands (`out(reg) _`, `inout(reg) value => _`) reserve
+the declared register without writing an output place. Split inputs are evaluated
+once. Pure assembly requires at least one output that is not discarded.
 
 
 Explicit register operands support `in`, `out`, `lateout`, `inout`, and
@@ -2163,8 +2165,11 @@ Discarded outputs and other registers remain unsupported.
 
 Slice first/last array windows check bounds, including empty and zero-sized
 windows. Array owning iterators expose only their remaining initialized elements
-through `as_mut_slice`. Raw and NonNull pointers support sized byte offsets and
-unsigned forward distances. Address mapping preserves wide-pointer metadata.
+through `as_mut_slice`. Raw and NonNull byte offsets support unsized pointees and preserve slice length
+or vtable metadata. Element offsets and unsigned forward distances require sized
+pointees. Byte add/sub also work in constants with allocation-bound checks;
+nonzero offsets of custom DST tails in constants remain unsupported. Address
+mapping preserves wide-pointer metadata.
 Raw pointer equality and `ptr::eq` compare the data address and metadata without
 reading the pointee; wide-pointer ordering remains unsupported. `ManuallyDrop`
 accepts unsized payloads, and `needs_drop` handles slices and erased objects.

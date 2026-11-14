@@ -541,3 +541,67 @@ fn libloading_symbol_graph_matches_rustc() {
         r#"fn main(){unsafe{let library=libloading::Library::new("/usr/lib/libSystem.B.dylib").unwrap();let length:libloading::Symbol<unsafe extern "C" fn(*const u8)->usize>=library.get(b"strlen\0").unwrap();let count=length(c"library".as_ptr() as *const u8);assert_eq!(count,7);println!("{count}");}}"#,
     );
 }
+
+fn cmov_consumer(version: &str) {
+    compare_registry(
+        "cmov",
+        version,
+        r#"
+use cmov::{Cmov,CmovEq};
+fn main(){
+ let mut sum=0u64;
+ for condition in [0u8,1,2,255] {
+  let mut value=7u64; value.cmovnz(&42,condition);
+  assert_eq!(value,if condition==0 {7}else{42});
+  let mut small=9u16; small.cmovz(&13,condition);
+  assert_eq!(small,if condition==0 {13}else{9});
+  for (left,right) in [(0u32,0u32),(7,9),(u32::MAX,u32::MAX)] {
+   let mut equal=17u8; left.cmoveq(&right,condition,&mut equal);
+   assert_eq!(equal,if left==right {condition}else{17});
+   let mut unequal=19u8; left.cmovne(&right,condition,&mut unequal);
+   assert_eq!(unequal,if left!=right {condition}else{19});
+   sum+=u64::from(equal)+u64::from(unequal);
+  }
+ }
+ println!("{}",sum);
+}
+"#,
+    );
+}
+#[test]
+fn cmov_046_default_graph_matches_rustc() {
+    cmov_consumer("0.4.6");
+}
+#[test]
+fn cmov_054_default_graph_matches_rustc() {
+    cmov_consumer("0.5.4");
+}
+#[test]
+fn triomphe_default_graph_matches_rustc() {
+    compare_registry(
+        "triomphe",
+        "0.1.14",
+        r#"
+use triomphe::{Arc,HeaderSlice,UniqueArc};
+use std::sync::atomic::{AtomicUsize,Ordering};
+static DROPS:AtomicUsize=AtomicUsize::new(0);
+#[repr(align(64))] struct Owner(u32);
+impl Drop for Owner {fn drop(&mut self){DROPS.fetch_add(1,Ordering::SeqCst);}}
+fn main(){
+ let owner=Arc::new(Owner(42));
+ let pointer=Arc::into_raw(owner);
+ let restored=unsafe{Arc::from_raw(pointer)};
+ let other=restored.clone(); assert!(Arc::ptr_eq(&restored,&other));
+ assert_eq!(Arc::strong_count(&other),2);assert_eq!(other.0,42);
+ drop(restored);assert_eq!(DROPS.load(Ordering::SeqCst),0);
+ drop(other);assert_eq!(DROPS.load(Ordering::SeqCst),1);
+ let slice:Arc<HeaderSlice<u32,[u16]>>=Arc::from_header_and_slice(7,&[11u16,13,17]);
+ let pointer=Arc::into_raw(slice);
+ let slice=unsafe{Arc::from_raw(pointer)};
+ assert_eq!(slice.header,7);assert_eq!(&slice.slice,&[11,13,17]);
+ let unique=UniqueArc::new(23u32).shareable(); assert_eq!(*unique,23);
+ println!("{} {} {}",DROPS.load(Ordering::SeqCst),slice.slice.len(),*unique);
+}
+"#,
+    );
+}

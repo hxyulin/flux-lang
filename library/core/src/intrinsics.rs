@@ -534,3 +534,9 @@ pub(crate) fn ptr_with_addr<T:?Sized>(pointer:*const T,address:usize)->*const T 
 /// from the pointee or assumptions about the in-memory layout of a fat pointer.
 #[rustc_intrinsic]
 pub(crate) fn ptr_metadata_word<T: ?Sized>(pointer: *const T) -> usize { loop {} }
+
+/// Byte displacement changes the data pointer and preserves all DST metadata.
+#[rustc_intrinsic]
+pub(crate) const unsafe fn ptr_byte_add<T: ?Sized>(pointer: *const T, count: usize) -> *const T { loop {} }
+#[rustc_intrinsic]
+pub(crate) const unsafe fn ptr_byte_sub<T: ?Sized>(pointer: *const T, count: usize) -> *const T { loop {} }

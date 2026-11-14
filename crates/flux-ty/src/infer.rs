@@ -3394,14 +3394,16 @@ impl Ctx<'_> {
                             .iter()
                             .find(|(index, _)| body.lists[asm.operands][*index as usize] == operand)
                             .map(|(_, expr)| *expr);
-                        if let Some(output) = output {
+                        if let Some(Some(output)) = output {
                             self.infer_expr(output);
                         }
-                        self.check_place(
-                            id,
-                            output.unwrap_or(operand),
-                            output.is_some() || register.output_only(),
-                        );
+                        if output != Some(None) {
+                            self.check_place(
+                                id,
+                                output.flatten().unwrap_or(operand),
+                                output.is_some() || register.output_only(),
+                            );
+                        }
                     }
                 }
                 self.deferred.push(Deferred::InlineAsm { expr: id });
@@ -8351,7 +8353,7 @@ impl Ctx<'_> {
                         .zip(asm.registers.iter())
                     {
                         let ty = self.resolve(self.expr_types[operand], reported);
-                        if let Some((_, output)) = asm.outputs.iter().find(|(index, _)| {
+                        if let Some((_, Some(output))) = asm.outputs.iter().find(|(index, _)| {
                             self.body.lists[asm.operands][*index as usize] == operand
                         }) {
                             let output_ty = self.resolve(self.expr_types[*output], reported);

@@ -323,8 +323,9 @@ pub struct InlineAsm {
     pub registers: Box<[AsmRegister]>,
     /// Inputs and inout places, evaluated once in source order.
     pub operands: SliceId<ExprId>,
-    /// Separate output places of split inout operands, indexed by operand.
-    pub outputs: Box<[(u32, ExprId)]>,
+    /// Separate or discarded output places, indexed by operand. None discards
+    /// the result while retaining its register and any input evaluation.
+    pub outputs: Box<[(u32, Option<ExprId>)]>,
     pub options: AsmOptions,
 }
 

@@ -752,6 +752,108 @@ impl<'a> Evaluator<'a> {
         })
     }
 
+    /// Preserve metadata independently of the allocation displacement. The
+    /// ordinary offset path performs byte bounds and allocation-origin checks.
+    fn pointer_byte_offset(
+        &mut self,
+        value: Value,
+        pointer_ty: Ty,
+        count: i128,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        if count == 0 {
+            return Ok(value);
+        }
+        if let Value::DynPointer {
+            pointer,
+            concrete,
+            object,
+            mutable,
+        } = value
+        {
+            let pointer = self.pointer_byte_offset(
+                (*pointer).clone(),
+                Ty::raw_ptr(mutable, concrete),
+                count,
+                range,
+            )?;
+            return Ok(Value::DynPointer {
+                pointer: Arc::new(pointer),
+                concrete,
+                object,
+                mutable,
+            });
+        }
+        let pointee = pointer_pointee(pointer_ty).ok_or_else(|| unsupported_view(range))?;
+        if self.sigs.metadata(pointee) == flux_ty::Metadata::VTable {
+            if let Value::PointerView {
+                pointer, source, ..
+            } = value
+            {
+                let shifted = self.pointer_byte_offset((*pointer).clone(), source, count, range)?;
+                return Ok(pointer_view(shifted, source, pointer_ty));
+            }
+            return Err(unsupported_view(range));
+        }
+        let len = if self.sigs.metadata(pointee) == flux_ty::Metadata::Length {
+            if !matches!(pointee.kind(), TyKind::Slice(_) | TyKind::Str) {
+                return Err(unsupported_view(range));
+            }
+            Some(self.slice_pointer_len(&value, pointer_ty, range)?)
+        } else {
+            None
+        };
+        let bytes = Ty::raw_ptr(flux_ty::Mutability::Not, Ty::int(IntTy::U8));
+        let shifted =
+            self.pointer_offset(pointer_view(value, pointer_ty, bytes), bytes, count, range)?;
+        let Value::PointerOffset {
+            pointer,
+            source,
+            offset,
+            ..
+        } = shifted
+        else {
+            unreachable!("nonzero offset creates an allocation view")
+        };
+        Ok(Value::PointerOffset {
+            pointer,
+            source,
+            offset,
+            target: pointer_ty,
+            len,
+        })
+    }
+
+    fn slice_pointer_len(
+        &self,
+        value: &Value,
+        pointer_ty: Ty,
+        range: TextRange,
+    ) -> Result<u64, EvalError> {
+        let pointee = pointer_pointee(pointer_ty).ok_or_else(|| unsupported_view(range))?;
+        let mut view = value;
+        while let Value::PointerView { pointer, .. } = view {
+            view = pointer;
+        }
+        match view {
+            Value::PointerOffset { len: Some(len), .. } => Some(*len),
+            Value::Ref(inner)
+            | Value::InteriorRef(inner)
+            | Value::LocalRef { value: inner, .. } => match &**inner {
+                Value::Aggregate(elements) => Some(elements.len() as u64),
+                _ => None,
+            },
+            Value::Static(id) => self.sigs.consts[*id].array_len(),
+            Value::StaticPart { id, path } => {
+                static_path_type(self.items, self.sigs, self.sigs.consts[*id], path)
+                    .and_then(Ty::array_len)
+            }
+            Value::FramePointer { ty, .. } => ty.array_len(),
+            _ => pointee.array_len(),
+        }
+        .ok_or_else(|| unsupported_view(range))
+    }
+
     /// A borrow of projected promoted storage keeps the allocation of its
     /// base. Copying the projected value would change pointer identity/bounds.
     fn projected_address(
@@ -1848,26 +1950,7 @@ impl<'a> Evaluator<'a> {
             .sequence_elem()
             .or_else(|| (pointee == Ty::STR).then_some(Ty::int(IntTy::U8)))
             .ok_or_else(|| unsupported_view(range))?;
-        let mut view = &value;
-        while let Value::PointerView { pointer, .. } = view {
-            view = pointer;
-        }
-        let count = match view {
-            Value::PointerOffset { len: Some(len), .. } => Some(*len),
-            Value::Ref(inner)
-            | Value::InteriorRef(inner)
-            | Value::LocalRef { value: inner, .. } => match &**inner {
-                Value::Aggregate(elements) => Some(elements.len() as u64),
-                _ => None,
-            },
-            Value::Static(id) => self.sigs.consts[*id].array_len(),
-            Value::StaticPart { id, path } => {
-                static_path_type(self.items, self.sigs, self.sigs.consts[*id], path)
-                    .and_then(Ty::array_len)
-            }
-            _ => pointee.array_len(),
-        }
-        .ok_or_else(|| unsupported_view(range))?;
+        let count = self.slice_pointer_len(&value, source_ty, range)?;
         if start > end || end as u64 > count {
             return Err(error(range, "constant subslice is out of bounds".into()));
         }
@@ -2561,6 +2644,8 @@ impl<'a> Evaluator<'a> {
                             flux_hir::Intrinsic::PtrAdd
                                 | flux_hir::Intrinsic::PtrSub
                                 | flux_hir::Intrinsic::PtrOffset
+                                | flux_hir::Intrinsic::PtrByteAdd
+                                | flux_hir::Intrinsic::PtrByteSub
                         )
                     ) && let [pointer, count] = &args[..]
                     {
@@ -2574,9 +2659,10 @@ impl<'a> Evaluator<'a> {
                             == Some(flux_hir::Intrinsic::PtrOffset)
                         {
                             sign_extend(bits, ty)
-                        } else if self.items.functions[*func].intrinsic
-                            == Some(flux_hir::Intrinsic::PtrSub)
-                        {
+                        } else if matches!(
+                            self.items.functions[*func].intrinsic,
+                            Some(flux_hir::Intrinsic::PtrSub | flux_hir::Intrinsic::PtrByteSub)
+                        ) {
                             -(bits as i128)
                         } else {
                             bits as i128
@@ -2587,7 +2673,14 @@ impl<'a> Evaluator<'a> {
                             &[],
                             body.operand_ty(pointer, self.sigs).subst(generics),
                         );
-                        let value = self.pointer_offset(value, pointer_ty, count, range)?;
+                        let value = if matches!(
+                            self.items.functions[*func].intrinsic,
+                            Some(flux_hir::Intrinsic::PtrByteAdd | flux_hir::Intrinsic::PtrByteSub)
+                        ) {
+                            self.pointer_byte_offset(value, pointer_ty, count, range)?
+                        } else {
+                            self.pointer_offset(value, pointer_ty, count, range)?
+                        };
                         self.frame_assign(body, locals, generics, dest, value, range)?;
                         block = target
                             .ok_or_else(|| error(range, "entering unreachable code".into()))?;
