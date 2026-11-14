@@ -71,7 +71,6 @@ mod resolve;
 mod selected;
 mod selected_signatures;
 pub use method_binders::method_early_lifetimes;
-pub(crate) use selected::projection as selected_projection_regions;
 pub use selected_signatures::{SelectedMethodSignature, selected_method_signature};
 mod trait_profile;
 

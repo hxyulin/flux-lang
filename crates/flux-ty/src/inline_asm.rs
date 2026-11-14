@@ -40,7 +40,12 @@ pub fn supports(items: &ItemTree, sigs: &Signatures, ty: Ty, register: AsmRegist
     match register.class() {
         AsmRegister::Const => ty.as_int().is_some(),
         AsmRegister::Reg => match ty.kind() {
-            TyKind::Int(i) => i.bits() <= 64 && (cfg!(target_arch = "aarch64") || i.bits() >= 16),
+            TyKind::Int(i) => {
+                i.bits() <= 64
+                    && (register.fixed().is_some()
+                        || cfg!(target_arch = "aarch64")
+                        || i.bits() >= 16)
+            }
             TyKind::Float(_) => true,
             TyKind::FnPtr(_) => true,
             TyKind::RawPtr(_, p) => !sigs.is_unsized(p),

@@ -7768,6 +7768,21 @@ impl<'a> Cx<'a> {
             // A selected header without its conditions cannot justify a skip.
             return true;
         };
+        // Erased selection cannot discharge constants or repeated lifetime
+        // parameters in an impl header. Their occurrence rows need bind_impl.
+        let mut parameters = FxHashSet::default();
+        if regions
+            .self_ty
+            .iter()
+            .chain(regions.trait_lifetimes.iter())
+            .chain(regions.trait_args.iter().flatten())
+            .any(|region| match region {
+                Region::Param(index) => !parameters.insert(*index),
+                Region::Static | Region::Erased | Region::Late(_) => true,
+            })
+        {
+            return true;
+        }
         if !regions.bounds.is_empty() || regions.bound_traits.iter().any(|t| t.bound != 0) {
             return true;
         }

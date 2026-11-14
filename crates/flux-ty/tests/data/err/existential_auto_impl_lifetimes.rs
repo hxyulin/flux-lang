@@ -1,5 +1,5 @@
-// The erased auto trait bounds still decide the impl, and lifetimes that
-// other bounds name stay unsupported.
+// Explicit marker prerequisites are checked at use sites, including
+// lifetimes absent from the self type.
 use std::marker::{PhantomData, PhantomPinned};
 
 pub type PinnedFieldsOf<T> = <PinnedFieldsOfHelperStruct<T> as PinnedFieldsOfHelperTrait>::Actual;

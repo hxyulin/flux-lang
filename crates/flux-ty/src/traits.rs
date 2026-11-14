@@ -519,101 +519,6 @@ fn check_caller_supertraits(
 /// A pure associated selection can expose lifetime rows that the old
 /// zero-slot alias model hid. Its inputs and output must add no formation
 /// requirements before uniformly quantified auto-trait selection can erase them.
-fn selected_auto_bound_is_uniform(
-    items: &ItemTree,
-    sigs: &Signatures,
-    id: ImplId,
-    index: usize,
-    predicate: &Predicate,
-    row: &[Region],
-    regions: &ImplRegions,
-) -> bool {
-    if !is_auto_trait(items, predicate.trait_ref.trait_) {
-        return false;
-    }
-    let imp = &items.impls[id];
-    let Some(written) = imp.generics.predicates.get(index) else {
-        return false;
-    };
-    let generics = crate::generic_names(items, None, &imp.generics);
-    let consts = crate::generic_consts(items, imp.module, None, &imp.generics);
-    let mut errors = Vec::new();
-    let raw = resolve_type(
-        items,
-        imp.module,
-        &written.ty,
-        TypeScope {
-            self_ty: Some(sigs.impls[id]),
-            generics: &generics,
-            consts: &consts,
-            bounds: sigs.impl_predicates.get(id).map_or(&[], |p| &p[..]),
-            defaults: Some(&sigs.trait_defaults),
-            struct_fields: Some(&sigs.structs),
-            ..TypeScope::default()
-        },
-        written.ty_range,
-        &mut errors,
-    );
-    let TyKind::Alias(alias) = raw.kind() else {
-        return false;
-    };
-    if !errors.is_empty() {
-        return false;
-    }
-    let mapped = crate::regions::selected_projection_regions(items, sigs, alias, row);
-    let Some(output) = mapped else {
-        return false;
-    };
-    let value = normalize(items, sigs, &[], raw);
-    if value.has_aliases()
-        || value.has_opaques()
-        || output.iter().any(|region| match *region {
-            Region::Param(i) => (i as usize) >= regions.names.len(),
-            Region::Static => false,
-            Region::Erased | Region::Late(_) => true,
-        })
-    {
-        return false;
-    }
-    let mut required = Vec::new();
-    let mut next = 0;
-    for &input in alias.args {
-        let count = crate::regions::slots(items, input);
-        let Some(part) = row.get(next..next + count) else {
-            return false;
-        };
-        crate::regions::implied_outlives_with_static(
-            items,
-            sigs,
-            input,
-            part,
-            Some(Region::Static),
-            &mut required,
-        );
-        next += count;
-    }
-    crate::regions::implied_outlives_with_static(
-        items,
-        sigs,
-        value,
-        &output,
-        Some(Region::Static),
-        &mut required,
-    );
-    // The existing policy still guards conditional applicability. A mapping
-    // alone must never certify new lifetime relations or type-outlives bounds.
-    let mut implied = Vec::new();
-    crate::regions::implied_outlives_with_static(
-        items,
-        sigs,
-        sigs.impls[id],
-        &regions.self_ty,
-        Some(Region::Static),
-        &mut implied,
-    );
-    required.iter().all(|bound| implied.contains(bound))
-}
-
 /// Rust's ordered orphan check: a local trait, or a local input type with
 /// no uncovered type parameters before it. References and Box are fundamental
 /// wrappers; other foreign constructors cover parameters but do not confer locality.
@@ -755,92 +660,17 @@ pub fn check_impls(
             );
             continue;
         }
-        if is_auto_trait(items, t) && !items.is_core(imp.module) {
-            // Header lifetimes remain uniformly quantified. Static bounds
-            // on type parameters are checked at each selected occurrence,
-            // including declaration and method compatibility proofs.
-            match sigs.impls.get(id).map(|ty| ty.kind()) {
-                Some(TyKind::Adt(..)) => {
-                    let lifetimes = crate::regions::slots(items, sigs.impls[id]);
-                    let predicates = sigs.impl_predicates.get(id).map_or(&[][..], |p| &p[..]);
-                    let regular_lifetimes = sigs.regions.impls.get(id).is_some_and(|r| {
-                        // A lifetime in no slot of the self type, `'__pin` in
-                        // pin-project-lite's `impl<'__pin, T> Unpin for S<T>
-                        // where __Origin<'__pin, T>: Unpin`, is existential.
-                        // Erasing it is exact where it occurs only in the
-                        // types of auto trait bounds: the accepted impls of
-                        // auto traits never depend on lifetimes, so such a
-                        // bound holds for some lifetime if and only if it
-                        // holds erased.
-                        let free = |region: &Region| {
-                            matches!(region, Region::Param(p) if (*p as usize) < r.names.len())
-                                && !r.self_ty.contains(region)
-                        };
-                        let bound_self = |(index, (row, predicate)): (usize, (&[Region], &Predicate))| {
-                            row.is_empty()
-                                || (row.iter().all(free)
-                                    && is_auto_trait(items, predicate.trait_ref.trait_)
-                                    && !predicate.self_ty.has_aliases()
-                                    && !predicate.self_ty.has_opaques())
-                                || selected_auto_bound_is_uniform(items, sigs, id, index, predicate, row, r)
-                        };
-                        // `T: 'a` in `impl<'a, T: Sync + 'a> Sync for Guard<'a,
-                        // T>` where `Guard`'s fields already require it: every
-                        // well-formed instance of the self type meets it, so
-                        // the erased selection decides the impl exactly.
-                        let mut implied = Vec::new();
-                        crate::regions::implied_outlives_with_static(
-                            items,
-                            sigs,
-                            sigs.impls[id],
-                            &r.self_ty,
-                            Some(Region::Static),
-                            &mut implied,
-                        );
-                        let implied_bound = |bound: &Outlives<Region>| match *bound {
-                            Outlives::Region(a, b) => a == b || implied.contains(bound),
-                            Outlives::Type(ty, b) => implied.iter().any(|i| {
-                                matches!(*i, Outlives::Type(u, c) if c == b
-                                    && (u == ty
-                                        || crate::regions::outlives_type_components(items, sigs, u)
-                                            .contains(&ty)))
-                            }),
-                        };
-                        // Named and elided header lifetimes are both universal.
-                        // Accept a permutation of distinct binder parameters;
-                        // constants and repeated parameters specialize the impl.
-                        r.names.len() >= lifetimes
-                            && r.self_ty.len() == lifetimes
-                            && r.self_ty.iter().enumerate().all(|(i, region)| {
-                                matches!(region, Region::Param(p) if (*p as usize) < r.names.len())
-                                    && !r.self_ty[..i].contains(region)
-                            })
-                            // Other region-dependent conditions retain their
-                            // admission gate until occurrence proofs cover them.
-                            && r.bounds.iter().all(|bound| implied_bound(bound)
-                                || matches!(*bound, Outlives::Type(ty, Region::Static) if matches!(ty.kind(), TyKind::Param(_))))
-                            && r.bound_selfs.len() == sigs.impl_predicates.get(id).map_or(0, |p| p.len())
-                            && r.bound_traits.len() == r.bound_selfs.len()
-                            && r.projections.len() == sigs.impl_projections.get(id).map_or(0, |p| p.len())
-                            && r.bound_selfs.len() == predicates.len()
-                            && r.bound_selfs.iter().map(|r| &r[..]).zip(predicates).enumerate().all(bound_self)
-                            && r.bound_traits.iter().all(|r| {
-                                r.lifetimes.is_empty() && r.args.iter().all(|a| a.is_empty())
-                            })
-                            && r.projections.iter().all(|r| r.is_empty())
-                    });
-                    if !regular_lifetimes {
-                        error(
-                            imp.self_range,
-                            "lifetime specialization and bounds in auto trait impls are not supported yet".into(),
-                        );
-                    }
-                }
-                _ => error(
-                    imp.self_range,
-                    "auto traits can only be implemented for structs and enums".into(),
-                ),
-            }
+        if is_auto_trait(items, t)
+            && !items.is_core(imp.module)
+            && !matches!(
+                sigs.impls.get(id).map(|ty| ty.kind()),
+                Some(TyKind::Adt(..))
+            )
+        {
+            error(
+                imp.self_range,
+                "auto traits can only be implemented for structs and enums".into(),
+            );
         }
         let has_may_dangle = imp.generics.params.iter().any(|p| p.may_dangle)
             || imp.generics.lifetimes.iter().any(|p| p.may_dangle);

@@ -129,7 +129,10 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                     "assembly operands cannot follow options".into(),
                 ));
             }
-            if !matches!(kind, "inout" | "inlateout" | "in" | "lateout" | "const") {
+            if !matches!(
+                kind,
+                "inout" | "inlateout" | "in" | "out" | "lateout" | "const"
+            ) {
                 return Err((
                     tokens[at].range(),
                     format!("assembly operand `{kind}` is not supported yet"),
@@ -143,13 +146,38 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                     return Err((range, "expected `(`".into()));
                 }
                 at += 1;
-                let register = match tokens.get(at).map(|t| t.text.as_str()) {
-                    Some("reg") => AsmRegister::Reg,
-                    Some("vreg") => AsmRegister::Vreg,
-                    Some("reg_byte") => AsmRegister::RegByte,
-                    Some("xmm_reg") => AsmRegister::XmmReg,
-                    _ => {
-                        return Err((range, "assembly register class is not supported yet".into()));
+                let register = if tokens
+                    .get(at)
+                    .is_some_and(|token| token.kind == SyntaxKind::STRING)
+                {
+                    let name = crate::literal::unescape_str(tokens[at].text.as_str())
+                        .map_err(|message| (range, message))?;
+                    let name = fixed_register(&name).ok_or((
+                        range,
+                        "explicit assembly register is not supported on this target yet".into(),
+                    ))?;
+                    if registers
+                        .iter()
+                        .any(|register: &AsmRegister| register.fixed() == Some(name))
+                    {
+                        return Err((
+                            range,
+                            "overlapping explicit registers are not supported yet".into(),
+                        ));
+                    }
+                    AsmRegister::Fixed(name)
+                } else {
+                    match tokens.get(at).map(|t| t.text.as_str()) {
+                        Some("reg") => AsmRegister::Reg,
+                        Some("vreg") => AsmRegister::Vreg,
+                        Some("reg_byte") => AsmRegister::RegByte,
+                        Some("xmm_reg") => AsmRegister::XmmReg,
+                        _ => {
+                            return Err((
+                                range,
+                                "assembly register class is not supported yet".into(),
+                            ));
+                        }
                     }
                 };
                 at += 1;
@@ -158,14 +186,16 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                 }
                 at += 1;
                 match (kind, register) {
+                    ("in", AsmRegister::Fixed(name)) => AsmRegister::InputFixed(name),
+                    ("out" | "lateout", AsmRegister::Fixed(name)) => AsmRegister::OutputFixed(name),
                     ("in", AsmRegister::RegByte) => AsmRegister::InputRegByte,
-                    ("lateout", AsmRegister::RegByte) => AsmRegister::OutputRegByte,
+                    ("out" | "lateout", AsmRegister::RegByte) => AsmRegister::OutputRegByte,
                     ("in", AsmRegister::XmmReg) => AsmRegister::InputXmmReg,
-                    ("lateout", AsmRegister::XmmReg) => AsmRegister::OutputXmmReg,
+                    ("out" | "lateout", AsmRegister::XmmReg) => AsmRegister::OutputXmmReg,
                     ("in", AsmRegister::Reg) => AsmRegister::InputReg,
                     ("in", AsmRegister::Vreg) => AsmRegister::InputVreg,
-                    ("lateout", AsmRegister::Reg) => AsmRegister::OutputReg,
-                    ("lateout", AsmRegister::Vreg) => AsmRegister::OutputVreg,
+                    ("out" | "lateout", AsmRegister::Reg) => AsmRegister::OutputReg,
+                    ("out" | "lateout", AsmRegister::Vreg) => AsmRegister::OutputVreg,
                     _ => register,
                 }
             };
@@ -179,8 +209,20 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
                 ));
             }
             expressions.push(tokens[at..at + n].to_vec());
+            if register.fixed().is_some() && name.is_some() {
+                return Err((range, "explicit register operands cannot have names".into()));
+            }
+            if register.fixed().is_none()
+                && name.is_none()
+                && registers.iter().any(|r| r.fixed().is_some())
+            {
+                return Err((
+                    range,
+                    "positional operands cannot follow explicit register operands".into(),
+                ));
+            }
             registers.push(register);
-            if name.is_none() && names.iter().any(Option::is_some) {
+            if register.fixed().is_none() && name.is_none() && names.iter().any(Option::is_some) {
                 return Err((
                     tokens[at].range(),
                     "positional operands cannot follow named operands".into(),
@@ -227,7 +269,7 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
     if options.pure && registers.iter().all(|register| register.input_only()) {
         return Err((range, "`pure` assembly requires an output".into()));
     }
-    let template = template(&text, &names, range)?;
+    let template = template(&text, &names, &registers, range)?;
     Ok(ParsedAsm {
         template: template.into(),
         registers: registers.into(),
@@ -237,16 +279,59 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
     })
 }
 
+// Keep explicit operands within the pinned backend's allocatable pools.
+// Canonical names also make alias overlap checks independent of operand width.
+fn fixed_register(name: &str) -> Option<Symbol> {
+    if cfg!(target_arch = "aarch64") {
+        let (prefix, number) = name.split_at_checked(1)?;
+        let number: u8 = number.parse().ok()?;
+        if name[1..] != number.to_string() {
+            return None;
+        }
+        let canonical = match prefix {
+            "x" | "w" if number <= 8 || matches!(number, 16 | 17) => format!("x{number}"),
+            "v" | "b" | "h" | "s" | "d" | "q" if number <= 7 || (16..=18).contains(&number) => {
+                format!("v{number}")
+            }
+            _ => return None,
+        };
+        return Some(Symbol::intern(&canonical));
+    }
+    if cfg!(target_arch = "x86_64") {
+        let canonical = match name {
+            "rax" | "eax" | "ax" | "al" => "rax",
+            "rcx" | "ecx" | "cx" | "cl" => "rcx",
+            "rdx" | "edx" | "dx" | "dl" => "rdx",
+            "rsi" | "esi" | "si" | "sil" => "rsi",
+            "rdi" | "edi" | "di" | "dil" => "rdi",
+            "r8" | "r8d" | "r8w" | "r8b" => "r8",
+            "r9" | "r9d" | "r9w" | "r9b" => "r9",
+            "r10" | "r10d" | "r10w" | "r10b" => "r10",
+            "r11" | "r11d" | "r11w" | "r11b" => "r11",
+            _ => {
+                let number = name.strip_prefix("xmm")?.parse::<u8>().ok()?;
+                if number >= 16 || name != format!("xmm{number}") {
+                    return None;
+                }
+                return Some(Symbol::intern(name));
+            }
+        };
+        return Some(Symbol::intern(canonical));
+    }
+    None
+}
+
 fn template(
     text: &str,
     names: &[Option<Symbol>],
+    registers: &[AsmRegister],
     range: TextRange,
 ) -> Result<Vec<AsmTemplatePiece>, Error> {
     let mut chars = text.chars().peekable();
     let mut literal = String::new();
     let mut pieces = Vec::new();
     let mut next = 0;
-    let mut used = vec![false; names.len()];
+    let mut used: Vec<_> = registers.iter().map(|r| r.fixed().is_some()).collect();
     while let Some(c) = chars.next() {
         if c != '{' && c != '}' {
             literal.push(c);
@@ -290,6 +375,7 @@ fn template(
                 .ok_or((range, "unknown assembly operand name".into()))?
         };
         if index >= names.len()
+            || registers[index].fixed().is_some()
             || (key.is_empty() || key.parse::<usize>().is_ok()) && names[index].is_some()
         {
             return Err((range, "invalid assembly operand reference".into()));

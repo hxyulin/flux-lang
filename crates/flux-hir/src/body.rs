@@ -246,30 +246,58 @@ pub enum AsmRegister {
     XmmReg,
     InputXmmReg,
     OutputXmmReg,
+    Fixed(Symbol),
+    InputFixed(Symbol),
+    OutputFixed(Symbol),
 }
 
 impl AsmRegister {
     pub const fn input_only(self) -> bool {
         matches!(
             self,
-            Self::InputReg | Self::InputVreg | Self::InputRegByte | Self::InputXmmReg | Self::Const
+            Self::InputReg
+                | Self::InputVreg
+                | Self::InputRegByte
+                | Self::InputXmmReg
+                | Self::InputFixed(_)
+                | Self::Const
         )
     }
 
     pub const fn output_only(self) -> bool {
         matches!(
             self,
-            Self::OutputReg | Self::OutputVreg | Self::OutputRegByte | Self::OutputXmmReg
+            Self::OutputReg
+                | Self::OutputVreg
+                | Self::OutputRegByte
+                | Self::OutputXmmReg
+                | Self::OutputFixed(_)
         )
     }
 
-    pub const fn class(self) -> Self {
+    pub const fn fixed(self) -> Option<Symbol> {
+        match self {
+            Self::Fixed(name) | Self::InputFixed(name) | Self::OutputFixed(name) => Some(name),
+            _ => None,
+        }
+    }
+
+    pub fn class(self) -> Self {
         match self {
             Self::Reg | Self::InputReg | Self::OutputReg => Self::Reg,
             Self::Vreg | Self::InputVreg | Self::OutputVreg => Self::Vreg,
             Self::Const => Self::Const,
             Self::RegByte | Self::InputRegByte | Self::OutputRegByte => Self::RegByte,
             Self::XmmReg | Self::InputXmmReg | Self::OutputXmmReg => Self::XmmReg,
+            Self::Fixed(name) | Self::InputFixed(name) | Self::OutputFixed(name) => {
+                if name.as_str().starts_with("xmm") {
+                    Self::XmmReg
+                } else if name.as_str().starts_with('v') {
+                    Self::Vreg
+                } else {
+                    Self::Reg
+                }
+            }
         }
     }
 }

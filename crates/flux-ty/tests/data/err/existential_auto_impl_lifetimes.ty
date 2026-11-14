@@ -7,7 +7,5 @@ struct ByOutlives<T> { 0: T }
 fn is_unpin<T>(&T) -> ()
 fn main() -> ()
 type PinnedFieldsOf<T> = <PinnedFieldsOfHelperStruct<T> as PinnedFieldsOfHelperTrait>::Actual
-error 969..979: lifetime specialization and bounds in auto trait impls are not supported yet
-error 1059..1072: lifetime specialization and bounds in auto trait impls are not supported yet
-error 1160..1193: the trait bound `Wrapper<PhantomPinned>: Unpin` is not satisfied
-error 1209..1235: the trait bound `NeverUnpin<u8>: Unpin` is not satisfied
+error 1156..1189: the trait bound `Wrapper<PhantomPinned>: Unpin` is not satisfied
+error 1205..1231: the trait bound `NeverUnpin<u8>: Unpin` is not satisfied

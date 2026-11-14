@@ -4117,14 +4117,19 @@ impl Lower<'_, '_, '_> {
                 value = self.b.ins().convert(ConvertOp::Bitcast, float, value);
             }
             arguments.push(value);
-            let class = if matches!(register.class(), AsmRegister::Reg | AsmRegister::RegByte) {
-                "r"
-            } else {
-                "w"
-            };
+            let class = register.fixed().map_or_else(
+                || {
+                    if matches!(register.class(), AsmRegister::Reg | AsmRegister::RegByte) {
+                        "r".to_owned()
+                    } else {
+                        "w".to_owned()
+                    }
+                },
+                |name| format!("{{{name}}}"),
+            );
             if register.input_only() {
                 template_indices.push(output_count + arguments.len() - 1);
-                input_constraints.push(class.to_owned());
+                input_constraints.push(class);
             } else {
                 template_indices.push(types.len());
                 input_constraints.push(types.len().to_string());

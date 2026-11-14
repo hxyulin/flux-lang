@@ -247,34 +247,9 @@ fn send_sync_match_rustc() {
         let accepted = db.file(root).parse.errors().is_empty()
             && hir.diagnostics.is_empty()
             && typed.diagnostics.is_empty();
-        // Lifetime specialization is deliberately rejected until trait
-        // selection carries region obligations through both solvers.
-        if matches!(
-            name,
-            "lifetime_specialized"
-                | "nested_lifetime_specialized"
-                | "repeated_lifetime_specialized"
-                | "bounded_lifetime_specialized"
-                | "predicate_lifetime_specialized"
-        ) {
-            assert!(
-                typed
-                    .diagnostics
-                    .iter()
-                    .any(|d| d.message.contains("not supported yet"))
-            );
-        }
         assert_eq!(
             accepted,
-            expected
-                && !matches!(
-                    name,
-                    "lifetime_specialized"
-                        | "nested_lifetime_specialized"
-                        | "repeated_lifetime_specialized"
-                        | "bounded_lifetime_specialized"
-                        | "predicate_lifetime_specialized"
-                ),
+            expected,
             "{name}: flux: {:?}\n{:?}\n{:?}",
             db.file(root).parse.errors(),
             hir.diagnostics,

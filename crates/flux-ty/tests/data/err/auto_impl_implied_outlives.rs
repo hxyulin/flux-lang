@@ -1,5 +1,5 @@
-// Marker bounds the self type does not imply stay unsupported, and the
-// guard's other bounds still decide whether it is a marker.
+// Marker impl prerequisites retain bounds not implied by the self type.
+// Field bounds still determine whether the impl applies.
 use std::cell::Cell;
 use std::marker::PhantomData;
 

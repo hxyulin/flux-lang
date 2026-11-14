@@ -1002,9 +1002,11 @@ T>`, are met by every instance and are accepted too. Explicit static bounds on
 type parameters, as in `impl<T: ?Sized, A: Allocator + 'static> Unpin for Box<T, A>`,
 are also supported. The allocator must satisfy that bound; the pointee need not
 be static or Unpin. Body uses, trait arguments, associated outputs and method
-compatibility checks retain the selected implementation's prerequisite. Other
-lifetime specialization/bounds in marker implementations and custom auto traits
-remain unsupported. Recursive structural proofs are conservatively
+compatibility checks retain the selected implementation's prerequisite.
+Explicit marker impls may specialize header lifetimes or carry additional
+outlives bounds. Each use checks the selected header and its prerequisites,
+including static object lifetimes and repeated lifetime parameters. Custom auto
+traits remain unsupported. Recursive structural proofs are conservatively
 depth-limited; no threading APIs are implied by these markers.
 `Unpin` also propagates structurally. `PhantomPinned` prevents that propagation;
 references, raw pointers, Box, Rc, Arc and Arc's Weak remain Unpin regardless of
@@ -1766,7 +1768,7 @@ halfword, word and doubleword names. `nomem`, `readonly`, `preserves_flags`,
 `nostack` and `pure` retain the existing bounded assembly interface.
 `reg_byte` accepts 8-bit integers. `xmm_reg` accepts 32/64-bit integers,
 floats and the embedded 128-bit x86 SIMD types; its optional `x` modifier
-selects the XMM name. Fixed registers, discarded outputs, wider SIMD register
+selects the XMM name. Discarded outputs and wider SIMD register
 classes and the `att_syntax` option remain unsupported. The backend translates Rust register modifiers to
 Keel's GNU operands and switches syntax for the template's Intel operand order.
 
@@ -2143,8 +2145,17 @@ conversions remain unsupported.
 AArch64 assembly accepts input-only `in(reg)` and `in(vreg)` operands alongside
 tied `inout` operands. Inputs may be expressions and are evaluated once in source
 order without writeback. Scalar and vector transports preserve their bits; pure
-assembly still requires an output. Separate output operands remain unsupported.
+assembly still requires an output. Separate `out` and `lateout` operands use the same output transport.
 
+
+Explicit register operands support `in`, `out`, `lateout`, `inout`, and
+`inlateout`. AArch64 accepts x0–x8, x16–x17, v0–v7, and v16–v18,
+including their width aliases. The x86-64 subset is rax, rcx, rdx, rsi, rdi,
+r8–r11, xmm0–xmm15, and their integer width aliases. These are bounded by
+the pinned backend's register pools. Explicit operands cannot be named or
+referenced by template placeholders. Overlapping explicit operands, including
+width aliases of one register, remain unsupported; use one tied operand.
+Discarded outputs and other registers remain unsupported.
 
 Slice first/last array windows check bounds, including empty and zero-sized
 windows. Array owning iterators expose only their remaining initialized elements
