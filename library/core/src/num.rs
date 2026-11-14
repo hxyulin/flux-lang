@@ -50,7 +50,7 @@ macro_rules! nonzero_fmt {
         }
     )*};
 }
-nonzero_fmt!(Binary, Octal, LowerHex, UpperHex);
+nonzero_fmt!(Binary, Octal, LowerHex, UpperHex, LowerExp, UpperExp);
 
 macro_rules! nonzero_impl {
     ($name:ident, $t:ty, $lang:literal) => {

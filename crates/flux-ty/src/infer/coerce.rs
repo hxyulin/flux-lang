@@ -386,6 +386,7 @@ impl Ctx<'_> {
             }));
             if ptr.abi == abi
                 && (ptr.is_unsafe || !def.sig.is_unsafe)
+                && ptr.is_variadic == def.sig.is_variadic
                 && self.unify(reified, expected)
             {
                 self.reified.insert(expr, expected);
@@ -821,6 +822,7 @@ impl Ctx<'_> {
                 }));
                 return ptr.abi == abi
                     && (ptr.is_unsafe || !def.sig.is_unsafe)
+                    && ptr.is_variadic == def.sig.is_variadic
                     && self.can_unify(reified, expected);
             }
             // `fn()` to `unsafe fn()`, as `coerce` makes it.

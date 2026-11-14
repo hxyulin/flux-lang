@@ -335,7 +335,8 @@ pub fn overlap(a: Ty, b: Ty) -> bool {
         (TyKind::Array(x, m), TyKind::Array(y, n)) => overlap(m, n) && overlap(x, y),
         (TyKind::Slice(x), TyKind::Slice(y)) => overlap(x, y),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_unsafe == y.is_unsafe
+            x.is_variadic == y.is_variadic
+                && x.is_unsafe == y.is_unsafe
                 && x.abi == y.abi
                 && x.inputs_output.len() == y.inputs_output.len()
                 && (x.inputs_output.iter().zip(y.inputs_output)).all(|(&a, &b)| overlap(a, b))

@@ -492,6 +492,7 @@ pub(crate) fn callable_type_ref(
         params: params.clone(),
         ret: Box::new(ret),
         is_unsafe: false,
+        is_variadic: false,
         abi: flux_hir::Abi::Rust,
     })
 }

@@ -546,3 +546,44 @@ fn generic_trait_objects_retain_declared_callable_capabilities() {
         "conflicting implementations of trait `Parser<_>`",
     );
 }
+
+#[test]
+fn variadic_pointer_impls_preserve_nominal_disjointness() {
+    accepts(
+        "variadic_pointer_disjointness",
+        r#"
+        trait Encode {}
+        impl<R, A> Encode for unsafe extern "C" fn(A, ...) -> R {}
+        struct Retained<T>(T);
+        trait Sealed {}
+        impl<T> Sealed for Retained<T> {}
+        impl<T: Encode> Sealed for T {}
+    "#,
+    );
+}
+
+#[test]
+fn fixed_and_variadic_pointer_types_are_distinct() {
+    for (name, source) in [
+        (
+            "fixed_to_variadic",
+            r#"fn test(p: unsafe extern "C" fn(i32)) { let _: unsafe extern "C" fn(i32, ...) = p; }"#,
+        ),
+        (
+            "variadic_to_fixed",
+            r#"fn test(p: unsafe extern "C" fn(i32, ...)) { let _: unsafe extern "C" fn(i32) = p; }"#,
+        ),
+    ] {
+        rejects(name, source, "E0308", "mismatched types");
+    }
+}
+
+#[test]
+fn indirect_variadic_arguments_require_c_promotions() {
+    rejects(
+        "variadic_f32",
+        r#"unsafe fn test(p: unsafe extern "C" fn(i32, ...)) { unsafe { p(0, 1.0f32) } }"#,
+        "E0617",
+        "can't pass `f32` to variadic function",
+    );
+}

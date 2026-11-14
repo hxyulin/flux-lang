@@ -1193,7 +1193,8 @@ pub fn match_ty(pattern: Ty, ty: Ty, binds: &mut [Option<Ty>]) -> bool {
         }
         (TyKind::Slice(x), TyKind::Slice(y)) => match_ty(x, y, binds),
         (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-            x.is_unsafe == y.is_unsafe
+            x.is_variadic == y.is_variadic
+                && x.is_unsafe == y.is_unsafe
                 && x.abi == y.abi
                 && x.inputs_output.len() == y.inputs_output.len()
                 && (x.inputs_output.iter().zip(y.inputs_output))

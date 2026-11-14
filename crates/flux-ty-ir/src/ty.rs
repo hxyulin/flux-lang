@@ -497,6 +497,7 @@ pub struct FnSigTy {
     pub regions: Option<&'static FnPtrRegions>,
     pub inputs_output: &'static [Ty],
     pub is_unsafe: bool,
+    pub is_variadic: bool,
     pub abi: flux_hir::Abi,
 }
 
@@ -507,6 +508,7 @@ impl FnSigTy {
             regions: None,
             inputs_output: all,
             is_unsafe,
+            is_variadic: false,
             abi: flux_hir::Abi::Rust,
         }
     }
@@ -1505,7 +1507,10 @@ fn write_sig(f: &mut fmt::Formatter<'_>, sig: FnSigTy) -> fmt::Result {
     if sig.abi != flux_hir::Abi::Rust {
         write!(f, "extern \"{}\" ", sig.abi.name())?;
     }
-    let params: Vec<String> = sig.params().iter().map(Ty::to_string).collect();
+    let mut params: Vec<String> = sig.params().iter().map(Ty::to_string).collect();
+    if sig.is_variadic {
+        params.push("...".into());
+    }
     write!(f, "fn({})", params.join(", "))?;
     if sig.ret() != Ty::UNIT {
         write!(f, " -> {}", sig.ret())?;

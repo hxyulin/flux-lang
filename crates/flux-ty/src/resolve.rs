@@ -927,6 +927,7 @@ pub fn resolve_type(
             params,
             ret,
             is_unsafe,
+            is_variadic,
             abi,
         } => {
             let scope = TypeScope {
@@ -950,6 +951,7 @@ pub fn resolve_type(
                 unreachable!()
             };
             let signature = FnSigTy {
+                is_variadic: *is_variadic,
                 abi: *abi,
                 ..FnSigTy::new(&params, ret, *is_unsafe)
             };

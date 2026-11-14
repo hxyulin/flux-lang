@@ -3513,7 +3513,8 @@ fn unify_headers_with_predicates(
                     && all(x.assoc_tys, y.assoc_tys)
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-                x.is_unsafe == y.is_unsafe
+                x.is_variadic == y.is_variadic
+                    && x.is_unsafe == y.is_unsafe
                     && x.abi == y.abi
                     && all(x.inputs_output, y.inputs_output)
             }

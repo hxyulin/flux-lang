@@ -256,6 +256,7 @@ impl Cx<'_> {
         range: TextRange,
     ) {
         if source.abi != target.abi
+            || source.is_variadic != target.is_variadic
             || (source.is_unsafe && !target.is_unsafe)
             || source.params().len() != target.params().len()
         {
@@ -429,6 +430,7 @@ impl Cx<'_> {
                     let signature = self.sigs.fns[function].subst(args);
                     let data = &self.items.functions[function];
                     let sig = flux_ty::FnSigTy {
+                        is_variadic: data.is_variadic,
                         abi: data.abi,
                         ..flux_ty::FnSigTy::new(&signature.params, signature.ret, data.is_unsafe)
                     };
@@ -620,7 +622,18 @@ impl Cx<'_> {
         dest: &Place,
         range: TextRange,
     ) {
-        let Some(output) = self.pointer_inputs(sig, own, input_types, inputs, range) else {
+        // C varargs have no declared region relationship with the result.
+        // Only the fixed prefix participates in the pointer's signature proof.
+        let count = if sig.is_variadic {
+            sig.params().len()
+        } else {
+            inputs.len()
+        };
+        let Some(output) = input_types
+            .get(..count)
+            .zip(inputs.get(..count))
+            .and_then(|(types, rows)| self.pointer_inputs(sig, own, types, rows, range))
+        else {
             self.errors.push(Diagnostic::new(
                 range,
                 "function pointer region metadata is not supported yet",

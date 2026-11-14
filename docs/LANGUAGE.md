@@ -913,6 +913,10 @@ pointer type; coercions preserve the ABI and may weaken safety. All but
 their base under `panic=abort`. ABIs rustc rejects for the target get
 rustc's errors. Functions and pointers of ABIs other than `Rust` do not
 implement the `Fn` traits.
+C-variadic declarations can also be reified as pointers, such as
+`unsafe extern "C" fn(i32, ...) -> i32`. The variadic tail is part of
+type identity and survives metadata round trips. Indirect calls apply the
+same argument promotion checks as direct C-variadic calls.
 Foreign function declarations are unsafe by default. A `safe fn` declaration
 inside an extern block permits ordinary calls and safe function-pointer
 coercions. The qualifier does not permit a function body or an unsafe qualifier.

@@ -1449,6 +1449,7 @@ fn embeds_cached(previous: Ty, next: Ty, cache: &mut FxHashMap<(Ty, Ty), bool>) 
             }
             (TyKind::FnPtr(a), TyKind::FnPtr(b)) => {
                 a.abi == b.abi
+                    && a.is_variadic == b.is_variadic
                     && a.is_unsafe == b.is_unsafe
                     && a.inputs_output.len() == b.inputs_output.len()
                     // Captured types participate in the child embedding below.

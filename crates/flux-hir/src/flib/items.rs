@@ -336,7 +336,7 @@ variants!(UseKind {0=>Named(name),1=>Anonymous{module_only},2=>Module(name),3=>G
 variants!(PathAnchor {0=>Plain,1=>Crate,2=>DefinitionCrate(id),3=>SelfModule,4=>Super(count),5=>Global});
 variants!(UseCapture {0=>Lifetime(value),1=>Param(name,range)});
 variants!(ArrayLenKind {0=>Lit{value,suffix},1=>NegLit{value,suffix},2=>Const(id),3=>Path(path),4=>Bool(value),5=>Char(value),6=>Anon(file,node),7=>Error});
-variants!(TypeRef {0=>Path(path),1=>Tuple(types),2=>Never,3=>Ptr{mutable,pointee},4=>Ref{lifetime,amp,mutable,pointee},5=>Array{elem,len},6=>Slice(ty),7=>Infer,8=>FnPtr{bound_lifetimes,params,ret,is_unsafe,abi},9=>ImplTrait(value),10=>Dyn(value),11=>ImplParam(index),12=>Opaque(index),13=>Const(value),14=>Error});
+variants!(TypeRef {0=>Path(path),1=>Tuple(types),2=>Never,3=>Ptr{mutable,pointee},4=>Ref{lifetime,amp,mutable,pointee},5=>Array{elem,len},6=>Slice(ty),7=>Infer,8=>FnPtr{bound_lifetimes,params,ret,is_unsafe,is_variadic,abi},9=>ImplTrait(value),10=>Dyn(value),11=>ImplParam(index),12=>Opaque(index),13=>Const(value),14=>Error});
 variants!(BindingKind {0=>Item,1=>Import,2=>Glob,3=>AmbiguousGlob});
 variants!(Def {0=>Module(id),1=>Struct(id),2=>Trait(id),3=>Function(id),4=>Const(id),5=>Variant(id,index),6=>TypeAlias(id),7=>Static(id),8=>Macro(id),9=>Primitive(name)});
 record!(Binding {

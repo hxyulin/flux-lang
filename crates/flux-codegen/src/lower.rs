@@ -5086,12 +5086,13 @@ impl Lower<'_, '_, '_> {
                     .fn_sig()
                     .expect("indirect calls are of function pointers");
                 let is_c = sig.abi.is_c();
+                let is_variadic = sig.is_variadic;
                 let sig = FnSig {
                     params: sig.params().into(),
                     ret: sig.ret(),
                 };
                 let signature = if is_c {
-                    c_signature(self.sigs, &self.ctx.layouts, &sig, false)
+                    c_signature(self.sigs, &self.ctx.layouts, &sig, is_variadic)
                 } else {
                     signature(self.sigs, &self.ctx.layouts, &sig, false)
                 };

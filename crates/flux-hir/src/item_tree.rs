@@ -1350,6 +1350,7 @@ pub enum TypeRef {
         params: Box<[TypeRef]>,
         ret: Box<TypeRef>,
         is_unsafe: bool,
+        is_variadic: bool,
         abi: Abi,
     },
     /// `impl Tr + 'a`, where it is not (yet) known what it stands for.
@@ -1501,6 +1502,7 @@ impl std::fmt::Display for TypeRef {
                 params,
                 ret,
                 is_unsafe,
+                is_variadic,
                 abi,
             } => {
                 if !bound_lifetimes.is_empty() {
@@ -1519,7 +1521,10 @@ impl std::fmt::Display for TypeRef {
                 if *abi != Abi::Rust {
                     write!(f, "extern \"{}\" ", abi.name())?;
                 }
-                let params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+                let mut params: Vec<String> = params.iter().map(|p| p.to_string()).collect();
+                if *is_variadic {
+                    params.push("...".into());
+                }
                 write!(f, "fn({})", params.join(", "))?;
                 if **ret != TypeRef::unit() {
                     write!(f, " -> {ret}")?;
@@ -3715,11 +3720,11 @@ pub(crate) fn is_anon_const(expr: ast::Expr<'_>) -> bool {
     }
 }
 
-/// `fn(A, B) -> R`, `unsafe fn(A)`; `extern "C" fn` and C-variadic ones
-/// are reported.
+/// A function pointer, retaining its safety, ABI, and variadic tail.
 fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
     let abi = function_abi(ptr.abi(), diagnostics);
     let mut params = Vec::new();
+    let mut is_variadic = false;
     if let Some(list) = ptr.param_list() {
         for param in list.params() {
             if !item_enabled(param.syntax(), diagnostics) {
@@ -3727,12 +3732,14 @@ fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> T
             }
             check_inert_attrs(param.attrs(), diagnostics);
             if let Some(dots) = param.dot3_token() {
-                unsupported(
-                    diagnostics,
-                    dots.text_range(),
-                    "C-variadic function pointer types",
-                );
-                return TypeRef::Error;
+                if !abi.is_c() {
+                    diagnostics.push(Diagnostic::new(
+                        dots.text_range(),
+                        "C-variadic function pointers require a C ABI",
+                    ));
+                }
+                is_variadic = true;
+                continue;
             }
             params.push(lower_type(param.ty(), diagnostics));
         }
@@ -3746,6 +3753,7 @@ fn lower_fn_ptr(ptr: ast::FnPtrType<'_>, diagnostics: &mut Vec<Diagnostic>) -> T
         params: params.into(),
         ret: Box::new(ret),
         is_unsafe: ptr.unsafe_token().is_some(),
+        is_variadic,
         abi,
     }
 }

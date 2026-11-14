@@ -1086,7 +1086,8 @@ impl Ctx<'_> {
                 ok
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-                let mut ok = x.is_unsafe == y.is_unsafe
+                let mut ok = x.is_variadic == y.is_variadic
+                    && x.is_unsafe == y.is_unsafe
                     && x.abi == y.abi
                     && x.inputs_output.len() == y.inputs_output.len();
                 for (&a, &b) in x.inputs_output.iter().zip(y.inputs_output) {
@@ -1308,7 +1309,8 @@ impl Ctx<'_> {
                         .all(|(&x, &y)| self.can_unify(x, y))
             }
             (TyKind::FnPtr(x), TyKind::FnPtr(y)) => {
-                x.is_unsafe == y.is_unsafe
+                x.is_variadic == y.is_variadic
+                    && x.is_unsafe == y.is_unsafe
                     && x.abi == y.abi
                     && x.inputs_output.len() == y.inputs_output.len()
                     && (x.inputs_output.iter().zip(y.inputs_output))
@@ -1407,7 +1409,10 @@ impl Ctx<'_> {
     /// `fn(A, B) -> R` for messages, as [`Self::describe`] describes
     /// types.
     fn describe_sig(&mut self, sig: crate::FnSigTy) -> String {
-        let params: Vec<String> = sig.params().iter().map(|&p| self.describe(p)).collect();
+        let mut params: Vec<String> = sig.params().iter().map(|&p| self.describe(p)).collect();
+        if sig.is_variadic {
+            params.push("...".into());
+        }
         let unsafety = if sig.is_unsafe { "unsafe " } else { "" };
         let abi = match sig.abi {
             flux_hir::Abi::Rust => String::new(),
@@ -4718,13 +4723,6 @@ impl Ctx<'_> {
     ) -> Ty {
         let items = self.items;
         let data = &items.functions[function];
-        if data.is_variadic {
-            self.error(
-                self.range(expr),
-                "variadic functions as values are not supported yet",
-            );
-            return Ty::ERROR;
-        }
         if flux_solve::traits::is_destructor(items, function) {
             self.error(self.range(expr), "explicit use of destructor method");
         }
@@ -4757,6 +4755,7 @@ impl Ctx<'_> {
             name,
             args: Ty::list(&args),
             sig: crate::FnSigTy {
+                is_variadic: data.is_variadic,
                 abi: data.abi,
                 ..crate::FnSigTy::new(&sig.params, sig.ret, data.is_unsafe)
             },
@@ -4790,12 +4789,13 @@ impl Ctx<'_> {
     ) -> Ty {
         let params = sig.params();
         let (want, got) = (params.len(), args.len());
-        if want != got {
+        if (sig.is_variadic && got < want) || (!sig.is_variadic && want != got) {
+            let at_least = if sig.is_variadic { "at least " } else { "" };
             let verb = if got == 1 { "was" } else { "were" };
             self.error(
                 self.range(callee),
                 format!(
-                    "this function takes {want} argument{} but {got} argument{} {verb} supplied",
+                    "this function takes {at_least}{want} argument{} but {got} argument{} {verb} supplied",
                     plural(want),
                     plural(got)
                 ),
@@ -4808,6 +4808,8 @@ impl Ctx<'_> {
             let ty = self.infer_expr(arg);
             if let Some(&param) = params.get(i) {
                 self.coerce(ty, param, arg);
+            } else if sig.is_variadic {
+                self.deferred.push(Deferred::VariadicArg { expr: arg, ty });
             }
         }
         if function.map_or(sig.is_unsafe, |function| {

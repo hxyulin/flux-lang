@@ -449,6 +449,7 @@ impl Encode for FnSigTy {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.inputs_output.encode(e)?;
         self.is_unsafe.encode(e)?;
+        self.is_variadic.encode(e)?;
         self.abi.encode(e)?;
         self.regions.is_some().encode(e)?;
         if let Some(r) = self.regions {
@@ -472,6 +473,7 @@ impl Decode for FnSigTy {
             return Err(Error::new("empty function signature"));
         }
         let is_unsafe = bool::decode(d)?;
+        let is_variadic = bool::decode(d)?;
         let abi = flux_hir::Abi::decode(d)?;
         let regions = if bool::decode(d)? {
             let bound = u32::decode(d)?;
@@ -518,6 +520,7 @@ impl Decode for FnSigTy {
         Ok(Self {
             inputs_output: Ty::list(&types),
             is_unsafe,
+            is_variadic,
             abi,
             regions,
         })
@@ -1078,6 +1081,7 @@ mod tests {
         let sig = FnSigTy {
             inputs_output: Ty::list(&[Ty::raw_ptr(Mutability::Not, parameter), parameter]),
             is_unsafe: true,
+            is_variadic: false,
             abi: flux_hir::Abi::Rust,
             regions: Some(recipe),
         };
@@ -1105,6 +1109,7 @@ mod tests {
         let make = |inputs: Vec<FnRegion>| FnSigTy {
             inputs_output: Ty::list(&[Ty::alias(alias)]),
             is_unsafe: false,
+            is_variadic: false,
             abi: flux_hir::Abi::Rust,
             regions: Some(FnPtrRegions::intern_with_projections(
                 1,
@@ -1497,6 +1502,29 @@ mod dag_tests {
         assert_eq!(
             Ty::decode(&mut d),
             Err(Error::new("type semantic nesting limit exceeded"))
+        );
+    }
+    #[test]
+    fn variadic_pointer_signatures_round_trip_distinctly() {
+        let fixed = FnSigTy {
+            abi: flux_hir::Abi::C,
+            ..FnSigTy::new(&[Ty::int(crate::IntTy::I32)], Ty::UNIT, true)
+        };
+        let variadic = FnSigTy {
+            is_variadic: true,
+            ..fixed
+        };
+        let mut encoder = Encoder::new();
+        variadic.encode(&mut encoder).unwrap();
+        let bytes = encoder.into_bytes();
+        let mut decoder = Decoder::new(&bytes);
+        let decoded = FnSigTy::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+        assert_eq!(decoded, variadic);
+        assert_ne!(decoded, fixed);
+        assert_eq!(
+            Ty::new(TyKind::FnPtr(variadic)).to_string(),
+            "unsafe extern \"C\" fn(i32, ...)"
         );
     }
 }
