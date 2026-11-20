@@ -382,6 +382,14 @@ impl<T: Clone> Clone for VecDeque<T> {
         result
     }
 }
+impl<T: PartialEq> PartialEq for VecDeque<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.iter().eq(other.iter())
+    }
+}
+
+impl<T: Eq> Eq for VecDeque<T> {}
+
 impl<T: core::fmt::Debug> core::fmt::Debug for VecDeque<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(self.iter()).finish()

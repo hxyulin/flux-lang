@@ -158,6 +158,28 @@ macro_rules! nonzero_signed {
             pub const fn checked_abs(self) -> Option<Self> {
                 match self.0.checked_abs() { Some(value) => Some(Self(value)), None => None }
             }
+            /// Negates the value, wrapping the minimum value back to itself.
+            pub const fn wrapping_neg(self) -> Self {
+                Self(self.0.wrapping_neg())
+            }
+        }
+
+        impl crate::ops::Neg for $name {
+            type Output = Self;
+
+            #[rustc_inherit_overflow_checks]
+            fn neg(self) -> Self {
+                Self(-self.0)
+            }
+        }
+
+        impl crate::ops::Neg for &$name {
+            type Output = $name;
+
+            #[rustc_inherit_overflow_checks]
+            fn neg(self) -> $name {
+                -*self
+            }
         }
     )*};
 }

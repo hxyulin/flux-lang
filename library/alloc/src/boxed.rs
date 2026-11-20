@@ -7,6 +7,7 @@
 use core::cmp::Ordering;
 use core::fmt;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 
@@ -83,6 +84,19 @@ impl<T: ?Sized> Box<T> {
     /// The value, never freed.
     pub fn leak<'a>(b: Box<T>) -> &'a mut T {
         unsafe { &mut *Box::into_raw(b) }
+    }
+}
+
+impl<T> Box<MaybeUninit<T>> {
+    /// Initializes the boxed storage and returns ownership of the value.
+    pub fn write(boxed: Self, value: T) -> Box<T> {
+        let raw = Box::into_raw(boxed).cast::<T>();
+        // SAFETY: MaybeUninit<T> has T's layout. This writes into the owned
+        // storage before reconstructing a box that will drop T.
+        unsafe {
+            raw.write(value);
+            Box::from_raw(raw)
+        }
     }
 }
 

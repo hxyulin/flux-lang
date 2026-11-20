@@ -585,6 +585,40 @@ impl<T> AtomicPtr<T> {
         self.value.into_inner()
     }
 
+    /// Adds a byte displacement with wrapping and returns the previous pointer.
+    pub fn fetch_byte_add(&self, bytes: usize, order: Ordering) -> *mut T {
+        self.fetch_map(order, |pointer| pointer.wrapping_byte_add(bytes))
+    }
+
+    /// Subtracts a byte displacement with wrapping and returns the previous pointer.
+    pub fn fetch_byte_sub(&self, bytes: usize, order: Ordering) -> *mut T {
+        self.fetch_map(order, |pointer| pointer.wrapping_byte_sub(bytes))
+    }
+
+    /// Applies a bitwise AND to the address and returns the previous pointer.
+    pub fn fetch_and(&self, mask: usize, order: Ordering) -> *mut T {
+        self.fetch_map(order, |pointer| pointer.with_addr(pointer.addr() & mask))
+    }
+
+    /// Applies a bitwise OR to the address and returns the previous pointer.
+    pub fn fetch_or(&self, mask: usize, order: Ordering) -> *mut T {
+        self.fetch_map(order, |pointer| pointer.with_addr(pointer.addr() | mask))
+    }
+
+    /// Applies a bitwise XOR to the address and returns the previous pointer.
+    pub fn fetch_xor(&self, mask: usize, order: Ordering) -> *mut T {
+        self.fetch_map(order, |pointer| pointer.with_addr(pointer.addr() ^ mask))
+    }
+
+    fn fetch_map<F>(&self, order: Ordering, mut map: F) -> *mut T
+    where
+        F: FnMut(*mut T) -> *mut T,
+    {
+        match self.fetch_update(order, Relaxed, |pointer| Some(map(pointer))) {
+            Ok(previous) | Err(previous) => previous,
+        }
+    }
+
     /// Loads with Relaxed, Acquire or SeqCst; other orders panic.
     #[track_caller]
     pub fn load(&self, order: Ordering) -> *mut T {

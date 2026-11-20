@@ -44,6 +44,26 @@ pub const fn null_mut<T>() -> *mut T {
     0 as *mut T
 }
 
+/// Creates a pointer from an address without provenance.
+pub const fn without_provenance_mut<T>(addr: usize) -> *mut T {
+    addr as *mut T
+}
+
+/// Creates a pointer using previously exposed provenance.
+pub const fn with_exposed_provenance<T>(addr: usize) -> *const T {
+    addr as *const T
+}
+
+/// Creates a mutable pointer using previously exposed provenance.
+pub const fn with_exposed_provenance_mut<T>(addr: usize) -> *mut T {
+    addr as *mut T
+}
+
+/// Returns a non-null, aligned pointer without provenance.
+pub const fn dangling_mut<T>() -> *mut T {
+    NonNull::<T>::dangling().as_ptr()
+}
+
 /// Builds slice metadata without accessing `data` or making a reference.
 pub const fn slice_from_raw_parts<T>(data: *const T, len: usize) -> *const [T] {
     crate::intrinsics::raw_slice_from_parts(data, len)
