@@ -43,7 +43,14 @@ fn main() {
     assert_eq!(drops.get(), 3);
 
     let number = OnceLock::new();
+    let mut other = OnceLock::new();
+    assert_eq!(number, other);
     number.set(5u64).unwrap();
+    assert_ne!(number, other);
+    other.set(6).unwrap();
+    assert_ne!(number, other);
+    *other.get_mut().unwrap() = 5;
+    assert_eq!(number, other);
     let cloned = number.clone();
     println!("{:?} {:?} {}", number.get(), cloned.get(), drops.get());
 }

@@ -2171,6 +2171,10 @@ assembly still requires an output. Separate `out` and `lateout` operands use the
 Discarded output operands (`out(reg) _`, `inout(reg) value => _`) reserve
 the declared register without writing an output place. Split inputs are evaluated
 once. Pure assembly requires at least one output that is not discarded.
+Assembly templates can come from macros that expand to string literals.
+On Darwin, direct assembly supports forward and backward numeric label
+references. The assembler already enables LSE, so `.arch_extension lse`
+is accepted.
 
 
 Explicit register operands support `in`, `out`, `lateout`, `inout`, and

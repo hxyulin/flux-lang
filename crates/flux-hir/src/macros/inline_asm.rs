@@ -1,31 +1,24 @@
 //! Rust inline assembly syntax. Expressions keep their original token origins.
 use flux_intern::Symbol;
-use flux_syntax::{SyntaxKind, SyntaxNode, T, TextRange, parser};
+use flux_syntax::{SyntaxKind, T, TextRange, parser};
 
-use super::tt::{self, Tok};
+use super::builtin::BuiltinCx;
+use super::tt::Tok;
 use crate::{AsmOptions, AsmRegister, AsmTemplatePiece};
 
 type Error = (TextRange, String);
 
-pub(crate) struct ParsedAsm {
+#[derive(Debug)]
+pub(crate) struct AsmLayout {
     pub template: Box<[AsmTemplatePiece]>,
     pub registers: Box<[AsmRegister]>,
     pub options: AsmOptions,
-    pub expressions: Vec<Vec<Tok>>,
-    pub outputs: Vec<(u32, Vec<Tok>)>,
+    pub outputs: Box<[u32]>,
 }
 
-pub(crate) fn parse_call(call: SyntaxNode<'_>) -> Result<ParsedAsm, Error> {
-    let mut tokens = Vec::new();
-    let tree = call
-        .children()
-        .find(|n| n.kind() == SyntaxKind::TOKEN_TREE)
-        .ok_or((call.text_range(), "expected assembly arguments".into()))?;
-    tt::tokens_of(tree, &mut tokens);
-    parse(super::strip_delimiters(&tokens), call.text_range())
-}
-
-pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error> {
+pub(crate) fn expand(cx: &BuiltinCx<'_>) -> Result<(Vec<Tok>, AsmLayout), Error> {
+    let tokens = cx.toks;
+    let range = cx.call;
     let mut input = parser::Input::default();
     for t in tokens {
         input.push(t.kind, t.is_union_keyword());
@@ -278,13 +271,28 @@ pub(crate) fn parse(tokens: &[Tok], range: TextRange) -> Result<ParsedAsm, Error
         return Err((range, "`pure` assembly requires an output".into()));
     }
     let template = template(&text, &names, &registers, range)?;
-    Ok(ParsedAsm {
-        template: template.into(),
-        registers: registers.into(),
-        options,
-        expressions,
-        outputs,
-    })
+    let mut tuple = Vec::new();
+    cx.quote("(", &mut tuple);
+    let mut output_indices = Vec::with_capacity(outputs.len());
+    for expr in expressions {
+        tuple.extend(expr);
+        cx.quote(",", &mut tuple);
+    }
+    for (index, expr) in outputs {
+        output_indices.push(index);
+        tuple.extend(expr);
+        cx.quote(",", &mut tuple);
+    }
+    cx.quote(")", &mut tuple);
+    Ok((
+        tuple,
+        AsmLayout {
+            template: template.into(),
+            registers: registers.into(),
+            options,
+            outputs: output_indices.into(),
+        },
+    ))
 }
 
 // Keep explicit operands within the pinned backend's allocatable pools.

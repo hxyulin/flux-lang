@@ -1,5 +1,5 @@
 //! Nonnegative time spans available without an allocator or operating system.
-use crate::ops::{Add, AddAssign, Sub, SubAssign};
+use crate::ops::{Add, AddAssign, Div, Sub, SubAssign};
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 
@@ -146,6 +146,28 @@ impl Duration {
         self.secs == 0 && self.nanos == 0
     }
 
+    /// Returns the ratio of two durations in floating point.
+    pub const fn div_duration_f64(self, rhs: Self) -> f64 {
+        let scale = NANOS_PER_SEC as f64;
+        let lhs_nanos = self.secs as f64 * scale + self.nanos as f64;
+        let rhs_nanos = rhs.secs as f64 * scale + rhs.nanos as f64;
+        lhs_nanos / rhs_nanos
+    }
+
+    /// Divides by a scalar, truncating subnanosecond fractions.
+    /// Returns `None` if the divisor is zero.
+    pub const fn checked_div(self, rhs: u32) -> Option<Self> {
+        if rhs == 0 {
+            return None;
+        }
+        let rhs = rhs as u64;
+        let remaining_nanos = (self.secs % rhs) * NANOS_PER_SEC as u64 + self.nanos as u64;
+        Some(Self {
+            secs: self.secs / rhs,
+            nanos: (remaining_nanos / rhs) as u32,
+        })
+    }
+
     pub const fn checked_add(self, rhs: Self) -> Option<Self> {
         let nanos = self.nanos + rhs.nanos;
         let carry = (nanos / NANOS_PER_SEC) as u64;
@@ -235,6 +257,16 @@ impl Sub for Duration {
     fn sub(self, rhs: Self) -> Self {
         self.checked_sub(rhs)
             .expect("overflow when subtracting durations")
+    }
+}
+
+impl Div<u32> for Duration {
+    type Output = Self;
+
+    #[track_caller]
+    fn div(self, rhs: u32) -> Self {
+        self.checked_div(rhs)
+            .expect("divide by zero error when dividing duration by scalar")
     }
 }
 

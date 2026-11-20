@@ -3,6 +3,9 @@ use std::time::Duration as Std;
 const NORMALIZED: Duration = Duration::new(7, 2_500_000_123);
 const SUM: Option<Duration> = Duration::new(1, 999_999_999).checked_add(Duration::from_nanos(2));
 const PRODUCT: Duration = Duration::new(1, 750_000_000).saturating_mul(3);
+const QUOTIENT: Option<Duration> = Duration::new(4, 7).checked_div(3);
+const RATIO: f64 = Duration::new(2, 700_000_000)
+    .div_duration_f64(Duration::new(5, 400_000_000));
 fn hash(mut state: u64, text: &str) -> u64 {
     for byte in text.as_bytes() {
         state = (state ^ (*byte as u64)).wrapping_mul(1099511628211);
@@ -18,6 +21,13 @@ fn main() {
     assert_eq!(Duration::default(), Std::ZERO);
     assert_eq!(Duration::MAX.checked_add(Std::from_nanos(1)), None);
     assert_eq!(PRODUCT, Duration::new(5, 250_000_000));
+    assert_eq!(QUOTIENT, Some(Duration::new(1, 333_333_335)));
+    assert_eq!(Duration::new(4, 7) / 3, QUOTIENT.unwrap());
+    assert_eq!(Duration::MAX.checked_div(0), None);
+    assert_eq!((Duration::MAX / u32::MAX).as_nanos(), Duration::MAX.as_nanos() / u32::MAX as u128);
+    assert_eq!(RATIO, 0.5);
+    assert!(Duration::ZERO.div_duration_f64(Duration::ZERO).is_nan());
+    assert!(Duration::from_nanos(1).div_duration_f64(Duration::ZERO).is_infinite());
     assert_eq!(Duration::MAX.saturating_mul(0), Duration::ZERO);
     assert_eq!(Duration::MAX.saturating_mul(2), Duration::MAX);
     assert_eq!(Duration::new(u64::MAX / 3, 999_999_999).saturating_mul(3), Duration::MAX);

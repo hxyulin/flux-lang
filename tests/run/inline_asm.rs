@@ -116,8 +116,36 @@ fn main() {
     assert_eq!(count, 6);
     macro_rules! barrier { ($place:expr) => { unsafe { asm!("/*{0:x}*/",inout(reg)$place); } }; }
     barrier!(count);
-    unsafe {
-        asm!("nop");
+    macro_rules! delta { () => { 2 }; }
+    macro_rules! instruction {
+        ($register:literal) => { concat!("add ", $register, ", ", $register, ", #", delta!()) };
     }
+    // SAFETY: the templates only change the declared register.
+    unsafe {
+        asm!(
+            instruction!("{0}"),
+            "nop",
+            concat!("add {0}, {0}, #", 3),
+            inout(reg) count,
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    assert_eq!(count, 11);
+    let mut retries = 3u32;
+    // SAFETY: control flow stays within each assembly block and only the
+    // declared registers are changed.
+    unsafe {
+        asm!(
+            ".arch_extension lse",
+            "b 3f",
+            "2: sub {0:w}, {0:w}, #1",
+            "3: cbnz {0:w}, 2b",
+            inout(reg) retries,
+            options(nomem, nostack, preserves_flags),
+        );
+        asm!("b 2f", "add {0}, {0}, #9", "2: add {0}, {0}, #1", inout(reg) count);
+    }
+    assert_eq!(retries, 0);
+    assert_eq!(count, 12);
     println!("asm {} {} {} {} {} {}", x, y, w, data[0], value, count);
 }

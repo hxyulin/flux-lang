@@ -1,6 +1,7 @@
 //! Lowers a function body from the typed AST to HIR.
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use flux_arena::{Arena, SliceId};
 use flux_intern::{Symbol, kw, sym};
@@ -1977,6 +1978,12 @@ struct Place<'a> {
     item_start: u32,
 }
 
+struct ExpandedBody<'a> {
+    parse: Cow<'a, Parse>,
+    file: Option<FileId>,
+    asm: Option<Arc<macros::inline_asm::AsmLayout>>,
+}
+
 /// Expansion can leave no tokens, statements without a value, or a tail
 /// expression. Items and semicolons remain barriers even without HIR statements.
 enum StmtExpansion {
@@ -2317,11 +2324,7 @@ impl<'a> Ctx<'a> {
 
     /// Expands the macro call `node` as `fragment`, reporting why not if
     /// it cannot.
-    fn expand(
-        &mut self,
-        node: SyntaxNode<'_>,
-        fragment: Fragment,
-    ) -> Option<(Cow<'a, Parse>, Option<FileId>)> {
+    fn expand(&mut self, node: SyntaxNode<'_>, fragment: Fragment) -> Option<ExpandedBody<'a>> {
         self.expand_in(node, fragment, self.syntax_file(node))
     }
 
@@ -2330,7 +2333,7 @@ impl<'a> Ctx<'a> {
         node: SyntaxNode<'_>,
         fragment: Fragment,
         file: Option<FileId>,
-    ) -> Option<(Cow<'a, Parse>, Option<FileId>)> {
+    ) -> Option<ExpandedBody<'a>> {
         let path = node.children().find_map(ast::Path::cast)?;
         let resolved = macros::resolve(
             self.items,
@@ -2388,7 +2391,11 @@ impl<'a> Ctx<'a> {
                 self.expand_types_in(parse.tree().root());
                 self.expansion_file = outer;
             }
-            return Some((Cow::Borrowed(parse), Some(cached.file)));
+            return Some(ExpandedBody {
+                parse: Cow::Borrowed(parse),
+                file: Some(cached.file),
+                asm: cached.asm.clone(),
+            });
         }
         let expansion = macros::expand(&def, node, &site, fragment, &mut self.diagnostics)?;
         if expansion.included_path.is_some() {
@@ -2404,7 +2411,11 @@ impl<'a> Ctx<'a> {
         if fragment != Fragment::Type {
             self.expand_types_in(expansion.parse.tree().root());
         }
-        Some((Cow::Owned(expansion.parse), None))
+        Some(ExpandedBody {
+            parse: Cow::Owned(expansion.parse),
+            file: None,
+            asm: expansion.asm,
+        })
     }
 
     /// Expands the macro calls in type position in `node`, for
@@ -2420,7 +2431,7 @@ impl<'a> Ctx<'a> {
                 self.expansion_depth += 1;
                 let parse = self
                     .expand_in(call, Fragment::Type, file)
-                    .map(|(parse, file)| (parse.into_owned(), file));
+                    .map(|expanded| (expanded.parse.into_owned(), expanded.file));
                 self.expansion_depth -= 1;
                 self.expansion_file = outer;
                 parse
@@ -2503,18 +2514,8 @@ impl<'a> Ctx<'a> {
         }
         let pin = self.is_builtin_macro(m, crate::Builtin::Pin);
         let offset_of = self.is_builtin_macro(m, crate::Builtin::OffsetOf);
-        let asm = if self.is_builtin_macro(m, crate::Builtin::Asm) {
-            match macros::inline_asm::parse_call(m.syntax()) {
-                Ok(asm) => Some(asm),
-                Err((at, message)) => {
-                    self.error(at, message);
-                    return Some(self.alloc_expr(Expr::Missing, range));
-                }
-            }
-        } else {
-            None
-        };
-        let Some((parse, file)) = self.expand(m.syntax(), Fragment::Expr) else {
+        let Some(ExpandedBody { parse, file, asm }) = self.expand(m.syntax(), Fragment::Expr)
+        else {
             return Some(self.alloc_expr(Expr::Missing, range));
         };
         let root = parse.tree().root();
@@ -2588,18 +2589,18 @@ impl<'a> Ctx<'a> {
                     operands.push(operand);
                 }
                 let operands = self.lists.alloc(operands);
-                for ((index, _), expr) in asm.outputs.iter().zip(fields) {
+                for (&index, expr) in asm.outputs.iter().zip(fields) {
                     let output = if matches!(expr, ast::Expr::UnderscoreExpr(_)) {
                         None
                     } else {
                         Some(self.lower_expr(expr))
                     };
-                    outputs.push((*index, output));
+                    outputs.push((index, output));
                 }
                 self.alloc_expr(
                     Expr::InlineAsm(crate::InlineAsm {
-                        template: asm.template,
-                        registers: asm.registers,
+                        template: asm.template.clone(),
+                        registers: asm.registers.clone(),
                         options: asm.options,
                         operands,
                         outputs: outputs.into(),
@@ -2648,7 +2649,8 @@ impl<'a> Ctx<'a> {
             });
             return StmtExpansion::Unit;
         }
-        let Some((parse, file)) = self.expand(m.syntax(), Fragment::Stmts) else {
+        let Some(ExpandedBody { parse, file, .. }) = self.expand(m.syntax(), Fragment::Stmts)
+        else {
             let id = self.alloc_expr(Expr::Missing, range);
             if !semicolon {
                 return StmtExpansion::Expr(id);
@@ -5788,7 +5790,8 @@ impl<'a> Ctx<'a> {
                 Pat::Missing
             }
             ast::Pat::MacroPat(m) => {
-                let Some((parse, _)) = self.expand(m.syntax(), Fragment::Pat) else {
+                let Some(ExpandedBody { parse, .. }) = self.expand(m.syntax(), Fragment::Pat)
+                else {
                     return self.alloc_pat(Pat::Missing, range);
                 };
                 let root = parse.tree().root();

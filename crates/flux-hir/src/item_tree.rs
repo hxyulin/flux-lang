@@ -242,8 +242,8 @@ pub(crate) struct BodyExpansion {
     pub file: FileId,
     pub ctxts: Vec<(u32, u32)>,
     pub fragment: flux_syntax::parser::Fragment,
-    /// Whether the item tree has the anonymous constants in `file`: those
-    /// of an expansion in a function's body.
+    pub asm: Option<Arc<macros::inline_asm::AsmLayout>>,
+    /// Whether the item tree has collected the anonymous constants in `file`.
     pub anon_consts: bool,
 }
 

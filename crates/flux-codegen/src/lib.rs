@@ -274,6 +274,7 @@ fn compile_object_inner(
     let timed = timings.is_some();
     let mut encoding = std::time::Duration::ZERO;
     let mut emitted = false;
+    let mut asm_labels = aarch64_asm::NumericLabels::default();
     let start = timed.then(std::time::Instant::now);
     let mut emission = keel_codegen::EmissionOptions::default();
     if panic_strategy == flux_mir::PanicStrategy::Unwind {
@@ -286,11 +287,15 @@ fn compile_object_inner(
                 let start = timed.then(std::time::Instant::now);
                 if target == Target::Aarch64AppleDarwin {
                     for item in &mut chunk.items {
-                        if let keel_asm_ir::Item::Text(text) = item
-                            && let std::borrow::Cow::Owned(rewritten) =
-                                aarch64_asm::system_aliases(text)
-                        {
-                            *text = rewritten;
+                        if let keel_asm_ir::Item::Text(text) = item {
+                            if let std::borrow::Cow::Owned(rewritten) = asm_labels.rewrite(text) {
+                                *text = rewritten;
+                            }
+                            if let std::borrow::Cow::Owned(rewritten) =
+                                aarch64_asm::compatible_source(text)
+                            {
+                                *text = rewritten;
+                            }
                         }
                     }
                 }
@@ -307,6 +312,12 @@ fn compile_object_inner(
         timings.assemble = emitted.then_some(encoding);
     }
     result.map_err(Error::codegen)?;
+    if asm_labels.has_preprocessed_numeric_labels() {
+        return Err(Error::message(
+            Stage::Assemble,
+            "numeric labels with assembly preprocessing are not supported yet",
+        ));
+    }
     let start = timed.then(std::time::Instant::now);
     let result = match assembler {
         Some(assembler) => assembler.finish().map_err(Error::assemble),

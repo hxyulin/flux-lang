@@ -143,7 +143,7 @@ struct PendingItem {
 struct PendingBodyMacro {
     ctx: Ctx,
     node: NodeId,
-    function: Option<FunctionId>,
+    owner: Option<BodyOwner>,
     scope: Option<MacroScopeId>,
     depth: u32,
 }
@@ -156,14 +156,30 @@ struct LegacyCall {
     macro_scope: Option<MacroScopeId>,
 }
 
-/// A retained expansion of a macro call in `function`'s body, whose
-/// anonymous constants are collected once the function's are.
+#[derive(Clone, Copy)]
+enum BodyOwner {
+    Function(FunctionId),
+    Const(ConstId),
+}
+
+impl BodyOwner {
+    fn function(self) -> Option<FunctionId> {
+        match self {
+            Self::Function(function) => Some(function),
+            Self::Const(_) => None,
+        }
+    }
+}
+
+/// A retained expansion whose anonymous constants are collected after those
+/// written directly in its owning item.
 struct BodyExpansionConsts {
     /// The expansion's file and the module of the block it is in.
     ctx: Ctx,
     /// The call, by the file it is in.
     call: (FileId, NodeId),
-    function: FunctionId,
+    owner: BodyOwner,
+    macro_scope: Option<MacroScopeId>,
 }
 
 struct Collector<'a> {
@@ -575,6 +591,7 @@ impl Collector<'_> {
                 file,
                 ctxts: expansion.ctxts,
                 fragment: flux_syntax::parser::Fragment::Type,
+                asm: expansion.asm,
                 anon_consts: true,
             },
         );
@@ -915,11 +932,7 @@ impl Collector<'_> {
                 self.expansion_depth = call.depth;
                 let shared = self.db.shared(call.ctx.file);
                 let _file = TypesFile::enter(call.ctx.file);
-                self.collect_body_node(
-                    call.ctx,
-                    shared.parse.tree().node(call.node),
-                    call.function,
-                );
+                self.collect_body_node(call.ctx, shared.parse.tree().node(call.node), call.owner);
                 progress |= self.items.body_expansions.contains_key(&key);
             }
             // Unknown macros retain their ordinary body-lowering diagnostics.
@@ -2745,7 +2758,7 @@ impl Collector<'_> {
             self.items.lang_fns.insert(lang, id);
         }
         if let Some(body) = f.body() {
-            self.collect_body_items(ctx, body.syntax().id(), Some(id));
+            self.collect_body_items(ctx, body.syntax().id(), BodyOwner::Function(id));
         }
         Some(id)
     }
@@ -2753,7 +2766,7 @@ impl Collector<'_> {
     /// The items declared in the blocks of a body, at `node` in
     /// `ctx.file`, of `function` if it is one's: each block with items
     /// becomes a module inside `ctx.module`.
-    fn collect_body_items(&mut self, ctx: Ctx, node: NodeId, function: Option<FunctionId>) {
+    fn collect_body_items(&mut self, ctx: Ctx, node: NodeId, owner: BodyOwner) {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         // Most bodies have no items: they are found without a walk.
@@ -2763,7 +2776,7 @@ impl Collector<'_> {
         }) {
             return;
         }
-        self.collect_body_node(ctx, tree.node(node), function);
+        self.collect_body_node(ctx, tree.node(node), Some(owner));
     }
 
     fn block_has_items(block: SyntaxNode<'_>) -> bool {
@@ -2779,11 +2792,12 @@ impl Collector<'_> {
     /// Block `node`'s items, in a module of their own, then those of the
     /// blocks inside it. A `macro_rules!` statement defines a macro for
     /// the items and blocks after it.
-    fn collect_block(&mut self, ctx: Ctx, node: NodeId, function: Option<FunctionId>) {
+    fn collect_block(&mut self, ctx: Ctx, node: NodeId, owner: Option<BodyOwner>) {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         let block = tree.node(node);
         let ctx = if Self::block_has_items(block) {
+            let function = owner.and_then(BodyOwner::function);
             let parent = &self.items.modules[ctx.module];
             let outer = function.map_or(kw::Empty, |f| self.items.functions[f].name);
             let count = self.block_counts.entry(function).or_default();
@@ -2810,14 +2824,14 @@ impl Collector<'_> {
         self.precollect_imports(ctx, block.children().map(|child| child.id()));
         let outer_scope = self.macro_scope;
         for child in block.children() {
-            self.collect_body_node(ctx, child, function);
+            self.collect_body_node(ctx, child, owner);
         }
         self.macro_scope = outer_scope;
     }
 
     /// Walk expressions without crossing item or block scopes. Retained macro
     /// expansions collect items through the same path as written block items.
-    fn collect_body_node(&mut self, ctx: Ctx, node: SyntaxNode<'_>, function: Option<FunctionId>) {
+    fn collect_body_node(&mut self, ctx: Ctx, node: SyntaxNode<'_>, owner: Option<BodyOwner>) {
         if is_item_kind(node.kind()) {
             let _file = TypesFile::enter(ctx.file);
             self.collect_scoped_item(ctx, node);
@@ -2827,11 +2841,11 @@ impl Collector<'_> {
             return;
         }
         if node.kind() == SyntaxKind::BLOCK_EXPR {
-            self.collect_block(ctx, node.id(), function);
+            self.collect_block(ctx, node.id(), owner);
             return;
         }
         if node.kind() == SyntaxKind::CALL_EXPR
-            && let Some(function) = function
+            && let Some(BodyOwner::Function(function)) = owner
             && let Some(call) = ast::CallExpr::cast(node)
             && matches!(call.expr(), Some(ast::Expr::PathExpr(_)))
             && call
@@ -2881,7 +2895,7 @@ impl Collector<'_> {
                 self.pending_body_macros.push(PendingBodyMacro {
                     ctx,
                     node: node.id(),
-                    function,
+                    owner,
                     scope: self.macro_scope,
                     depth: self.expansion_depth,
                 });
@@ -2890,11 +2904,13 @@ impl Collector<'_> {
             let def = self.items.macros[id].clone();
             let fragment = if node.kind() == SyntaxKind::MACRO_TYPE {
                 flux_syntax::parser::Fragment::Type
-            } else if node.parent().is_some_and(|p| {
-                matches!(p.kind(), SyntaxKind::EXPR_STMT)
-                    || (matches!(p.kind(), SyntaxKind::BLOCK_EXPR | SyntaxKind::MACRO_STMTS)
-                        && !node.children().any(|c| c.kind() == SyntaxKind::ATTR))
-            }) {
+            } else if !matches!(def.kind, macros::MacroKind::Builtin(crate::Builtin::Asm))
+                && node.parent().is_some_and(|p| {
+                    matches!(p.kind(), SyntaxKind::EXPR_STMT)
+                        || (matches!(p.kind(), SyntaxKind::BLOCK_EXPR | SyntaxKind::MACRO_STMTS)
+                            && !node.children().any(|c| c.kind() == SyntaxKind::ATTR))
+                })
+            {
                 flux_syntax::parser::Fragment::Stmts
             } else {
                 flux_syntax::parser::Fragment::Expr
@@ -2947,31 +2963,32 @@ impl Collector<'_> {
                     file,
                     ctxts: expansion.ctxts,
                     fragment,
+                    asm: expansion.asm,
                     anon_consts: false,
                 },
             );
-            if let Some(function) = function {
+            if let Some(owner) = owner {
                 self.body_expansion_consts.push(BodyExpansionConsts {
                     ctx: Ctx { file, ..ctx },
                     call: (ctx.file, node.id()),
-                    function,
+                    owner,
+                    macro_scope: self.macro_scope,
                 });
             }
             let shared = self.db.shared(file);
             self.items.insert_file(file, Arc::clone(&shared));
             self.expansion_depth += 1;
-            self.collect_body_node(Ctx { file, ..ctx }, shared.parse.tree().root(), function);
+            self.collect_body_node(Ctx { file, ..ctx }, shared.parse.tree().root(), owner);
             self.expansion_depth -= 1;
             return;
         }
         for child in node.children() {
-            self.collect_body_node(ctx, child, function);
+            self.collect_body_node(ctx, child, owner);
         }
     }
 
-    /// The anonymous constants of retained body expansions, in the scope
-    /// of their function as [`Self::anon_walk`] would give it, numbered
-    /// after the function's own.
+    /// The anonymous constants of retained body expansions, in the scope of
+    /// their owning item and numbered after its written anonymous constants.
     fn collect_body_expansion_consts(&mut self) {
         if self.body_expansion_consts.is_empty() {
             return;
@@ -2984,32 +3001,43 @@ impl Collector<'_> {
             }
         }
         for pending in std::mem::take(&mut self.body_expansion_consts) {
-            let function = &self.items.functions[pending.function];
-            let owner_generics = self.items.owner_generics(function.owner);
-            let generic_self = matches!(function.owner, Some(Owner::Trait(_)))
+            let (owner, generics, item) = match pending.owner {
+                BodyOwner::Function(id) => {
+                    let function = &self.items.functions[id];
+                    (function.owner, Some(&function.generics), function.name)
+                }
+                BodyOwner::Const(id) => {
+                    let konst = &self.items.consts[id];
+                    (konst.owner, None, konst.name.unwrap_or(kw::Empty))
+                }
+            };
+            let owner_generics = self.items.owner_generics(owner);
+            let generic_self = matches!(owner, Some(Owner::Trait(_)))
                 || owner_generics.is_some_and(|g| !g.params.is_empty() || !g.lifetimes.is_empty());
             let generics = owner_generics
                 .into_iter()
-                .chain(Some(&function.generics))
+                .chain(generics)
                 .flat_map(|g| g.params.iter().map(|p| (p.name, p.is_const())))
                 .collect();
             let mut scope = AnonScope {
                 self_adt: None,
                 module: pending.ctx.module,
-                owner: function.owner.filter(|_| !generic_self),
+                owner: owner.filter(|_| !generic_self),
                 generics,
                 generic_self,
-                function: Some(pending.function),
-                item: function.name,
+                function: pending.owner.function(),
+                item,
             };
             let shared = self.db.shared(pending.ctx.file);
             let start = self.items.diagnostics.len();
+            let old_scope = std::mem::replace(&mut self.macro_scope, pending.macro_scope);
             self.anon_walk(
                 pending.ctx.file,
                 shared.parse.tree().root(),
                 &mut scope,
                 &mut counts,
             );
+            self.macro_scope = old_scope;
             self.tag(start, pending.ctx.file);
             if let Some(expansion) = self.items.body_expansions.get_mut(&pending.call) {
                 expansion.anon_consts = true;
@@ -3329,7 +3357,7 @@ impl Collector<'_> {
                             file,
                         },
                         node.id(),
-                        scope.function,
+                        scope.function.map(BodyOwner::Function),
                     );
                 }
                 if let Some(&module) = self.items.block_modules.get(&(file, node.id())) {
@@ -3570,7 +3598,7 @@ impl Collector<'_> {
             macro_scope: self.macro_scope,
         });
         if let Some(body) = c.body() {
-            self.collect_body_items(ctx, body.syntax().id(), None);
+            self.collect_body_items(ctx, body.syntax().id(), BodyOwner::Const(id));
         }
         Some(id)
     }
@@ -3674,7 +3702,7 @@ impl Collector<'_> {
             }
         }
         self.items.diagnostics.extend(pending);
-        self.items.consts.alloc(Const {
+        let id = self.items.consts.alloc(Const {
             name: Some(symbol),
             ty,
             ty_range: st
@@ -3699,7 +3727,7 @@ impl Collector<'_> {
             macro_scope: self.macro_scope,
         });
         if let Some(body) = st.body() {
-            self.collect_body_items(ctx, body.syntax().id(), None);
+            self.collect_body_items(ctx, body.syntax().id(), BodyOwner::Const(id));
         }
     }
 

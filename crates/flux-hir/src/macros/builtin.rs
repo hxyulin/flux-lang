@@ -115,7 +115,7 @@ impl BuiltinCx<'_> {
     }
 
     /// Generated `{core}` paths carry embedded core definition identity.
-    fn quote(&self, source: &str, out: &mut Vec<Tok>) {
+    pub(super) fn quote(&self, source: &str, out: &mut Vec<Tok>) {
         self.quote_at(source, self.origin(), out);
     }
 
@@ -239,19 +239,7 @@ fn split_exprs<'a>(cx: &BuiltinCx<'_>, toks: &'a [Tok], named: bool) -> Result<A
 pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, Error> {
     let mut out = Vec::new();
     match builtin {
-        Builtin::Asm => {
-            let asm = super::inline_asm::parse(cx.toks, cx.call)?;
-            cx.quote("(", &mut out);
-            for expr in asm
-                .expressions
-                .into_iter()
-                .chain(asm.outputs.into_iter().map(|(_, expr)| expr))
-            {
-                out.extend(expr);
-                cx.quote(",", &mut out);
-            }
-            cx.quote(")", &mut out);
-        }
+        Builtin::Asm => unreachable!("assembly expansion also produces its operand layout"),
         Builtin::Pin => {
             let args = split_exprs(cx, cx.toks, false)?;
             if args.args.len() != 1 {

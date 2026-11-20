@@ -292,6 +292,7 @@ pub(crate) struct Expansion {
     /// Physical source inclusion, whose ranges belong to this path.
     pub included_path: Option<std::path::PathBuf>,
     pub ctxts: Vec<(u32, u32)>,
+    pub asm: Option<Arc<inline_asm::AsmLayout>>,
 }
 
 /// The macro a call names, if it names one: `local` is looked up in
@@ -715,6 +716,7 @@ fn expand_at_depth(
         _ => call_range,
     };
     let mut ctxts = Vec::new();
+    let mut asm = None;
     let output = match &def.kind {
         MacroKind::ProcMacro(host) => {
             if host.kind != crate::ProcMacroKind::Function {
@@ -839,7 +841,11 @@ fn expand_at_depth(
                     .first()
                     .is_some_and(|token| token.kind == SyntaxKind::STRING);
             let eager;
-            let inner = if format_first
+            let inner = if builtin == Builtin::Asm && inner.iter().any(|token| token.kind == T![!])
+            {
+                eager = eager_arguments(inner, site, diagnostics, depth + 1, Eager::AsmTemplates)?;
+                &eager[..]
+            } else if format_first
                 || matches!(
                     builtin,
                     Builtin::Concat
@@ -848,8 +854,14 @@ fn expand_at_depth(
                         | Builtin::IncludeBytes
                         | Builtin::Env
                         | Builtin::OptionEnv
-                ) {
-                eager = eager_arguments(inner, site, diagnostics, depth + 1, format_first)?;
+                )
+            {
+                let mode = if format_first {
+                    Eager::First
+                } else {
+                    Eager::All
+                };
+                eager = eager_arguments(inner, site, diagnostics, depth + 1, mode)?;
                 &eager[..]
             } else {
                 inner
@@ -970,6 +982,7 @@ fn expand_at_depth(
                             .with_cfg_options(site.items.crates[site.krate.0 as usize].cfg.clone()),
                         included_path: Some(path),
                         ctxts: Vec::new(),
+                        asm: None,
                     })
                 })();
                 return match result {
@@ -980,7 +993,15 @@ fn expand_at_depth(
                     }
                 };
             }
-            match builtin::expand(builtin, &cx) {
+            let expanded = if builtin == Builtin::Asm {
+                inline_asm::expand(&cx).map(|(out, layout)| {
+                    asm = Some(Arc::new(layout));
+                    out
+                })
+            } else {
+                builtin::expand(builtin, &cx)
+            };
+            match expanded {
                 Ok(out) => out,
                 Err((range, message)) => {
                     diagnostics.push(Diagnostic::new(range, message));
@@ -1044,6 +1065,7 @@ fn expand_at_depth(
         parse,
         ctxts,
         included_path: None,
+        asm,
     })
 }
 
@@ -1055,7 +1077,14 @@ pub(crate) fn expand_attribute_value(
 ) -> Option<Vec<Tok>> {
     let mut tokens = Vec::new();
     tokens_of(expr.syntax(), &mut tokens);
-    eager_arguments(&tokens, site, diagnostics, 0, false)
+    eager_arguments(&tokens, site, diagnostics, 0, Eager::All)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Eager {
+    First,
+    All,
+    AsmTemplates,
 }
 
 /// Eager builtins expand nested macro arguments before interpreting literals.
@@ -1065,7 +1094,7 @@ fn eager_arguments(
     site: &CallSite<'_>,
     diagnostics: &mut Vec<Diagnostic>,
     depth: u32,
-    only_first: bool,
+    mode: Eager,
 ) -> Option<Vec<Tok>> {
     let mut input = flux_syntax::parser::Input::default();
     for t in toks {
@@ -1084,6 +1113,19 @@ fn eager_arguments(
             break;
         };
         let written = &toks[pos..pos + n];
+        if mode == Eager::AsmTemplates && !written.iter().any(|token| token.kind == T![!]) {
+            out.extend_from_slice(written);
+            pos += n;
+            if matches!(written, [token] if token.kind == SyntaxKind::STRING)
+                && toks.get(pos).is_some_and(|token| token.kind == T![,])
+            {
+                out.push(toks[pos]);
+                pos += 1;
+                continue;
+            }
+            out.extend_from_slice(&toks[pos..]);
+            break;
+        }
         // A forwarded `expr` fragment keeps the invisible parentheses
         // that hold it together; a macro call inside is expanded anyway.
         let mut arg = written;
@@ -1151,14 +1193,27 @@ fn eager_arguments(
                     ));
                     return None;
                 }
-                tokens = eager_arguments(&tokens, site, diagnostics, depth + 1, false)?;
+                tokens = eager_arguments(&tokens, site, diagnostics, depth + 1, Eager::All)?;
+            }
+            if mode == Eager::AsmTemplates
+                && !matches!(&tokens[..], [token] if token.kind == SyntaxKind::STRING)
+            {
+                diagnostics.push(Diagnostic::new(
+                    node.text_range(),
+                    "expected an assembly template string",
+                ));
+                return None;
             }
             out.extend(tokens);
         } else {
             out.extend_from_slice(written);
+            if mode == Eager::AsmTemplates {
+                out.extend_from_slice(&toks[pos + n..]);
+                break;
+            }
         }
         pos += n;
-        if only_first {
+        if mode == Eager::First {
             out.extend_from_slice(&toks[pos..]);
             return Some(out);
         }

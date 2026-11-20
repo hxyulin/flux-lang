@@ -1,6 +1,7 @@
 //! A bounded, spin-waiting once-initialized cell for sized payloads.
 
 use core::cell::UnsafeCell;
+use core::cmp::{Eq, PartialEq};
 use core::default::Default;
 use core::marker::{Send, Sync};
 use core::ops::{Drop, FnOnce};
@@ -120,6 +121,14 @@ impl<T: core::clone::Clone> core::clone::Clone for OnceLock<T> {
         cell
     }
 }
+
+impl<T: PartialEq> PartialEq for OnceLock<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.get() == other.get()
+    }
+}
+
+impl<T: Eq> Eq for OnceLock<T> {}
 
 impl<T> Default for OnceLock<T> {
     fn default() -> OnceLock<T> {

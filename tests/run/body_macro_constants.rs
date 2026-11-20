@@ -10,7 +10,7 @@ impl<const MIN: i32, const MAX: i32> Ranged<MIN, MAX> {
     }
 }
 
-fn width<const N: usize>() -> usize {
+const fn width<const N: usize>() -> usize {
     N
 }
 
@@ -53,7 +53,24 @@ fn generic<T: Default + Copy>() -> usize {
     array.len() + zeros!(1).len() + sized!()
 }
 
+macro_rules! assert_constant {
+    ($cond:expr) => {{
+        let [()] = [(); (true & $cond) as usize];
+    }};
+}
+
+macro_rules! terminated {
+    ($text:expr) => {{
+        const BYTES: &[u8] = concat!($text, "\0").as_bytes();
+        const _: () = assert_constant!(BYTES.len() > 1);
+        BYTES
+    }};
+}
+
 fn main() {
+    assert_eq!(terminated!("hi"), b"hi\0");
+    static WIDTH: usize = sized!();
+    assert_eq!(WIDTH, 16);
     let a = zeros!(3);
     declare!(b);
     let r = ranged!(1234).map_or(-1, |r| r.0);

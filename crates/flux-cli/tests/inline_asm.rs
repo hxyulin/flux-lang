@@ -89,6 +89,10 @@ fn inline_asm_contracts_match_rustc() {
             r#"fn main(){let mut x=1u64;unsafe{core::arch::asm!("{",inout(reg)x)}}"#,
         ),
         (
+            "non_string_template",
+            r#"macro_rules! tpl { () => { 1 } } fn main(){unsafe{core::arch::asm!(tpl!())}}"#,
+        ),
+        (
             "bad_option",
             r#"fn main(){unsafe{core::arch::asm!("nop",options(wrong))}}"#,
         ),
