@@ -69,7 +69,20 @@
     "census_date": "2026-11-11",
     "rustc_control_date": "2026-11-11"
   },
-  "last_updated": "2026-11-13",
+  "last_updated": "2026-11-20",
+  "locked_crate_builds": {
+    "date": "2026-11-20",
+    "host": "aarch64-apple-darwin",
+    "package_versions": 1915,
+    "rustc_eligible": 1528,
+    "full_replay_passed": 1137,
+    "full_replay_failed": 391,
+    "targeted_replay_additional_passes": 17,
+    "latest_recorded_passed": 1154,
+    "latest_recorded_failed": 374,
+    "scope": "Default features, locked offline library wrappers, Rustc release controls, Flux fast-build, debug assertions off, panic-abort. Targeted replays ran on two later compiler snapshots. Feature matrix figures come from the earlier survey.",
+    "results": "locked-crate-build-results.json"
+  },
   "crate_builds": {
     "date": "2026-11-13",
     "compiler_revision": "875d348",

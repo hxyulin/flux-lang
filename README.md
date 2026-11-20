@@ -64,20 +64,23 @@ and cfg are not applied. These counts measure parsing only. The build survey
 below uses a newer, separately inventoried source cache.
 [Per-file rustc controls](docs/status/rustc-parser-controls.json).
 
-![Crate build coverage: 864 of 1,529 Rustc-eligible default-feature library graphs pass; 20 of 22 selected no-default-feature cases and 6 of 21 selected extra-feature cases pass.](docs/status/crate-builds.svg)
+![Crate build coverage. 1,154 of 1,528 default-feature library graphs have a recorded pass. 20 of 22 selected no-default-feature cases and 6 of 21 selected extra-feature cases pass.](docs/status/crate-builds.svg)
 
-The 2026-11-13 build screen inventories **1,916 package versions across
-1,227 names** on arm64 macOS. It builds cached sources through fresh
-edition-2024 library wrappers, using Rustc release controls and Flux fast-build.
-Both use panic-abort with debug assertions off. Rustc controls pass for
-**1,529 graphs**; Flux builds **864**, reports **664 compilation failures**,
-and retains **1 timeout**, Logos 0.16.1, after a 600-second retry.
-The other 387 versions comprise 175 control-build failures, 61 missing offline
-dependency graphs, 149 Rustc-hosted proc-macro roots, and 2 packages without
-libraries. One recorded failure is a compiler panic in Time 0.3.45.
-[All outcomes and leading diagnostics](docs/status/crate-build-results.json).
+The 2026-11-20 locked replay on arm64 macOS builds **1,137 of 1,528
+Rustc-eligible default-feature library graphs (74.4%)** on one Flux snapshot.
+Targeted replays on later snapshots confirm **17 additional passes**, bringing
+the recorded count to **1,154 of 1,528 (75.5%)**, with **374 failures still
+recorded**. The full replay used offline edition-2024 library wrappers with
+fixed dependency versions. The Rustc controls use release, and Flux uses
+fast-build. Both use panic-abort with debug assertions off.
+[Per-graph outcomes and compiler snapshots](docs/status/locked-crate-build-results.json).
 
-The feature matrix adds **46 configurations across 23 selected versions**.
+The inventory excludes 175 graphs that fail the Rustc control, 61 with
+unavailable offline dependencies, 149 Rustc-hosted proc-macro roots, and two
+packages without library targets.
+[Initial 2026-11-13 build survey](docs/status/crate-build-results.json).
+
+The 2026-11-13 feature matrix adds **46 configurations across 23 selected versions**.
 Of those passing Rustc controls, Flux builds **20 / 22** with default features
 disabled and **6 / 21** with selected extra features. This is a selected matrix,
 not every feature combination. [Configurations and results](docs/status/feature-build-results.json).

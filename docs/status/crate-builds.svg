@@ -1,16 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 600" role="img" aria-labelledby="title desc">
 <title id="title">Crate build coverage</title>
-<desc id="desc">Rustc-eligible library graph builds on arm64 macOS. All installed default-feature versions and selected feature configurations are separate populations. Exclusions and scope are recorded in compatibility.json.</desc>
-<style>:root{color-scheme:light dark;--bg:#f6f7fb;--fg:#162033;--pass:#6554d9;--fail:#d7a28d;--unknown:#cbd2df}@media(prefers-color-scheme:dark){:root{--bg:#161b22;--fg:#e6edf3;--pass:#b4a7ff;--fail:#a65a3b;--unknown:#64748b}}.background{fill:var(--bg)}.text{fill:var(--fg)}.pass{fill:var(--pass)}.fail{fill:var(--fail)}.unknown{fill:var(--unknown)}</style>
+<desc id="desc">Rustc-eligible library graph builds on arm64 macOS. One complete default-feature replay passed 1,137 of 1,528 graphs. Later targeted replays confirmed 17 additional passes. The selected feature configurations were measured separately.</desc>
+<style>:root{color-scheme:light dark;--bg:#f6f7fb;--fg:#162033;--pass:#6554d9;--fail:#d7a28d}@media(prefers-color-scheme:dark){:root{--bg:#161b22;--fg:#e6edf3;--pass:#b4a7ff;--fail:#a65a3b}}.background{fill:var(--bg)}.text{fill:var(--fg)}.pass{fill:var(--pass)}.fail{fill:var(--fail)}</style>
 <rect class="background" width="720" height="600" rx="20"/>
 <g font-family="system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif"><text class="text" x="30" y="60" font-size="36" font-weight="650">Crate build coverage</text>
-<text class="text" x="30" y="128" font-size="25">Default features, all versions</text><text class="text" x="690" y="128" text-anchor="end" font-size="30" font-weight="650">864 / 1,529</text>
-<rect class="pass" x="30" y="153" width="372.95" height="38"/><rect class="fail" x="402.95" y="153" width="286.62" height="38"/><rect class="unknown" x="689.57" y="153" width="0.43" height="38"/>
+<text class="text" x="30" y="128" font-size="25">Default features, recorded</text><text class="text" x="690" y="128" text-anchor="end" font-size="30" font-weight="650">1,154 / 1,528</text>
+<rect class="pass" x="30" y="153" width="498.46" height="38"/><rect class="fail" x="528.46" y="153" width="161.54" height="38"/>
 <text class="text" x="30" y="273" font-size="25">No default features, selected</text><text class="text" x="690" y="273" text-anchor="end" font-size="30" font-weight="650">20 / 22</text>
-<rect class="pass" x="30" y="298" width="600.00" height="38"/><rect class="fail" x="630.00" y="298" width="60.00" height="38"/><rect class="unknown" x="690.00" y="298" width="0.00" height="38"/>
+<rect class="pass" x="30" y="298" width="600.00" height="38"/><rect class="fail" x="630.00" y="298" width="60.00" height="38"/>
 <text class="text" x="30" y="418" font-size="25">Extra features, selected</text><text class="text" x="690" y="418" text-anchor="end" font-size="30" font-weight="650">6 / 21</text>
-<rect class="pass" x="30" y="443" width="188.57" height="38"/><rect class="fail" x="218.57" y="443" width="471.43" height="38"/><rect class="unknown" x="690.00" y="443" width="0.00" height="38"/>
+<rect class="pass" x="30" y="443" width="188.57" height="38"/><rect class="fail" x="218.57" y="443" width="471.43" height="38"/>
 <rect class="pass" x="30" y="545" width="24" height="24"/><text class="text" x="66" y="566" font-size="26">Passed</text>
 <rect class="fail" x="250" y="545" width="24" height="24"/><text class="text" x="286" y="566" font-size="26">Failed</text>
-<rect class="unknown" x="470" y="545" width="24" height="24"/><text class="text" x="506" y="566" font-size="26">Timed out</text>
 </g></svg>
