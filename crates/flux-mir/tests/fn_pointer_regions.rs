@@ -33,6 +33,36 @@ fn function_pointer_regions_match_rustc() {
             false,
         ),
         (
+            "qualified_owner_callback",
+            "struct S;trait Tr<'a>{fn get(x:&'a u32)->&'a u32;}impl<'a>Tr<'a> for S{fn get(x:&'a u32)->&'a u32{x}}fn table<'a>()->fn(&'a u32)->&'a u32{let p:fn(&'a u32)->&'a u32=<S as Tr<'a>>::get;p}fn main(){}",
+            true,
+        ),
+        (
+            "qualified_owner_callback_escape",
+            "struct S;trait Tr<'a>{fn get(x:&'a u32)->&'a u32;}impl<'a>Tr<'a> for S{fn get(x:&'a u32)->&'a u32{x}}fn table<'a>()->fn(&'a u32)->&'a u32{let p:fn(&'a u32)->&'a u32=<S as Tr<'static>>::get;p}fn main(){}",
+            false,
+        ),
+        (
+            "qualified_owner_callback_with_self_regions",
+            "struct S<'a>(&'a u32);trait Tr<'a>{fn get(x:&'a u32)->Self;}impl<'a>Tr<'a> for S<'a>{fn get(x:&'a u32)->Self{S(x)}}fn table<'a>()->fn(&'a u32)->S<'a>{let p:fn(&'a u32)->S<'a>=<S<'a> as Tr<'a>>::get;p}fn main(){}",
+            true,
+        ),
+        (
+            "qualified_owner_without_signature_regions",
+            "struct S;trait Tr<'a>{fn get();}impl Tr<'static> for S{fn get(){}}fn table<'a>(_:&'a u32)->fn(){let p:fn()=<S as Tr<'a>>::get;p}fn main(){}",
+            false,
+        ),
+        (
+            "explicit_inherent_owner_callback",
+            "struct S<'a>(&'a u32);impl<'a>S<'a>{fn get(x:&'a u32)->&'a u32{x}}fn table<'a>()->fn(&'a u32)->&'a u32{let p:fn(&'a u32)->&'a u32=S::<'a>::get;p}fn main(){}",
+            true,
+        ),
+        (
+            "explicit_inherent_owner_callback_escape",
+            "struct S<'a>(&'a u32);impl<'a>S<'a>{fn get(x:&'a u32)->&'a u32{x}}fn table<'a>()->fn(&'a u32)->&'a u32{let p:fn(&'a u32)->&'a u32=S::<'static>::get;p}fn main(){}",
+            false,
+        ),
+        (
             "fixed_owner_object_callback",
             "trait Tr<'a,T>{unsafe fn drop(_: *mut(dyn core::future::Future<Output=T>+'a));}fn table<'a,T,F:Tr<'a,T>>()->unsafe fn(*mut(dyn core::future::Future<Output=T>+'a)){F::drop}fn main(){}",
             true,

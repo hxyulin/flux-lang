@@ -1,4 +1,4 @@
-//! Contextual `as _` uses the ordinary object coercion and its region proof.
+//! Contextual `as _` uses the ordinary coercion and its region proof.
 use flux_hir::{SourceCrate, SourceDb};
 use flux_intern::Symbol;
 use flux_syntax::Edition;
@@ -82,6 +82,21 @@ fn contextual_object_casts_match_rustc() {
         (
             "unrelated_reference",
             "fn f(x:&u32)->&u64{x as _}fn main(){}",
+            false,
+        ),
+        (
+            "shared_reborrow",
+            "fn f(x:&mut u32)->Option<&u32>{let value=Some(x as _);value}fn main(){}",
+            true,
+        ),
+        (
+            "shared_reborrow_escape",
+            "fn f(x:&mut u32)->Option<&'static u32>{let value=Some(x as _);value}fn main(){}",
+            false,
+        ),
+        (
+            "shared_reborrow_overlap",
+            "fn f(x:&mut u32)->&u32{let shared=x as _;*x+=1;shared}fn main(){}",
             false,
         ),
     ] {

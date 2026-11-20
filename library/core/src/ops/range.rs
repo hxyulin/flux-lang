@@ -20,8 +20,12 @@ pub struct Range<Idx> {
 
 impl<Idx: PartialOrd<Idx>> Range<Idx> {
     /// Whether `item` is in the range.
-    pub fn contains(&self, item: &Idx) -> bool {
-        self.start <= *item && *item < self.end
+    pub fn contains<U: ?Sized>(&self, item: &U) -> bool
+    where
+        Idx: PartialOrd<U>,
+        U: PartialOrd<Idx>,
+    {
+        <Self as RangeBounds<Idx>>::contains(self, item)
     }
 
     /// Whether the range has nothing in it.
@@ -39,8 +43,12 @@ pub struct RangeFrom<Idx> {
 
 impl<Idx: PartialOrd<Idx>> RangeFrom<Idx> {
     /// Whether `item` is in the range.
-    pub fn contains(&self, item: &Idx) -> bool {
-        self.start <= *item
+    pub fn contains<U: ?Sized>(&self, item: &U) -> bool
+    where
+        Idx: PartialOrd<U>,
+        U: PartialOrd<Idx>,
+    {
+        <Self as RangeBounds<Idx>>::contains(self, item)
     }
 }
 
@@ -53,8 +61,12 @@ pub struct RangeTo<Idx> {
 
 impl<Idx: PartialOrd<Idx>> RangeTo<Idx> {
     /// Whether `item` is in the range.
-    pub fn contains(&self, item: &Idx) -> bool {
-        *item < self.end
+    pub fn contains<U: ?Sized>(&self, item: &U) -> bool
+    where
+        Idx: PartialOrd<U>,
+        U: PartialOrd<Idx>,
+    {
+        <Self as RangeBounds<Idx>>::contains(self, item)
     }
 }
 
@@ -83,8 +95,12 @@ impl<Idx> RangeInclusive<Idx> {
 
 impl<Idx: PartialOrd<Idx>> RangeInclusive<Idx> {
     /// Whether `item` is in the range.
-    pub fn contains(&self, item: &Idx) -> bool {
-        self.start <= *item && *item <= self.end
+    pub fn contains<U: ?Sized>(&self, item: &U) -> bool
+    where
+        Idx: PartialOrd<U>,
+        U: PartialOrd<Idx>,
+    {
+        <Self as RangeBounds<Idx>>::contains(self, item)
     }
 
     /// Whether the range has nothing (left) in it.
@@ -102,8 +118,12 @@ pub struct RangeToInclusive<Idx> {
 
 impl<Idx: PartialOrd<Idx>> RangeToInclusive<Idx> {
     /// Whether `item` is in the range.
-    pub fn contains(&self, item: &Idx) -> bool {
-        *item <= self.end
+    pub fn contains<U: ?Sized>(&self, item: &U) -> bool
+    where
+        Idx: PartialOrd<U>,
+        U: PartialOrd<Idx>,
+    {
+        <Self as RangeBounds<Idx>>::contains(self, item)
     }
 }
 
@@ -207,7 +227,7 @@ pub trait RangeBounds<T: ?Sized> {
     fn end_bound(&self) -> Bound<&T>;
 
     /// Whether `item` is in the range.
-    fn contains<U>(&self, item: &U) -> bool
+    fn contains<U: ?Sized>(&self, item: &U) -> bool
     where
         T: PartialOrd<U>,
         U: PartialOrd<T>,
@@ -266,7 +286,7 @@ impl<T> RangeBounds<T> for RangeInclusive<T> {
     }
     /// Once iterated to its end, it ends before it.
     fn end_bound(&self) -> Bound<&T> {
-        if self.exhausted { Excluded(&self.end) } else { Included(&self.end) }
+        if self.exhausted { Excluded(&self.start) } else { Included(&self.end) }
     }
 }
 

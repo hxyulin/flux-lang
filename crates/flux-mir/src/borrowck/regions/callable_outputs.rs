@@ -260,6 +260,11 @@ impl Cx<'_> {
                 }
                 actual_rows.push(vars);
             }
+            let callee = self.normalize(predicate.self_ty.subst(args));
+            let owner_count = match callee.kind() {
+                TyKind::FnDef(def) => self.sigs.regions.fns.get(def.function)?.owner,
+                _ => 0,
+            };
             let inputs = actual_rows.get(1).map_or(&[][..], Vec::as_slice);
             let input_ty = self.normalize(predicate.trait_ref.args.first()?.subst(args));
             let mut implied = Vec::new();
@@ -284,6 +289,15 @@ impl Cx<'_> {
                 .collect::<FxHashSet<_>>()
                 .into_iter()
                 .collect();
+            // Include the owner's fixed variables in the outer side of the
+            // binder proof even though its input rows are already available.
+            let fixed_owner = if let TyKind::FnDef(def) = callee.kind()
+                && flux_ty::regions::item_owner_lifetimes(self.items, def) != 0
+            {
+                actual_rows.first()?.clone()
+            } else {
+                self.fresh_list(owner_count)
+            };
             if !bound.is_empty() {
                 let implied: Vec<_> = self
                     .hole_pairs
@@ -297,6 +311,23 @@ impl Cx<'_> {
                 self.record_pointer_check_at(self.vars, bound, implied, range, caller_constraints);
             }
             self.late_inputs = self.late_slots(predicate.trait_ref.args[0], inputs, args, arg_vars);
+            // The erased FnDef trait check cannot establish its owner
+            // provenance, even when no Output equality was written.
+            let item_output = if fixed_owner.is_empty() {
+                None
+            } else {
+                let TyKind::Tuple(input_types) = input_ty.kind() else {
+                    return None;
+                };
+                Some(self.function_output_with_obligations(
+                    callee,
+                    input_types,
+                    inputs,
+                    FunctionUse::CallableEquality,
+                    None,
+                    &fixed_owner,
+                )?)
+            };
             // Angle-bracket Fn<Args> in the trusted forwarding impls need not
             // constrain Output. Every written equality, including an empty
             // scalar/unit row, must retain its own recipe when present.
@@ -321,10 +352,12 @@ impl Cx<'_> {
             let candidates: Vec<_> = self
                 .env_regions
                 .iter()
-                .filter(|(source, _)| source.map_args(|ty| self.normalize(ty)) == alias)
+                .filter(|(source, _)| {
+                    item_output.is_none() && source.map_args(|ty| self.normalize(ty)) == alias
+                })
                 .cloned()
                 .collect();
-            let mut actual = None;
+            let mut actual = item_output;
             for (source, mut vars) in candidates {
                 if let Some((_, recipe)) = self
                     .env_late
@@ -373,6 +406,7 @@ impl Cx<'_> {
                         inputs,
                         FunctionUse::CallableEquality,
                         None,
+                        &[],
                     ),
                     TyKind::FnPtr(_) | TyKind::Dynamic(_) => {
                         let (signature, own) = match source.kind() {

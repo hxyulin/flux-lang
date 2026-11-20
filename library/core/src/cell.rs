@@ -136,6 +136,14 @@ impl<T: ?Sized> Cell<T> {
     }
 }
 
+impl<T> Cell<[T]> {
+    /// Views the slice as individually mutable cells.
+    pub const fn as_slice_of_cells(&self) -> &[Cell<T>] {
+        // SAFETY: Cell<T> has T's layout, and the cast preserves the slice length.
+        unsafe { &*(self as *const Cell<[T]> as *const [Cell<T>]) }
+    }
+}
+
 impl<T: Copy> Cell<T> {
     /// A copy of the value.
     pub fn get(&self) -> T {

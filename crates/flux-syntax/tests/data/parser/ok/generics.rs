@@ -9,3 +9,7 @@ struct Wrapper<T, const N: usize = 3>([T; N]);
 trait Gat { type Item<'a>: Copy where Self: 'a; }
 impl<T> Gat for Wrapper<T> { type Item<'a> = &'a T where Self: 'a; }
 impl <T as Trait>::Assoc {}
+
+fn const_turbofish() {
+    takes_const::<{ 40 + 2 }>();
+}

@@ -40,11 +40,24 @@ pub use flux_ty_ir::regions::{
     FnRegions, IMPL_SELF_ARG, ImplRegions, LifetimeName, OpaqueBoundRegions, OpaqueRegions,
     Outlives, ProjectionSelection, Region, RegionSigs, StructRegions, TRAIT_LIFETIMES_ARG,
     TraitRefRegions, TraitRegions, TypeArgRegions, Variance, has_declared_projection_inputs,
-    has_projection_inputs, instantiate, object_associated_range, object_own_slots,
-    object_region_types, slots,
+    has_projection_inputs, instantiate, item_owner_lifetimes, object_associated_range,
+    object_own_slots, object_region_types, slots,
 };
 
 pub use crate::fn_regions::variances as fn_pointer_variances;
+
+/// A concrete nominal type with no free lifetime or callable capture inputs.
+pub fn is_closed_nominal(items: &ItemTree, ty: Ty) -> bool {
+    fn has_callable_capture(ty: Ty) -> bool {
+        matches!(ty.kind(), TyKind::Closure(..) | TyKind::FnDef(_))
+            || ty.children().any(has_callable_capture)
+    }
+
+    matches!(ty.kind(), TyKind::Adt(..))
+        && !ty.has_infer()
+        && is_closed_region_free(items, ty)
+        && !has_callable_capture(ty)
+}
 
 /// A concrete definition whose shape cannot acquire regions by substitution.
 pub(crate) fn is_closed_region_free(items: &ItemTree, ty: Ty) -> bool {
@@ -69,6 +82,7 @@ pub use projection_outlives::{
 };
 mod resolve;
 mod selected;
+pub(crate) use selected::closed_impl_predicates_hold;
 mod selected_signatures;
 pub use method_binders::method_early_lifetimes;
 pub use selected_signatures::{SelectedMethodSignature, selected_method_signature};
@@ -78,11 +92,11 @@ pub use trait_profile::{
     TraitProfileError, TraitProfileReason, required_method_trait_profile, safe_method_trait_profile,
 };
 
-pub(crate) use resolve::resolve_regions;
 pub use resolve::{
     BoundProjectionSelections, TraitBoundRegions, function_bound_projection_selections,
     trait_bound_regions, trait_bound_schemes,
 };
+pub(crate) use resolve::{outlives_known, resolve_regions};
 
 fn has_projection_outlives_inputs(items: &ItemTree, ty: Ty) -> bool {
     matches!(ty.kind(), TyKind::Alias(alias) if has_projection_inputs(items, alias))
@@ -158,6 +172,8 @@ pub(crate) struct Walker<'a> {
     /// In a trait's `impl` block's methods, the slots of its associated
     /// types, which `Self::Out` resolves to.
     pub self_types: &'a [(Symbol, Box<[Region]>)],
+    /// Projection inputs from those same associated type definitions.
+    pub self_type_selections: &'a [(Symbol, Box<[ProjectionSelection]>)],
     /// Inherited projections whose selected impl needs an unrepresented map.
     pub unmapped_self_types: &'a [Symbol],
     pub inherited_self_types: &'a [(Symbol, Box<[Region]>)],
@@ -172,12 +188,14 @@ pub(crate) struct Walker<'a> {
     pub inferred_root_alias: Option<crate::AliasTy>,
     /// Selection inputs stay invariant even when normalization erases them.
     pub selected_inputs: Vec<(crate::AliasTy, Box<[Region]>)>,
-    /// Local annotations cannot yet map associated projections' written lifetimes.
+    /// Use expression and local type rules, including inference for elided rows.
     pub body: bool,
     /// Omitted object bounds in expression type spellings are inferred.
     /// Alias declarations and generic defaults keep their declaration defaults.
     pub infer_objects: bool,
     pub elided: Elided,
+    /// Trait-object lifetime arguments must be explicit in impl headers.
+    pub in_impl_header: bool,
     /// The lifetime parameters elided lifetimes made, after `names`.
     pub fresh: Vec<TextRange>,
     /// In a function's return type, the lifetimes each of its opaque
@@ -192,7 +210,7 @@ pub(crate) struct Walker<'a> {
     /// Written-bound proofs also collect inputs hidden behind type aliases.
     pub expand_alias_selections: bool,
     /// Original trait bounds provide owner lifetime arguments for `T::Family`.
-    pub projection_owners: Vec<(Ty, flux_hir::TraitId, flux_hir::Bound)>,
+    projection_owners: Vec<ProjectionOwner>,
     /// An impl/trait's own trait arguments have already been resolved in its header.
     pub self_projection_owner: Option<(flux_hir::TraitId, Box<[Region]>)>,
     /// The region of the reference whose pointee is being walked, if
@@ -207,6 +225,14 @@ pub(crate) struct Walker<'a> {
     pub infer_unknown_owners: bool,
 }
 
+#[derive(Clone)]
+struct ProjectionOwner {
+    subject: Ty,
+    trait_: flux_hir::TraitId,
+    module: ModuleId,
+    bound: flux_hir::Bound,
+}
+
 impl<'a> Walker<'a> {
     pub fn new(items: &'a ItemTree, module: ModuleId, names: Vec<Option<Symbol>>) -> Self {
         Walker {
@@ -216,6 +242,7 @@ impl<'a> Walker<'a> {
             late_names: Vec::new(),
             self_regions: None,
             self_types: &[],
+            self_type_selections: &[],
             unmapped_self_types: &[],
             inherited_self_types: &[],
             scope: TypeScope::default(),
@@ -226,6 +253,7 @@ impl<'a> Walker<'a> {
             body: false,
             infer_objects: false,
             elided: Elided::Is(Region::Erased),
+            in_impl_header: false,
             fresh: Vec::new(),
             opaque_captures: Vec::new(),
             errors: Vec::new(),
@@ -466,7 +494,13 @@ impl<'a> Walker<'a> {
             return;
         }
         let start = out.len();
-        self.trait_lifetimes(path, object.trait_, false, out);
+        let last = path.segments.len().saturating_sub(1);
+        if !self.in_impl_header && path.args(last).is_none_or(|args| args.lifetimes.is_empty()) {
+            let count = self.items.traits[object.trait_].generics.lifetimes.len();
+            self.lifetime_args(path, "trait", count, out);
+        } else {
+            self.trait_lifetimes(path, object.trait_, self.in_impl_header, out);
+        }
         let owner = out[start..].to_vec();
         let mut rows = Vec::new();
         let arguments = path.args(path.segments.len().saturating_sub(1));
@@ -594,6 +628,12 @@ impl<'a> Walker<'a> {
                         &mut Vec::new(),
                     )
                 });
+            let raw = match raw.kind() {
+                TyKind::Alias(alias) if self.body && raw != ty => {
+                    Ty::alias(self.normalize_written_projection_inputs(path, sigs, alias))
+                }
+                _ => raw,
+            };
             if self.body
                 && let TyKind::Alias(alias) = raw.kind()
                 && raw != ty
@@ -663,7 +703,7 @@ impl<'a> Walker<'a> {
                 let mut inputs = Vec::new();
                 self.projection_inputs(path, alias, &mut inputs);
                 let row = if self.body && is_closed_region_free(self.items, ty) {
-                    selected::closed_projection(self.items, sigs, alias, &inputs)
+                    selected::closed_projection(self.items, sigs, alias, &inputs, ty)
                 } else {
                     selected::projection(self.items, sigs, alias, &inputs)
                 };
@@ -686,11 +726,64 @@ impl<'a> Walker<'a> {
                 return;
             }
         }
+        // `Self::Out` can resolve to a projection written in this impl's
+        // associated type value. Its input row belongs to that definition.
+        // When it still names the impl's own trait projection, use that
+        // occurrence's inputs, even if the definition has the same slot count.
+        if let TyKind::Alias(output) = ty.kind()
+            && path.qself.is_none()
+            && let [first, name] = &*path.segments
+            && *first == kw::SelfUpper
+            && path.args(1).is_none()
+            && self.scope.self_types.contains(&(*name, ty))
+            && let Some((_, row)) = self
+                .self_types
+                .iter()
+                .find(|(candidate, _)| candidate == name)
+            && row.len() == slots(self.items, ty)
+        {
+            self.check_args(path);
+            out.extend_from_slice(row);
+            if let Some(selections) = &mut self.selections
+                && let Some((_, associated)) = self
+                    .self_type_selections
+                    .iter()
+                    .find(|(candidate, _)| candidate == name)
+            {
+                // Only replay an input from the associated definition when this
+                // occurrence has resolved to that projection already. If the
+                // method signature still names its own trait's alias, its input
+                // row belongs to that alias.
+                selections.extend(
+                    associated
+                        .iter()
+                        .filter(|selection| {
+                            selection.alias == output
+                                && selection.qualified
+                                && !has_declared_projection_inputs(selection.alias)
+                                && selection.args.iter().any(|row| !row.is_empty())
+                        })
+                        .cloned()
+                        .map(|mut selection| {
+                            selection.qualified = false;
+                            selection
+                        }),
+                );
+            }
+            return;
+        }
         if let TyKind::Alias(alias) = ty.kind()
             && has_projection_inputs(self.items, alias)
         {
             let start = out.len();
             self.projection_inputs(path, alias, out);
+            if out.len() - start != slots(self.items, ty) {
+                self.errors.push((
+                    path.range(0, TextRange::default()),
+                    "projection lifetime inputs do not match this occurrence".into(),
+                ));
+                return;
+            }
             if (!self.qualified_legacy_selections || !has_declared_projection_inputs(alias))
                 && let Some(selections) = self.selections.as_mut()
             {
@@ -906,7 +999,7 @@ impl<'a> Walker<'a> {
         self.ref_region = previous;
     }
 
-    fn add_projection_bounds(&mut self, generics: &Generics) {
+    pub(crate) fn add_projection_bounds(&mut self, generics: &Generics) {
         for predicate in &generics.predicates {
             let mut scratch = Vec::new();
             let subject = crate::resolve_type(
@@ -918,9 +1011,120 @@ impl<'a> Walker<'a> {
                 &mut scratch,
             );
             if let (Some(trait_), _) = self.items.resolve_trait(self.module, &predicate.bound) {
-                self.projection_owners
-                    .push((subject, trait_, predicate.bound.clone()));
+                self.add_projection_owner(subject, trait_, &predicate.bound);
             }
+        }
+    }
+
+    fn add_trait_projection_bounds(&mut self, owner: flux_hir::TraitId) {
+        let declaration = &self.items.traits[owner];
+        let subject = Ty::param(0, kw::SelfUpper);
+        self.in_module(declaration.loc.module, |walker| {
+            for bound in &declaration.supertraits {
+                if let (Some(trait_), _) = walker.items.resolve_trait(walker.module, bound) {
+                    walker.add_projection_owner(subject, trait_, bound);
+                }
+            }
+        });
+    }
+
+    fn add_projection_owner(
+        &mut self,
+        subject: Ty,
+        trait_: flux_hir::TraitId,
+        bound: &flux_hir::Bound,
+    ) {
+        self.projection_owners.push(ProjectionOwner {
+            subject,
+            trait_,
+            module: self.module,
+            bound: bound.clone(),
+        });
+    }
+
+    fn in_module<T>(&mut self, module: ModuleId, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = std::mem::replace(&mut self.module, module);
+        let value = f(self);
+        self.module = previous;
+        value
+    }
+
+    /// A selected input contributes the regions of its output, after its own
+    /// occurrence has been checked. Normalize through written wrappers so
+    /// `projection_inputs` can walk each original spelling with the
+    /// corresponding normalized type.
+    fn normalize_written_projection_inputs(
+        &self,
+        path: &Path,
+        sigs: &Signatures,
+        alias: crate::AliasTy,
+    ) -> crate::AliasTy {
+        let Some(qself) = &path.qself else {
+            return alias;
+        };
+        if !alias
+            .args
+            .iter()
+            .chain(alias.family_args)
+            .any(|ty| ty.has_aliases())
+        {
+            return alias;
+        }
+        let owner = qself.trait_.as_ref().filter(|_| !qself.associated_bound);
+        let owner_args = owner.and_then(|path| path.args(path.segments.len().saturating_sub(1)));
+        let family_args = path.args(path.segments.len().saturating_sub(1));
+        let normalize = |ty: Ty, written: Option<&TypeRef>| {
+            written.map_or(ty, |written| {
+                self.normalize_written_projection_input(sigs, written, ty)
+            })
+        };
+        let self_ty = normalize(alias.args[0], Some(&qself.ty));
+        let args =
+            std::iter::once(self_ty).chain(alias.args[1..].iter().enumerate().map(|(i, &ty)| {
+                let written = owner_args.and_then(|args| args.types.get(i));
+                if written.is_none()
+                    && self_ty != alias.args[0]
+                    && ty == alias.args[0]
+                    && owner.is_some()
+                    && resolve::trait_default_self(self.items, alias.trait_, i)
+                {
+                    self_ty
+                } else {
+                    normalize(ty, written)
+                }
+            }));
+        crate::AliasTy {
+            args: Ty::list(&args.collect::<Vec<_>>()),
+            family_args: Ty::list(
+                &alias
+                    .family_args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &ty)| normalize(ty, family_args.and_then(|args| args.types.get(i))))
+                    .collect::<Vec<_>>(),
+            ),
+            ..alias
+        }
+    }
+
+    fn normalize_written_projection_input(
+        &self,
+        sigs: &Signatures,
+        written: &TypeRef,
+        ty: Ty,
+    ) -> Ty {
+        if !ty.has_aliases() {
+            return ty;
+        }
+        match (written, ty.kind()) {
+            (TypeRef::Path(path), _) if path.qself.is_some() => {
+                flux_solve::traits::normalize(self.items, sigs, &[], ty)
+            }
+            (TypeRef::Ref { pointee, .. }, TyKind::Ref(mutability, inner)) => Ty::new(TyKind::Ref(
+                mutability,
+                self.normalize_written_projection_input(sigs, pointee, inner),
+            )),
+            _ => ty,
         }
     }
 
@@ -944,17 +1148,19 @@ impl<'a> Walker<'a> {
                     .0
                     == Some(alias.trait_)
             })
-            .cloned();
+            .map(|path| (self.module, path.clone()));
         let explicit_owner = owner_path.is_some();
         let candidates: Vec<_> = self
             .projection_owners
             .iter()
-            .filter(|(self_ty, trait_, _)| *self_ty == alias.args[0] && *trait_ == alias.trait_)
-            .map(|(_, _, bound)| bound.path.clone())
+            .filter(|owner| owner.subject == alias.args[0] && owner.trait_ == alias.trait_)
+            .map(|owner| (owner.module, &owner.bound.path))
             .collect();
         let owner_path = owner_path.or_else(|| {
             if candidates.windows(2).all(|pair| pair[0] == pair[1]) {
-                candidates.first().cloned()
+                candidates
+                    .first()
+                    .map(|&(module, path)| (module, path.clone()))
             } else {
                 None
             }
@@ -985,8 +1191,10 @@ impl<'a> Walker<'a> {
                 out.extend(lifetimes.iter().copied());
             } else if let Some((lifetimes, _)) = &inherited {
                 out.extend(lifetimes.iter().copied());
-            } else if let Some(owner) = &owner_path {
-                self.trait_lifetimes(owner, alias.trait_, false, out);
+            } else if let Some((module, owner)) = &owner_path {
+                self.in_module(*module, |walker| {
+                    walker.trait_lifetimes(owner, alias.trait_, false, out);
+                });
             } else if let Some((trait_, lifetimes)) = &self.self_projection_owner
                 && *trait_ == alias.trait_
                 && self.scope.self_ty == Some(alias.args[0])
@@ -1032,12 +1240,14 @@ impl<'a> Walker<'a> {
         }
         let self_regions = out[self_start..].to_vec();
         for (index, &ty) in alias.args.iter().skip(1).enumerate() {
-            if let Some(written) = owner_path
-                .as_ref()
-                .and_then(|p| p.args(p.segments.len().saturating_sub(1)))
-                .and_then(|a| a.types.get(index))
-            {
-                self.walk(written, ty, out);
+            if let Some((module, written)) = owner_path.as_ref().and_then(|(module, path)| {
+                let written = path
+                    .args(path.segments.len().saturating_sub(1))?
+                    .types
+                    .get(index)?;
+                Some((*module, written))
+            }) {
+                self.in_module(module, |walker| walker.walk(written, ty, out));
             } else if owner_path.is_some()
                 && ty == self_ty
                 && resolve::trait_default_self(self.items, alias.trait_, index)
@@ -1085,10 +1295,10 @@ impl<'a> Walker<'a> {
             let sources: Vec<_> = self
                 .projection_owners
                 .iter()
-                .filter(|(ty, trait_, bound)| {
-                    *ty == alias.args[0]
-                        && *trait_ != alias.trait_
-                        && bound.bound_lifetimes.is_empty()
+                .filter(|owner| {
+                    owner.subject == alias.args[0]
+                        && owner.trait_ != alias.trait_
+                        && owner.bound.bound_lifetimes.is_empty()
                 })
                 .cloned()
                 .collect();
@@ -1098,42 +1308,49 @@ impl<'a> Walker<'a> {
                 args: Ty::list(&alias.args[1..]),
             };
             let mut found = None;
-            for (self_ty, trait_, bound) in sources {
-                let mut errors = Vec::new();
-                let Some((principal, _)) = crate::traits::resolve_bound(
-                    self.items,
-                    self.module,
-                    &bound,
-                    self_ty,
-                    self.scope,
-                    &mut errors,
-                ) else {
-                    continue;
-                };
-                if !errors.is_empty() {
-                    continue;
-                }
-                let mut lifetimes = Vec::new();
-                self.trait_lifetimes(&bound.path, trait_, false, &mut lifetimes);
-                let written = bound.path.args(bound.path.segments.len().saturating_sub(1));
-                let mut rows = Vec::new();
-                let mut complete = true;
-                for (index, &ty) in principal.args.iter().enumerate() {
-                    if let Some(written) = written.and_then(|args| args.types.get(index)) {
-                        rows.push(self.regions(written, ty));
-                    } else if slots(self.items, ty) == 0 {
-                        rows.push(Box::default());
-                    } else {
-                        complete = false;
-                        break;
+            for ProjectionOwner {
+                subject,
+                trait_,
+                module,
+                bound,
+            } in sources
+            {
+                let input = self.in_module(module, |walker| {
+                    let mut errors = Vec::new();
+                    let (principal, _) = crate::traits::resolve_bound(
+                        walker.items,
+                        module,
+                        &bound,
+                        subject,
+                        walker.scope,
+                        &mut errors,
+                    )?;
+                    if !errors.is_empty() {
+                        return None;
                     }
-                }
-                if !complete {
-                    continue;
-                }
-                let Some(input) = object::inherited_inputs(
-                    self.items, self_ty, principal, &lifetimes, &rows, target,
-                ) else {
+                    let mut lifetimes = Vec::new();
+                    walker.trait_lifetimes(&bound.path, trait_, false, &mut lifetimes);
+                    let written = bound.path.args(bound.path.segments.len().saturating_sub(1));
+                    let mut rows = Vec::new();
+                    for (index, &ty) in principal.args.iter().enumerate() {
+                        if let Some(written) = written.and_then(|args| args.types.get(index)) {
+                            rows.push(walker.regions(written, ty));
+                        } else if slots(walker.items, ty) == 0 {
+                            rows.push(Box::default());
+                        } else {
+                            return None;
+                        }
+                    }
+                    object::inherited_inputs(
+                        walker.items,
+                        subject,
+                        principal,
+                        &lifetimes,
+                        &rows,
+                        target,
+                    )
+                });
+                let Some(input) = input else {
                     continue;
                 };
                 if found.as_ref().is_some_and(|previous| previous != &input) {
@@ -1391,7 +1608,6 @@ impl<'a> Walker<'a> {
             };
             nested.elided = Elided::Missing(None);
             nested.selections = Some(Vec::new());
-            nested.qualified_legacy_selections = self.qualified_legacy_selections;
             nested.expand_alias_selections = true;
             nested.regions(&def.ty, alias_ty);
             self.errors.append(&mut nested.errors);
@@ -1438,6 +1654,11 @@ impl<'a> Walker<'a> {
                     }
                     selection.alias = selection.alias.map_args(|ty| ty.subst(&actual));
                     selection.args = rows.into();
+                    if self.qualified_legacy_selections {
+                        // The alias definition supplies declaration proofs.
+                        // Its spelling did not occur in the method signature.
+                        selection.qualified = false;
+                    }
                     if let Some(selections) = self.selections.as_mut() {
                         selections.push(selection);
                     }
@@ -1483,6 +1704,17 @@ fn alias_regions_in(
         generics: &generics,
         signature_of: Some("type aliases"),
         ..TypeScope::default()
+    };
+    let bounds = crate::traits::resolve_predicates(
+        items,
+        def.loc.module,
+        &def.generics,
+        scope,
+        &mut Vec::new(),
+    );
+    let scope = TypeScope {
+        bounds: &bounds.predicates,
+        ..scope
     };
     let mut scratch = Vec::new();
     let ty = crate::resolve_type(
@@ -1836,7 +2068,7 @@ fn stored_regions<R: Copy>(items: &ItemTree, ty: Ty, regions: &[R]) -> Vec<R> {
                     visit(items, ty, row, next, out);
                 }
             }
-            TyKind::FnDef(_) => {}
+            TyKind::FnDef(_) => *next += slots(items, ty),
             TyKind::Array(elem, _) => visit(items, elem, row, next, out),
             _ => {
                 for child in ty.children() {
@@ -2172,6 +2404,12 @@ pub fn outlives_structs_with_projections(
 /// such as `Cow<B>`'s `B::Owned`. Include those components in both implied
 /// assumptions and obligations, using the same storage traversal.
 pub fn outlives_type_components(items: &ItemTree, sigs: &Signatures, ty: Ty) -> Vec<Ty> {
+    // A nominal type gets its free regions through its declaration inputs.
+    // A closed instance has no such regions. Its hidden projections can have
+    // explicit lifetime rows, which cannot be recovered from their erased types.
+    if is_closed_nominal(items, ty) {
+        return Vec::new();
+    }
     // Leaf queries cannot expose nominal fields. Hidden-field traversal issues
     // many of these; do not rebuild the complete declaration graph for each one.
     match ty.kind() {
@@ -2189,136 +2427,146 @@ pub fn outlives_type_components(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
         | TyKind::Tuple([]) => return Vec::new(),
         _ => {}
     }
-    let projected = outlives_structs_with_projections(sigs, ty);
-    fn visit(
-        items: &ItemTree,
-        sigs: &Signatures,
-        projected: &rustc_hash::FxHashSet<flux_hir::StructId>,
-        ty: Ty,
-        active: &mut Vec<flux_hir::StructId>,
-        expanded: &mut rustc_hash::FxHashSet<(Ty, Vec<flux_hir::StructId>)>,
-        out: &mut Vec<Ty>,
-    ) {
-        // A recursive declaration suppresses field traversal only on its active
-        // path. The same type under another path can expose more projections.
-        if !expanded.insert((ty, active.clone())) {
-            return;
+    type Cutoffs = Vec<flux_hir::StructId>;
+
+    struct Components<'a> {
+        items: &'a ItemTree,
+        sigs: &'a Signatures,
+        projected: rustc_hash::FxHashSet<flux_hir::StructId>,
+        active: Vec<flux_hir::StructId>,
+        expanding: rustc_hash::FxHashSet<(Ty, usize)>,
+        visited: rustc_hash::FxHashMap<Ty, Vec<Cutoffs>>,
+        out: Vec<Ty>,
+    }
+
+    impl Components<'_> {
+        /// The ancestor declarations that stopped this walk. Other ancestors
+        /// did not affect what it could discover.
+        fn visit(&mut self, ty: Ty) -> Cutoffs {
+            if let Some(covered) = self.visited.get(&ty).and_then(|contexts| {
+                contexts
+                    .iter()
+                    .find(|cutoffs| cutoffs.iter().all(|id| self.active.contains(id)))
+            }) {
+                return covered.clone();
+            }
+            // At the same depth a nested walk has the same active prefix.
+            // This also terminates a recursive coroutine witness without
+            // treating the unfinished walk as context-independent.
+            let path = (ty, self.active.len());
+            if !self.expanding.insert(path) {
+                return self.active.clone();
+            }
+            let blocked = self.walk(ty);
+            self.expanding.remove(&path);
+            let contexts = self.visited.entry(ty).or_default();
+            contexts.retain(|old| !blocked.iter().all(|id| old.contains(id)));
+            contexts.push(blocked.clone());
+            blocked
         }
-        match ty.kind() {
-            TyKind::Param(_) | TyKind::Alias(_) => {
-                if !out.contains(&ty) {
-                    out.push(ty);
+
+        fn extend(cutoffs: &mut Cutoffs, additional: Cutoffs) {
+            for id in additional {
+                if !cutoffs.contains(&id) {
+                    cutoffs.push(id);
                 }
             }
-            TyKind::FnDef(def) => {
-                // Function-item identity captures its substitutions even when
-                // the zero-sized value has no physical region slots.
-                for &arg in def.args {
-                    visit(items, sigs, projected, arg, active, expanded, out);
-                }
-            }
-            TyKind::FnPtr(sig) => {
-                if let Some(r) = sig.regions {
-                    for &ty in r.types {
-                        visit(items, sigs, projected, ty, active, expanded, out);
+        }
+
+        fn walk(&mut self, ty: Ty) -> Cutoffs {
+            let mut blocked = Vec::new();
+            let items = self.items;
+            let sigs = self.sigs;
+            match ty.kind() {
+                TyKind::Param(_) | TyKind::Alias(_) => {
+                    if !self.out.contains(&ty) {
+                        self.out.push(ty);
                     }
                 }
-            }
-            // Generic arguments in a closure's signature do not store values.
-            // Only its environment contributes type-outlives requirements.
-            TyKind::Closure(_, args) => visit(
-                items,
-                sigs,
-                projected,
-                ClosureArgs::split(args).upvars,
-                active,
-                expanded,
-                out,
-            ),
-            // A const array length is a generic argument, not borrowed data.
-            TyKind::Array(elem, _) => visit(items, sigs, projected, elem, active, expanded, out),
-            TyKind::Adt(adt, args)
-                if flux_solve::is_lang_struct(items, adt.strukt, "coroutine")
-                    && let Some(&closure_ty) = args.first()
-                    && let TyKind::Closure(id, closure_args) = closure_ty.kind()
-                    && let Some(stored) = sigs.coroutine_witnesses.get(&id)
-                    && stored.iter().all(|ty| {
-                        slots(items, ty.subst(ClosureArgs::split(closure_args).parent)) == 0
-                    }) =>
-            {
-                // Output R is only a facade marker, never stored future data.
-                // Captures and checked suspension storage determine whether
-                // the future's owned types outlive a requested object bound.
-                let closure = ClosureArgs::split(closure_args);
-                visit(
-                    items,
-                    sigs,
-                    projected,
-                    closure.upvars,
-                    active,
-                    expanded,
-                    out,
-                );
-                for &ty in *stored {
-                    visit(
-                        items,
-                        sigs,
-                        projected,
-                        ty.subst(closure.parent),
-                        active,
-                        expanded,
-                        out,
-                    );
+                TyKind::FnDef(def) => {
+                    // Even a zero-sized function item captures its substitutions.
+                    for &arg in def.args {
+                        Self::extend(&mut blocked, self.visit(arg));
+                    }
                 }
-            }
-            TyKind::Adt(adt, args) => {
-                // A symbolic const argument is represented by Param too, but
-                // it stores no borrowed value.
-                for (&arg, parameter) in args.iter().zip(&items.structs[adt.strukt].generics.params)
+                TyKind::FnPtr(sig) => {
+                    if let Some(r) = sig.regions {
+                        for &ty in r.types {
+                            Self::extend(&mut blocked, self.visit(ty));
+                        }
+                    }
+                }
+                // A closure stores its captures. An array stores its elements.
+                TyKind::Closure(_, args) => return self.visit(ClosureArgs::split(args).upvars),
+                TyKind::Array(elem, _) => return self.visit(elem),
+                TyKind::Adt(adt, args)
+                    if flux_solve::is_lang_struct(items, adt.strukt, "coroutine")
+                        && let Some(&closure_ty) = args.first()
+                        && let TyKind::Closure(id, closure_args) = closure_ty.kind()
+                        && let Some(stored) = sigs.coroutine_witnesses.get(&id)
+                        && stored.iter().all(|ty| {
+                            slots(items, ty.subst(ClosureArgs::split(closure_args).parent)) == 0
+                        }) =>
                 {
-                    if !parameter.is_const() {
-                        visit(items, sigs, projected, arg, active, expanded, out);
+                    // The captures and suspension storage hold the future's
+                    // values. Its output type is only a marker.
+                    let closure = ClosureArgs::split(closure_args);
+                    blocked = self.visit(closure.upvars);
+                    for &ty in *stored {
+                        Self::extend(&mut blocked, self.visit(ty.subst(closure.parent)));
                     }
                 }
-                if projected.contains(&adt.strukt)
-                    && !active.contains(&adt.strukt)
-                    && let Some(fields) = sigs.structs.get(adt.strukt)
-                {
-                    active.push(adt.strukt);
-                    for &field in *fields {
-                        visit(
-                            items,
-                            sigs,
-                            projected,
-                            field.subst(args),
-                            active,
-                            expanded,
-                            out,
-                        );
+                TyKind::Adt(..) if is_closed_nominal(items, ty) => {}
+                TyKind::Adt(adt, args) => {
+                    // Symbolic const arguments are also represented by Param.
+                    for (&arg, parameter) in
+                        args.iter().zip(&items.structs[adt.strukt].generics.params)
+                    {
+                        if !parameter.is_const() {
+                            Self::extend(&mut blocked, self.visit(arg));
+                        }
                     }
-                    active.pop();
+                    if self.projected.contains(&adt.strukt)
+                        && let Some(fields) = sigs.structs.get(adt.strukt)
+                    {
+                        if self.active.contains(&adt.strukt) {
+                            Self::extend(&mut blocked, vec![adt.strukt]);
+                        } else {
+                            self.active.push(adt.strukt);
+                            for &field in *fields {
+                                let mut field_blocked = self.visit(field.subst(args));
+                                // This declaration is active in its own fields
+                                // every time, independently of the outer path.
+                                field_blocked.retain(|&id| id != adt.strukt);
+                                Self::extend(&mut blocked, field_blocked);
+                            }
+                            self.active.pop();
+                        }
+                    }
+                }
+                _ => {
+                    if ty.has_params() || ty.has_aliases() {
+                        for child in ty.children() {
+                            Self::extend(&mut blocked, self.visit(child));
+                        }
+                    }
                 }
             }
-            _ => {
-                if ty.has_params() || ty.has_aliases() {
-                    for child in ty.children() {
-                        visit(items, sigs, projected, child, active, expanded, out);
-                    }
-                }
-            }
+            blocked
         }
     }
-    let mut out = Vec::new();
-    visit(
+
+    let mut components = Components {
         items,
         sigs,
-        &projected,
-        ty,
-        &mut Vec::new(),
-        &mut rustc_hash::FxHashSet::default(),
-        &mut out,
-    );
-    out
+        projected: outlives_structs_with_projections(sigs, ty),
+        active: Vec::new(),
+        expanding: Default::default(),
+        visited: Default::default(),
+        out: Vec::new(),
+    };
+    components.visit(ty);
+    components.out
 }
 
 /// Admit only declarations whose complete required-method representation can be
@@ -2339,6 +2587,14 @@ pub(crate) fn check_trait_admission(
             || trait_profile::generic_method_profile(items, diagnostics, sigs, id).is_ok()
         {
             continue;
+        }
+        if std::env::var_os("FLUX_TRACE_TRAIT_PROFILE").is_some() {
+            eprintln!(
+                "trait {}: {:?} {:?}",
+                t.name,
+                trait_profile::safe_method_profile(items, diagnostics, sigs, id),
+                trait_profile::generic_method_profile(items, diagnostics, sigs, id)
+            );
         }
         for l in &t.generics.lifetimes {
             diagnostics.push(flux_hir::Diagnostic {

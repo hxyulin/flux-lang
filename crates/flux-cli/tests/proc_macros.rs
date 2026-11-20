@@ -18,6 +18,16 @@ use proc_macro::{TokenStream,TokenTree};
 static COUNT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 #[proc_macro] pub fn counter(_:TokenStream)->TokenStream {COUNT.fetch_add(1,std::sync::atomic::Ordering::SeqCst).to_string().parse().unwrap()}
 #[proc_macro] pub fn identity(input:TokenStream)->TokenStream {input}
+#[proc_macro] pub fn size_of_type(input:TokenStream)->TokenStream {
+    let mut tokens = input.into_iter();
+    let Some(TokenTree::Group(ty)) = tokens.next() else { panic!("expected a grouped type") };
+    assert_eq!(ty.delimiter(), proc_macro::Delimiter::None);
+    assert!(tokens.next().is_none());
+    let mut output: TokenStream = "::core::mem::size_of::<".parse().unwrap();
+    output.extend([TokenTree::Group(ty)]);
+    output.extend(">()".parse::<TokenStream>().unwrap());
+    output
+}
 #[proc_macro] pub fn suffix(input:TokenStream)->TokenStream {
     let mut input=input.into_iter();let literal=input.next().unwrap();
     assert!(matches!(literal,TokenTree::Literal(_)));assert!(input.next().is_none());
@@ -38,6 +48,9 @@ static COUNT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(
 }
 #[proc_macro] pub fn call_capture(_:TokenStream)->TokenStream {"outside".parse().unwrap()}
 #[proc_macro_attribute] pub fn remove(_:TokenStream,_:TokenStream)->TokenStream{TokenStream::new()}
+#[proc_macro_attribute] pub fn host(_:TokenStream,_:TokenStream)->TokenStream {
+    "fn from_attribute() -> u32 { 37 }".parse().unwrap()
+}
 #[proc_macro] pub fn failure(_:TokenStream)->TokenStream {"compile_error!(\"macro rejected input\");".parse().unwrap()}
 #[proc_macro] pub fn panics(_:TokenStream)->TokenStream {panic!("deliberate macro panic")}
 #[proc_macro_attribute] pub fn add(arguments:TokenStream,input:TokenStream)->TokenStream {
@@ -45,10 +58,20 @@ static COUNT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(
 }
 #[proc_macro_derive(Answer,attributes(answer))] pub fn answer(input:TokenStream)->TokenStream {
     assert!(input.to_string().contains("answer"),"helper input lost");
+    assert!(!input.to_string().contains("cfg_attr"),"derive input is not configured");
     assert!(!input.to_string().contains("missing"),"disabled field leaked to derive");
     let mut iter=input.into_iter();let mut name=None;
     while let Some(t)=iter.next(){if matches!(&t,TokenTree::Ident(i) if i.to_string()=="struct"){name=iter.next().map(|t|t.to_string());break;}}
     format!("impl {}{{fn answer()->usize{{42}}}}",name.unwrap()).parse().unwrap()
+}
+#[proc_macro_derive(ConfiguredEnum, attributes(answer))]
+pub fn configured_enum(input: TokenStream) -> TokenStream {
+    let text = input.to_string();
+    assert_eq!(text.matches("answer").count(), 2);
+    assert!(text.contains("enabled variant"));
+    assert!(!text.contains("cfg_attr"));
+    assert!(!text.contains("Unavailable"));
+    "impl Status { fn available() -> Self { Self::Available(17) } }".parse().unwrap()
 }
 
 macro_rules! declare_generated {
@@ -71,7 +94,19 @@ const PROGRAM: &str = r####"
 use host::{identity as id,add,Answer};
 #[derive(Clone,Answer)] #[answer(rename="kept")]
 /// retained root docs
-struct Item { #[answer] value:usize, #[cfg(any())] missing:MissingType }
+struct Item {
+    #[cfg_attr(all(), cfg_attr(all(), answer))]
+    #[cfg_attr(any(), invented_helper)]
+    value:usize,
+    #[cfg(any())] missing:MissingType
+}
+#[derive(host::ConfiguredEnum)]
+enum Status {
+    #[cfg_attr(all(), answer, doc = "enabled variant")]
+    Available(#[cfg_attr(all(), answer)] u32),
+    #[cfg_attr(all(), cfg(any()))]
+    Unavailable(MissingType),
+}
 #[add(29)] fn original()->usize{13}
 id!(fn generated()->usize{17});
 id!(/// retained item docs
@@ -90,6 +125,10 @@ macro_rules! forwarded_local { ($value:expr) => {{ let generated = $value; host:
 mod later_consumer {
     use super::late_prelude::*;
     identity! { pub struct Late; }
+    #[derive(Clone, Answer)]
+    #[answer]
+    struct LateDerived;
+    pub fn derived() -> usize { LateDerived::answer() }
     #[crate::late_prelude::docs]
     #[doc="retained"]
     pub fn attributed() -> usize { 47 }
@@ -97,21 +136,44 @@ mod later_consumer {
     fn erased(_: MissingType) {}
     impl Late { identity! { pub fn value() -> usize { 29 } } }
 }
-mod late_prelude { pub use host::{identity, docs, remove}; }
+mod late_prelude { pub use host::{identity, docs, remove, Answer}; }
+mod inherited_attribute {
+    use host::*;
+    mod nested {
+        use super::*;
+        #[host]
+        fn replaced() {}
+        pub(super) fn value() -> u32 { from_attribute() }
+        pub(super) fn block_value() -> u32 {
+            #[host]
+            unsafe extern "C" {}
+            from_attribute()
+        }
+    }
+    pub fn value() -> u32 { nested::value() }
+    pub fn block_value() -> u32 { nested::block_value() }
+}
 fn main(){
+    assert_eq!(inherited_attribute::value(),37);
+    assert_eq!(inherited_attribute::block_value(),37);
     let qualified=Qualified(37); assert_eq!(qualified.clone().0,37);
     assert_eq!(forwarded_local!(17),17);
     assert_eq!(anonymous(&3,7),7);
     assert_eq!(later_consumer::Late::value(),29);
+    assert_eq!(later_consumer::derived(),42);
     assert_eq!(later_consumer::attributed(),47);
     assert_eq!(GeneratedItem::generated(),43);assert_eq!(generated_attribute_value(),31);
     let a=host::counter!();let b=host::counter!();assert_ne!(a,b);assert_eq!(a+b,1);
     let value=Item{value:3};assert_eq!(value.clone().value,3);assert_eq!(Item::answer(),42);
+    let Status::Available(status)=Status::available();assert_eq!(status,17);
     assert_eq!(original()+added()+generated(),59);
     assert_eq!(documented(),23);let _=Documented;
     assert!(host::suffix!("word"custom));assert!(host::emit_suffix!());
     macro_rules! separated {($l:literal,$i:ident)=>{host::separate!($l $i)}}
     assert!(separated!("word",custom));
+    macro_rules! forwarded_type {($ty:ty)=>{host::size_of_type!($ty)}}
+    assert_eq!(forwarded_type!(u16),2);
+    assert_eq!(forwarded_type!(&'static [u8]),16);
     let n=7;assert_eq!(*borrowed(&n),7);
     assert_eq!(id!((1u32 << 3) >= 8),true);
     assert_eq!(id!(r###"raw " value"###),"raw \" value");
@@ -239,7 +301,8 @@ fn direct_expansion_contracts_match_rustc() {
             .find(|m| m.name.as_str() == "Generated")
             .unwrap()
             .helpers
-            .is_none()
+            .as_ref()
+            .is_some_and(Vec::is_empty)
     );
     assert!(
         exports
@@ -247,7 +310,8 @@ fn direct_expansion_contracts_match_rustc() {
             .find(|m| m.name.as_str() == "GeneratedHelper")
             .unwrap()
             .helpers
-            .is_none()
+            .as_deref()
+            == Some(&[Symbol::intern("generated_helper_attr")])
     );
     assert!(!exports.iter().any(|m| m.name.as_str() == "Disabled"));
     assert!(
@@ -261,19 +325,125 @@ fn direct_expansion_contracts_match_rustc() {
             .iter()
             .any(|s| s.as_str() == "answer")
     );
-    for (name, text, expected, flux_expected) in [
-        ("generated_function_helper_shadow", "use host::{GeneratedHelper,remove as generated_helper_attr};#[generated_helper_attr]#[derive(GeneratedHelper)]fn bad(){}fn main(){}", false),
-        ("generated_derive_before_attribute", "#[derive(host::GeneratedHelper)]#[host::remove]fn bad(){}fn main(){}", false),
-        ("generated_attribute_before_derive", "#[host::remove]#[derive(host::GeneratedHelper)]fn bad(){}fn main(){}", true),
-        ("generated_disabled_variant", "#[derive(host::GeneratedHelper)]enum E{#[cfg(any())]Disabled{#[allow(dead_code)]value:Missing},Enabled}fn main(){}", true),
-        ("generated_qualified_attribute", "#[derive(host::Generated)]#[host::generated_attribute]struct S;fn main(){assert_eq!(S::generated(),43);}", true),
-        ("generated_configured_fields", "#[cfg_attr(all(),derive(host::Generated))]struct S{#[cfg(any())]#[allow(dead_code)]missing:Missing,n:u32}fn main(){assert_eq!(S::generated(),43);}", true),
-        ("generated_helper_macro_shadow", "use host::{GeneratedHelper, add as generated_helper_attr};#[derive(GeneratedHelper)]#[generated_helper_attr(37)]struct S;fn main(){let _=added();}", false),
-        ("generated_derive", "#[derive(host::Generated)]struct S;fn main(){assert_eq!(S::generated(),43);}", true),
-        ("generated_attribute", "#[host::generated_attribute]fn f(){}fn main(){f();}", true),
-        ("generated_function", "host::generated_identity!(fn f(){});fn main(){f();}", true),
-        ("generated_unknown_helper", "#[derive(host::Generated)]#[invented_helper]struct S;fn main(){}", false),
-        ("disabled_generated_export", "#[derive(host::Disabled)]struct S;fn main(){}", false),
+    for (name, text, expected) in [
+        (
+            "associated_attributes_keep_owner",
+            "struct S;\
+             trait Tr { #[host::generated_attribute] fn value(&self)->usize { 7 } }\
+             impl Tr for S {}\
+             impl S { #[crate::later::add(9)] fn original()->usize { 11 }\
+             #[crate::later::remove] fn erased(_:missing_type!()) {} }\
+             mod later { pub use host::{add,remove}; }\
+             fn main() { assert_eq!(S.value()+S::original()+S::added(),27); }",
+            true,
+        ),
+        (
+            "associated_attribute_duplicate",
+            "struct S;trait Tr{fn added()->usize;fn original()->usize;}\
+             impl Tr for S{#[host::add(9)]fn original()->usize{7}fn added()->usize{2}}\
+             fn main(){}",
+            false,
+        ),
+        (
+            "associated_attribute_does_not_export",
+            "struct S;impl S{#[host::add(9)]fn original()->usize{7}}fn main(){added();}",
+            false,
+        ),
+        (
+            "generated_function_helper_shadow",
+            "use host::{GeneratedHelper,remove as generated_helper_attr};#[generated_helper_attr]#[derive(GeneratedHelper)]fn bad(){}fn main(){}",
+            false,
+        ),
+        (
+            "generated_derive_before_attribute",
+            "#[derive(host::GeneratedHelper)]#[host::remove]fn bad(){}fn main(){}",
+            false,
+        ),
+        (
+            "generated_attribute_before_derive",
+            "#[host::remove]#[derive(host::GeneratedHelper)]fn bad(){}fn main(){}",
+            true,
+        ),
+        (
+            "generated_disabled_variant",
+            "#[derive(host::GeneratedHelper)]enum E{#[cfg(any())]Disabled{#[allow(dead_code)]value:Missing},Enabled}fn main(){}",
+            true,
+        ),
+        (
+            "generated_qualified_attribute",
+            "#[derive(host::Generated)]#[host::generated_attribute]struct S;fn main(){assert_eq!(S::generated(),43);}",
+            true,
+        ),
+        (
+            "generated_configured_fields",
+            "#[cfg_attr(all(),derive(host::Generated))]struct S{#[cfg(any())]#[allow(dead_code)]missing:Missing,n:u32}fn main(){assert_eq!(S::generated(),43);}",
+            true,
+        ),
+        (
+            "generated_helper_macro_shadow",
+            "use host::{GeneratedHelper, add as generated_helper_attr};#[derive(GeneratedHelper)]#[generated_helper_attr(37)]struct S;fn main(){let _=added();}",
+            false,
+        ),
+        (
+            "generated_derive",
+            "#[derive(host::Generated)]struct S;fn main(){assert_eq!(S::generated(),43);}",
+            true,
+        ),
+        (
+            "generated_builtin_attribute",
+            "#[derive(host::Generated)]#[repr(C)]struct S;fn main(){}",
+            true,
+        ),
+        (
+            "generated_field_attribute",
+            "#[derive(host::Generated)]struct S{#[allow(dead_code)]n:u32}fn main(){}",
+            true,
+        ),
+        (
+            "generated_helper_metadata",
+            "#[derive(host::GeneratedHelper)]#[generated_helper_attr]struct S;fn main(){}",
+            true,
+        ),
+        (
+            "generated_field_helper_metadata",
+            "#[derive(host::GeneratedHelper)]struct S{#[generated_helper_attr]n:u32}fn main(){}",
+            true,
+        ),
+        (
+            "generated_undeclared_helper",
+            "#[derive(host::Generated)]#[generated_helper_attr]struct S;fn main(){}",
+            false,
+        ),
+        (
+            "generated_qualified_helper",
+            "#[derive(host::GeneratedHelper)]#[generated_helper_attr::wrong]struct S;fn main(){}",
+            false,
+        ),
+        (
+            "generated_unsafe_helper",
+            "#[derive(host::GeneratedHelper)]#[unsafe(generated_helper_attr)]struct S;fn main(){}",
+            false,
+        ),
+        (
+            "generated_attribute",
+            "#[host::generated_attribute]fn f(){}fn main(){f();}",
+            true,
+        ),
+        (
+            "generated_function",
+            "host::generated_identity!(fn f(){});fn main(){f();}",
+            true,
+        ),
+        (
+            "generated_unknown_helper",
+            "#[derive(host::Generated)]#[invented_helper]struct S;fn main(){}",
+            false,
+        ),
+        (
+            "disabled_generated_export",
+            "#[derive(host::Disabled)]struct S;fn main(){}",
+            false,
+        ),
         (
             "qualified",
             "host::identity!(fn value()->u32{7});fn main(){assert_eq!(value(),7);}",
@@ -285,9 +455,64 @@ fn direct_expansion_contracts_match_rustc() {
             true,
         ),
         (
+            "attribute_glob_named_like_extern_crate",
+            "use host::*;#[host]fn replaced(){}fn main(){assert_eq!(from_attribute(),37);}",
+            true,
+        ),
+        (
+            "attribute_glob_named_like_local_module",
+            "mod host{}use ::host::*;#[host]fn replaced(){}fn main(){assert_eq!(from_attribute(),37);}",
+            true,
+        ),
+        (
+            "attribute_glob_through_parent_scope",
+            "use host::*;mod parent{use super::*;mod child{use super::*;#[host]fn replaced(){}pub fn check(){assert_eq!(from_attribute(),37);}}pub fn check(){child::check();}}fn main(){parent::check();}",
+            true,
+        ),
+        (
+            "attribute_glob_through_crate_scope",
+            "use host::*;mod child{use crate::*;#[host]fn replaced(){}pub fn check(){assert_eq!(from_attribute(),37);}}fn main(){child::check();}",
+            true,
+        ),
+        (
+            "attribute_generated_item_stays_in_block",
+            "use host::*;fn nested(){#[host]unsafe extern \"C\" {}let _=from_attribute();}fn main(){let _=from_attribute();}",
+            false,
+        ),
+        (
+            "derive_from_parent_glob",
+            "mod child{use super::*;#[cfg_attr(all(),derive(Clone,Build),answer)]struct S;fn check(){let _=S.clone();assert_eq!(S::answer(),42);}}pub use host::Answer as Build;",
+            true,
+        ),
+        (
+            "derive_from_private_glob",
+            "mod owner{use host::Answer;}mod child{use super::owner::*;#[derive(Answer)]#[answer]struct S;}",
+            false,
+        ),
+        (
+            "derive_from_ambiguous_globs",
+            "mod first{pub use host::Answer as Build;}mod second{pub use host::Generated as Build;}mod child{use super::{first::*,second::*};#[derive(Build)]struct S;}",
+            false,
+        ),
+        (
             "helper_field",
             "#[derive(host::Answer)]struct S{#[answer]n:u32}fn main(){}",
             true,
+        ),
+        (
+            "active_helper_field",
+            "#[derive(host::Answer)]struct S(#[cfg_attr(all(),cfg_attr(all(),answer))]u32);fn main(){assert_eq!(S::answer(),42);}",
+            true,
+        ),
+        (
+            "active_unknown_field_attribute",
+            "#[derive(host::Answer)]#[answer]struct S(#[cfg_attr(all(),unknown_helper)]u32);fn main(){}",
+            false,
+        ),
+        (
+            "active_unsafe_field_helper",
+            "#[derive(host::Answer)]#[answer]struct S(#[cfg_attr(all(),unsafe(answer))]u32);fn main(){}",
+            false,
         ),
         (
             "configured_derive",
@@ -362,14 +587,7 @@ fn direct_expansion_contracts_match_rustc() {
             "#![no_std] fn value(x:f64)->f64{host::identity!(x).sqrt()}fn main(){}",
             false,
         ),
-    ].into_iter().map(|(name,text,expected)|(name,text,expected,expected)).chain([
-        ("generated_builtin_attribute", "#[derive(host::Generated)]#[repr(C)]struct S;fn main(){}", true, false),
-        ("generated_field_attribute", "#[derive(host::Generated)]struct S{#[allow(dead_code)]n:u32}fn main(){}", true, false),
-        // Generated helper declarations are not present in the host catalog.
-        // Keep this Rust-valid form explicitly unsupported rather than treating
-        // every unrecognized attribute as a helper.
-        ("generated_helper_metadata", "#[derive(host::GeneratedHelper)]#[generated_helper_attr]struct S;fn main(){}", true, false),
-    ]) {
+    ] {
         let file = root.join(format!("{name}.rs"));
         std::fs::write(&file, text).unwrap();
         let output = run(
@@ -423,12 +641,9 @@ fn direct_expansion_contracts_match_rustc() {
                 diagnostics.extend(mir.diagnostics);
             }
         }
-        if matches!(name, "generated_helper_metadata" | "generated_helper_macro_shadow" | "generated_builtin_attribute" | "generated_field_attribute") {
-            assert!(diagnostics.iter().any(|d| d.message.contains("attribute")), "helper metadata boundary: {diagnostics:?}");
-        }
         assert_eq!(
             diagnostics.is_empty(),
-            flux_expected,
+            expected,
             "Flux {name}: {diagnostics:?}"
         );
     }

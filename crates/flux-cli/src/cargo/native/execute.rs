@@ -3,6 +3,7 @@ use super::{Domain, Options, Plan, PlannedPackage, Result, Target};
 use crate::build::{CompileRequest, SourceInput};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -54,8 +55,9 @@ pub(super) fn run(
             rustc_dependencies(&plan, id, &mut rustc_units);
         }
     }
-    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let mut rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     let version = if !rustc_units.is_empty() {
+        rustc = resolve_host_rustc(&rustc)?;
         crate::cargo::output(Command::new(&rustc).arg("-vV"), "rustc version")?
     } else {
         String::new()
@@ -237,6 +239,58 @@ pub(super) fn run(
     }
 }
 
+#[cfg(unix)]
+fn resolve_host_rustc(rustc: &OsStr) -> Result<OsString> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let path = Path::new(rustc);
+    let program = if path.file_name() == Some(rustc) {
+        let Some(program) = std::env::var_os("PATH").and_then(|dirs| {
+            std::env::split_paths(&dirs)
+                .map(|dir| dir.join(path))
+                .find(|path| {
+                    path.metadata()
+                        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                })
+        }) else {
+            return Ok(rustc.to_owned());
+        };
+        program
+    } else {
+        path.to_owned()
+    };
+    let program = std::path::absolute(program).map_err(|e| e.to_string())?;
+    let sibling = program.with_file_name("rustup");
+    let rustup = if program
+        .metadata()
+        .ok()
+        .zip(sibling.metadata().ok())
+        .is_some_and(|(a, b)| a.dev() == b.dev() && a.ino() == b.ino())
+    {
+        Some(sibling)
+    } else {
+        program
+            .canonicalize()
+            .ok()
+            .filter(|path| path.file_name() == Some(OsStr::new("rustup")))
+    };
+    // Resolve Rustup's proxy before each worker changes to its package directory.
+    // Explicit compiler binaries and wrappers keep their original entry point.
+    if let Some(rustup) = rustup {
+        let path = crate::cargo::output(
+            Command::new(rustup).args(["which", "rustc"]),
+            "rustup rustc selection",
+        )?;
+        return Ok(path.trim_end().into());
+    }
+    Ok(program.into_os_string())
+}
+
+#[cfg(not(unix))]
+fn resolve_host_rustc(rustc: &OsStr) -> Result<OsString> {
+    Ok(rustc.to_owned())
+}
+
 /// Serializes preparations of one workspace, which share its host directory.
 fn lock_directory(root: &Path) -> Result<std::fs::File> {
     let file = std::fs::File::create(root.join(".lock")).map_err(|e| e.to_string())?;
@@ -312,7 +366,7 @@ fn hex(bytes: &[u8]) -> String {
 struct HostSettings<'a> {
     version: &'a str,
     cfg: &'a str,
-    rustc: &'a std::ffi::OsStr,
+    rustc: &'a OsStr,
     native_macros: bool,
     debug_assertions: bool,
     release: bool,
@@ -463,7 +517,7 @@ fn rustc_unit(
     outputs: &[Output],
     index: usize,
     root: &Path,
-    rustc: &std::ffi::OsStr,
+    rustc: &OsStr,
     version: &str,
 ) -> Result<RustcUnit> {
     let unit = &plan.units[index];
@@ -507,6 +561,11 @@ fn rustc_unit(
             if proc_macro { "proc-macro" } else { "rlib" },
         ])
         .arg(format!("-Cmetadata={metadata}"))
+        // Rustc also writes intermediate object files, even when link and
+        // dep-info below have explicit paths. Keep those out of the package
+        // directory, which concurrent workspace builds may share.
+        .arg("--out-dir")
+        .arg(&directory)
         .arg("-L")
         .arg(format!("dependency={}", deps.display()))
         .arg(format!(
@@ -736,7 +795,7 @@ fn host_sources(
             Some(macro_exports(
                 rustc,
                 &outputs[id],
-                &unit.target.root,
+                &unit.target,
                 cfg.clone(),
                 None,
             )?)
@@ -818,7 +877,7 @@ fn package_directory(plan: &Plan, unit: usize) -> Result<&Path> {
 fn macro_exports(
     rustc: &str,
     output: &Output,
-    source: &std::path::Path,
+    target: &Target,
     cfg: flux_hir::CrateCfg,
     server: Option<&Path>,
 ) -> Result<Vec<flux_hir::ProcMacro>> {
@@ -826,10 +885,20 @@ fn macro_exports(
         return Ok(exports.clone());
     }
     let artifact = output.artifact.as_ref().ok_or("missing host macro")?;
-    if let Some(server) = server {
-        return crate::proc_macro::exports_from_server(server, artifact, source, cfg);
-    }
-    crate::proc_macro::exports(rustc, artifact, source, cfg)
+    let discovered;
+    let server = if let Some(server) = server {
+        server
+    } else {
+        discovered = crate::proc_macro::rustc_server(rustc)?;
+        &discovered
+    };
+    crate::proc_macro::exports_from_server(
+        server,
+        artifact,
+        &target.root,
+        crate::cargo::edition(&target.edition)?,
+        cfg,
+    )
 }
 
 fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<String, String>> {
@@ -1151,7 +1220,7 @@ fn compile_root(
             Some(macro_exports(
                 &prepared.rustc,
                 &prepared.outputs[id],
-                &unit.target.root,
+                &unit.target,
                 cfg.clone(),
                 macro_server.as_deref(),
             )?)

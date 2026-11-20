@@ -283,10 +283,15 @@ pub fn swap<T>(x: &mut T, y: &mut T) {
 }
 
 /// Puts `src` where `dest` refers, and gives back what was there.
-pub fn replace<T>(dest: &mut T, src: T) -> T {
-    let mut src = src;
-    swap(dest, &mut src);
-    src
+pub const fn replace<T>(dest: &mut T, src: T) -> T {
+    let dest = dest as *mut T;
+    // SAFETY: dest is initialized and uniquely borrowed. Writing src after
+    // reading the old value leaves it initialized without dropping that value.
+    unsafe {
+        let previous = crate::ptr::read(dest);
+        crate::ptr::write(dest, src);
+        previous
+    }
 }
 
 /// Takes the value `dest` refers to, leaving its type's default.
@@ -307,15 +312,11 @@ pub const unsafe fn transmute<T, U>(value: T) -> U {
 /// # Safety
 /// The source bytes must form a valid Dst. The caller must prevent duplicate
 /// use or destruction when the copy transfers ownership. Panics if Dst is larger.
-pub unsafe fn transmute_copy<Src,Dst>(source:&Src)->Dst {
+pub const unsafe fn transmute_copy<Src,Dst>(source:&Src)->Dst {
     assert!(size_of::<Src>()>=size_of::<Dst>(),"cannot transmute_copy if Dst is larger than Src");
-    let mut result=MaybeUninit::<Dst>::uninit();
-    // SAFETY: the size check bounds the read. Byte copying needs only alignment
-    // one and preserves padding/initialization; result supplies Dst's alignment.
-    unsafe {
-        crate::ptr::copy_nonoverlapping(source as *const Src as *const u8,result.as_mut_ptr() as *mut u8,size_of::<Dst>());
-        result.assume_init()
-    }
+    // SAFETY: the size check bounds the read. The caller guarantees that the
+    // bytes represent a valid Dst, and read_unaligned needs no Dst alignment.
+    unsafe { crate::ptr::read_unaligned(source as *const Src as *const Dst) }
 }
 
 /// The byte offset of a field path within a type.

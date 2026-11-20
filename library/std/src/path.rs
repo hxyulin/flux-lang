@@ -356,6 +356,12 @@ impl<T: ?Sized + AsRef<OsStr>> From<&T> for PathBuf { fn from(value: &T) -> Self
 impl From<String> for PathBuf { fn from(value: String) -> Self { Self { inner: OsString::from(value) } } }
 impl From<OsString> for PathBuf { fn from(value: OsString) -> Self { Self { inner: value } } }
 
+impl core::str::FromStr for PathBuf {
+    type Err = core::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> { Ok(Self::from(s)) }
+}
+
 impl PartialEq for Path { fn eq(&self, other: &Path) -> bool { self.cmp(other) == Ordering::Equal } }
 impl Eq for Path {}
 impl PartialOrd for Path { fn partial_cmp(&self, other: &Path) -> Option<Ordering> { Some(self.cmp(other)) } }
@@ -411,6 +417,11 @@ impl core::fmt::Debug for PathBuf {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { self.as_path().fmt(f) }
 }
 pub struct Display<'a> { path: &'a Path }
+impl core::fmt::Debug for Display<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(self.path, f)
+    }
+}
 impl core::fmt::Display for Display<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { core::fmt::Display::fmt(&self.path.to_string_lossy(), f) }
 }

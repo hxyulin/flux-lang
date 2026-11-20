@@ -73,6 +73,8 @@ fn check_cases(directory: &str) {
                     .iter()
                     .any(|d| d.message.contains("lifetime")
                         || d.message.contains("escapes")
+                        || d.message.contains("cannot return value referencing")
+                        || d.message.contains("function pointer is not general enough")
                         || d.message.contains("does not live long enough")),
                 "{name}: {:?}",
                 mir.diagnostics

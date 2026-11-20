@@ -150,7 +150,32 @@ fn select(
         });
     }
     if let (TypeRef::Path(path), TyKind::Alias(alias)) = (written, ty.kind()) {
-        if path.qself.is_some() && !has_declared_projection_inputs(alias) {
+        if let Some(qself) = &path.qself
+            && !has_declared_projection_inputs(alias)
+        {
+            // The input walker records qualified receivers before their
+            // parent projection. Replay a receiver with no slots first so
+            // the parent's proof can use its exact selected type.
+            let mut proof_alias = alias;
+            let receiver = alias.args[0];
+            if receiver.has_aliases() && slots(items, receiver) == 0 {
+                let selected = select(
+                    items,
+                    sigs,
+                    &qself.ty,
+                    receiver,
+                    &[],
+                    inputs,
+                    next,
+                    selections,
+                )?;
+                if !selected.regions.is_empty() {
+                    return None;
+                }
+                let mut args = alias.args.to_vec();
+                args[0] = selected.ty;
+                proof_alias.args = Ty::list(&args);
+            }
             let input = inputs.get(*next)?;
             if input.alias != alias
                 || !input.lifetimes.is_empty()
@@ -170,10 +195,7 @@ fn select(
                 // Declaration equalities can normalize an abstract family
                 // without selecting an impl. An empty row carries no region
                 // substitution, but its original membership is still proved.
-                let row = if input_row.is_empty()
-                    && regions.is_empty()
-                    && slots(items, normalized) == 0
-                {
+                let row = if slots(items, normalized) == 0 {
                     Vec::new()
                 } else {
                     selected::projection(items, sigs, alias, &input_row)?
@@ -181,7 +203,7 @@ fn select(
                 if row.len() != slots(items, normalized) {
                     return None;
                 }
-                selections.push((alias, input_row.into()));
+                selections.push((proof_alias, input_row.into()));
                 return Some(SelectedSignatureType {
                     ty: normalized,
                     regions: row.into(),
@@ -190,7 +212,7 @@ fn select(
             // An abstract output selects no concrete row. Preserve its exact
             // type/value row, and prove this saved occurrence's owning trait
             // from the original header when comparing the method contract.
-            selections.push((alias, input_row.into()));
+            selections.push((proof_alias, input_row.into()));
         }
         return Some(SelectedSignatureType {
             ty,

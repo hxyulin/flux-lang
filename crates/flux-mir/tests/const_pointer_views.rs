@@ -384,8 +384,14 @@ fn const_pointer_reads_match_rustc() {
         (
             "unsize_view",
             true,
-            false,
+            true,
             r###"const X:&[u8]=unsafe{&*(&0x04030201u32 as *const u32 as *const [u8;4])};fn main(){let _=X;}"###,
+        ),
+        (
+            "unsize_view_out_of_bounds",
+            false,
+            false,
+            r###"const X:&[u8]=unsafe{&*(&17u8 as *const u8 as *const [u8;2])};fn main(){let _=X;}"###,
         ),
         (
             "large_zst_view",

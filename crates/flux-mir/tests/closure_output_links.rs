@@ -9,6 +9,84 @@ fn closure_output_links_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "generic_callable_object_static_output",
+            include_str!("../../../tests/run/static_callable_object_output.rs"),
+            true,
+        ),
+        (
+            "generic_callable_object_cannot_extend_output",
+            r#"
+use std::borrow::Cow;
+fn erase<'a, F>(callback: F) -> Box<dyn Fn(&str) -> Cow<'static, str>>
+where F: Fn(&str) -> Cow<'a, str> + 'static {
+    Box::new(callback)
+}
+fn main() {}
+"#,
+            false,
+        ),
+        (
+            "static_closure_associated_iterator_item",
+            include_str!("../../../tests/run/static_closure_iterator.rs"),
+            true,
+        ),
+        (
+            "static_closure_cannot_extend_local_iterator_items",
+            r#"
+use std::sync::LazyLock;
+fn collect<I: IntoIterator<Item = &'static str>>(iter: I) -> Vec<&'static str> {
+    iter.into_iter().collect()
+}
+static VIEWS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let words = [String::from("local")];
+    collect(words.iter().map(String::as_str))
+});
+fn main() { println!("{}", VIEWS[0]); }
+"#,
+            false,
+        ),
+        (
+            "inferred_pointer_input_regions",
+            include_str!("../../../tests/run/closure_pointer_inputs.rs"),
+            true,
+        ),
+        (
+            "inferred_pointer_cannot_require_static_input",
+            r#"
+enum Token<'src> { Word(&'src str), Other }
+fn apply<'src>(token: Token<'src>, f: impl Fn(Token<'src>) -> usize) -> usize { f(token) }
+fn only_static(_: Token<'static>) -> usize { 0 }
+fn classify(token: Token<'_>, keyword: bool) -> usize {
+    apply(token, match keyword {
+        true => |t| only_static(t),
+        false => |_: Token<'_>| 1,
+    })
+}
+fn main() {}
+"#,
+            false,
+        ),
+        (
+            "shared_call_argument_reborrow",
+            include_str!("../../../tests/run/shared_call_capture.rs"),
+            true,
+        ),
+        (
+            "shared_argument_with_fixed_region",
+            "fn read(_: &'static u32){}fn capture(x:&'static u32)->impl Fn(){||read(x)}fn main(){}",
+            false,
+        ),
+        (
+            "inferred_argument_type_copies_the_binding",
+            "fn read<T>(_:T){}fn capture<'a>(x:&'a u32)->impl Fn()+'a{||read(x)}fn main(){}",
+            false,
+        ),
+        (
+            "shared_argument_points_to_local",
+            "fn read(x:&u32)->u32{*x}fn capture()->impl Fn()->u32{let x=37;let borrowed=&x;||read(borrowed)}fn main(){}",
+            false,
+        ),
+        (
             "fixed_to_static_reject",
             "fn consume<'a,F:Fn(&'a str)->&'static str>(p:&'a str,f:F)->&'static str{f(p)}fn bad<'a>(s:&'a str)->&'static str{consume(s,|v|v)}fn main(){}",
             false,

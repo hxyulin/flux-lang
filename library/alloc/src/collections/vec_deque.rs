@@ -149,6 +149,25 @@ impl<T> VecDeque<T> {
         // SAFETY: the former final element is initialized and now removed.
         Some(unsafe { ptr::read(self.buf.ptr().add(index)) })
     }
+
+    /// Removes and returns the element at `index`, preserving the other elements' order.
+    pub fn remove(&mut self, index: usize) -> Option<T> {
+        if index >= self.len {
+            return None;
+        }
+        if index < self.len / 2 {
+            for i in (1..=index).rev() {
+                self.swap(i - 1, i);
+            }
+            self.pop_front()
+        } else {
+            for i in index + 1..self.len {
+                self.swap(i - 1, i);
+            }
+            self.pop_back()
+        }
+    }
+
     /// Rotates the first `mid` elements to the back without allocating.
     ///
     /// # Panics
@@ -222,6 +241,27 @@ impl<T> VecDeque<T> {
             )
         }
     }
+
+    /// Searches a deque sorted by `key`. Returns the matching index or insertion point.
+    pub fn binary_search_by_key<'a, B: Ord, F: FnMut(&'a T) -> B>(
+        &'a self,
+        target: &B,
+        mut key: F,
+    ) -> Result<usize, usize> {
+        use core::cmp::Ordering;
+
+        let (front, back) = self.as_slices();
+        let split = front.len();
+        match back.first().map(|element| key(element).cmp(target)) {
+            Some(Ordering::Equal) => Ok(split),
+            Some(Ordering::Less) => back
+                .binary_search_by_key(target, key)
+                .map(|index| split + index)
+                .map_err(|index| split + index),
+            _ => front.binary_search_by_key(target, key),
+        }
+    }
+
     pub fn as_mut_slices(&mut self) -> (&mut [T], &mut [T]) {
         let first = self.len.min(self.capacity() - self.head);
         // SAFETY: both initialized spans are disjoint, even when one is empty.
@@ -265,6 +305,45 @@ impl<T> VecDeque<T> {
             first: first.iter(),
             second: second.iter(),
         }
+    }
+
+    /// Iterates over the selected range in queue order.
+    ///
+    /// # Panics
+    /// Panics if the range is reversed or extends past the queue.
+    pub fn range<R: RangeBounds<usize>>(&self, range: R) -> Iter<'_, T> {
+        let range = slice::range(range, ..self.len());
+        let (first, second) = self.as_slices();
+        let boundary = first.len();
+        Iter {
+            first: first[range.start.min(boundary)..range.end.min(boundary)].iter(),
+            second: second[range.start.saturating_sub(boundary)..range.end.saturating_sub(boundary)]
+                .iter(),
+        }
+    }
+
+    /// Iterates mutably over the selected range in queue order.
+    ///
+    /// # Panics
+    /// Panics if the range is reversed or extends past the queue.
+    pub fn range_mut<R: RangeBounds<usize>>(&mut self, range: R) -> IterMut<'_, T> {
+        let range = slice::range(range, ..self.len());
+        let (first, second) = self.as_mut_slices();
+        let boundary = first.len();
+        IterMut {
+            first: first[range.start.min(boundary)..range.end.min(boundary)].iter_mut(),
+            second: second[range.start.saturating_sub(boundary)..range.end.saturating_sub(boundary)]
+                .iter_mut(),
+        }
+    }
+
+    /// Tests whether any element equals `value`, including across the wrap.
+    pub fn contains(&self, value: &T) -> bool
+    where
+        T: PartialEq,
+    {
+        let (first, second) = self.as_slices();
+        first.contains(value) || second.contains(value)
     }
     pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         let (first, second) = self.as_mut_slices();

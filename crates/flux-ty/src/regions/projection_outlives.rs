@@ -18,23 +18,80 @@ pub fn type_projection_outlives(
     ty: Ty,
     row: &[Region],
 ) -> Vec<ProjectionOutlives> {
-    fn walk(
-        items: &ItemTree,
-        sigs: &Signatures,
-        active: &mut Vec<flux_hir::StructId>,
-        ty: Ty,
-        row: &[Region],
-        bounds: &[Region],
-        out: &mut Vec<ProjectionOutlives>,
-    ) -> Option<()> {
+    let mut walk = ProjectionWalk {
+        items,
+        sigs,
+        active: Vec::new(),
+        projected: Default::default(),
+        visited: Default::default(),
+        complete: Default::default(),
+        out: Vec::new(),
+    };
+    if walk.visit(ty, row, &[]).is_none() {
+        walk.out.clear();
+    }
+    walk.out
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Occurrence {
+    ty: Ty,
+    row: Box<[Region]>,
+    bounds: Box<[Region]>,
+}
+
+struct ProjectionWalk<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    active: Vec<flux_hir::StructId>,
+    projected: rustc_hash::FxHashMap<flux_hir::StructId, bool>,
+    visited: rustc_hash::FxHashSet<(Occurrence, Vec<flux_hir::StructId>)>,
+    complete: rustc_hash::FxHashSet<Occurrence>,
+    out: Vec<ProjectionOutlives>,
+}
+
+impl ProjectionWalk<'_> {
+    /// Returns the earliest ancestor that blocked a field expansion. An
+    /// occurrence with no external cutoff can be reused on every path.
+    fn visit(&mut self, ty: Ty, row: &[Region], bounds: &[Region]) -> Option<usize> {
+        let key = Occurrence {
+            ty,
+            row: row.into(),
+            bounds: bounds.into(),
+        };
+        if self.complete.contains(&key) {
+            return Some(usize::MAX);
+        }
+        if !self.visited.insert((key.clone(), self.active.clone())) {
+            return Some(if self.active.is_empty() {
+                usize::MAX
+            } else {
+                0
+            });
+        }
+        let blocked = self.walk(ty, row, bounds)?;
+        if blocked == usize::MAX {
+            self.complete.insert(key);
+        }
+        Some(blocked)
+    }
+
+    fn walk(&mut self, ty: Ty, row: &[Region], bounds: &[Region]) -> Option<usize> {
+        let items = self.items;
+        let sigs = self.sigs;
         if row.len() != slots(items, ty) {
             return None;
         }
         if let TyKind::Ref(_, inner) = ty.kind() {
+            let &region = row.first()?;
+            if bounds.contains(&region) {
+                return self.visit(inner, row.get(1..)?, bounds);
+            }
             let mut bounds = bounds.to_vec();
-            bounds.push(*row.first()?);
-            return walk(items, sigs, active, inner, row.get(1..)?, &bounds, out);
+            bounds.push(region);
+            return self.visit(inner, row.get(1..)?, &bounds);
         }
+        let mut blocked = usize::MAX;
         if let TyKind::Alias(alias) = ty.kind() {
             if has_projection_inputs(items, alias) {
                 for &target in bounds {
@@ -43,27 +100,27 @@ pub fn type_projection_outlives(
                         regions: row.into(),
                         target,
                     };
-                    if !out.contains(&requirement) {
-                        out.push(requirement);
+                    if !self.out.contains(&requirement) {
+                        self.out.push(requirement);
                     }
                 }
                 let mut at = alias.owner_lifetimes as usize;
                 for &arg in alias.args {
                     let end = at.checked_add(slots(items, arg))?;
-                    walk(items, sigs, active, arg, row.get(at..end)?, &[], out)?;
+                    blocked = blocked.min(self.visit(arg, row.get(at..end)?, &[])?);
                     at = end;
                 }
                 at += alias.family_lifetimes as usize;
                 for &arg in alias.family_args {
                     let end = at.checked_add(slots(items, arg))?;
-                    walk(items, sigs, active, arg, row.get(at..end)?, &[], out)?;
+                    blocked = blocked.min(self.visit(arg, row.get(at..end)?, &[])?);
                     at = end;
                 }
                 if at != row.len() {
                     return None;
                 }
             }
-            return Some(());
+            return Some(blocked);
         }
         let (children, mut at): (Vec<Ty>, usize) = match ty.kind() {
             TyKind::Adt(adt, args) => (
@@ -75,70 +132,78 @@ pub fn type_projection_outlives(
                 object_own_slots(items, object),
             ),
             TyKind::Closure(_, args) => (vec![ClosureArgs::split(args).upvars], 0),
-            TyKind::FnPtr(_) | TyKind::FnDef(_) => return Some(()),
+            TyKind::FnPtr(_) | TyKind::FnDef(_) => return Some(blocked),
             TyKind::Array(inner, _) => (vec![inner], 0),
             _ => (ty.children().collect(), 0),
         };
         for child in children {
             let end = at.checked_add(slots(items, child))?;
-            walk(items, sigs, active, child, row.get(at..end)?, bounds, out)?;
+            blocked = blocked.min(self.visit(child, row.get(at..end)?, bounds)?);
             at = end;
         }
         // Nominal fields can store a projection absent from the type arguments.
         // Reconstruct each field's original row before substituting its types.
-        if let TyKind::Adt(adt, args) = ty.kind()
-            && !active.contains(&adt.strukt)
-            && outlives_structs_with_projections(sigs, ty).contains(&adt.strukt)
-        {
-            let metadata = sigs.regions.structs.get(adt.strukt)?;
-            let own = metadata.lifetimes as usize;
-            let mut at = own;
-            let mut arguments = Vec::new();
-            for &arg in args {
-                let end = at.checked_add(slots(items, arg))?;
-                arguments.push(row.get(at..end)?.to_vec());
-                at = end;
-            }
-            active.push(adt.strukt);
-            for (&field, table) in sigs
-                .structs
-                .get(adt.strukt)?
-                .iter()
-                .zip(metadata.fields.iter())
-            {
-                let mut field_row = Vec::new();
-                instantiate(
-                    items,
-                    field,
-                    table,
-                    &mut |region| match region {
-                        Region::Param(index) => {
-                            row.get(index as usize).copied().unwrap_or(Region::Erased)
-                        }
-                        region => region,
-                    },
-                    &|index| arguments.get(index as usize).cloned().unwrap_or_default(),
-                    &mut field_row,
-                );
-                walk(
-                    items,
-                    sigs,
-                    active,
-                    field.subst(args),
-                    &field_row,
-                    bounds,
-                    out,
-                )?;
-            }
-            active.pop();
+        let TyKind::Adt(adt, args) = ty.kind() else {
+            return Some(blocked);
+        };
+        if !self.has_projected_fields(adt.strukt, ty) {
+            return Some(blocked);
         }
-        Some(())
+        if let Some(index) = self.active.iter().position(|&id| id == adt.strukt) {
+            return Some(blocked.min(index));
+        }
+        let metadata = sigs.regions.structs.get(adt.strukt)?;
+        let mut at = metadata.lifetimes as usize;
+        let mut arguments = Vec::new();
+        for &arg in args {
+            let end = at.checked_add(slots(items, arg))?;
+            arguments.push(row.get(at..end)?.to_vec());
+            at = end;
+        }
+        let depth = self.active.len();
+        self.active.push(adt.strukt);
+        for (&field, table) in sigs
+            .structs
+            .get(adt.strukt)?
+            .iter()
+            .zip(metadata.fields.iter())
+        {
+            let mut field_row = Vec::new();
+            instantiate(
+                items,
+                field,
+                table,
+                &mut |region| match region {
+                    Region::Param(index) => {
+                        row.get(index as usize).copied().unwrap_or(Region::Erased)
+                    }
+                    region => region,
+                },
+                &|index| arguments.get(index as usize).cloned().unwrap_or_default(),
+                &mut field_row,
+            );
+            let field_blocked = self.visit(field.subst(args), &field_row, bounds)?;
+            if field_blocked < depth {
+                blocked = blocked.min(field_blocked);
+            }
+        }
+        self.active.pop();
+        Some(blocked)
     }
-    let mut out = Vec::new();
-    if walk(items, sigs, &mut Vec::new(), ty, row, &[], &mut out).is_none() {
-        out.clear();
+
+    fn has_projected_fields(&mut self, id: flux_hir::StructId, ty: Ty) -> bool {
+        if let Some(&projected) = self.projected.get(&id) {
+            return projected;
+        }
+        // The graph follows declaration fields. Arguments are visited
+        // separately and do not change whether this declaration expands.
+        let projected = outlives_structs_with_projections(self.sigs, ty);
+        let found = projected.contains(&id);
+        self.projected
+            .extend(projected.into_iter().map(|id| (id, true)));
+        self.projected.insert(id, found);
+        found
     }
-    out
 }
 
 /// Recover reference-implied projections in every parameter and return type.

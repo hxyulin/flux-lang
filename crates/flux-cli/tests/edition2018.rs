@@ -190,6 +190,7 @@ fn old_prelude_and_match_ergonomics() {
         "fn main(){let _:Vec<u32>=Vec::from_iter([1,2]);}",
     ] {
         case.check(source, Edition::E2018, false);
+        case.check(source, Edition::E2021, true);
         case.check(source, Edition::E2024, true);
     }
     let source = r#"use std::convert::TryInto;use std::iter::FromIterator;static mut VALUE:u32=3;fn main(){let [ref x]=&[5u32];let [mut y]=&[7u32];y+=1;let z:u8=9u16.try_into().unwrap();let v=Vec::from_iter([1u32,2]);println!("{} {} {} {} {}",x,y,z,v.len(),unsafe{*(&VALUE)});}"#;
@@ -200,6 +201,28 @@ fn old_prelude_and_match_ergonomics() {
         all(target_os = "linux", target_arch = "x86_64")
     ))]
     assert_eq!(case.runtime(source, Edition::E2018), b"5 8 9 2 3\n");
+}
+
+#[test]
+fn future_traits_join_the_prelude_in_2024() {
+    let case = Case::new();
+    for source in [
+        "fn require<T: Future>() {} fn main() {}",
+        "fn require<T: IntoFuture>() {} fn main() {}",
+    ] {
+        case.check(source, Edition::E2021, false);
+        case.check(source, Edition::E2024, true);
+    }
+}
+
+#[test]
+fn qualified_generic_defaults_check_the_receiver() {
+    let case = Case::new();
+    case.check(
+        "trait Reader { type Offset; } impl Reader for () { type Offset = u8; } struct Header<T = <R as Reader>::Offset, R: Reader = ()>(T, R); fn main() {}",
+        Edition::E2024,
+        false,
+    );
 }
 
 #[test]
@@ -223,6 +246,11 @@ fn closure_capture_and_temporary_drop_scopes_differ() {
 
 #[test]
 fn macro_token_editions_cross_crate_boundaries() {
+    const OBJECT_MACROS: &str = r#"
+#[macro_export]macro_rules! path_object{($t:path)=>{const _:Option<&$t>=None;};}
+#[macro_export]macro_rules! type_object{($t:ty)=>{const _:Option<&$t>=None;};}
+#[macro_export]macro_rules! forwarded_object{($t:path)=>{$crate::type_object!($t);};}
+"#;
     for (library_edition, consumer_edition, library_source, consumer_source, expected) in [
         (
             Edition::E2018,
@@ -233,7 +261,7 @@ fn macro_token_editions_cross_crate_boundaries() {
 #[macro_export]macro_rules! declare{()=>{fn gen()->u32{17}};}
 "#,
             r#"source::declare!();fn main(){let a=[1u32,2];let mut it=source::iterate!(a);let x:&u32=it.next().unwrap();println!("{} {} {}",x,source::route!(const{4}),r#gen());}"#,
-            "1 3 17\n",
+            Some("1 3 17\n"),
         ),
         (
             Edition::E2024,
@@ -244,7 +272,36 @@ fn macro_token_editions_cross_crate_boundaries() {
 #[macro_export]macro_rules! declare{($name:ident)=>{fn $name()->u32{23}};}
 "#,
             r#"source::declare!(gen);fn main(){let a=[1u32,2];let mut it=source::iterate!(a);let x:u32=it.next().unwrap();println!("{} {} {}",x,source::route!(const{4}),gen());}"#,
-            "1 1 23\n",
+            Some("1 1 23\n"),
+        ),
+        (
+            Edition::E2015,
+            Edition::E2024,
+            OBJECT_MACROS,
+            r#"trait Test {} source::path_object!(Test); source::forwarded_object!(Test);
+            source::path_object!(::std::fmt::Debug); fn main() { println!("legacy"); }"#,
+            Some("legacy\n"),
+        ),
+        (
+            Edition::E2024,
+            Edition::E2018,
+            OBJECT_MACROS,
+            r#"trait Test {} source::type_object!(Test); fn main() { println!("captured"); }"#,
+            Some("captured\n"),
+        ),
+        (
+            Edition::E2024,
+            Edition::E2018,
+            OBJECT_MACROS,
+            "trait Test {} source::path_object!(Test); fn main() {}",
+            None,
+        ),
+        (
+            Edition::E2015,
+            Edition::E2024,
+            OBJECT_MACROS,
+            "trait Test {} source::type_object!(Test); fn main() {}",
+            None,
         ),
     ] {
         let case = Case::new();
@@ -262,17 +319,21 @@ fn macro_token_editions_cross_crate_boundaries() {
                 .unwrap(),
         );
         let executable = case.0.join("rustc");
-        success(
-            Command::new("rustc")
-                .arg(format!("--edition={}", edition_name(consumer_edition)))
-                .arg("-Cpanic=abort")
-                .arg(&consumer)
-                .arg("--extern")
-                .arg(format!("source={}", lib.display()))
-                .arg("-o")
-                .arg(&executable)
-                .output()
-                .unwrap(),
+        let rustc = Command::new("rustc")
+            .arg(format!("--edition={}", edition_name(consumer_edition)))
+            .arg("-Cpanic=abort")
+            .arg(&consumer)
+            .arg("--extern")
+            .arg(format!("source={}", lib.display()))
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert_eq!(
+            rustc.status.success(),
+            expected.is_some(),
+            "{}",
+            String::from_utf8_lossy(&rustc.stderr)
         );
         let mut db = SourceDb::new();
         let lib = db.load_with_edition(&library, library_edition).unwrap();
@@ -295,6 +356,17 @@ fn macro_token_editions_cross_crate_boundaries() {
         assert!(db.syntax_errors().is_empty(), "{:?}", db.syntax_errors());
         assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
+        let Some(expected) = expected else {
+            assert!(
+                typed
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.message == "expected a type, found a trait"),
+                "{:?}",
+                typed.diagnostics
+            );
+            continue;
+        };
         assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
         let mir = flux_mir::build_file(&hir, &typed);
         assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
@@ -400,4 +472,28 @@ fn boxed_slice_into_iter_respects_edition_2024_boundary() {
         all(target_os = "linux", target_arch = "x86_64")
     ))]
     assert_eq!(case.runtime(modern, Edition::E2024), b"modern\n");
+}
+
+#[test]
+fn pre_2024_environment_safety_matches_rustc() {
+    let case = Case::new();
+    let calls = "fn main() { std::env::set_var(\"FLUX_EDITION_PROBE\", \"x\"); std::env::remove_var(\"FLUX_EDITION_PROBE\"); }";
+    for edition in [
+        Edition::E2015,
+        Edition::E2018,
+        Edition::E2021,
+        Edition::E2024,
+    ] {
+        case.check(calls, edition, edition != Edition::E2024);
+    }
+    case.check(
+        "fn main() { let _: fn(&str) = std::env::remove_var::<&str>; }",
+        Edition::E2021,
+        false,
+    );
+    case.check(
+        "mod env { pub unsafe fn remove_var(_: &str) {} } fn main() { env::remove_var(\"probe\"); }",
+        Edition::E2021,
+        false,
+    );
 }

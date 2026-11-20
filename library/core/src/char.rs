@@ -256,6 +256,39 @@ impl char {
         if (self as u32) < 0x10000 { 1 } else { 2 }
     }
 
+    /// Writes the character as UTF-16 and returns the initialized prefix.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `dst` is shorter than `self.len_utf16()`.
+    #[track_caller]
+    pub const fn encode_utf16(self, dst: &mut [u16]) -> &mut [u16] {
+        let len = self.len_utf16();
+        let dst = dst as *mut [u16];
+        if dst.len() < len {
+            crate::panicking::panic("encode_utf16: buffer too small")
+        }
+        // SAFETY: the checked prefix is within the exclusive input slice.
+        let dst = unsafe { crate::slice::from_raw_parts_mut(dst.cast::<u16>(), len) };
+        let (first, second) = self.utf16_units();
+        dst[0] = first;
+        if len == 2 {
+            dst[1] = second;
+        }
+        dst
+    }
+
+    /// Encodes one scalar. Zero in the second slot means it takes one unit.
+    pub(crate) const fn utf16_units(self) -> (u16, u16) {
+        let code = self as u32;
+        if code < 0x10000 {
+            (code as u16, 0)
+        } else {
+            let code = code - 0x10000;
+            (0xD800 | (code >> 10) as u16, 0xDC00 | (code & 0x3FF) as u16)
+        }
+    }
+
     /// Whether the `char` has Unicode's `White_Space` property.
     pub const fn is_whitespace(self) -> bool {
         match self {

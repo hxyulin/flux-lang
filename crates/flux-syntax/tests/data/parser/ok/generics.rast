@@ -1,4 +1,4 @@
-SOURCE_FILE@0..709
+SOURCE_FILE@0..768
   FN@0..82
     FN_KW@0..2 "fn"
     WHITESPACE@2..3 " "
@@ -840,4 +840,48 @@ SOURCE_FILE@0..709
     ASSOC_ITEM_LIST@706..708
       L_CURLY@706..707 "{"
       R_CURLY@707..708 "}"
-  WHITESPACE@708..709 "\n"
+  WHITESPACE@708..710 "\n\n"
+  FN@710..767
+    FN_KW@710..712 "fn"
+    WHITESPACE@712..713 " "
+    NAME@713..728
+      IDENT@713..728 "const_turbofish"
+    PARAM_LIST@728..730
+      L_PAREN@728..729 "("
+      R_PAREN@729..730 ")"
+    WHITESPACE@730..731 " "
+    BLOCK_EXPR@731..767
+      L_CURLY@731..732 "{"
+      WHITESPACE@732..737 "\n    "
+      EXPR_STMT@737..765
+        CALL_EXPR@737..764
+          PATH_EXPR@737..762
+            PATH@737..762
+              PATH_SEGMENT@737..762
+                NAME_REF@737..748
+                  IDENT@737..748 "takes_const"
+                COLON2@748..750 "::"
+                GENERIC_ARG_LIST@750..762
+                  L_ANGLE@750..751 "<"
+                  CONST_ARG@751..761
+                    BLOCK_EXPR@751..761
+                      L_CURLY@751..752 "{"
+                      WHITESPACE@752..753 " "
+                      BIN_EXPR@753..759
+                        LITERAL@753..755
+                          INT_NUMBER@753..755 "40"
+                        WHITESPACE@755..756 " "
+                        PLUS@756..757 "+"
+                        WHITESPACE@757..758 " "
+                        LITERAL@758..759
+                          INT_NUMBER@758..759 "2"
+                      WHITESPACE@759..760 " "
+                      R_CURLY@760..761 "}"
+                  R_ANGLE@761..762 ">"
+          ARG_LIST@762..764
+            L_PAREN@762..763 "("
+            R_PAREN@763..764 ")"
+        SEMICOLON@764..765 ";"
+      WHITESPACE@765..766 "\n"
+      R_CURLY@766..767 "}"
+  WHITESPACE@767..768 "\n"

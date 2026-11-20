@@ -2,7 +2,7 @@
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod support;
 extern crate alloc as alloc_crate;
-pub use core::{fmt, ops, str};
+pub use core::{error, fmt, ops, str};
 
 #[path = "../../../library/core/src/time.rs"]
 #[allow(
@@ -20,7 +20,8 @@ fn monotonic_time_matches_rustc() {
 #[path = "../../../library/std/src/time.rs"]
 #[allow(
     dead_code,
-    reason = "host checks exercise duration arithmetic; native fixture exercises clock methods"
+    unused_imports,
+    reason = "this test includes the production module with public APIs used by the native fixtures"
 )]
 mod implementation;
 

@@ -168,6 +168,8 @@ fn direct_foreign_declarations_match_native_rustc_off_and_on() {
         #[repr(i8)]#[derive(Clone,Copy)]enum Signed{A=-7,B=101}
         unsafe extern \"C\" {fn sum_words(x:Words)->u64;fn padded(x:Padded)->Padded; fn enum_signed(x:Signed)->Signed; fn nullable(x:Option<extern \"C\" fn(u64)->u64>)->Option<extern \"C\" fn(u64)->u64>;}
         unsafe extern \"C\" {
+            fn borrowed_word(value:&u64)->u64;
+            fn nullable_reference(value:Option<&u64>)->Option<&u64>;
             #[link_name=\"abi_integer_view\"]fn integer_wide(x:u64)->u64;
             #[link_name=\"abi_integer_view\"]fn integer_narrow(x:u32)->u32;
             #[link_name=\"abi_byte_view\"]fn byte_signed(x:i8)->i8;
@@ -175,6 +177,9 @@ fn direct_foreign_declarations_match_native_rustc_off_and_on() {
         }
         extern \"C\" fn plus(x:u64)->u64{x+13}
         extern \"C\" fn wrapper()->u64{unsafe{assert_eq!(integer_wide(40),41);assert_eq!(integer_narrow(41),42);
+            let word=41u64;assert_eq!(borrowed_word(&word),42);
+            assert_eq!(*nullable_reference(Some(&word)).unwrap(),41);
+            assert!(nullable_reference(None).is_none());
             let narrow:unsafe extern \"C\" fn(u32)->u32=integer_narrow;assert_eq!(narrow(42),43);
             assert_eq!(byte_signed(40),41);assert_eq!(byte_unsigned(41),42);
             let unsigned:unsafe extern \"C\" fn(u8)->u8=byte_unsigned;assert_eq!(unsigned(42),43);

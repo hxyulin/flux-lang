@@ -293,6 +293,8 @@ pub mod unix {
         }
     }
     pub mod net {
+        pub use crate::net::unix::UnixStream;
+
         #[derive(Clone)]
         pub struct SocketAddr{path:Option<crate::path::PathBuf>}
         impl SocketAddr{

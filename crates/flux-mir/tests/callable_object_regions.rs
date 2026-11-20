@@ -112,3 +112,54 @@ fn repeated_alias_rejects_borrowed_input() {
         false,
     );
 }
+
+#[test]
+fn associated_types_in_trait_callback_signature() {
+    let declaration = r#"
+use std::ops::Range;
+struct Line<S>(S);
+trait Segment {
+    type Scalar;
+    fn each(&self, callback: &mut dyn FnMut(&Line<Self::Scalar>, Range<Self::Scalar>));
+}
+"#;
+    for (name, callback, accepted) in [
+        ("associated_callback", "dyn FnMut(&Line<S>, Range<S>)", true),
+        (
+            "wrong_callback_scalar",
+            "dyn FnMut(&Line<S>, Range<u8>)",
+            false,
+        ),
+        (
+            "static_callback_input",
+            "dyn FnMut(&'static Line<S>, Range<S>)",
+            false,
+        ),
+    ] {
+        compare(
+            name,
+            &format!(
+                "{declaration} impl<S: 'static> Segment for Line<S> {{
+                    type Scalar = S;
+                    fn each(&self, _: &mut {callback}) {{}}
+                }}"
+            ),
+            accepted,
+        );
+    }
+    compare(
+        "callback_lifetimes_must_stay_independent",
+        r#"
+struct Line<S>(S);
+trait Segment {
+    type Scalar;
+    fn each(&self, callback: &mut dyn FnMut(&Line<Self::Scalar>, &Line<Self::Scalar>));
+}
+impl<S> Segment for Line<S> {
+    type Scalar = S;
+    fn each(&self, _: &mut dyn for<'a> FnMut(&'a Line<S>, &'a Line<S>)) {}
+}
+"#,
+        false,
+    );
+}

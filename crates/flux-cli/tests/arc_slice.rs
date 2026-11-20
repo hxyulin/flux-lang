@@ -118,6 +118,7 @@ fn erased_layout_contract_and_overflow() {
     // remain unchanged; embedded-library identity, paths and abort spelling adapt.
     // This ordinary test module must not claim the trusted alloc lang item.
     let library = include_str!("../../../library/alloc/src/sync.rs")
+        .replace("mod box_conversion;", "")
         .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
@@ -133,9 +134,9 @@ fn erased_layout_contract_and_overflow() {
             let a = Arc::new([3u32, 4]);
             let b: Arc<[u32]> = vec![3u32, 4].into();
             unsafe {
-                assert_eq!((*a.ptr.as_ptr()).layout, (*b.ptr.as_ptr()).layout);
-                let a_offset = a.data.as_ptr() as usize - a.ptr.as_ptr() as usize;
-                let b_offset = b.data.as_ptr() as *mut u32 as usize - b.ptr.as_ptr() as usize;
+                assert_eq!((*a.header().as_ptr()).layout, (*b.header().as_ptr()).layout);
+                let a_offset = a.data.as_ptr() as usize - a.header().as_ptr() as usize;
+                let b_offset = b.data.as_ptr() as *mut u32 as usize - b.header().as_ptr() as usize;
                 assert_eq!(a_offset, b_offset);
                 assert!(a_offset >= size_of::<Header>());
             }

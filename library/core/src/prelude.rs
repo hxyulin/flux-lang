@@ -1,6 +1,11 @@
 //! The names every module sees without importing them.
 
 pub mod rust_2024 {
+    pub use super::rust_2021::*;
+    pub use crate::future::{Future, IntoFuture};
+}
+
+pub mod rust_2021 {
     pub use crate::clone::Clone;
     pub use crate::cmp::{Eq, Ord, PartialEq, PartialOrd};
     pub use crate::convert::{AsMut, AsRef, From, Into, TryFrom, TryInto};

@@ -46,8 +46,8 @@ mod source;
 
 pub use body::{
     AsmOptions, AsmRegister, AsmTemplatePiece, Binding, BindingId, Body, BodyLists, BodySourceMap,
-    Expr, ExprId, InlineAsm, Literal, LoopSource, MatchArm, Pat, PatId, PathGenerics, Res,
-    SegmentArgs, Stmt, TypeRefId,
+    Expr, ExprId, InlineAsm, Literal, LoopSource, MatchArm, Pat, PatId, PathGenerics, RecordTarget,
+    Res, SegmentArgs, Stmt, TypeRefId,
 };
 pub use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 pub use item_tree::{

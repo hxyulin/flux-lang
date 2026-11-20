@@ -11,6 +11,16 @@ fn constant_call_temporaries_match_rustc() {
             true,
         ),
         (
+            "array_with_promoted_variant",
+            include_str!("../../../tests/run/const_promoted_signature_table.rs"),
+            true,
+        ),
+        (
+            "array_with_interior_mutable_variant",
+            "use std::cell::Cell;enum E{Cell(Cell<u32>)}const fn hold(v:&'static[&'static E])->&'static[&'static E]{v}const C:&[&E]=hold(&[&E::Cell(Cell::new(7))]);",
+            false,
+        ),
+        (
             "static_const_method_array",
             "struct Name(&'static str);impl Name{const fn text(&self)->&str{self.0}}const N:Name=Name(\"field\");const fn hold(v:&'static[&'static str])->&'static[&'static str]{v}static C:&[&str]=hold(&[N.text()]);",
             true,

@@ -10,6 +10,16 @@ fn fundamental_object_intersections_match_rustc() {
     std::fs::create_dir_all(&directory).unwrap();
     for (name, source, accepted) in [
         (
+            "disjoint_inherent_methods",
+            "struct Concrete; trait Edit<'a> {} struct Wrapper<T>(T); impl<'a,T:Edit<'a>> Wrapper<T> { fn width(&self)->u16{17} } impl Wrapper<Concrete> { fn width(&self)->u16{29} } fn probe()->u16 { Wrapper(Concrete).width() }",
+            true,
+        ),
+        (
+            "overlapping_inherent_methods",
+            "struct Concrete; trait Edit<'a> {} impl<'a> Edit<'a> for Concrete {} struct Wrapper<T>(T); impl<'a,T:Edit<'a>> Wrapper<T> { fn width(&self)->u16{17} } impl Wrapper<Concrete> { fn width(&self)->u16{29} }",
+            false,
+        ),
+        (
             "local_object_closed",
             "trait Bound{}trait Obj{}trait Conv<T>{}impl<T>Conv<T>for T{}impl<E:Bound>Conv<E>for Box<dyn Obj>{}",
             true,
@@ -32,6 +42,26 @@ fn fundamental_object_intersections_match_rustc() {
         (
             "foreign_bound_can_gain_upstream_impl",
             "trait Conv<T>{}impl<T>Conv<T>for T{}impl<E:std::error::Error>Conv<E>for Box<dyn std::error::Error>{}",
+            false,
+        ),
+        (
+            "foreign_bound_for_local_constructor",
+            "struct Local<T>(T); trait Conv<T>{} impl<T:std::fmt::Display>Conv<T>for T{} impl<T>Conv<Local<T>>for Local<T>{}",
+            true,
+        ),
+        (
+            "foreign_bound_with_local_impl_overlaps",
+            "struct Local<T>(T); trait Conv<T>{} impl<T:std::fmt::Display>Conv<T>for T{} impl<T>Conv<Local<T>>for Local<T>{} impl std::fmt::Display for Local<u8>{fn fmt(&self,_:&mut std::fmt::Formatter<'_>)->std::fmt::Result{Ok(())}}",
+            false,
+        ),
+        (
+            "unresolved_projection_has_a_disjoint_outer_constructor",
+            "trait Storage{type Item;} impl Storage for u32{type Item=char;} struct Local<T>(T); impl<T:Storage+Default> From<Box<T::Item>> for Local<T>{fn from(_:Box<T::Item>)->Self{Self(T::default())}} impl TryFrom<u8> for Local<u32>{type Error=();fn try_from(_:u8)->Result<Self,()>{Ok(Self(0))}}",
+            true,
+        ),
+        (
+            "unresolved_projection_can_match_inside_the_same_constructor",
+            "trait Storage{type Item;} impl Storage for u32{type Item=char;} struct Local<T>(T); impl<T:Storage+Default> From<Box<T::Item>> for Local<T>{fn from(_:Box<T::Item>)->Self{Self(T::default())}} impl TryFrom<Box<char>> for Local<u32>{type Error=();fn try_from(_:Box<char>)->Result<Self,()>{Ok(Self(0))}}",
             false,
         ),
         (

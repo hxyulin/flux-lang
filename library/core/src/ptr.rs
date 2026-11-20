@@ -80,9 +80,8 @@ pub const unsafe fn read<T>(src: *const T) -> T {
 
 /// Reads an initialized value without requiring `src` to be aligned.
 /// The caller must provide readable memory for the entire initialized value
-/// and ensure its ownership is used and dropped only once. Exact sized layouts
-/// are supported, including aggregates and pointers. Constant evaluation is not supported.
-pub unsafe fn read_unaligned<T>(src: *const T) -> T {
+/// and ensure its ownership is used and dropped only once.
+pub const unsafe fn read_unaligned<T>(src: *const T) -> T {
     unsafe { crate::intrinsics::read_unaligned(src) }
 }
 
@@ -179,6 +178,12 @@ pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
     unsafe { crate::intrinsics::drop_in_place(to_drop) }
 }
 
+/// Rebuilds a raw pointer with `data`'s provenance and `metadata`'s layout.
+#[doc(hidden)]
+pub fn __with_metadata_of<T: ?Sized>(data: *mut u8, metadata: *const T) -> *mut T {
+    crate::intrinsics::ptr_with_metadata(data, metadata)
+}
+
 impl<T: ?Sized> *const T {
     /// Replaces the data address while retaining pointer metadata.
     pub fn with_addr(self,address:usize)->Self {
@@ -245,6 +250,11 @@ impl<T: ?Sized> *const T {
 }
 
 impl<T> *const T {
+    /// Whether the address is aligned for a value of type `T`.
+    pub fn is_aligned(self) -> bool {
+        self.addr() % crate::mem::align_of::<T>() == 0
+    }
+
     /// The nonnegative element distance from origin.
     /// # Safety
     /// Both pointers must belong to the same allocation, with self at or after
@@ -330,7 +340,7 @@ impl<T> *const T {
 
     /// Reads an initialized value without requiring pointer alignment.
     /// See [`read_unaligned`] for the supported types and safety contract.
-    pub unsafe fn read_unaligned(self) -> T {
+    pub const unsafe fn read_unaligned(self) -> T {
         unsafe { read_unaligned(self) }
     }
 
@@ -429,6 +439,11 @@ impl<T: ?Sized> *mut T {
 }
 
 impl<T> *mut T {
+    /// Whether the address is aligned for a value of type `T`.
+    pub fn is_aligned(self) -> bool {
+        self.cast_const().is_aligned()
+    }
+
     /// The nonnegative element distance from origin.
     /// # Safety
     /// Both pointers must belong to the same allocation, with self at or after
@@ -545,7 +560,7 @@ impl<T> *mut T {
 
     /// Reads an initialized value without requiring pointer alignment.
     /// See [`read_unaligned`] for the supported types and safety contract.
-    pub unsafe fn read_unaligned(self) -> T {
+    pub const unsafe fn read_unaligned(self) -> T {
         unsafe { read_unaligned(self) }
     }
 
@@ -693,6 +708,13 @@ impl<T: ?Sized> NonNull<T> {
 }
 
 impl<T> NonNull<T> {
+    /// Creates a pointer with the given nonzero address and no provenance.
+    pub const fn without_provenance(addr: crate::num::NonZeroUsize) -> Self {
+        Self {
+            pointer: addr.get() as *const T,
+        }
+    }
+
     /// The nonnegative element distance from origin.
     /// # Safety
     /// The pointers must share an allocation, self must not precede origin,
@@ -810,11 +832,17 @@ impl<T> NonNull<[T]> {
 
 impl<T: ?Sized> PartialEq for NonNull<T> {
     fn eq(&self, other: &NonNull<T>) -> bool {
-        self.pointer as *const u8 as usize == other.pointer as *const u8 as usize
+        eq(self.pointer, other.pointer)
     }
 }
 
 impl<T: ?Sized> Eq for NonNull<T> {}
+
+impl<T: ?Sized> crate::hash::Hash for NonNull<T> {
+    fn hash<H: crate::hash::Hasher>(&self, state: &mut H) {
+        hash(self.pointer, state);
+    }
+}
 
 impl<T> crate::cmp::PartialOrd for NonNull<T> {
     fn partial_cmp(&self, other: &Self) -> Option<crate::cmp::Ordering> {

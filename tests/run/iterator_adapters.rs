@@ -78,6 +78,15 @@ fn product_refs(s: &[i64]) -> i64 {
     s.iter().product()
 }
 
+fn finish_fused<I: core::iter::FusedIterator<Item = u32>>(mut iter: I) -> u32 {
+    let mut sum = 0;
+    while let Some(value) = iter.next() {
+        sum += value;
+    }
+    assert!(iter.next().is_none());
+    sum
+}
+
 fn main() {
     let a = [3u32, 1, 4, 1, 5, 9, 2, 6];
     let s: &[u32] = &a;
@@ -99,6 +108,7 @@ fn main() {
     let c: i32 = bs.iter().cloned().map(|b| b.v).sum();
     show(8, c as i64);
     show(9, s.iter().copied().max().unwrap() as i64);
+    show(1000, finish_fused(s.iter().map(|value| *value + 1)) as i64);
 
     // size_hint and len.
     hint(10, s.iter().size_hint());

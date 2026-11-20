@@ -301,6 +301,7 @@ pub struct RigidSolver<'a> {
     depth: std::cell::Cell<u32>,
     bound_matching: BoundMatching,
     normalizations: std::cell::RefCell<rustc_hash::FxHashMap<(Ty, Option<AliasTy>), Ty>>,
+    memberships_proven: std::cell::RefCell<rustc_hash::FxHashMap<Predicate, bool>>,
     proof_cuts: std::cell::Cell<u32>,
     overflowed: std::cell::Cell<bool>,
     normalizing: std::cell::RefCell<rustc_hash::FxHashSet<(Ty, Option<AliasTy>)>>,
@@ -308,7 +309,130 @@ pub struct RigidSolver<'a> {
 
 // Structural auto-trait proofs can cross several library containers per field.
 // Keep normalization re-entry and predicate recursion under the same budget.
-const RIGID_RECURSION_LIMIT: usize = 128;
+const RIGID_RECURSION_LIMIT: usize = u128::BITS as usize;
+
+/// Reuse proofs that depend on the same still-active coinductive hypotheses.
+pub struct CoinductiveMemo<Goal> {
+    frames: Vec<u64>,
+    next_frame: u64,
+    dependencies: u128,
+    uses: u32,
+    answers: rustc_hash::FxHashMap<Goal, (u128, u64)>,
+}
+
+impl<Goal> Default for CoinductiveMemo<Goal> {
+    fn default() -> Self {
+        Self {
+            frames: Vec::new(),
+            next_frame: 0,
+            dependencies: 0,
+            uses: 0,
+            answers: Default::default(),
+        }
+    }
+}
+
+impl<Goal: Eq + std::hash::Hash> CoinductiveMemo<Goal> {
+    pub fn reset(&mut self) {
+        self.frames.clear();
+        self.next_frame = 0;
+        self.dependencies = 0;
+        self.uses = 0;
+        self.answers.clear();
+    }
+
+    pub fn enter(&mut self) {
+        self.frames.push(self.next_frame);
+        self.next_frame += 1;
+    }
+
+    pub fn leave(&mut self) {
+        self.frames.pop();
+    }
+
+    fn deepest(dependencies: u128) -> usize {
+        (u128::BITS - 1 - dependencies.leading_zeros()) as usize
+    }
+
+    pub fn reusable(&self, goal: &Goal, auto_path: impl FnOnce(usize) -> bool) -> Option<u128> {
+        let &(dependencies, frame) = self.answers.get(goal)?;
+        if dependencies == 0 {
+            return Some(0);
+        }
+        // A frame identifies its exact active prefix. Coinduction requires
+        // every edge from the first assumption to the new consumer to be auto.
+        (self.frames.get(Self::deepest(dependencies)) == Some(&frame)
+            && auto_path(dependencies.trailing_zeros() as usize))
+        .then_some(dependencies)
+    }
+
+    pub fn use_dependencies(&mut self, dependencies: u128) {
+        if dependencies != 0 {
+            self.dependencies |= dependencies;
+            self.uses = self.uses.wrapping_add(1);
+        }
+    }
+
+    pub fn uses(&self) -> u32 {
+        self.uses
+    }
+
+    pub fn begin_proof(&mut self) -> u128 {
+        std::mem::take(&mut self.dependencies)
+    }
+
+    pub fn end_proof(&mut self, parent: u128) -> u128 {
+        // Discharge the hypotheses introduced by this proof itself.
+        let mask = 1_u128
+            .checked_shl(self.frames.len() as u32)
+            .map_or(u128::MAX, |first_local| first_local - 1);
+        let dependencies = self.dependencies & mask;
+        self.dependencies = parent | dependencies;
+        dependencies
+    }
+
+    pub fn remember(&mut self, goal: Goal, dependencies: u128) {
+        let frame = if dependencies == 0 {
+            0
+        } else {
+            self.frames[Self::deepest(dependencies)]
+        };
+        self.answers.insert(goal, (dependencies, frame));
+    }
+}
+
+struct ProofPath<'a> {
+    stack: &'a mut Vec<Predicate>,
+    memo: CoinductiveMemo<Predicate>,
+}
+
+impl<'a> ProofPath<'a> {
+    fn new(stack: &'a mut Vec<Predicate>) -> Self {
+        let mut memo = CoinductiveMemo::default();
+        for _ in 0..stack.len() {
+            memo.enter();
+        }
+        Self { stack, memo }
+    }
+
+    fn push(&mut self, goal: Predicate) {
+        self.stack.push(goal);
+        self.memo.enter();
+    }
+
+    fn pop(&mut self) {
+        self.stack.pop();
+        self.memo.leave();
+    }
+
+    fn reusable_dependencies(&self, items: &ItemTree, goal: Predicate) -> Option<u128> {
+        self.memo.reusable(&goal, |first| {
+            self.stack[first..]
+                .iter()
+                .all(|p| is_auto_trait(items, p.trait_ref.trait_))
+        })
+    }
+}
 
 impl<'a> RigidSolver<'a> {
     /// Build a context from elaborated caller memberships, their equalities,
@@ -335,6 +459,7 @@ impl<'a> RigidSolver<'a> {
             depth: std::cell::Cell::new(0),
             bound_matching: BoundMatching::Normalized,
             normalizations: Default::default(),
+            memberships_proven: Default::default(),
             proof_cuts: std::cell::Cell::new(0),
             overflowed: std::cell::Cell::new(false),
             normalizing: Default::default(),
@@ -347,6 +472,7 @@ impl<'a> RigidSolver<'a> {
     pub fn original_memberships_only(mut self) -> Self {
         self.bound_matching = BoundMatching::Original;
         self.normalizations.get_mut().clear();
+        self.memberships_proven.get_mut().clear();
         self
     }
 
@@ -395,15 +521,25 @@ impl<'a> RigidSolver<'a> {
     /// caller must still prove its conditions, including lifetime obligations.
     /// Unknown output parameters are represented by `Ty::ERROR`.
     pub fn candidate(&self, goal: Predicate) -> Option<(ImplId, Vec<Ty>)> {
+        let mut headers =
+            self.sigs
+                .impl_index
+                .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty);
+        let first = headers.next()?;
+        let Some(second) = headers.next() else {
+            // With one possible header, checking its erased bounds cannot
+            // change the candidate. The caller proves those bounds with
+            // the actual lifetime arguments.
+            return self.match_impl(first, goal).map(|args| (first, args));
+        };
         if let Some((imp, _)) = select_impl(self.items, self.sigs, goal) {
             // Retain selection priority, but rebind output-only parameters in
             // this caller context rather than keeping erased placeholder args.
             return self.match_impl(imp, goal).map(|args| (imp, args));
         }
-        let mut candidates = self
-            .sigs
-            .impl_index
-            .impls_for(self.items, goal.trait_ref.trait_, goal.self_ty)
+        let mut candidates = [first, second]
+            .into_iter()
+            .chain(headers)
             .filter_map(|imp| self.match_impl(imp, goal).map(|args| (imp, args)));
         let first = candidates.next()?;
         candidates.next().is_none().then_some(first)
@@ -412,7 +548,7 @@ impl<'a> RigidSolver<'a> {
     /// Select an impl only after proving all substituted type requirements.
     /// Lifetime relationships still require the region checker's proof.
     pub fn select_impl(&self, goal: Predicate) -> Option<(ImplId, Vec<Ty>)> {
-        self.select(goal, &mut Vec::new())
+        self.select(goal, &mut ProofPath::new(&mut Vec::new()))
     }
 
     fn caller_normalize(
@@ -438,6 +574,7 @@ impl<'a> RigidSolver<'a> {
     /// their substituted receiver also has a globally definite impl.
     pub fn with_abstract_outputs(mut self, memberships: &'a [Predicate]) -> Self {
         self.abstract_outputs = memberships;
+        self.memberships_proven.get_mut().clear();
         self
     }
 
@@ -504,6 +641,10 @@ impl<'a> RigidSolver<'a> {
     }
 
     pub fn holds(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> bool {
+        self.holds_at(goal, &mut ProofPath::new(stack))
+    }
+
+    fn holds_at(&self, goal: Predicate, path: &mut ProofPath<'_>) -> bool {
         if in_env(self.sigs, self.memberships, goal)
             || is_builtin_trait(self.items, goal.trait_ref.trait_, goal.self_ty)
             || (self.items.traits[goal.trait_ref.trait_].lang == Some(flux_intern::sym::sized)
@@ -524,17 +665,45 @@ impl<'a> RigidSolver<'a> {
         }) {
             return true;
         }
-        if let Some((_, coinductive)) = auto_cycle(self.items, goal, stack) {
+        if let Some((start, coinductive)) = auto_cycle(self.items, goal, path.stack) {
             self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
-            if !coinductive {
+            if coinductive && start < RIGID_RECURSION_LIMIT {
+                path.memo.use_dependencies(1 << start);
+            } else if !coinductive {
                 self.overflowed.set(true);
             }
             return coinductive;
         }
-        if stack.len() >= RIGID_RECURSION_LIMIT {
+        if path.stack.len() >= RIGID_RECURSION_LIMIT {
             self.record_overflow();
             return false;
         }
+        if let Some(&known) = self.memberships_proven.borrow().get(&goal) {
+            return known;
+        }
+        if let Some(dependencies) = path.reusable_dependencies(self.items, goal) {
+            self.proof_cuts.set(self.proof_cuts.get().wrapping_add(1));
+            path.memo.use_dependencies(dependencies);
+            return true;
+        }
+        let cuts = self.proof_cuts.get();
+        let coinductive_uses = path.memo.uses();
+        let parent_dependencies = path.memo.begin_proof();
+        let proven = self.prove_membership(goal, path);
+        let dependencies = path.memo.end_proof(parent_dependencies);
+        let cuts = self.proof_cuts.get().wrapping_sub(cuts);
+        let coinductive_cuts = path.memo.uses().wrapping_sub(coinductive_uses);
+        if cuts == 0 || (proven && cuts == coinductive_cuts) {
+            if dependencies == 0 {
+                self.memberships_proven.borrow_mut().insert(goal, proven);
+            } else {
+                path.memo.remember(goal, dependencies);
+            }
+        }
+        proven
+    }
+
+    fn prove_membership(&self, goal: Predicate, path: &mut ProofPath<'_>) -> bool {
         if let TyKind::Closure(_, args) = goal.self_ty.kind() {
             match closure_goal(self.items, goal.trait_ref.trait_, args) {
                 ClosureGoal::Fn(kind, params) => {
@@ -544,46 +713,46 @@ impl<'a> RigidSolver<'a> {
                         && goal.trait_ref.args.first() == Some(&params);
                 }
                 ClosureGoal::Upvars(types) => {
-                    stack.push(goal);
+                    path.push(goal);
                     let proven = types.iter().all(|&self_ty| {
-                        self.holds(
+                        self.holds_at(
                             Predicate {
                                 self_ty,
                                 trait_ref: goal.trait_ref,
                             },
-                            stack,
+                            path,
                         )
                     });
-                    stack.pop();
+                    path.pop();
                     return proven;
                 }
                 ClosureGoal::No => {}
             }
         }
         if let Some(owner) = declared_alias_bound(self.sigs, goal) {
-            stack.push(goal);
-            let proven = self.holds(owner, stack);
-            stack.pop();
+            path.push(goal);
+            let proven = self.holds_at(owner, path);
+            path.pop();
             if proven {
                 return true;
             }
         }
-        if self.select(goal, stack).is_some() {
+        if self.select(goal, path).is_some() {
             return true;
         }
         let Some(nested) = auto_trait_requirements(self.items, self.sigs, goal) else {
             return false;
         };
-        stack.push(goal);
+        path.push(goal);
         let proven = nested.into_iter().all(|p| {
             let p = self.normalize_goal(p);
-            self.holds(p, stack)
+            self.holds_at(p, path)
         });
-        stack.pop();
+        path.pop();
         proven
     }
 
-    fn select(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
+    fn select(&self, goal: Predicate, path: &mut ProofPath<'_>) -> Option<(ImplId, Vec<Ty>)> {
         // Normalizing an associated requirement can re-enter selection with a
         // fresh goal stack. Bound that path as well as membership recursion.
         let depth = self.depth.get();
@@ -592,17 +761,17 @@ impl<'a> RigidSolver<'a> {
             return None;
         }
         self.depth.set(depth + 1);
-        let result = self.select_at(goal, stack);
+        let result = self.select_at(goal, path);
         self.depth.set(depth);
         result
     }
 
-    fn select_at(&self, goal: Predicate, stack: &mut Vec<Predicate>) -> Option<(ImplId, Vec<Ty>)> {
-        if stack.len() >= RIGID_RECURSION_LIMIT || stack.contains(&goal) {
+    fn select_at(&self, goal: Predicate, path: &mut ProofPath<'_>) -> Option<(ImplId, Vec<Ty>)> {
+        if path.stack.len() >= RIGID_RECURSION_LIMIT || path.stack.contains(&goal) {
             self.record_overflow();
             return None;
         }
-        stack.push(goal);
+        path.push(goal);
         let mut found = None;
         for imp in self
             .sigs
@@ -636,7 +805,7 @@ impl<'a> RigidSolver<'a> {
                 let p = self.normalize_goal(p);
                 !has_error(p.self_ty)
                     && !p.trait_ref.args.iter().any(|&ty| has_error(ty))
-                    && self.holds(p, stack)
+                    && self.holds_at(p, path)
             }) {
                 continue;
             }
@@ -656,12 +825,12 @@ impl<'a> RigidSolver<'a> {
                 continue;
             }
             if found.is_some() {
-                stack.pop();
+                path.pop();
                 return None;
             }
             found = Some((imp, args));
         }
-        stack.pop();
+        path.pop();
         found
     }
 }
@@ -821,6 +990,16 @@ pub fn associated_self_types(
 ) -> Vec<(TraitRef, Symbol, Ty)> {
     let mut out = Vec::new();
     for &goal in candidates.iter().skip(1) {
+        let associated = items.traits[goal.trait_ref.trait_]
+            .types
+            .iter()
+            .filter(|ty| ty.generics.params.is_empty() && ty.generics.lifetimes.is_empty());
+        // An inherited trait with no usable associated types cannot add
+        // anything to the type namespace. Its impl still gets checked where
+        // the trait obligation is required.
+        if associated.clone().next().is_none() {
+            continue;
+        }
         // Conditional definitions need independent caller evidence. An
         // explicit caller membership still owns its abstract output.
         let selected = select_definite_impl(items, sigs, goal).or_else(|| {
@@ -833,10 +1012,7 @@ pub fn associated_self_types(
         let Some((imp, args)) = selected else {
             continue;
         };
-        for associated in &items.traits[goal.trait_ref.trait_].types {
-            if !associated.generics.params.is_empty() || !associated.generics.lifetimes.is_empty() {
-                continue;
-            }
+        for associated in associated {
             if let Some(ty) = impl_type(sigs, imp, associated.name) {
                 out.push((goal.trait_ref, associated.name, ty.subst(&args)));
             }
@@ -1554,7 +1730,7 @@ impl Normalizer<'_> {
                         && (!in_env(sigs, &proof.env, alias_predicate(alias))
                             || select_definite_impl(items, sigs, alias_predicate(alias)).is_some())
                         && let Some((imp, args)) =
-                            proof.select(alias_predicate(alias), &mut Vec::new())
+                            proof.select_impl(alias_predicate(alias))
                         && let Some(ty) = instantiate_impl_type(sigs, imp, alias, &args)
                     {
                         return self.go(ty, depth + 1);
@@ -1617,12 +1793,28 @@ pub fn instance_sig(
 /// `ty` with generic arguments `args` substituted and its associated
 /// types normalized: a type of an instance, for code generation.
 pub fn instance_ty(items: &ItemTree, sigs: &Signatures, ty: Ty, args: &[Ty]) -> Ty {
-    normalize(
-        items,
-        sigs,
-        &[],
-        reveal(sigs, normalize(items, sigs, &[], ty.subst(args))),
-    )
+    normalize_revealed(items, sigs, &[], ty.subst(args))
+}
+
+/// Normalize projections and reveal hidden types, including projections that
+/// become resolvable only after an opaque receiver is revealed.
+pub fn normalize_revealed(
+    items: &ItemTree,
+    sigs: &Signatures,
+    env: &[Projection],
+    mut ty: Ty,
+) -> Ty {
+    for _ in 0..=64 {
+        let normalized = normalize(items, sigs, env, ty);
+        let revealed = reveal(sigs, normalized);
+        if revealed == normalized {
+            return normalized;
+        }
+        // Revealing a receiver can select a trait impl whose return has
+        // another hidden type. Normalize and reveal again in that case.
+        ty = revealed;
+    }
+    ty
 }
 
 /// The `impl` block for `goal` and its generic arguments: the only one
@@ -1826,6 +2018,39 @@ fn impl_bounds(
     for p in preds {
         definite &= may_hold(items, sigs, p.subst(args), depth + 1)?;
     }
+    // Substituting the header can turn a blanket's equality into a concrete
+    // mismatch. Drop that candidate before resolving the method or constant.
+    // Caller-owned equalities can still decide open projections.
+    let closed =
+        |ty: Ty| !ty.has_params() && !ty.has_infer() && !ty.has_opaques() && !has_error(ty);
+    for projection in sigs.impl_projections.get(imp).into_iter().flatten() {
+        let projection = projection.subst(args);
+        if projection.is_tautology()
+            || !projection
+                .alias
+                .args
+                .iter()
+                .chain(projection.alias.family_args)
+                .copied()
+                .all(closed)
+            || !closed(projection.ty)
+        {
+            continue;
+        }
+        let expected = normalize_projection_rhs(items, sigs, &[], projection);
+        let actual = normalize(items, sigs, &[], Ty::alias(projection.alias));
+        if actual != expected
+            && closed(actual)
+            && closed(expected)
+            && !actual.has_aliases()
+            && !expected.has_aliases()
+            && crate::regions::slots(items, actual) == 0
+            && crate::regions::slots(items, expected) == 0
+            && !crate::fn_regions::same_shape(actual, expected)
+        {
+            return None;
+        }
+    }
     Some(definite)
 }
 
@@ -1865,21 +2090,21 @@ fn may_hold(items: &ItemTree, sigs: &Signatures, p: Predicate, depth: u32) -> Op
     let impls = sigs
         .impl_index
         .matching(items, p.trait_ref.trait_, p.self_ty);
-    let mut found = None;
     for imp in impls {
         let Some(args) = match_impl(items, sigs, imp, p) else {
             continue;
         };
         if impl_bounds(items, sigs, imp, &args, depth).is_some() {
-            found = Some(false);
+            return Some(false);
         }
     }
     // A trait's bound on a parameter in the other arguments
     // (`i32: PartialEq<T>`) may hold where the bounds in scope say.
-    if found.is_none() && p.trait_ref.args.iter().any(|&a| is_rigid(a)) {
-        return Some(false);
-    }
-    found
+    p.trait_ref
+        .args
+        .iter()
+        .any(|&a| is_rigid(a))
+        .then_some(false)
 }
 
 /// The generic arguments for which `impl` block `imp`'s header is
@@ -2194,13 +2419,12 @@ fn evaluate_with(
         sigs,
         env,
         unsized_params,
-        stack: Vec::new(),
         memo: Default::default(),
-        cut: usize::MAX,
+        other_cuts: 0,
         overflowed: false,
         bound_matching,
     };
-    let proven = proof.holds_at(goal);
+    let proven = proof.holds_at(goal, &mut ProofPath::new(&mut Vec::new()));
     Evaluation::from_proof(proven, proof.overflowed)
 }
 
@@ -2237,42 +2461,45 @@ struct Holds<'a> {
     items: &'a ItemTree,
     sigs: &'a Signatures,
     env: &'a [Predicate],
-    stack: Vec<Predicate>,
-    /// Answers that did not depend on a goal further down `stack`.
+    /// Answers that can be used without assuming an active ancestor.
     memo: rustc_hash::FxHashMap<Predicate, bool>,
-    /// The lowest index in `stack` that a cycle or the depth limit cut
-    /// at, since the goal being proved started: an answer whose proof
-    /// cut below its own goal's index depends on its callers.
-    cut: usize,
+    other_cuts: u32,
 }
 
 impl Holds<'_> {
-    /// [`holds`], within the goals `stack` is proving. As in rustc, a goal
-    /// that needs itself does not hold, nor does one that needs ever larger
-    /// types.
-    fn holds_at(&mut self, goal: Predicate) -> bool {
+    fn holds_at(&mut self, goal: Predicate, path: &mut ProofPath<'_>) -> bool {
         if let Some(&known) = self.memo.get(&goal) {
             return known;
         }
-        let depth = self.stack.len();
-        let outer = std::mem::replace(&mut self.cut, usize::MAX);
-        let holds = self.prove(goal);
-        // The outermost goal is not asked again.
-        if self.cut >= depth && depth > 0 {
-            self.memo.insert(goal, holds);
+        if let Some(dependencies) = path.reusable_dependencies(self.items, goal)
+            && !path.stack.contains(&goal)
+        {
+            path.memo.use_dependencies(dependencies);
+            return true;
         }
-        self.cut = self.cut.min(outer);
+        let parent_dependencies = path.memo.begin_proof();
+        let coinductive_uses = path.memo.uses();
+        let cuts = self.other_cuts;
+        let holds = self.prove(goal, path);
+        let dependencies = path.memo.end_proof(parent_dependencies);
+        if cuts == self.other_cuts && (holds || coinductive_uses == path.memo.uses()) {
+            if dependencies == 0 {
+                self.memo.insert(goal, holds);
+            } else {
+                path.memo.remember(goal, dependencies);
+            }
+        }
         holds
     }
 
-    fn nested(&mut self, goal: Predicate, nested: Predicate) -> bool {
-        self.stack.push(goal);
-        let holds = self.holds_at(nested);
-        self.stack.pop();
+    fn nested(&mut self, goal: Predicate, nested: Predicate, path: &mut ProofPath<'_>) -> bool {
+        path.push(goal);
+        let holds = self.holds_at(nested, path);
+        path.pop();
         holds
     }
 
-    fn prove(&mut self, goal: Predicate) -> bool {
+    fn prove(&mut self, goal: Predicate, path: &mut ProofPath<'_>) -> bool {
         let (items, sigs, env) = (self.items, self.sigs, self.env);
         if goal.self_ty == Ty::ERROR || goal.trait_ref.args.contains(&Ty::ERROR) {
             return true;
@@ -2285,18 +2512,22 @@ impl Holds<'_> {
         }) {
             return true;
         }
-        if let Some((start, coinductive)) = auto_cycle(items, goal, &self.stack) {
-            self.cut = self.cut.min(start);
+        if let Some((start, coinductive)) = auto_cycle(items, goal, path.stack) {
+            if coinductive && start < u128::BITS as usize {
+                path.memo.use_dependencies(1 << start);
+            } else {
+                self.other_cuts = self.other_cuts.wrapping_add(1);
+            }
             self.overflowed |= !coinductive;
             return coinductive;
         }
-        if self.stack.len() > 256 {
-            self.cut = 0;
+        if path.stack.len() > 256 {
+            self.other_cuts = self.other_cuts.wrapping_add(1);
             self.overflowed = true;
             return false;
         }
         if let Some(owner) = declared_alias_bound(sigs, goal)
-            && self.nested(goal, owner)
+            && self.nested(goal, owner, path)
         {
             return true;
         }
@@ -2328,7 +2559,7 @@ impl Holds<'_> {
                             self_ty: ty,
                             trait_ref,
                         };
-                        self.nested(goal, upvar)
+                        self.nested(goal, upvar, path)
                     });
                 }
                 // Other traits hold through blanket `impl` blocks, below.
@@ -2358,7 +2589,7 @@ impl Holds<'_> {
             let nested = sigs.impl_predicates.get(imp).into_iter().flatten();
             nested
                 .copied()
-                .all(|p| self.nested(goal, normalize_predicate(items, sigs, p.subst(&args))))
+                .all(|p| self.nested(goal, normalize_predicate(items, sigs, p.subst(&args)), path))
         });
         if holds {
             return true;
@@ -2368,7 +2599,7 @@ impl Holds<'_> {
         };
         nested
             .into_iter()
-            .all(|p| self.nested(goal, normalize_predicate(items, sigs, p)))
+            .all(|p| self.nested(goal, normalize_predicate(items, sigs, p), path))
     }
 }
 

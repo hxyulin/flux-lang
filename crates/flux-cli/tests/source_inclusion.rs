@@ -105,6 +105,40 @@ fn success(output: Output) -> Output {
     output
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn debugger_visualizer_inputs_match_rustc() {
+    let case = Case::new();
+    case.write("printer.py", "# a debugger visualizer\n");
+    case.write("sub/inner.py", "# a second debugger visualizer\n");
+    case.write(
+        "sub/mod.rs",
+        "#![debugger_visualizer(gdb_script_file = \"inner.py\")]",
+    );
+    case.write(
+        "main.rs",
+        r#"
+#![debugger_visualizer(gdb_script_file = "printer.py")]
+#[debugger_visualizer(natvis_file = "printer.py",)]
+mod inline {
+    #![debugger_visualizer(gdb_script_file = "printer.py")]
+}
+mod sub;
+fn main() {}
+"#,
+    );
+    case.oracle(true, None);
+    for source in [
+        r#"#![debugger_visualizer(gdb_script_file = "missing.py")]"#,
+        r#"#![debugger_visualizer(key = "printer.py")]"#,
+        r#"#![debugger_visualizer(gdb_script_file = "printer.py", natvis_file = "printer.py")]"#,
+        r#"#[debugger_visualizer(gdb_script_file = "printer.py")] fn invalid() {}"#,
+    ] {
+        case.write("main.rs", format!("{source}\nfn main() {{}}"));
+        case.oracle(false, None);
+    }
+}
+
 #[test]
 fn nested_source_data_modules_hygiene_and_environment() {
     let case = Case::new();

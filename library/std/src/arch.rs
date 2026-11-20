@@ -15,6 +15,25 @@ pub fn __aarch64_neon_detected()->bool{
 }
 
 #[doc(hidden)]
+pub fn __aarch64_fp16_detected() -> bool {
+    if cfg!(target_feature = "fp16") {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        query(b"hw.optional.arm.FEAT_FP16\0")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        aarch64_hwcap((1 << 0) | (1 << 9))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
+#[doc(hidden)]
 pub fn __crc_detected() -> bool {
     if cfg!(target_feature = "crc") {
         return true;
@@ -65,7 +84,7 @@ pub fn __aarch64_sb_detected() -> bool {
 fn aarch64_hwcap(mask: usize) -> bool {
     unsafe extern "C" { fn getauxval(kind: usize) -> usize; }
     // SAFETY: AT_HWCAP returns a scalar and takes no pointer arguments.
-    unsafe { getauxval(16) & mask != 0 }
+    unsafe { getauxval(16) & mask == mask }
 }
 
 #[cfg(target_os = "macos")]

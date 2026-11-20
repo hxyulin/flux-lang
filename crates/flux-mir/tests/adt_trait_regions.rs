@@ -54,6 +54,44 @@ fn adt_trait_contracts_match_rustc() {
             true,
         ),
         (
+            "nested_projection_output_bound",
+            "
+use std::borrow::Cow;
+use std::fmt::Debug;
+struct Entry<'a, T> where [T]: ToOwned { data: Cow<'a, [T]> }
+struct Descriptor<'a, T>
+where
+    <[Entry<'a, T>] as ToOwned>::Owned: Debug,
+    [Entry<'a, T>]: ToOwned,
+    [T]: ToOwned,
+{
+    entries: Cow<'a, [Entry<'a, T>]>,
+}
+fn main() {}
+",
+            true,
+        ),
+        (
+            "projection_output_requires_exact_owner",
+            "
+use std::borrow::Cow;
+use std::fmt::Debug;
+use std::marker::PhantomData;
+struct Entry<'a, T> where [T]: ToOwned { data: Cow<'a, [T]> }
+struct Descriptor<'a, 'b, T>
+where
+    <[Entry<'a, T>] as ToOwned>::Owned: Debug,
+    [Entry<'b, T>]: ToOwned,
+    [T]: ToOwned,
+{
+    entries: Cow<'b, [Entry<'b, T>]>,
+    marker: PhantomData<&'a ()>,
+}
+fn main() {}
+",
+            false,
+        ),
+        (
             "positive_generic_construction",
             "use std::marker::PhantomData;trait Read<'a>{fn read(&self)->&'a u32;}impl<'a>Read<'a>for &'a u32{fn read(&self)->&'a u32{*self}}struct C<'a,R:Read<'a>>{r:R,marker:PhantomData<&'a()>}fn make<'a,R:Read<'a>>(r:R)->C<'a,R>{C{r,marker:PhantomData}}fn main(){}",
             true,
@@ -300,7 +338,12 @@ fn adt_trait_contracts_match_rustc() {
         );
         assert!(hir.diagnostics.is_empty(), "{name}: {:?}", hir.diagnostics);
         let typed = flux_mir::check_file(&hir);
-        if name != "argument_wf_missing" && name != "duplicate_owner_rows" {
+        if !matches!(
+            name,
+            "argument_wf_missing"
+                | "duplicate_owner_rows"
+                | "projection_output_requires_exact_owner"
+        ) {
             assert!(
                 typed.diagnostics.is_empty(),
                 "{name}: {:?}",

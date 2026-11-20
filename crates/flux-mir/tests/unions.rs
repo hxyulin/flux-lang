@@ -102,32 +102,26 @@ fn union_rejections() {
             "union U { a: u32 } fn main() { let u = U { a: 1 }; unsafe { let U { a } = u; } }",
             "union patterns are not supported yet",
         ),
-        (
-            "union U { a: u32 } const U0: U = U { a: 1 }; fn main() {}",
-            "union constant evaluation is not supported yet",
-        ),
-        (
-            "union U { a: u32, b: u64 } const X: u64 = unsafe { U { a: 1 }.b }; fn main() {}",
-            "union constant evaluation is not supported yet",
-        ),
-        (
-            "union U { a: u32 } const fn f() -> u32 { unsafe { U { a: 1 }.a } } const X: u32 = f(); fn main() {}",
-            "union constant evaluation is not supported yet",
-        ),
-        (
-            "union U { a: u32 } const R: &U = &U { a: 1 }; fn main() {}",
-            "union constant evaluation is not supported yet",
-        ),
-        (
-            "#[derive(Copy, Clone)] union U { a: u32 } struct W { u: U } const W0: W = W { u: U { a: 1 } }; fn main() {}",
-            "union constant evaluation is not supported yet",
-        ),
     ] {
         let found = errors(text);
         assert!(
             found.iter().any(|e| e.contains(expected)),
             "{text}\nexpected {expected:?}, found {found:?}"
         );
+    }
+}
+
+#[test]
+fn supported_constant_unions() {
+    for text in [
+        "union U { a: u32 } const U0: U = U { a: 1 }; fn main() {}",
+        "union U { a: u32 } const fn f() -> u32 { unsafe { U { a: 1 }.a } } const X: u32 = f(); fn main() {}",
+        "union U { a: u32 } const R: &U = &U { a: 1 }; fn main() {}",
+        "#[derive(Copy, Clone)] union U { a: u32 } struct W { u: U } const W0: W = W { u: U { a: 1 } }; fn main() {}",
+        include_str!("../../../tests/run/const_union_relocation.rs"),
+    ] {
+        let found = errors(text);
+        assert!(found.is_empty(), "{text}: {found:?}");
     }
 }
 
@@ -176,7 +170,7 @@ fn aggregate_union_rejections() {
             "only the last field",
         ),
         (
-            "#[derive(Copy, Clone)] struct S(&'static u32); union U { a: S } fn main() {}",
+            "#[derive(Copy, Clone)] struct S<'a>(&'a u32); union U<'a> { a: S<'a> } fn main() {}",
             "this union field type is not supported yet",
         ),
         (
@@ -267,20 +261,21 @@ fn concrete_copy_union_fields_match_rustc_boundary() {
             Some("union fields must implement Copy"),
         ),
         ("union U<T: Copy> { field: T } fn main() {}", true, None),
-        (
-            "union U { r: &'static u8 } fn main() {}",
-            true,
-            Some("this union field type is not supported yet"),
-        ),
+        ("union U { r: &'static u8 } fn main() {}", true, None),
         (
             "#[derive(Copy, Clone)] enum E { A, B(&'static u8) } union U { e: E } fn main() {}",
             true,
-            Some("this union field type is not supported yet"),
+            None,
         ),
         (
             "#[derive(Copy, Clone)] struct S(&'static u8); #[derive(Copy, Clone)] union Inner { s: S } union U { inner: Inner } fn main() {}",
             true,
-            Some("this union field type is not supported yet"),
+            None,
+        ),
+        (
+            "union U { r: &'static u8 } fn main() { let local = 7; let _ = U { r: &local }; }",
+            false,
+            Some("does not live long enough"),
         ),
         (
             "union U { marker: core::marker::PhantomData<&'static u8> } fn main() {}",
@@ -318,6 +313,31 @@ fn concrete_copy_union_fields_match_rustc_boundary() {
             "union U { a: bool, b: u8 } fn main() { let mut u = U { a: true }; unsafe { let a = &u.a; u.b = 1; let _ = *a; } }",
             false,
             Some("borrowed"),
+        ),
+        (
+            "#[repr(C)] #[derive(Clone, Copy)] struct V([f32; 4]); union U { bytes: [u32; 4], vector: V } const X: f32 = unsafe { (0, [U { bytes: [0x3f800000; 4] }]).1[0].vector.0[1] }; fn main() { assert_eq!(X, 1.0); }",
+            true,
+            None,
+        ),
+        (
+            "#[repr(C)] union U { bytes: [u32; 2], lanes: [f32; 2] } static WORD: U = U { bytes: [0x3f800000; 2] }; const X: &[f32; 2] = unsafe { &WORD.lanes }; const Y: f32 = X[1]; fn main() { assert_eq!(Y, 1.0); }",
+            true,
+            None,
+        ),
+        (
+            "union U { byte: u8, flag: bool } const X: bool = unsafe { U { byte: 2 }.flag }; fn main() {}",
+            false,
+            Some("invalid bool in constant value"),
+        ),
+        (
+            "union U { short: u32, long: u64 } const X: u64 = unsafe { U { short: 1 }.long }; fn main() {}",
+            false,
+            Some("read of uninitialized bytes in union field"),
+        ),
+        (
+            "#[repr(C)] union U { short: u32, long: u64 } static WORD: U = U { short: 1 }; const X: &u64 = unsafe { &WORD.long }; fn main() {}",
+            false,
+            Some("read of uninitialized bytes in union field"),
         ),
     ];
     let dir = std::env::temp_dir().join(format!("flux-union-boundary-{}", std::process::id()));

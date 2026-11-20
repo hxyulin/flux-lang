@@ -161,6 +161,12 @@ fn borrowed<'a>(key: &'a i32) {
     assert_eq!(map.get(&key).unwrap(), "borrowed");
 }
 fn main() {
+    let mut ordered = std::collections::BTreeSet::new();
+    assert_eq!(ordered.last(), None);
+    ordered.extend([6, 2, 9, 1]);
+    assert_eq!(ordered.last(), Some(&9));
+    ordered.remove(&9);
+    assert_eq!(ordered.last(), Some(&6));
     let empty: BTreeMap<i32, String> = Default::default();
     assert!(empty.into_iter().next().is_none());
     let mut single: BTreeMap<i32, String> = const { BTreeMap::new() };

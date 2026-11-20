@@ -38,6 +38,14 @@ impl<T> Option<T> {
         }
     }
 
+    /// Returns a slice containing the value if present, or an empty slice.
+    pub const fn as_slice(&self) -> &[T] {
+        match self {
+            Some(value) => crate::slice::from_ref(value),
+            None => &[],
+        }
+    }
+
     /// The value; panics on `None`.
     #[rustc_allow_const_fn_unstable(const_precise_live_drops)]
     #[track_caller]
@@ -247,9 +255,8 @@ impl<T> Option<T> {
         }
     }
 
-    /// Takes the value out, leaving `None`. (`const` in rustc; flux's
-    /// constant evaluation cannot write through `&mut` yet.)
-    pub fn take(&mut self) -> Option<T> {
+    /// Takes the value out, leaving `None`.
+    pub const fn take(&mut self) -> Option<T> {
         crate::mem::replace(self, None)
     }
 

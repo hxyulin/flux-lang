@@ -102,6 +102,15 @@ impl<T> OnceLock<T> {
     }
 }
 
+impl<T> From<T> for OnceLock<T> {
+    fn from(value: T) -> Self {
+        OnceLock {
+            state: AtomicUsize::new(2),
+            value: UnsafeCell::new(Some(value)),
+        }
+    }
+}
+
 impl<T: core::clone::Clone> core::clone::Clone for OnceLock<T> {
     fn clone(&self) -> OnceLock<T> {
         let cell = OnceLock::new();

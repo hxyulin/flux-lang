@@ -6,7 +6,14 @@ mod case_filter;
 fn higher_ranked_trait_bounds_match_rustc() {
     let root = std::env::temp_dir().join(format!("flux-ranked-traits-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
+    let projection = include_str!("../../../tests/run/higher_ranked_projection_bounds.rs");
+    let restricted_projection = projection.replace(
+        "impl Deref for Data<'_, '_>",
+        "impl Deref for Data<'static, 'static>",
+    );
     for (name, source, valid) in [
+        ("projected_receiver", projection, true),
+        ("static_projected_receiver", &restricted_projection, false),
         (
             "universal_owned",
             "trait Decode<'de>{fn value(&self)->u32;} struct Owned;impl<'de> Decode<'de> for Owned{fn value(&self)->u32{7}} struct Fixed;impl Decode<'static> for Fixed{fn value(&self)->u32{1}} fn need<T:for<'a>Decode<'a>>(_:T){}fn main(){need(Owned);}",

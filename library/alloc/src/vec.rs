@@ -141,8 +141,9 @@ impl<T> Vec<T> {
     }
 
     #[inline(always)]
-    pub fn as_slice(&self) -> &[T] {
-        self
+    pub const fn as_slice(&self) -> &[T] {
+        // SAFETY: the vector owns its initialized prefix of length self.len.
+        unsafe { core::slice::from_raw_parts(self.as_ptr(), self.len) }
     }
 
     #[inline(always)]
@@ -151,7 +152,7 @@ impl<T> Vec<T> {
     }
 
     #[inline(always)]
-    pub fn as_ptr(&self) -> *const T {
+    pub const fn as_ptr(&self) -> *const T {
         self.buf.ptr() as *const T
     }
 
@@ -320,11 +321,11 @@ impl<T> Vec<T> {
         self.truncate(0);
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.len
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
@@ -636,7 +637,7 @@ impl<T> Deref for Vec<T> {
 
     #[inline(always)]
     fn deref(&self) -> &[T] {
-        unsafe { core::slice::from_raw_parts(self.as_ptr(), self.len) }
+        self.as_slice()
     }
 }
 

@@ -15,22 +15,47 @@ impl Ctx<'_> {
         crate::resolve::pinned_pointees(self.items, actual, expected)
     }
 
+    pub(super) fn coerce_call_argument(
+        &mut self,
+        actual: Ty,
+        expected: Ty,
+        expr: ExprId,
+        function: flux_hir::FunctionId,
+        index: usize,
+    ) {
+        self.coerce(actual, expected, expr);
+        let place = self.blame(expr);
+        if self.closure_locals.is_empty()
+            || self.reborrows.get(place).is_some()
+            || self.unsizes.get(place).is_some()
+            || !matches!(
+                self.sigs.fns[function].params[index].kind(),
+                TyKind::Ref(Mutability::Not, _)
+            )
+            || !self.captures_place(place)
+            || self.known(actual) != self.known(expected)
+        {
+            return;
+        }
+        let Some(regions) = self.sigs.regions.fns.get(function) else {
+            return;
+        };
+        // Capture the referent through the shared reference, including when
+        // the required lifetime comes from the method's owner.
+        if let Some(crate::regions::Region::Param(region)) =
+            regions.params.get(index).and_then(|row| row.first())
+            && (*region as usize) < regions.names.len()
+        {
+            self.reborrows.insert(place, Mutability::Not);
+        }
+    }
+
     /// Checks that a value of type `actual` (from `expr`) can be used where
     /// `expected` is: `!` coerces to anything, other types must unify.
     pub(super) fn coerce(&mut self, actual: Ty, expected: Ty, expr: ExprId) {
         if self.shallow(actual) == Ty::NEVER {
             self.never_coercions.insert(expr, expected);
-            if let TyKind::Infer(var) = self.shallow(expected).kind() {
-                let (int, _) = self.unknown(var);
-                self.set_var(
-                    var,
-                    VarValue::Unknown {
-                        int,
-                        float: self.float_var(var),
-                        diverging: true,
-                    },
-                );
-            }
+            self.mark_diverging_result(expected);
             return;
         }
         let blamed = self.blame(expr);
@@ -489,6 +514,20 @@ impl Ctx<'_> {
         }
     }
 
+    pub(super) fn mark_diverging_result(&mut self, expected: Ty) {
+        if let TyKind::Infer(var) = self.shallow(expected).kind() {
+            let (int, _) = self.unknown(var);
+            self.set_var(
+                var,
+                VarValue::Unknown {
+                    int,
+                    float: self.float_var(var),
+                    diverging: true,
+                },
+            );
+        }
+    }
+
     /// Whether a pointer to a `source` may become one to `target`, trait
     /// object `d`: `source` must implement its trait with the associated
     /// types it gives, and be sized (obligations, reported at `expr`
@@ -517,6 +556,7 @@ impl Ctx<'_> {
                 TyKind::Closure(..) | TyKind::Dynamic(_) | TyKind::FnDef(_) | TyKind::FnPtr(_)
             )
             && !caller_callable
+            && !crate::objects::forwards_callable_input_binder(self.items, source, d)
         {
             self.error(range, "higher-ranked callable object coercions from non-closure types are not supported yet");
             return true;
@@ -526,6 +566,11 @@ impl Ctx<'_> {
             && d.assoc_tys
                 .iter()
                 .any(|&ty| crate::regions::slots(self.items, ty) != 0)
+            && !d
+                .callable_signature()
+                .and_then(|signature| signature.regions)
+                .and_then(|regions| regions.inputs_output.last())
+                .is_some_and(|row| row.iter().all(|region| *region == crate::FnRegion::Static))
         {
             self.error(
                 range,

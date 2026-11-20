@@ -30,13 +30,18 @@ fn normalized_stderr(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn forced_source_libraries_match_rustc_for_identity_panics_and_const_generics() {
+fn forced_source_libraries_match_rustc() {
     let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .unwrap();
     let scratch = scratch::Scratch::new(repository.join("out/builtins-source"));
-    for fixture in ["any_type_id", "panic_track_caller", "const_generics"] {
+    for fixture in [
+        "any_type_id",
+        "panic_track_caller",
+        "const_generics",
+        "deferred_array_range",
+    ] {
         // Preserve the same physical source spelling in both compilers so
         // Location::caller and panic messages remain directly comparable.
         let source = format!("tests/run/{fixture}.rs");

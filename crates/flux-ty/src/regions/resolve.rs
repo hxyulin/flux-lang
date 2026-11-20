@@ -22,17 +22,18 @@ fn borrowed_receiver(items: &ItemTree, mut receiver: Ty, self_ty: Option<Ty>) ->
 
 type Errors = Vec<(flux_hir::FileId, TextRange, String)>;
 
+fn has_static_self_bound(bounds: &[Outlives<Region>]) -> bool {
+    bounds.iter().any(|bound| {
+        matches!(*bound, Outlives::Type(ty, Region::Static)
+            if matches!(ty.kind(), TyKind::Param(p) if p.index == 0))
+    })
+}
+
 /// A bound on a trait's abstract Self is inherited through its supertraits.
 /// Follow only lifetimeless owners: the erased TraitRef does not represent
 /// lifetime arguments on other supertrait edges. Static Self needs no such
 /// substitution, and never follows bounds on a trait's other type arguments.
 fn inherit_static_self(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts) {
-    let self_static = |bounds: &[Outlives<Region>]| {
-        bounds.iter().any(|bound| {
-            matches!(*bound, Outlives::Type(ty, Region::Static)
-                if matches!(ty.kind(), TyKind::Param(p) if p.index == 0))
-        })
-    };
     let mut children = vec![Vec::new(); items.traits.len()];
     let mut requires_static = vec![false; items.traits.len()];
     let mut pending = Vec::new();
@@ -44,7 +45,7 @@ fn inherit_static_self(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::
             .regions
             .traits
             .get(id)
-            .is_some_and(|r| self_static(&r.outlives))
+            .is_some_and(|r| has_static_self_bound(&r.outlives))
         {
             requires_static[id.index()] = true;
             pending.push(id);
@@ -70,7 +71,7 @@ fn inherit_static_self(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::
     for (id, _) in items.traits.iter().skip(from.traits as usize) {
         if requires_static[id.index()]
             && let Some(regions) = sigs.regions.traits.get_mut(id)
-            && !self_static(&regions.outlives)
+            && !has_static_self_bound(&regions.outlives)
         {
             let self_ty = flux_solve::traits::trait_self_predicate(items, id).self_ty;
             let mut outlives = regions.outlives.to_vec();
@@ -1001,6 +1002,7 @@ fn structs(
             sigs,
             &data.generics,
             sigs.struct_predicates.get(id).map_or(&[][..], |p| p),
+            None,
             &metadata.bound_selfs,
             &metadata.bound_traits,
             &mut assumptions,
@@ -1077,14 +1079,115 @@ fn structs_selected(
             continue;
         }
         let regions = &sigs.regions.structs[id];
+        if s.generics.lifetimes.is_empty()
+            || !regions.variances[..s.generics.lifetimes.len()].contains(&Variance::Bivariant)
+        {
+            continue;
+        }
+        let used = used_struct_parameters(
+            s,
+            regions,
+            sigs.structs[id],
+            sigs.struct_projections.get(id).map_or(&[], |row| row),
+        );
         for (i, l) in s.generics.lifetimes.iter().enumerate() {
-            if regions.variances[i] == Variance::Bivariant {
+            if !used[i] {
                 errors.push((
                     s.loc.file,
                     l.range,
                     format!("lifetime parameter `{}` is never used", l.name),
                 ));
             }
+        }
+    }
+}
+
+/// A used projection input determines its associated output. This counts as a
+/// use of the output parameters without changing the ADT's field variances.
+fn used_struct_parameters(
+    data: &flux_hir::Struct,
+    regions: &StructRegions,
+    fields: &[Ty],
+    projections: &[crate::Projection],
+) -> Vec<bool> {
+    let lifetimes = data.generics.lifetimes.len();
+    let mut used: Vec<_> = regions
+        .variances
+        .iter()
+        .map(|v| *v != Variance::Bivariant)
+        .collect();
+    let parameters = |types: &[Ty], mut referenced: Vec<usize>| {
+        referenced.extend(
+            (0..data.generics.params.len())
+                .filter(|&i| types.iter().any(|&ty| crate::uses_param(ty, i as u32)))
+                .map(|i| lifetimes + i),
+        );
+        referenced
+    };
+    let region_index = |r: &Region| match *r {
+        Region::Param(index) if (index as usize) < lifetimes => Some(index as usize),
+        _ => None,
+    };
+    let field_regions = regions
+        .fields
+        .iter()
+        .flatten()
+        .filter_map(region_index)
+        .collect();
+    for parameter in parameters(fields, field_regions) {
+        if let Some(slot) = used.get_mut(parameter) {
+            *slot = true;
+        }
+    }
+    for (i, generic) in data.generics.params.iter().enumerate() {
+        used[lifetimes + i] |= generic.is_const();
+    }
+
+    let bindings = written_projection_bindings(&data.generics);
+    let mut rules = Vec::new();
+    for (((binding, _, _, index), projection), row) in
+        bindings.zip(projections).zip(&regions.projections)
+    {
+        let alias = projection.alias;
+        if binding.name != alias.name || binding.args.is_some() {
+            continue;
+        }
+        let Some((self_row, trait_row)) = regions
+            .bound_selfs
+            .get(index)
+            .zip(regions.bound_traits.get(index))
+        else {
+            continue;
+        };
+        let inputs: Vec<_> = self_row
+            .iter()
+            .chain(&trait_row.lifetimes)
+            .chain(trait_row.args.iter().flatten())
+            .copied()
+            .collect();
+        if inputs.contains(&Region::Erased) {
+            continue;
+        }
+        let antecedents = parameters(alias.args, inputs.iter().filter_map(region_index).collect());
+        let outputs = parameters(
+            &[projection.ty],
+            row.iter().filter_map(region_index).collect(),
+        );
+        rules.push((antecedents, outputs));
+    }
+    loop {
+        let mut changed = false;
+        for (inputs, outputs) in &rules {
+            if inputs.iter().all(|&i| used.get(i) == Some(&true)) {
+                for &i in outputs {
+                    if let Some(slot) = used.get_mut(i) {
+                        changed |= !std::mem::replace(slot, true);
+                    }
+                }
+            }
+        }
+        if !changed {
+            return used;
         }
     }
 }
@@ -1108,6 +1211,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         };
         walker.add_projection_bounds(&imp.generics);
         walker.elided = Elided::Fresh;
+        walker.in_impl_header = true;
         walker.selections = Some(Vec::new());
         let self_regions = walker.regions(&imp.self_ty, self_ty);
         let mut header_selections = vec![walker.selections.take().unwrap().into_boxed_slice()];
@@ -1160,6 +1264,7 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
         walker.scope.self_ty = Some(self_ty);
         walker.self_projection_owner = trait_ref.map(|tr| (tr.trait_, trait_lifetimes.clone()));
         walker.elided = Elided::Missing(None);
+        walker.in_impl_header = false;
         let mut type_selections = Vec::new();
         let types: Box<[(Symbol, Box<[Region]>)]> = imp
             .types
@@ -1254,21 +1359,23 @@ fn impls(items: &ItemTree, sigs: &mut Signatures, from: flux_hir::ItemCounts, er
             }
         }
         dedup(&mut outlives);
-        let (bound_selfs, bound_traits, projections) = bound_regions(
+        // A written `where Self: Trait` refers to the exact header
+        // occurrence, including its anonymous reference and object regions.
+        let (bound_selfs, bound_traits, projections) = bound_regions_with_walker(
             items,
-            imp.module,
             &imp.generics,
-            &names,
-            &generics,
             sigs.impl_predicates.get(id).map_or(&[][..], |p| p),
             sigs.impl_projections.get(id).map_or(&[][..], |p| p),
             &mut list,
+            &mut walker,
+            None,
         );
         check_bound_wf(
             items,
             sigs,
             &imp.generics,
             sigs.impl_predicates.get(id).map_or(&[][..], |p| p),
+            None,
             &bound_selfs,
             &bound_traits,
             &mut outlives,
@@ -1463,6 +1570,7 @@ pub(super) fn safe_method_contract(
         owner,
         (0..owner_names.len() as u32).map(Region::Param).collect(),
     ));
+    walker.add_trait_projection_bounds(owner);
     walker.add_projection_bounds(&declaration.generics);
     walker.add_projection_bounds(&function.generics);
     walker.elided = Elided::Fresh;
@@ -1571,6 +1679,7 @@ pub(super) fn safe_method_contract(
         sigs,
         &function.generics,
         &bounds.predicates,
+        Some(&environment),
         &bound_selfs,
         &bound_traits,
         &mut outlives,
@@ -1685,6 +1794,7 @@ pub fn function_bound_projection_selections(
         let rows = sigs.regions.impls.get(owner)?;
         walker.self_regions = Some(&rows.self_ty);
         walker.self_types = &rows.types;
+        walker.self_type_selections = &rows.type_selections;
         walker.self_projection_owner = sigs
             .impl_traits
             .get(owner)
@@ -1828,6 +1938,7 @@ fn functions(
         let mut owner_outlives: Vec<Outlives<Region>> = Vec::new();
         let mut self_regions: Option<Box<[Region]>> = None;
         let mut self_types: Box<[(Symbol, Box<[Region]>)]> = Box::default();
+        let mut self_type_selections = &[][..];
         if let Some(flux_hir::Owner::Impl(imp)) = function.owner
             && let Some(r) = sigs.regions.impls.get(imp)
         {
@@ -1835,6 +1946,7 @@ fn functions(
             owner_outlives = r.outlives.to_vec();
             self_regions = Some(r.self_ty.clone());
             self_types = r.types.clone();
+            self_type_selections = &r.type_selections;
         }
         if let Some(flux_hir::Owner::Trait(trait_)) = function.owner
             && let Some(r) = sigs.regions.traits.get(trait_)
@@ -1877,6 +1989,11 @@ fn functions(
             );
             let definitions =
                 flux_solve::traits::associated_self_types(items, sigs, &candidates, Some(&proof));
+            let owner_scope = crate::TypeScope {
+                bounds: &memberships,
+                unsized_params: &parameters,
+                ..crate::TypeScope::default()
+            };
             let mut tables = Vec::new();
             for candidate in candidates.iter().skip(1) {
                 for associated in &items.traits[candidate.trait_ref.trait_].types {
@@ -1892,7 +2009,20 @@ fn functions(
                         .find(|(tr, name, ty)| {
                             *tr == candidate.trait_ref
                                 && *name == associated.name
-                                && is_closed_region_free(items, *ty)
+                                && (is_closed_region_free(items, *ty)
+                                    || (slots(items, *ty) == 0
+                                        && !ty.has_aliases()
+                                        && !ty.has_opaques()
+                                        && selected::generic_zero_row_projection(
+                                            items,
+                                            sigs,
+                                            flux_solve::traits::alias_of(
+                                                items, *tr, self_ty, *name,
+                                            ),
+                                            *ty,
+                                            owner_scope,
+                                            &projections,
+                                        )))
                         })
                         .map(|_| Box::default())
                         .or_else(|| {
@@ -1944,6 +2074,7 @@ fn functions(
         let mut walker = Walker::new(items, function.loc.module, names);
         walker.self_regions = self_regions.as_deref();
         walker.self_types = &self_types;
+        walker.self_type_selections = self_type_selections;
         walker.unmapped_self_types = &unmapped_self_types;
         walker.inherited_self_types = &inherited_self_types;
         walker.scope = TypeScope {
@@ -1957,6 +2088,7 @@ fn functions(
         };
         walker.self_projection_owner = match function.owner {
             Some(flux_hir::Owner::Trait(owner)) => {
+                walker.add_trait_projection_bounds(owner);
                 Some((owner, (0..owner_count).map(Region::Param).collect()))
             }
             Some(flux_hir::Owner::Impl(owner)) => sigs.impl_traits.get(owner).and_then(|tr| {
@@ -1974,9 +2106,7 @@ fn functions(
                 &items.impls[owner].trait_ref,
             )
         {
-            walker
-                .projection_owners
-                .push((self_ty, trait_, bound.clone()));
+            walker.add_projection_owner(self_ty, trait_, bound);
         }
         for generics in items
             .owner_generics(function.owner)
@@ -1997,6 +2127,7 @@ fn functions(
                 .any(|ty| ty.has_aliases());
         let mut selected_inputs = Vec::new();
         walker.qualified_legacy_selections = selected_method;
+        walker.expand_alias_selections = capture_selections;
         let params: Box<[Box<[Region]>]> = function
             .params
             .iter()
@@ -2141,6 +2272,7 @@ fn functions(
             sigs,
             &function.generics,
             sigs.fn_predicates.get(id).map_or(&[][..], |p| p),
+            Some(&resolved_bounds),
             &bound_selfs,
             &bound_traits,
             &mut outlives,
@@ -2763,13 +2895,7 @@ fn bound_regions_with_walker(
         }
     }
     errors.append(&mut walker.errors);
-    let bindings = written.iter().enumerate().flat_map(|(index, w)| {
-        let last = w.bound.path.segments.len().saturating_sub(1);
-        let args = w.bound.path.args(last);
-        args.map_or(&[][..], |a| &a.bindings)
-            .iter()
-            .map(move |b| (b, args, &w.bound, index))
-    });
+    let bindings = written_projection_bindings(generics);
     let mut tables: Vec<Box<[Region]>> = Vec::with_capacity(projections.len());
     let mut table_owners = Vec::with_capacity(projections.len());
     for ((b, args, bound, index), p) in bindings.zip(projections) {
@@ -2834,6 +2960,29 @@ fn bound_regions_with_walker(
     (selfs, traits, tables.into())
 }
 
+fn written_projection_bindings(
+    generics: &Generics,
+) -> impl Iterator<
+    Item = (
+        &flux_hir::AssocBinding,
+        Option<&flux_hir::GenericArgs>,
+        &flux_hir::Bound,
+        usize,
+    ),
+> {
+    generics
+        .predicates
+        .iter()
+        .enumerate()
+        .flat_map(|(index, predicate)| {
+            let path = &predicate.bound.path;
+            let args = path.args(path.segments.len().saturating_sub(1));
+            args.map_or(&[][..], |args| &args.bindings)
+                .iter()
+                .map(move |binding| (binding, args, &predicate.bound, index))
+        })
+}
+
 /// A trait argument's requirements must follow from the signature's own
 /// bounds and input/self types. Do not turn its required WF into assumptions.
 #[allow(clippy::too_many_arguments)]
@@ -2861,7 +3010,11 @@ fn check_trait_wf(
             Outlives::Type(ty, region) if slots(items, ty) == 0 => {
                 let normalized = flux_solve::traits::normalize(items, sigs, &[], ty);
                 normalized != ty
-                    && slots(items, normalized) == 0
+                    && (slots(items, normalized) == 0
+                        || matches!(ty.kind(), TyKind::Alias(alias)
+                            if selected::projection(items, sigs, alias, &[]).is_some_and(|row|
+                                row.len() == slots(items, normalized)
+                                    && row.iter().all(|r| *r == Region::Static))))
                     && outlives_type_components(items, sigs, normalized)
                         .into_iter()
                         .all(|component| {
@@ -2875,19 +3028,42 @@ fn check_trait_wf(
         // an alias's erased spelling alone does not prove its contract.
         let declared_static = match requirement {
             Outlives::Type(ty, _) if slots(items, ty) == 0 => {
-                flux_solve::traits::alias_bounds(sigs, env, ty)
-                    .iter()
-                    .any(|bound| {
-                        sigs.regions
+                let output_bound = match ty.kind() {
+                    TyKind::Alias(alias)
+                        if alias.family_args.is_empty() && alias.family_lifetimes == 0 =>
+                    {
+                        flux_solve::traits::in_env(
+                            sigs,
+                            env,
+                            flux_solve::traits::alias_predicate(alias),
+                        ) && sigs
+                            .regions
                             .traits
-                            .get(bound.trait_ref.trait_)
+                            .get(alias.trait_)
                             .is_some_and(|contract| {
-                                contract.outlives.iter().any(|requirement| {
-                                    matches!(requirement, Outlives::Type(ty, Region::Static)
-                                if matches!(ty.kind(), TyKind::Param(param) if param.index == 0))
+                                contract.families.iter().any(|(name, family)| {
+                                    *name == alias.name
+                                        && family.outlives.is_empty()
+                                        && family.bound_traits.is_empty()
+                                        && family.output_outlives.contains(&Region::Static)
                                 })
                             })
-                    })
+                    }
+                    _ => false,
+                };
+                output_bound
+                    || flux_solve::traits::alias_bounds(sigs, env, ty)
+                        .iter()
+                        .any(|bound| {
+                            sigs.regions.traits.get(bound.trait_ref.trait_).is_some_and(
+                                |contract| {
+                                    contract.outlives.iter().any(|requirement| {
+                                        matches!(requirement, Outlives::Type(ty, Region::Static)
+                                if matches!(ty.kind(), TyKind::Param(param) if param.index == 0))
+                                    })
+                                },
+                            )
+                        })
             }
             _ => false,
         };
@@ -2909,18 +3085,21 @@ fn check_bound_wf(
     sigs: &Signatures,
     generics: &Generics,
     predicates: &[crate::Predicate],
+    environment: Option<&[crate::Predicate]>,
     selfs: &[Box<[Region]>],
     traits: &[TraitRefRegions],
     assumptions: &mut Vec<Outlives<Region>>,
     errors: &mut Vec<(TextRange, String)>,
 ) {
     // Elaborating a trait bound may assume the trait's bounds on its
-    // abstract Self. Bounds on the trait's other arguments remain obligations.
+    // abstract Self, including a wrapper whose type has no occurrence
+    // regions to distinguish. Bounds on the other arguments remain obligations.
     for (predicate, regions) in predicates.iter().zip(traits) {
         if !matches!(
             predicate.self_ty.kind(),
             TyKind::Param(_) | TyKind::Alias(_)
-        ) {
+        ) && slots(items, predicate.self_ty) != 0
+        {
             continue;
         }
         let Some(declaration) = sigs.regions.traits.get(predicate.trait_ref.trait_) else {
@@ -2943,11 +3122,12 @@ fn check_bound_wf(
                 if matches!(r, Region::Late(_)) {
                     continue;
                 }
-                assumptions.push(Outlives::Type(predicate.self_ty, r));
+                outlives_params(items, sigs, predicate.self_ty, r, assumptions);
             }
         }
     }
     dedup(assumptions);
+    let mut env = None;
     for (((written, predicate), self_regions), regions) in generics
         .predicates
         .iter()
@@ -3009,7 +3189,9 @@ fn check_bound_wf(
             items,
             sigs,
             predicate,
-            &flux_solve::traits::elaborate(sigs, predicates),
+            env.get_or_insert_with(|| {
+                flux_solve::traits::elaborate(sigs, environment.unwrap_or(predicates))
+            }),
             self_regions,
             regions,
             bound_assumptions,
@@ -3021,7 +3203,10 @@ fn check_bound_wf(
 
 /// Reachability through explicit and implied signature bounds. Erased regions
 /// have an earlier resolution diagnostic and cannot cause useful follow-ups.
-fn outlives_known(requirement: Outlives<Region>, assumptions: &[Outlives<Region>]) -> bool {
+pub(crate) fn outlives_known(
+    requirement: Outlives<Region>,
+    assumptions: &[Outlives<Region>],
+) -> bool {
     let reaches = |a, b| {
         let mut seen = vec![a];
         let mut next = 0;
@@ -3347,12 +3532,42 @@ fn dedup<T: PartialEq>(list: &mut Vec<T>) {
     }
 }
 
-/// Reconstruct the written owner bounds before admission trusts their table.
+/// Reconstruct the owner bounds before admission trusts their table.
 pub(super) fn trait_outlives_contract(
     items: &ItemTree,
     sigs: &Signatures,
     id: flux_hir::TraitId,
 ) -> Option<Box<[Outlives<Region>]>> {
+    let mut written = written_trait_outlives(items, sigs, id)?;
+    if items.traits[id].generics.lifetimes.is_empty() && !has_static_self_bound(&written) {
+        let mut pending = vec![id];
+        let mut seen = rustc_hash::FxHashSet::default();
+        // Follow the same lifetimeless edges used to populate the saved
+        // table, proving the bound from the ancestor's declaration.
+        while let Some(next) = pending.pop() {
+            if !seen.insert(next) || !items.traits[next].generics.lifetimes.is_empty() {
+                continue;
+            }
+            if next != id
+                && written_trait_outlives(items, sigs, next)
+                    .is_some_and(|bounds| has_static_self_bound(&bounds))
+            {
+                written.push(Outlives::Type(Ty::param(0, kw::SelfUpper), Region::Static));
+                break;
+            }
+            if let Some(signature) = sigs.traits.get(next) {
+                pending.extend(signature.supertraits.iter().map(|edge| edge.trait_));
+            }
+        }
+    }
+    Some(written.into_boxed_slice())
+}
+
+fn written_trait_outlives(
+    items: &ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::TraitId,
+) -> Option<Vec<Outlives<Region>>> {
     let declaration = items.traits.get(id)?;
     let names: Vec<_> = own_names(&declaration.generics).map(|n| n.name).collect();
     let generics = crate::generic_names(
@@ -3375,7 +3590,7 @@ pub(super) fn trait_outlives_contract(
         &mut errors,
     );
     dedup(&mut out);
-    errors.is_empty().then(|| out.into_boxed_slice())
+    errors.is_empty().then_some(out)
 }
 
 /// The lifetime bounds of `generics` (`'a: 'b`, `T: 'a`), with the
@@ -3841,6 +4056,7 @@ fn struct_outlives(items: &ItemTree, sigs: &mut Signatures, from: usize, errors:
                 sigs,
                 &s.generics,
                 sigs.struct_predicates.get(id).map_or(&[][..], |p| p),
+                None,
                 &metadata.bound_selfs,
                 &metadata.bound_traits,
                 &mut out,

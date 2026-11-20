@@ -1,4 +1,4 @@
-//! Associated constants are callable values, with the same checks as local pointers.
+//! Associated constant calls and their owner constraints.
 use flux_hir::{SourceCrate, SourceDb};
 use flux_intern::Symbol;
 use flux_syntax::Edition;
@@ -22,6 +22,99 @@ fn associated_constant_calls_match_rustc() {
             "static_output",
             "static X:u32=3;fn get()->&'static u32{&X}struct H;impl H{const F:fn()->&'static u32=get;}fn f()->&'static u32{H::F()}fn main(){}",
             true,
+        ),
+        (
+            "static_owner_type_argument",
+            include_str!("../../../tests/run/static_associated_constant_owner.rs"),
+            true,
+        ),
+        (
+            "named_owner_type_argument",
+            include_str!("../../../tests/run/named_associated_constant_owner.rs"),
+            true,
+        ),
+        (
+            "trait_constant_requires_static_owner",
+            "trait Type{const NAME:&'static str;} struct S<'a>(&'a str); impl Type for S<'static>{const NAME:&'static str=\"static\";} fn bad<'a>(_: &'a str)->&'static str{<S<'a> as Type>::NAME}fn main(){}",
+            false,
+        ),
+        (
+            "reference_constant_requires_static_pointee",
+            r#"
+                trait Signature { const VALUE: &'static str; }
+                struct S<'a>(&'a str);
+                impl Signature for S<'static> { const VALUE: &'static str = "s"; }
+                impl<T: Signature + ?Sized> Signature for &T {
+                    const VALUE: &'static str = T::VALUE;
+                }
+                fn f<'a>(_: &'a str) -> &'static str {
+                    <&'a S<'a> as Signature>::VALUE
+                }
+                fn main() {}
+            "#,
+            false,
+        ),
+        (
+            "trait_constant_requires_equal_owner_lifetimes",
+            r#"
+                trait Signature { const VALUE: &'static str; }
+                struct S<'a, 'b>(&'a str, &'b str);
+                impl<'a> Signature for S<'a, 'a> { const VALUE: &'static str = "s"; }
+                fn f<'a, 'b>(_: &'a str, _: &'b str) -> &'static str {
+                    <S<'a, 'b> as Signature>::VALUE
+                }
+                fn main() {}
+            "#,
+            false,
+        ),
+        (
+            "trait_constant_requires_adt_outlives",
+            r#"
+                trait Signature { const VALUE: &'static str; }
+                struct S<'a: 'b, 'b>(&'a str, &'b str);
+                impl<'a, 'b> Signature for S<'a, 'b> { const VALUE: &'static str = "s"; }
+                fn f<'a, 'b>(_: &'a str, _: &'b str) -> &'static str {
+                    <S<'a, 'b> as Signature>::VALUE
+                }
+                fn main() {}
+            "#,
+            false,
+        ),
+        (
+            "trait_constant_requires_impl_outlives",
+            r#"
+                trait Signature { const VALUE: &'static str; }
+                struct S<'a, 'b>(&'a str, &'b str);
+                impl<'a: 'b, 'b> Signature for S<'a, 'b> { const VALUE: &'static str = "s"; }
+                fn f<'a, 'b>(_: &'a str, _: &'b str) -> &'static str {
+                    <S<'a, 'b> as Signature>::VALUE
+                }
+                fn main() {}
+            "#,
+            false,
+        ),
+        (
+            "trait_constant_result_depends_on_owner_lifetime",
+            r#"
+                trait Signature { const VALUE: Self; }
+                struct S<'a>(&'a str);
+                impl<'a> Signature for S<'a> { const VALUE: Self = S("s"); }
+                fn f<'a>(_: &'a str) -> &'static str {
+                    <S<'a> as Signature>::VALUE.0
+                }
+                fn main() {}
+            "#,
+            false,
+        ),
+        (
+            "lifetime_dependent_owner_bound",
+            "use core::marker::PhantomData; trait Bound<'a> {} impl Bound<'static> for dyn Fn() + 'static {} struct Gate<T:?Sized,U>(PhantomData<T>,PhantomData<U>); impl<T:Bound<'static>+?Sized,U> Gate<T,U> { const N:u32=1; } fn bad<'a>(_: &'a u8) { let _ = Gate::<dyn Fn() + 'a, &'static u8>::N; } fn main() {}",
+            false,
+        ),
+        (
+            "unexpected_owner_lifetime_argument",
+            "use core::marker::PhantomData; struct Gate<T:?Sized>(PhantomData<T>); impl<T:?Sized> Gate<T> { const N:u32=1; } fn main() { let _ = Gate::<'static,dyn Fn() + 'static>::N; }",
+            false,
         ),
         (
             "borrowed_pointer",

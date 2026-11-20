@@ -3,11 +3,11 @@ use super::{
     ArgTys, ArrayLens, Builtins, Core, Diagnostic, FnSig, FxHashMap, Generics, ItemCounts, ItemLoc,
     ItemTree, LenValues, Mutability, OnceLock, Owner, Predicate, Signatures, Symbol, TextRange,
     TraitSig, Ty, TyKind, TypeRef, TypeScope, check_alias, check_const_params, check_type_defaults,
-    contains, contains_ref, core_lens_values, discriminant_ty, duplicate_assoc_items,
-    generic_consts, generic_names, impl_index, impl_type, in_scope, kw, mentions_param, not_sync,
-    opaque_sigs, param_const_ty, params_of, regions, resolve_generic_arg, resolve_or_report,
-    resolve_predicates, resolve_type, self_ty, supported_union_field, traits, unsized_argument,
-    unsized_error, uses_param,
+    contains, core_lens_values, discriminant_ty, duplicate_assoc_items, generic_consts,
+    generic_names, impl_index, impl_type, in_scope, kw, mentions_param, not_sync, opaque_sigs,
+    param_const_ty, params_of, regions, resolve_generic_arg, resolve_or_report, resolve_predicates,
+    resolve_type, self_ty, supported_union_member, traits, unsized_argument, unsized_error,
+    uses_param,
 };
 use flux_solve::{is_lang_struct, maybe_unsized, unsized_params};
 
@@ -893,9 +893,26 @@ pub(super) fn extend_signatures(
             .collect();
         if function.has_self
             && let (Some(&receiver), Some(self_ty)) = (params.first(), scope.self_ty)
+            && !receiver.has_error()
+            && flux_solve::receiver_shape(items, receiver, self_ty).is_none()
         {
-            let receiver = flux_solve::traits::normalize(items, &sigs, &[], receiver);
-            let valid = flux_solve::receiver_shape(items, receiver, self_ty).is_some();
+            let mut projections =
+                flux_solve::traits::caller_owner_projections(&sigs, function.owner);
+            projections.extend_from_slice(&own.projections);
+            projections.extend(flux_solve::traits::caller_supertrait_projections(
+                &sigs, &bounds,
+            ));
+            let normalize = |ty| {
+                flux_solve::traits::normalize_with_memberships(
+                    items,
+                    &sigs,
+                    &projections,
+                    &bounds,
+                    ty,
+                )
+            };
+            let receiver = normalize(receiver);
+            let valid = flux_solve::receiver_shape(items, receiver, normalize(self_ty)).is_some();
             if !receiver.has_error() && !valid {
                 let mut diagnostic = Diagnostic::new(
                     function.params[0].range,
@@ -1013,13 +1030,20 @@ pub(super) fn extend_signatures(
             &sigs,
             sigs.struct_predicates.get(id).map_or(&[][..], |p| p),
         );
-        for (field, &ty) in data.fields.iter().zip(sigs.structs[id]) {
+        for (index, (field, &ty)) in data.fields.iter().zip(sigs.structs[id]).enumerate() {
             if ty.has_error() {
                 continue;
             }
             let ty = flux_solve::traits::normalize(items, &sigs, &[], ty);
-            let message = if !supported_union_field(items, &sigs, ty, &mut FxHashMap::default(), 0)
-            {
+            let message = if !supported_union_member(
+                items,
+                &sigs,
+                id,
+                index,
+                ty,
+                &mut FxHashMap::default(),
+                0,
+            ) {
                 Some("this union field type is not supported yet")
             } else if !matches!(ty.kind(), TyKind::Adt(adt, _) if is_lang_struct(items, adt.strukt, "manually_drop"))
                 && (!flux_solve::traits::is_copy(items, &sigs, &env, ty)
@@ -1095,17 +1119,9 @@ pub(super) fn extend_signatures(
         let sig = &sigs.fns[id];
         let params = function.params.iter().zip(&sig.params);
         if function.abi.is_c() {
-            for (param, &ty) in params.clone() {
-                if contains_ref(ty) {
-                    error(
-                        function.loc.file,
-                        param.range,
-                        "passing references to C is not supported yet",
-                    );
-                }
-            }
-            // Aggregate ABI layouts are checked after substitution by codegen,
-            // covering generic definitions and C function pointers alike.
+            // Check concrete ABI layouts after substitution in codegen. This
+            // covers thin references and nullable wrappers through the same
+            // route as generic definitions and C function pointers.
             let types = params
                 .map(|(p, &ty)| (ty, p.range))
                 .chain([(sig.ret, function.ret_range)]);

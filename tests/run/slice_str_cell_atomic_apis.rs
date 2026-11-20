@@ -58,6 +58,11 @@ fn main() {
     let view = Cell::from_mut(&mut value);
     view.set(11);
     println!("{} {}", value, std::mem::size_of::<MaybeUninit<u64>>());
+    let mut values = [13, 17, 19];
+    let cells = Cell::from_mut(&mut values[..]).as_slice_of_cells();
+    assert_eq!(cells.len(), 3);
+    cells[1].set(cells[0].get() + cells[2].get());
+    assert_eq!(values, [13, 32, 19]);
 
     let counter = AtomicUsize::default();
     counter.fetch_add(3, Ordering::Relaxed);

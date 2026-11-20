@@ -72,6 +72,23 @@ fn replacing_noncopy_cell_payloads_drops_each_value_once() {
 }
 
 #[test]
+fn cell_replace_initializes_once_and_returns_the_previous_value() {
+    static INITIALIZATIONS: AtomicUsize = AtomicUsize::new(0);
+    static KEY: LocalKey<cell::Cell<u32>> = LocalKey::__new(|| {
+        INITIALIZATIONS.fetch_add(1, Ordering::Relaxed);
+        cell::Cell::new(7)
+    });
+    std::thread::spawn(|| {
+        assert_eq!(KEY.replace(19), 7);
+        assert_eq!(KEY.replace(23), 19);
+        assert_eq!(KEY.get(), 23);
+    })
+    .join()
+    .unwrap();
+    assert_eq!(INITIALIZATIONS.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn refcell_callbacks_enforce_borrows_and_release_them_after_unwind() {
     static KEY: LocalKey<cell::RefCell<Vec<u32>>> = LocalKey::__new(|| cell::RefCell::new(vec![7]));
     std::thread::spawn(|| {

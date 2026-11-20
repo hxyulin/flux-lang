@@ -9,6 +9,9 @@ const fn empty<T>() -> Vec<T> { Vec::new() }
 const WORDS: Vec<u32> = empty();
 const ALIGNED: Vec<Aligned> = empty();
 const ZERO: Vec<Zst> = empty();
+const WORD_VIEW: &Vec<u32> = &Vec::new();
+const WORD_COUNT: usize = WORD_VIEW.len();
+const WORDS_EMPTY: bool = WORD_VIEW.is_empty();
 const RAW: *const u32 = 64usize as *const u32;
 const SIGNED: *mut u8 = -1i8 as *mut u8;
 const WIDE_INT: *const u8 = u128::MAX as *const u8;
@@ -26,6 +29,8 @@ impl<T> Arena<T> {
 const ARENA: Arena<String> = Arena::new();
 
 fn main() {
+    assert_eq!(WORD_COUNT, 0);
+    assert!(WORDS_EMPTY);
     let mut words = WORDS;
     assert_eq!(words.len(), 0);
     assert_eq!(words.capacity(), 0);

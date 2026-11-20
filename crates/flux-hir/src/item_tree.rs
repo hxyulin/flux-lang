@@ -48,6 +48,23 @@ pub enum Derive {
     Hash,
 }
 
+impl Derive {
+    fn named(name: &str) -> Option<Self> {
+        Some(match name {
+            "Clone" => Self::Clone,
+            "Copy" => Self::Copy,
+            "PartialEq" => Self::PartialEq,
+            "Eq" => Self::Eq,
+            "PartialOrd" => Self::PartialOrd,
+            "Ord" => Self::Ord,
+            "Default" => Self::Default,
+            "Debug" => Self::Debug,
+            "Hash" => Self::Hash,
+            _ => return None,
+        })
+    }
+}
+
 pub type FunctionId = Idx<Function>;
 pub type StructId = Idx<Struct>;
 pub type ImplId = Idx<Impl>;
@@ -404,6 +421,8 @@ pub struct Const {
     pub is_static: Option<bool>,
     /// The imported symbol of a foreign static, which has no initializer.
     pub extern_symbol: Option<Symbol>,
+    /// The native name of a defined static marked `no_mangle`.
+    pub export_symbol: Option<Symbol>,
     /// `#[rustc_specialization]` in `core`: an associated constant
     /// standing in for what rustc's `core` learns by specialization
     /// (whether an iterator is `TrustedLen`, ...), which as there does
@@ -1111,6 +1130,8 @@ pub enum UseKind {
 pub struct Path {
     /// Edition of the written path's leading token; generated paths use None.
     pub edition: Option<flux_syntax::Edition>,
+    /// Bare trait-object syntax uses the edition of a macro path substitution.
+    pub bare_trait_object: Option<bool>,
     pub anchor: PathAnchor,
     /// `<T as Tr>` or `<T>` before the segments: a qualified path.
     pub qself: Option<Box<QSelf>>,
@@ -1231,6 +1252,7 @@ impl Path {
     pub fn single(name: Symbol) -> Path {
         Path {
             edition: None,
+            bare_trait_object: None,
             anchor: PathAnchor::Plain,
             qself: None,
             segments: Box::new([name]),
@@ -2317,12 +2339,13 @@ fn lower_path_with(
                 .map_or(TextRange::default(), |n| n.syntax().text_range())
         })
         .collect();
+    let syntax = path.syntax();
+    let leading = syntax.tokens().find(|t| !t.kind().is_trivia());
     Some(Path {
-        edition: path
-            .syntax()
-            .tokens()
-            .find(|t| !t.kind().is_trivia())
-            .map(|t| t.edition()),
+        edition: leading.map(|t| t.edition()),
+        bare_trait_object: leading
+            .and_then(|t| syntax.tree().token_origin(t.index()))
+            .and_then(|origin| origin.path_allows_bare_trait()),
         anchor,
         qself,
         segments: names.into(),
@@ -2632,6 +2655,7 @@ fn core_path(module: &str, name: &str, _in_core: bool) -> Path {
 
     Path {
         edition: None,
+        bare_trait_object: None,
         anchor,
         qself: None,
         segments,
@@ -2755,6 +2779,7 @@ fn derive_attr(
                     .collect::<Vec<_>>();
                 let path = Path {
                     edition: None,
+                    bare_trait_object: None,
                     anchor: if first.kind() == SyntaxKind::COLON {
                         PathAnchor::Global
                     } else {
@@ -2784,23 +2809,12 @@ fn derive_attr(
                 }
             }
         };
-        let derive = match name {
-            "Clone" => Derive::Clone,
-            "Copy" => Derive::Copy,
-            "PartialEq" => Derive::PartialEq,
-            "Eq" => Derive::Eq,
-            "PartialOrd" => Derive::PartialOrd,
-            "Ord" => Derive::Ord,
-            "Default" => Derive::Default,
-            "Debug" => Derive::Debug,
-            "Hash" => Derive::Hash,
-            _ => {
-                error(
-                    range,
-                    format!("cannot find derive macro `{name}` in this scope"),
-                );
-                continue;
-            }
+        let Some(derive) = Derive::named(name) else {
+            error(
+                range,
+                format!("cannot find derive macro `{name}` in this scope"),
+            );
+            continue;
         };
         out.push((derive, range));
     }
@@ -2982,16 +2996,23 @@ fn lower_bounds(
 
 /// `dyn Tr + 'a`, or `Tr + 'a` before edition 2021.
 fn lower_dyn(d: ast::DynTraitType<'_>, diagnostics: &mut Vec<Diagnostic>) -> TypeRef {
-    let range = d.syntax().text_range();
+    let syntax = d.syntax();
+    let range = syntax.text_range();
     if d.dyn_token().is_none()
-        && d.syntax()
+        && syntax
             .tokens()
             .find(|t| !t.kind().is_trivia())
             .is_some_and(|t| {
-                !matches!(
-                    t.edition(),
-                    flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
-                )
+                !syntax
+                    .tree()
+                    .token_origin(t.index())
+                    .and_then(|origin| origin.path_allows_bare_trait())
+                    .unwrap_or_else(|| {
+                        matches!(
+                            t.edition(),
+                            flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+                        )
+                    })
             })
     {
         diagnostics.push(Diagnostic::new(range, "expected a type, found a trait"));

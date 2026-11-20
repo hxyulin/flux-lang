@@ -74,6 +74,21 @@ fn implicit_and_precise_captures_match_rustc() {
             [true, true, true],
         ),
         (
+            "nested_impl_method_static_promise",
+            include_str!("../../../tests/run/borrowed_opaque_method.rs"),
+            [true, true, true],
+        ),
+        (
+            "nested_impl_method_broken_static_promise",
+            "trait T{fn value(&self)->&(impl Copy+'static);}struct S<'a>(&'a u32);impl T for S<'_>{fn value(&self)->&(impl Copy+'static){&self.0}}fn main(){}",
+            [false, false, false],
+        ),
+        (
+            "nested_impl_method_weakened_static_promise",
+            "trait T{fn value(&self)->&(impl Copy+'static);}struct S<'a>(&'a u32);impl T for S<'_>{fn value(&self)->&(impl Copy+'_){&self.0}}fn main(){}",
+            [false, false, false],
+        ),
+        (
             "generic_captured",
             "fn f<T>(x:T)->impl Sized{x}fn main(){let r;{let x=1;r=f(&x);}drop(r);}",
             [false, false, false],

@@ -144,6 +144,26 @@ fn blanket_adapter_intersections_match_rustc() {
             false,
         ),
         (
+            "concrete_projection_equality_disjoint",
+            "trait Family{type Out;}struct Record;impl Family for u8{type Out=u8;}trait Abi{}impl Abi for u8{}impl<T:Family<Out=Record>>Abi for T{}",
+            true,
+        ),
+        (
+            "concrete_projection_equality_overlaps",
+            "trait Family{type Out;}struct Record;impl Family for u8{type Out=Record;}trait Abi{}impl Abi for u8{}impl<T:Family<Out=Record>>Abi for T{}",
+            false,
+        ),
+        (
+            "fixed_projection_output_from_trait_input",
+            "trait Family{type Out;}impl Family for u8{type Out=u8;}trait Abi<O>{}impl Abi<u32> for u8{}impl<T:Family<Out=O>,O>Abi<O> for T{}",
+            true,
+        ),
+        (
+            "unfixed_projection_output_overlaps",
+            "trait Family{type Out;}impl Family for u8{type Out=u8;}trait Abi<O>{}impl<O>Abi<O> for u8{}impl<T:Family<Out=O>,O>Abi<O> for T{}",
+            false,
+        ),
+        (
             "closed_projection_headers_disjoint",
             "trait Family{type Out;}impl Family for u8{type Out=u8;}impl Family for u16{type Out=u16;}struct Target;impl From<<u8 as Family>::Out>for Target{fn from(_:u8)->Self{Target}}impl From<<u16 as Family>::Out>for Target{fn from(_:u16)->Self{Target}}",
             true,
@@ -378,6 +398,16 @@ fn upstream_and_downstream_ownership_stays_open() {
             "foreign_upstream_can_implement",
             "trait Conv<T>{}impl<T>Conv<T>for T{}impl<T:upstream::Bound>Conv<T>for upstream::External{}",
             false,
+        ),
+        (
+            "foreign_projection_equality_keeps_overlap",
+            "struct Local;trait Abi{}impl Abi for upstream::Generic<u8>{}impl<T:upstream::Family<Out=Local>>Abi for T{}",
+            false,
+        ),
+        (
+            "foreign_projection_local_impl_excludes_overlap",
+            "struct Local;impl upstream::Family for Local{type Out=u8;}trait Abi{}impl Abi for Local{}impl<T:upstream::Family<Out=Local>>Abi for T{}",
+            true,
         ),
         (
             "foreign_trait_local_self",

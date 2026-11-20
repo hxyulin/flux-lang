@@ -147,3 +147,84 @@ fn deprecation_attributes_match_rustc() {
     }
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn restricted_reexports_match_rustc() {
+    let root = std::env::temp_dir().join(format!("flux-reexport-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("probe.rs");
+    for (source, accepted) in [
+        ("mod hidden {} pub(crate) use hidden as visible;", true),
+        (
+            "mod m { pub struct F(u16); } struct F(u8); fn f() { use m::F; let _: Option<F> = None; F(1); }",
+            true,
+        ),
+        (
+            "mod m { pub struct F(u16); } fn f() { use m::*; let _: Option<F> = None; F(1); }",
+            false,
+        ),
+        (
+            "mod m { pub struct F(pub(crate) u16); } fn f() { use m::F; F(1); }",
+            true,
+        ),
+        ("fn hidden() {} pub(crate) use hidden as visible;", true),
+        ("mod m { use core::ptr::addr_of; }", true),
+        ("pub use core::ptr::addr_of as address;", true),
+        (
+            "use core::ptr::addr_of as private; pub use private as address;",
+            false,
+        ),
+        (
+            "mod m { pub fn f() {} pub(crate) use f as private; } pub use m::private as visible;",
+            false,
+        ),
+        (
+            "mod m { pub struct F {} pub(crate) fn F() {} } pub use m::F;",
+            true,
+        ),
+        (
+            "mod m { pub(crate) struct F {} pub(crate) fn F() {} } pub use m::F;",
+            false,
+        ),
+        (
+            "mod m { pub(crate) fn f() {} } pub use m::*; pub use f as visible;",
+            false,
+        ),
+        (
+            "mod parent { mod hidden {} mod child { pub(super) use super::hidden as visible; } }",
+            true,
+        ),
+        ("mod hidden {} pub use hidden as visible;", false),
+        (
+            "mod parent { mod hidden {} pub(super) use hidden as visible; }",
+            false,
+        ),
+        (
+            "mod parent { mod hidden {} mod child { pub(crate) use super::hidden as visible; } }",
+            false,
+        ),
+    ] {
+        std::fs::write(&path, source).unwrap();
+        let oracle = Command::new("rustc")
+            .args(["--edition=2024", "--crate-type=lib", "--emit=metadata"])
+            .arg(&path)
+            .arg("-o")
+            .arg(root.join("probe.rmeta"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            oracle.status.success(),
+            accepted,
+            "{source}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let (_, _, hir) = flux_hir::lower_text(&path, source);
+        assert_eq!(
+            hir.diagnostics.is_empty(),
+            accepted,
+            "{source}: {:?}",
+            hir.diagnostics
+        );
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

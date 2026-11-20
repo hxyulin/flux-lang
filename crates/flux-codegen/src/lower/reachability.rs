@@ -127,7 +127,7 @@ impl<'a> Reach<'a> {
         for ((id, _), body) in &mir.closures {
             closures.entry(id.owner).or_default().push(body);
         }
-        Self {
+        let mut reach = Self {
             hir,
             items: &hir.items,
             sigs,
@@ -159,7 +159,13 @@ impl<'a> Reach<'a> {
             erased_templates: Default::default(),
             symbolic_calls: FxHashMap::default(),
             symbolic_constants: FxHashMap::default(),
+        };
+        for (id, konst) in hir.items.consts.iter() {
+            if konst.export_symbol.is_some() && reach.own(konst.loc.module) {
+                reach.konst(id);
+            }
         }
+        reach
     }
 
     fn own(&self, module: ModuleId) -> bool {

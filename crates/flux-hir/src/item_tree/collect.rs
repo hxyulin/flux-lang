@@ -70,6 +70,7 @@ impl ItemTree {
             macro_paths: Vec::new(),
             collected_imports: rustc_hash::FxHashSet::default(),
             pending_items: Vec::new(),
+            replaced_assoc_items: rustc_hash::FxHashSet::default(),
             pending_body_macros: Vec::new(),
             legacy_calls: Vec::new(),
             body_expansion_consts: Vec::new(),
@@ -118,7 +119,7 @@ struct MacroPathCheck {
 /// textual scope and associated owner while waiting for the item namespace.
 enum PendingItemKind {
     Macro(Option<AssocOwner>),
-    Attribute,
+    Procedural(Option<AssocOwner>),
 }
 
 /// Where a macro call among associated items puts the items it expands
@@ -169,6 +170,7 @@ struct Collector<'a> {
     legacy_calls: Vec<LegacyCall>,
     body_expansion_consts: Vec<BodyExpansionConsts>,
     pending_items: Vec<PendingItem>,
+    replaced_assoc_items: rustc_hash::FxHashSet<(FileId, NodeId)>,
     pending_body_macros: Vec<PendingBodyMacro>,
     collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
     macro_paths: Vec<MacroPathCheck>,
@@ -366,6 +368,8 @@ impl Collector<'_> {
             is_core,
             crate_root,
             self.db.crate_output_overridden(file),
+            self.db.file(self.real_file(file)),
+            &self.items.crates[self.items.modules[module].krate.0 as usize],
             &mut self.items.diagnostics,
         );
         let items: Vec<NodeId> = source.items().map(|i| i.syntax().id()).collect();
@@ -378,53 +382,34 @@ impl Collector<'_> {
         let _file = TypesFile::enter(ctx.file);
         self.precollect_imports(ctx, items.iter().copied());
         for &node in items {
-            let start = self.items.diagnostics.len();
             let shared = self.db.shared(ctx.file);
-            if item_enabled(shared.parse.tree().node(node), &mut self.items.diagnostics) {
-                let syntax = shared.parse.tree().node(node);
-                let unresolved_attribute = self.db.has_proc_macros()
-                    && crate::cfg::Attrs::new(syntax.children().filter_map(ast::Attr::cast))
-                        .iter()
-                        .any(|attr| {
-                            if self.is_derive_attr(ctx, attr) {
-                                return false;
-                            }
-                            let Some(path) = attr
-                                .meta()
-                                .and_then(|meta| meta.path())
-                                .filter(|path| path.qualifier().is_some())
-                            else {
-                                return false;
-                            };
-                            let mut errors = Vec::new();
-                            check_attr(attr, &mut errors);
-                            if errors.is_empty() {
-                                return false;
-                            }
-                            let mut tokens = Vec::new();
-                            macros::tt::tokens_of(path.syntax(), &mut tokens);
-                            self.proc_path(ctx, &tokens).is_none()
-                        });
-                if unresolved_attribute {
-                    self.pending_items.push(PendingItem {
-                        kind: PendingItemKind::Attribute,
-                        ctx,
-                        node,
-                        scope: self.macro_scope,
-                        depth: self.expansion_depth,
-                        diagnostic: None,
-                    });
-                    self.tag(start, ctx.file);
-                    continue;
-                }
-                if self.collect_proc_item(ctx, node) {
-                    self.tag(start, ctx.file);
-                    continue;
-                }
-                self.collect_item_expanding_types(ctx, node);
-                self.collect_anon_consts(ctx, node);
+            self.collect_scoped_item(ctx, shared.parse.tree().node(node));
+        }
+    }
+
+    fn collect_scoped_item(&mut self, ctx: Ctx, syntax: SyntaxNode<'_>) {
+        let start = self.items.diagnostics.len();
+        if item_enabled(syntax, &mut self.items.diagnostics) {
+            if self.proc_item_needs_scope(ctx, syntax) {
+                self.pending_items.push(PendingItem {
+                    kind: PendingItemKind::Procedural(None),
+                    ctx,
+                    node: syntax.id(),
+                    scope: self.macro_scope,
+                    depth: self.expansion_depth,
+                    diagnostic: None,
+                });
+            } else {
+                self.collect_proc_or_regular_item(ctx, syntax.id());
             }
-            self.tag(start, ctx.file);
+        }
+        self.tag(start, ctx.file);
+    }
+
+    fn collect_proc_or_regular_item(&mut self, ctx: Ctx, node: NodeId) {
+        if !self.collect_proc_item(ctx, node, None) {
+            self.collect_item_expanding_types(ctx, node);
+            self.collect_anon_consts(ctx, node);
         }
     }
 
@@ -519,6 +504,7 @@ impl Collector<'_> {
                         },
                         call,
                         diagnostics,
+                        false,
                     )
                 },
             );
@@ -535,7 +521,11 @@ impl Collector<'_> {
         ctx: Ctx,
         call: SyntaxNode<'_>,
         diagnostics: &mut Vec<Diagnostic>,
+        assoc_root: bool,
     ) -> Option<(flux_syntax::Parse, Option<FileId>)> {
+        if self.assoc_proc_replaces_type(ctx, call, assoc_root) {
+            return None;
+        }
         if let Some(cached) = self.items.body_expansions.get(&(ctx.file, call.id())) {
             return Some((
                 self.items.files[&cached.file].parse.clone(),
@@ -659,17 +649,16 @@ impl Collector<'_> {
     /// scope from here on.
     fn define_macro(&mut self, ctx: Ctx, node: SyntaxNode<'_>, export: bool, builtin: bool) {
         let krate = self.items.modules[ctx.module].krate;
-        let file = node
-            .tokens()
-            .find(|token| !token.kind().is_trivia())
-            .and_then(|token| node.tree().token_origin(token.index()))
-            .and_then(|origin| {
-                self.items
-                    .macros
-                    .iter()
-                    .find_map(|(_, def)| (def.group == origin.group).then_some(def.file))
-            })
-            .unwrap_or_else(|| self.real_file(ctx.file));
+        let file =
+            node.tokens()
+                .find(|token| !token.kind().is_trivia())
+                .and_then(|token| node.tree().token_origin(token.index()))
+                .and_then(|origin| {
+                    self.items.macros.iter().find_map(|(_, def)| {
+                        (def.group == origin.source_group()).then_some(def.file)
+                    })
+                })
+                .unwrap_or_else(|| self.real_file(ctx.file));
         let Some(def) = MacroDef::from_rules(
             node,
             krate,
@@ -702,16 +691,19 @@ impl Collector<'_> {
     fn collect_macro_call(&mut self, ctx: Ctx, mc: ast::MacroCall<'_>) {
         let is_core = self.items.is_core(ctx.module);
         let (mut export, mut builtin) = (false, false);
+        let node = mc.syntax();
+        let is_definition = macros::is_macro_rules(node);
         let attrs = crate::cfg::Attrs::new(mc.attrs());
         for attr in attrs.iter() {
             match attr_name(attr) {
                 Some("macro_export") => export = true,
                 Some("rustc_builtin_macro") if is_core => builtin = true,
+                // Rustc accepts this legacy spelling with an unused-attribute warning.
+                Some("macro_use") if is_definition && super::attributes::bare_attr(attr) => {}
                 _ => check_attr(attr, &mut self.items.diagnostics),
             }
         }
-        let node = mc.syntax();
-        if macros::is_macro_rules(node) {
+        if is_definition {
             self.define_macro(ctx, node, export, builtin);
             return;
         }
@@ -834,62 +826,61 @@ impl Collector<'_> {
                 let shared = self.db.shared(call.ctx.file);
                 let node = shared.parse.tree().node(call.node);
                 self.macro_scope = call.scope;
-                let resolved = match call.kind {
-                    PendingItemKind::Attribute => crate::cfg::Attrs::new(node.children().filter_map(ast::Attr::cast)).iter().find_map(|attr| {
-                        let path = attr.meta()?.path()?;
-                        let mut tokens = Vec::new();
-                        macros::tt::tokens_of(path.syntax(), &mut tokens);
-                        self.proc_path(call.ctx, &tokens).filter(|&id| matches!(&self.items.macros[id].kind, macros::MacroKind::ProcMacro(host) if host.kind == crate::ProcMacroKind::Attribute))
-                    }),
-                    PendingItemKind::Macro(_) => {
-                        let mc = ast::MacroCall::cast(node).expect("pending macro call");
-                        mc.path().and_then(|path| match macros::resolve::<()>(self.items, path, &[], call.scope, call.ctx.module).ok()? {
-                            macros::Resolved::Def(id) => Some(id),
-                            macros::Resolved::Local(_) => None,
-                        })
-                    }
-                };
-                match resolved {
-                    Some(def) => {
-                        progress = true;
-                        self.macro_scope = call.scope;
-                        self.expansion_depth = call.depth;
-                        let _file = TypesFile::enter(call.ctx.file);
-                        let start = self.items.diagnostics.len();
-                        match call.kind {
-                            PendingItemKind::Macro(owner) => {
-                                let mc = ast::MacroCall::cast(node).expect("pending macro call");
-                                if let Some(owner) = owner {
-                                    self.collect_assoc_macro(call.ctx, owner, mc);
-                                } else {
-                                    self.collect_resolved_macro_call(call.ctx, mc, def);
-                                }
-                            }
-                            PendingItemKind::Attribute => {
-                                self.collect_proc_item(call.ctx, call.node);
-                            }
+                self.expansion_depth = call.depth;
+                let _file = TypesFile::enter(call.ctx.file);
+                let start = self.items.diagnostics.len();
+                match call.kind {
+                    PendingItemKind::Procedural(owner) => {
+                        if self.proc_item_needs_scope(call.ctx, node) {
+                            unresolved.push(call);
+                            continue;
                         }
-                        self.tag(start, call.ctx.file);
+                        self.collect_pending_procedural_item(call.ctx, node, owner);
                     }
-                    None => unresolved.push(call),
+                    PendingItemKind::Macro(owner) => {
+                        let mc = ast::MacroCall::cast(node).expect("pending macro call");
+                        let path = mc.path().expect("pending macro path");
+                        let Ok(macros::Resolved::Def(def)) = macros::resolve::<()>(
+                            self.items,
+                            path,
+                            &[],
+                            call.scope,
+                            call.ctx.module,
+                        ) else {
+                            unresolved.push(call);
+                            continue;
+                        };
+                        if let Some(owner) = owner {
+                            self.collect_assoc_macro(call.ctx, owner, mc);
+                        } else {
+                            self.collect_resolved_macro_call(call.ctx, mc, def);
+                        }
+                    }
                 }
+                self.tag(start, call.ctx.file);
+                progress = true;
             }
-            if !progress {
+            if progress {
+                self.pending_items.extend(unresolved);
+            } else {
                 for call in unresolved {
                     let start = self.items.diagnostics.len();
                     if let Some(diagnostic) = call.diagnostic {
                         self.items.diagnostics.push(diagnostic);
                     } else {
+                        let _file = TypesFile::enter(call.ctx.file);
                         self.macro_scope = call.scope;
                         self.expansion_depth = call.depth;
-                        self.collect_item_expanding_types(call.ctx, call.node);
-                        self.collect_anon_consts(call.ctx, call.node);
+                        let PendingItemKind::Procedural(owner) = call.kind else {
+                            unreachable!("unresolved item macros have a diagnostic");
+                        };
+                        let shared = self.db.shared(call.ctx.file);
+                        let node = shared.parse.tree().node(call.node);
+                        self.collect_pending_procedural_item(call.ctx, node, owner);
                     }
                     self.tag(start, call.ctx.file);
                 }
-                break;
             }
-            self.pending_items.extend(unresolved);
         }
         self.items.def_map = base_map;
         self.macro_scope = saved_scope;
@@ -1064,9 +1055,40 @@ impl Collector<'_> {
         trait_vis
     }
 
+    fn attribute_site(&self, ctx: Ctx) -> macros::CallSite<'_> {
+        macros::CallSite {
+            items: self.items,
+            krate: self.items.modules[ctx.module].krate,
+            module: ctx.module,
+            scope: self.macro_scope,
+            real_file: self.real_file(ctx.file),
+            read_text: crate::source::SourceDb::read_include_str,
+        }
+    }
+
+    fn check_item_attr(&mut self, ctx: Ctx, attr: ast::Attr<'_>) {
+        if attr_name(attr) == Some("deprecated") {
+            let mut diagnostics = Vec::new();
+            let site = self.attribute_site(ctx);
+            super::attributes::deprecated_attr(attr, Some(&site), &mut diagnostics);
+            self.items.diagnostics.extend(diagnostics);
+        } else {
+            check_attr(attr, &mut self.items.diagnostics);
+        }
+    }
+
     /// `type Pair<T> = (T, T);`, outside traits and `impl` blocks.
     fn collect_type_alias(&mut self, ctx: Ctx, t: ast::TypeAlias<'_>) {
-        check_attrs(t.attrs(), &mut self.items.diagnostics);
+        let mut diagnostics = Vec::new();
+        let site = self.attribute_site(ctx);
+        super::attributes::check_attrs_with(t.attrs(), &mut diagnostics, |attr, diagnostics| {
+            if attr_name(attr) == Some("deprecated") {
+                super::attributes::deprecated_attr(attr, Some(&site), diagnostics);
+            } else {
+                check_attr(attr, diagnostics);
+            }
+        });
+        self.items.diagnostics.extend(diagnostics);
         let vis = self.visibility(ctx, t.visibility());
         let Some(name) = t.name() else {
             return;
@@ -1262,7 +1284,7 @@ impl Collector<'_> {
             }
             match lang_attr(attr) {
                 Some(name) if is_core => lang = Some(name),
-                _ => check_attr(attr, &mut self.items.diagnostics),
+                _ => self.check_item_attr(ctx, attr),
             }
         }
         let vis = self.visibility(ctx, t.visibility());
@@ -1324,80 +1346,69 @@ impl Collector<'_> {
         };
         check_attrs(list.attrs(), &mut self.items.diagnostics);
         let nodes: Vec<_> = list.items().map(|item| item.syntax().id()).collect();
-        self.collect_trait_items(ctx, id, &nodes);
+        self.collect_assoc_items(ctx, AssocOwner::Trait(id), &nodes);
     }
 
-    fn collect_trait_items(&mut self, ctx: Ctx, id: TraitId, nodes: &[NodeId]) {
-        let _file = TypesFile::enter(ctx.file);
-        let shared = self.db.shared(ctx.file);
-        for &node in nodes {
-            let Some(item) = ast::Item::cast(shared.parse.tree().node(node)) else {
-                continue;
-            };
-            if !item_enabled(item.syntax(), &mut self.items.diagnostics) {
-                continue;
-            }
-            let what = match item {
-                ast::Item::Fn(f) => {
-                    if let Some(function) = self.collect_fn(ctx, f, None, Some(Owner::Trait(id))) {
-                        let data = &self.items.functions[function];
-                        let duplicate =
-                            self.items.traits[id].value(self.items, data.name).is_some();
-                        if duplicate {
-                            // rustc's span has a bodiless item's `;`.
-                            let range = if data.has_body {
-                                data.def_range
-                            } else {
-                                data.item_range
-                            };
-                            let name = data.name;
-                            self.items.diagnostics.push(Diagnostic::new(
-                                range,
-                                format!("the name `{name}` is defined multiple times"),
-                            ));
+    fn collect_trait_item(&mut self, ctx: Ctx, id: TraitId, item: ast::Item<'_>) {
+        let what = match item {
+            ast::Item::Fn(f) => {
+                if let Some(function) = self.collect_fn(ctx, f, None, Some(Owner::Trait(id))) {
+                    let data = &self.items.functions[function];
+                    let duplicate = self.items.traits[id].value(self.items, data.name).is_some();
+                    if duplicate {
+                        // rustc's span has a bodiless item's `;`.
+                        let range = if data.has_body {
+                            data.def_range
                         } else {
-                            self.items.traits[id].functions.push(function);
-                            let name = self.items.functions[function].name;
-                            self.items.trait_fns.entry(name).or_default().push(id);
-                        }
-                    }
-                    continue;
-                }
-                ast::Item::Const(c) => {
-                    let Some(konst) = self.collect_const(ctx, c, Some(Owner::Trait(id))) else {
-                        continue;
-                    };
-                    let data = &self.items.consts[konst];
-                    let Some(name) = data.name else {
-                        continue;
-                    };
-                    if self.items.traits[id].value(self.items, name).is_some() {
+                            data.item_range
+                        };
+                        let name = data.name;
                         self.items.diagnostics.push(Diagnostic::new(
-                            data.item_range,
+                            range,
                             format!("the name `{name}` is defined multiple times"),
                         ));
                     } else {
-                        self.items.traits[id].consts.push(konst);
+                        self.items.traits[id].functions.push(function);
+                        let name = self.items.functions[function].name;
                         self.items.trait_fns.entry(name).or_default().push(id);
                     }
-                    continue;
                 }
-                ast::Item::TypeAlias(t) => {
-                    self.collect_trait_type(id, t);
-                    continue;
+                return;
+            }
+            ast::Item::Const(c) => {
+                let Some(konst) = self.collect_const(ctx, c, Some(Owner::Trait(id))) else {
+                    return;
+                };
+                let data = &self.items.consts[konst];
+                let Some(name) = data.name else {
+                    return;
+                };
+                if self.items.traits[id].value(self.items, name).is_some() {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        data.item_range,
+                        format!("the name `{name}` is defined multiple times"),
+                    ));
+                } else {
+                    self.items.traits[id].consts.push(konst);
+                    self.items.trait_fns.entry(name).or_default().push(id);
                 }
-                ast::Item::MacroCall(call) => {
-                    self.collect_assoc_macro(ctx, AssocOwner::Trait(id), call);
-                    continue;
-                }
-                _ => "items like this in traits",
-            };
-            unsupported(
-                &mut self.items.diagnostics,
-                item.syntax().text_range(),
-                what,
-            );
-        }
+                return;
+            }
+            ast::Item::TypeAlias(t) => {
+                self.collect_trait_type(id, t);
+                return;
+            }
+            ast::Item::MacroCall(call) => {
+                self.collect_assoc_macro(ctx, AssocOwner::Trait(id), call);
+                return;
+            }
+            _ => "items like this in traits",
+        };
+        unsupported(
+            &mut self.items.diagnostics,
+            item.syntax().text_range(),
+            what,
+        );
     }
 
     fn collect_module(&mut self, ctx: Ctx, m: ast::Module<'_>) {
@@ -1467,6 +1478,13 @@ impl Collector<'_> {
                         invalid_path = true;
                     }
                 }
+            } else if attr_name(attr) == Some("debugger_visualizer") {
+                super::attributes::check_debugger_visualizer(
+                    attr,
+                    self.db.file(self.real_file(ctx.file)),
+                    &self.items.crates[self.items.modules[ctx.module].krate.0 as usize],
+                    &mut self.items.diagnostics,
+                );
             } else {
                 check_attr(attr, &mut self.items.diagnostics);
             }
@@ -1623,6 +1641,8 @@ impl Collector<'_> {
                 false,
                 false,
                 false,
+                self.db.file(self.real_file(ctx.file)),
+                &self.items.crates[krate.0 as usize],
                 &mut self.items.diagnostics,
             );
             let items: Vec<NodeId> = list.items().map(|i| i.syntax().id()).collect();
@@ -1649,6 +1669,7 @@ impl Collector<'_> {
         if let Some(tree) = u.use_tree() {
             let prefix = Path {
                 edition: None,
+                bare_trait_object: None,
                 anchor: PathAnchor::Plain,
                 qself: None,
                 segments: Box::default(),
@@ -1913,67 +1934,117 @@ impl Collector<'_> {
         };
         check_attrs(list.attrs(), &mut self.items.diagnostics);
         let nodes: Vec<_> = list.items().map(|item| item.syntax().id()).collect();
-        self.collect_impl_items(ctx, id, &nodes, is_trait_impl);
+        self.collect_assoc_items(ctx, AssocOwner::Impl(id, is_trait_impl), &nodes);
     }
 
-    fn collect_impl_items(&mut self, ctx: Ctx, id: ImplId, nodes: &[NodeId], is_trait_impl: bool) {
+    fn collect_assoc_items(&mut self, ctx: Ctx, owner: AssocOwner, nodes: &[NodeId]) {
         let _file = TypesFile::enter(ctx.file);
         let shared = self.db.shared(ctx.file);
         for &node in nodes {
-            let Some(item) = ast::Item::cast(shared.parse.tree().node(node)) else {
-                continue;
+            let syntax = shared.parse.tree().node(node);
+            let test = match owner {
+                AssocOwner::Trait(_) => None,
+                AssocOwner::Impl(..) => Some(false),
             };
-            if !item_enabled_with_test_context(
-                item.syntax(),
-                &mut self.items.diagnostics,
-                Some(false),
-            ) {
+            if !item_enabled_with_test_context(syntax, &mut self.items.diagnostics, test) {
                 continue;
             }
-            let what = match item {
-                ast::Item::Fn(f) => {
-                    if let Some(function) = self.collect_fn(ctx, f, None, Some(Owner::Impl(id))) {
-                        let (name, range) = {
-                            let data = &self.items.functions[function];
-                            (data.name, data.item_range)
-                        };
-                        if !(is_trait_impl && self.duplicate_value(id, name, range)) {
-                            self.items.impls[id].functions.push(function);
-                        }
-                    }
-                    continue;
-                }
-                ast::Item::Const(c) => {
-                    if let Some(konst) = self.collect_const(ctx, c, Some(Owner::Impl(id))) {
-                        let (name, range) = {
-                            let data = &self.items.consts[konst];
-                            (data.name, data.item_range)
-                        };
-                        let duplicate = name.is_some_and(|name| {
-                            is_trait_impl && self.duplicate_value(id, name, range)
-                        });
-                        if !duplicate {
-                            self.items.impls[id].consts.push(konst);
-                        }
-                    }
-                    continue;
-                }
-                ast::Item::TypeAlias(t) => {
-                    self.collect_impl_type(id, t, is_trait_impl);
-                    continue;
-                }
-                ast::Item::MacroCall(call) => {
-                    self.collect_assoc_macro(ctx, AssocOwner::Impl(id, is_trait_impl), call);
-                    continue;
-                }
-                _ => "items like this in `impl` blocks",
-            };
-            unsupported(
-                &mut self.items.diagnostics,
-                item.syntax().text_range(),
-                what,
-            );
+            if self.proc_item_needs_scope(ctx, syntax) {
+                self.replaced_assoc_items.insert((ctx.file, node));
+                self.pending_items.push(PendingItem {
+                    kind: PendingItemKind::Procedural(Some(owner)),
+                    ctx,
+                    node,
+                    scope: self.macro_scope,
+                    depth: self.expansion_depth,
+                    diagnostic: None,
+                });
+            } else if self.collect_proc_item(ctx, node, Some(owner)) {
+                self.replaced_assoc_items.insert((ctx.file, node));
+            } else {
+                self.collect_assoc_item(ctx, owner, syntax);
+            }
         }
+    }
+
+    fn collect_pending_procedural_item(
+        &mut self,
+        ctx: Ctx,
+        syntax: SyntaxNode<'_>,
+        owner: Option<AssocOwner>,
+    ) {
+        let Some(owner) = owner else {
+            self.collect_proc_or_regular_item(ctx, syntax.id());
+            return;
+        };
+        if !self.collect_proc_item(ctx, syntax.id(), Some(owner)) {
+            self.replaced_assoc_items.remove(&(ctx.file, syntax.id()));
+            self.collect_assoc_item(ctx, owner, syntax);
+            self.collect_assoc_anon_consts(ctx, owner, &[syntax.id()]);
+        }
+    }
+
+    fn collect_assoc_item(&mut self, ctx: Ctx, owner: AssocOwner, syntax: SyntaxNode<'_>) {
+        let Some(item) = ast::Item::cast(syntax) else {
+            return;
+        };
+        match owner {
+            AssocOwner::Impl(id, is_trait_impl) => {
+                self.collect_impl_item(ctx, id, is_trait_impl, item)
+            }
+            AssocOwner::Trait(id) => self.collect_trait_item(ctx, id, item),
+        }
+    }
+
+    fn collect_impl_item(
+        &mut self,
+        ctx: Ctx,
+        id: ImplId,
+        is_trait_impl: bool,
+        item: ast::Item<'_>,
+    ) {
+        let what = match item {
+            ast::Item::Fn(f) => {
+                if let Some(function) = self.collect_fn(ctx, f, None, Some(Owner::Impl(id))) {
+                    let (name, range) = {
+                        let data = &self.items.functions[function];
+                        (data.name, data.item_range)
+                    };
+                    if !(is_trait_impl && self.duplicate_value(id, name, range)) {
+                        self.items.impls[id].functions.push(function);
+                    }
+                }
+                return;
+            }
+            ast::Item::Const(c) => {
+                if let Some(konst) = self.collect_const(ctx, c, Some(Owner::Impl(id))) {
+                    let (name, range) = {
+                        let data = &self.items.consts[konst];
+                        (data.name, data.item_range)
+                    };
+                    let duplicate = name
+                        .is_some_and(|name| is_trait_impl && self.duplicate_value(id, name, range));
+                    if !duplicate {
+                        self.items.impls[id].consts.push(konst);
+                    }
+                }
+                return;
+            }
+            ast::Item::TypeAlias(t) => {
+                self.collect_impl_type(id, t, is_trait_impl);
+                return;
+            }
+            ast::Item::MacroCall(call) => {
+                self.collect_assoc_macro(ctx, AssocOwner::Impl(id, is_trait_impl), call);
+                return;
+            }
+            _ => "items like this in `impl` blocks",
+        };
+        unsupported(
+            &mut self.items.diagnostics,
+            item.syntax().text_range(),
+            what,
+        );
     }
 
     /// Associated items from a macro keep the surrounding impl or trait
@@ -2064,6 +2135,10 @@ impl Collector<'_> {
             self.items.expansion_files.insert(file, real);
             file
         };
+        self.collect_assoc_expansion(ctx, owner, file);
+    }
+
+    fn collect_assoc_expansion(&mut self, ctx: Ctx, owner: AssocOwner, file: FileId) {
         let shared = self.db.shared(file);
         self.items.insert_file(file, Arc::clone(&shared));
         let nodes: Vec<_> = shared
@@ -2091,16 +2166,12 @@ impl Collector<'_> {
                         },
                         call,
                         diagnostics,
+                        true,
                     )
                 },
             );
             self.items.diagnostics.extend(diagnostics);
-            match owner {
-                AssocOwner::Impl(id, is_trait_impl) => {
-                    self.collect_impl_items(ctx, id, &nodes, is_trait_impl);
-                }
-                AssocOwner::Trait(id) => self.collect_trait_items(ctx, id, &nodes),
-            }
+            self.collect_assoc_items(ctx, owner, &nodes);
             self.collect_assoc_anon_consts(ctx, owner, &nodes);
         });
         self.tag(start, file);
@@ -2288,7 +2359,7 @@ impl Collector<'_> {
             } else if is_core && let Some(name) = lang_attr(attr) {
                 lang = Some(name);
             } else {
-                check_attr(attr, &mut self.items.diagnostics);
+                self.check_item_attr(ctx, attr);
             }
         }
         let vis = self.item_visibility(ctx, f.visibility(), owner);
@@ -2695,6 +2766,16 @@ impl Collector<'_> {
         self.collect_body_node(ctx, tree.node(node), function);
     }
 
+    fn block_has_items(block: SyntaxNode<'_>) -> bool {
+        block.children().any(|child| {
+            is_item_kind(child.kind())
+                || child.kind() == SyntaxKind::MACRO_EXPR
+                || child.children().any(|node| {
+                    node.kind() == SyntaxKind::MACRO_EXPR && !macros::is_macro_rules(node)
+                })
+        })
+    }
+
     /// Block `node`'s items, in a module of their own, then those of the
     /// blocks inside it. A `macro_rules!` statement defines a macro for
     /// the items and blocks after it.
@@ -2702,13 +2783,7 @@ impl Collector<'_> {
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         let block = tree.node(node);
-        let has_items = block.children().any(|c| {
-            is_item_kind(c.kind())
-                || c.kind() == SyntaxKind::MACRO_EXPR
-                || c.children()
-                    .any(|m| m.kind() == SyntaxKind::MACRO_EXPR && !macros::is_macro_rules(m))
-        });
-        let ctx = if has_items {
+        let ctx = if Self::block_has_items(block) {
             let parent = &self.items.modules[ctx.module];
             let outer = function.map_or(kw::Empty, |f| self.items.functions[f].name);
             let count = self.block_counts.entry(function).or_default();
@@ -2745,12 +2820,7 @@ impl Collector<'_> {
     fn collect_body_node(&mut self, ctx: Ctx, node: SyntaxNode<'_>, function: Option<FunctionId>) {
         if is_item_kind(node.kind()) {
             let _file = TypesFile::enter(ctx.file);
-            let start = self.items.diagnostics.len();
-            if item_enabled(node, &mut self.items.diagnostics) {
-                self.collect_item_expanding_types(ctx, node.id());
-                self.collect_anon_consts(ctx, node.id());
-            }
-            self.tag(start, ctx.file);
+            self.collect_scoped_item(ctx, node);
             return;
         }
         if !item_enabled(node, &mut Vec::new()) {
@@ -3167,7 +3237,9 @@ impl Collector<'_> {
         counts: &mut rustc_hash::FxHashMap<Symbol, u32>,
     ) {
         let kind = node.kind();
-        if !item_enabled(node, &mut Vec::new()) {
+        if self.replaced_assoc_items.contains(&(file, node.id()))
+            || !item_enabled(node, &mut Vec::new())
+        {
             return;
         }
         let outer = scope.clone();
@@ -3244,6 +3316,22 @@ impl Collector<'_> {
         }
         match kind {
             SyntaxKind::BLOCK_EXPR => {
+                // Ordinary body collection has already handled blocks in
+                // expressions. Signature types can also contain constant
+                // blocks, which need the same lexical item collection.
+                if !self.items.block_modules.contains_key(&(file, node.id()))
+                    && Self::block_has_items(node)
+                {
+                    let _file = TypesFile::enter(file);
+                    self.collect_block(
+                        Ctx {
+                            module: scope.module,
+                            file,
+                        },
+                        node.id(),
+                        scope.function,
+                    );
+                }
                 if let Some(&module) = self.items.block_modules.get(&(file, node.id())) {
                     scope.module = module;
                 }
@@ -3257,6 +3345,7 @@ impl Collector<'_> {
                 if let Some(array) = ast::ArrayExpr::cast(node)
                     && array.semicolon_token().is_some()
                     && let Some(expr) = array.exprs().nth(1)
+                    && !matches!(const_expr_root(expr), ast::Expr::UnderscoreExpr(_))
                 {
                     self.anon_const(file, expr, AnonUse::Repeat, scope, counts);
                 }
@@ -3388,6 +3477,7 @@ impl Collector<'_> {
             discriminant: None,
             is_static: None,
             extern_symbol: None,
+            export_symbol: None,
             specialization: false,
             anon: Some(AnonConst {
                 self_adt: scope.self_adt,
@@ -3475,6 +3565,7 @@ impl Collector<'_> {
             anon: None,
             is_static: None,
             extern_symbol: None,
+            export_symbol: None,
             specialization,
             macro_scope: self.macro_scope,
         });
@@ -3486,13 +3577,65 @@ impl Collector<'_> {
 
     /// `static X: T = v;` or `static mut X: T = v;`.
     fn collect_static(&mut self, ctx: Ctx, st: ast::Static<'_>, foreign: bool) {
-        check_attrs(st.attrs(), &mut self.items.diagnostics);
+        let edition = self.items.edition(ctx.module);
         let vis = self.visibility(ctx, st.visibility());
         let Some(name) = st.name() else {
             return;
         };
         let name_end = name.syntax().text_range().end();
-        let diagnostics = &mut self.items.diagnostics;
+        let mut pending = Vec::new();
+        let diagnostics = &mut pending;
+        let attrs = crate::cfg::Attrs::new(st.attrs());
+        diagnostics.extend(
+            attrs
+                .errors
+                .iter()
+                .map(|(range, message)| Diagnostic::new(*range, message.clone())),
+        );
+        let symbol = Symbol::intern(name.text());
+        let mut extern_symbol = foreign.then_some(symbol);
+        let mut export_symbol = None;
+        let mut saw_link_name = false;
+        for attr in attrs.iter() {
+            match attr_name(attr) {
+                Some("export_name") if !foreign => {
+                    let site = macros::CallSite {
+                        items: self.items,
+                        krate: self.items.modules[ctx.module].krate,
+                        module: ctx.module,
+                        scope: self.macro_scope,
+                        real_file: self.real_file(ctx.file),
+                        read_text: crate::source::SourceDb::read_include_str,
+                    };
+                    export_symbol = super::attributes::static_export_name(attr, &site, diagnostics)
+                        .or(export_symbol);
+                }
+                Some("no_mangle") if !foreign => {
+                    let meta = attr.meta().expect("named attribute");
+                    let range = attr.syntax().text_range();
+                    if edition == flux_syntax::Edition::E2024 && meta.unsafe_token().is_none() {
+                        diagnostics.push(Diagnostic::new(
+                            range,
+                            "unsafe attribute used without unsafe",
+                        ));
+                    }
+                    if meta.token_tree().is_some() || meta.eq_token().is_some() {
+                        diagnostics.push(Diagnostic::new(
+                            range,
+                            "malformed `no_mangle` attribute input",
+                        ));
+                    } else {
+                        export_symbol = Some(symbol);
+                    }
+                }
+                Some("link_name") if foreign && !saw_link_name => {
+                    saw_link_name = true;
+                    extern_symbol =
+                        super::attributes::link_name_attr(attr, diagnostics).or(extern_symbol);
+                }
+                _ => check_attr(attr, diagnostics),
+            }
+        }
         let ty = match st.ty() {
             Some(ty) => {
                 let mut ty = lower_type(Some(ty), diagnostics);
@@ -3515,15 +3658,7 @@ impl Collector<'_> {
         if !has_body && !foreign {
             diagnostics.push(Diagnostic::new(item_range, "free static item without body"));
         }
-        let mut extern_symbol = foreign.then(|| Symbol::intern(name.text()));
         if foreign {
-            for attr in crate::cfg::Attrs::new(st.attrs()).iter() {
-                if attr_name(attr) == Some("link_name") {
-                    extern_symbol =
-                        super::attributes::link_name_attr(attr, diagnostics).or(extern_symbol);
-                    break;
-                }
-            }
             if has_body {
                 diagnostics.push(Diagnostic::new(
                     item_range,
@@ -3538,8 +3673,9 @@ impl Collector<'_> {
                 unsupported(diagnostics, item_range, "safe foreign statics");
             }
         }
+        self.items.diagnostics.extend(pending);
         self.items.consts.alloc(Const {
-            name: Some(Symbol::intern(name.text())),
+            name: Some(symbol),
             ty,
             ty_range: st
                 .ty()
@@ -3558,6 +3694,7 @@ impl Collector<'_> {
             anon: None,
             is_static: Some(st.mut_token().is_some()),
             extern_symbol,
+            export_symbol,
             specialization: false,
             macro_scope: self.macro_scope,
         });
@@ -3702,6 +3839,7 @@ impl Collector<'_> {
             vis,
             path: Path {
                 edition: None,
+                bare_trait_object: None,
                 anchor: PathAnchor::DefinitionCrate(target),
                 qself: None,
                 segments: Box::default(),
@@ -4328,6 +4466,7 @@ impl Collector<'_> {
                     discriminant: Some((strukt, variants.len() as u32)),
                     is_static: None,
                     extern_symbol: None,
+                    export_symbol: None,
                     specialization: false,
                     anon: None,
                     macro_scope: self.macro_scope,

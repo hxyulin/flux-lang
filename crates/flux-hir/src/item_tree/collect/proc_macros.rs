@@ -1,11 +1,61 @@
 //! Procedural attribute replacement and custom-derive item collection.
 use super::{
-    AstNode, Collector, Ctx, Diagnostic, MacroId, NodeId, SourceDb, Symbol, SyntaxKind, TextRange,
-    ast, attr_name, is_item_kind, item_enabled, macros,
+    AssocOwner, AstNode, Collector, Ctx, Derive, Diagnostic, MacroId, NodeId, SourceDb, Symbol,
+    SyntaxKind, SyntaxNode, TextRange, ast, attr_name, check_attr, is_item_kind, item_enabled,
+    macros,
 };
 use flux_syntax::T;
+use rustc_hash::FxHashSet;
+
+fn is_derive_helper(attr: ast::Attr<'_>, names: &FxHashSet<Symbol>) -> bool {
+    attr.meta()
+        .is_some_and(|meta| meta.unsafe_token().is_none())
+        && attr_name(attr).is_some_and(|name| names.contains(&Symbol::intern(name)))
+}
 
 impl Collector<'_> {
+    /// Imports through local modules need the completed macro namespace.
+    /// Keep the whole item so a late derive can still claim its helpers.
+    pub(super) fn proc_item_needs_scope(&self, ctx: Ctx, syntax: SyntaxNode<'_>) -> bool {
+        if !self.db.has_proc_macros() {
+            return false;
+        }
+        let attrs = crate::cfg::Attrs::new(syntax.children().filter_map(ast::Attr::cast));
+        attrs.iter().any(|attr| {
+            let Some(meta) = attr.meta() else {
+                return false;
+            };
+            if attr_name(attr) == Some("derive") {
+                let Some(tree) = meta.token_tree() else {
+                    return false;
+                };
+                let mut tokens = Vec::new();
+                macros::tt::tokens_of(tree.syntax(), &mut tokens);
+                return macros::strip_delimiters(&tokens)
+                    .split(|token| token.kind == T![,])
+                    .filter(|path| !path.is_empty())
+                    .any(|path| {
+                        !matches!(path, [name] if Derive::named(name.text.as_str()).is_some())
+                            && self.proc_path(ctx, path).is_none()
+                    });
+            }
+            let Some(path) = meta.path().filter(|path| path.qualifier().is_some()) else {
+                return false;
+            };
+            if self.is_derive_attr(ctx, attr) {
+                return false;
+            }
+            let mut errors = Vec::new();
+            check_attr(attr, &mut errors);
+            if errors.is_empty() {
+                return false;
+            }
+            let mut tokens = Vec::new();
+            macros::tt::tokens_of(path.syntax(), &mut tokens);
+            self.proc_path(ctx, &tokens).is_none()
+        })
+    }
+
     pub(super) fn proc_path(&self, ctx: Ctx, tokens: &[macros::tt::Tok]) -> Option<MacroId> {
         let mut starts = Vec::new();
         let text = macros::tt::write_text(tokens, &mut starts);
@@ -31,9 +81,54 @@ impl Collector<'_> {
         matches!(self.items.macros[id].kind, macros::MacroKind::ProcMacro(_)).then_some(id)
     }
 
+    fn proc_attribute(&self, ctx: Ctx, attr: ast::Attr<'_>) -> Option<MacroId> {
+        let path = attr.meta()?.path()?;
+        let mut tokens = Vec::new();
+        macros::tt::tokens_of(path.syntax(), &mut tokens);
+        let id = self.proc_path(ctx, &tokens)?;
+        matches!(&self.items.macros[id].kind, macros::MacroKind::ProcMacro(host)
+            if host.kind == crate::ProcMacroKind::Attribute)
+        .then_some(id)
+    }
+
+    /// The original types of an attributed associated item are replaced along
+    /// with its body. Type macros inside it are part of the attribute input.
+    pub(super) fn assoc_proc_replaces_type(
+        &self,
+        ctx: Ctx,
+        mut node: SyntaxNode<'_>,
+        assoc_root: bool,
+    ) -> bool {
+        if !self.db.has_proc_macros() {
+            return false;
+        }
+        while let Some(parent) = node.parent() {
+            if is_item_kind(node.kind())
+                && (parent.kind() == SyntaxKind::ASSOC_ITEM_LIST
+                    || assoc_root && parent.kind() == SyntaxKind::SOURCE_FILE)
+            {
+                let attrs = crate::cfg::Attrs::new(node.children().filter_map(ast::Attr::cast));
+                if attrs
+                    .iter()
+                    .any(|attr| self.proc_attribute(ctx, attr).is_some())
+                    || self.proc_item_needs_scope(ctx, node)
+                {
+                    return true;
+                }
+            }
+            node = parent;
+        }
+        false
+    }
+
     /// Attribute macros replace items; derives append items after retaining the
     /// configured input. Helpers are consumed only for a resolved derive.
-    pub(super) fn collect_proc_item(&mut self, ctx: Ctx, node: NodeId) -> bool {
+    pub(super) fn collect_proc_item(
+        &mut self,
+        ctx: Ctx,
+        node: NodeId,
+        owner: Option<AssocOwner>,
+    ) -> bool {
         if !self.db.has_proc_macros() {
             return false;
         }
@@ -41,6 +136,7 @@ impl Collector<'_> {
         let syntax = shared.parse.tree().node(node);
         let attrs = crate::cfg::Attrs::new(syntax.children().filter_map(ast::Attr::cast));
         let mut active = attrs.iter().collect::<Vec<_>>();
+        let mut helper_names = FxHashSet::default();
         let mut unavailable_helpers = false;
         for attr in active
             .iter()
@@ -55,9 +151,12 @@ impl Collector<'_> {
                 if let Some(id) = self.proc_path(ctx, path)
                     && let macros::MacroKind::ProcMacro(host) = &self.items.macros[id].kind
                     && host.kind == crate::ProcMacroKind::Derive
-                    && host.helpers.is_none()
                 {
-                    unavailable_helpers = true;
+                    if let Some(helpers) = &host.helpers {
+                        helper_names.extend(helpers.iter().copied());
+                    } else {
+                        unavailable_helpers = true;
+                    }
                 }
             }
         }
@@ -113,15 +212,12 @@ impl Collector<'_> {
                 ));
                 return true;
             }
-            let Some(path) = attr.meta().and_then(|m| m.path()) else {
+            // Derive helpers occupy the item's attribute scope regardless of
+            // where the derive appears in the list.
+            if is_derive_helper(*attr, &helper_names) {
                 continue;
-            };
-            let mut toks = Vec::new();
-            macros::tt::tokens_of(path.syntax(), &mut toks);
-            if let Some(id) = self.proc_path(ctx, &toks)
-                && let macros::MacroKind::ProcMacro(host) = &self.items.macros[id].kind
-                && host.kind == crate::ProcMacroKind::Attribute
-            {
+            }
+            if let Some(id) = self.proc_attribute(ctx, *attr) {
                 if attr
                     .meta()
                     .is_some_and(|m| m.eq_token().is_some() || m.unsafe_token().is_some())
@@ -138,11 +234,15 @@ impl Collector<'_> {
         }
         let mut derives = Vec::new();
         let mut replacement = Vec::new();
-        let mut helper_names = rustc_hash::FxHashSet::default();
+        let mut root_helpers = Vec::new();
         if attribute.is_none() {
             for attr in &active {
                 if attr_name(*attr) != Some("derive") {
+                    let start = replacement.len();
                     macros::tt::tokens_of(attr.syntax(), &mut replacement);
+                    if is_derive_helper(*attr, &helper_names) {
+                        root_helpers.push(start..replacement.len());
+                    }
                     continue;
                 }
                 let Some(tree) = attr.meta().and_then(|m| m.token_tree()) else {
@@ -188,7 +288,6 @@ impl Collector<'_> {
                                 ));
                                 return true;
                             }
-                            helper_names.extend(host.helpers.iter().flatten().copied());
                             derives.push((host.clone(), attr.syntax().text_range()));
                         } else {
                             if !kept.is_empty() {
@@ -240,12 +339,18 @@ impl Collector<'_> {
             .filter_map(ast::Attr::cast)
             .map(|a| a.syntax().raw_range())
             .collect::<Vec<_>>();
+        let mut derive_attrs = Vec::new();
+        let mut retained_attrs = Vec::new();
         if attribute.is_none() {
+            let mut disabled_end = 0;
             for child in syntax
                 .descendants()
                 .skip(1)
                 .filter(|n| crate::item_tree::cfg_position(*n))
             {
+                if child.raw_range().start() < disabled_end {
+                    continue;
+                }
                 if !item_enabled(child, &mut self.items.diagnostics) {
                     let mut range = child.raw_range();
                     // Separators belong to the surrounding list in some nodes.
@@ -257,11 +362,39 @@ impl Collector<'_> {
                         range = TextRange::new(range.start(), next.raw_range().end());
                     }
                     skip.push(range);
+                    disabled_end = range.end();
+                    continue;
+                }
+                let accepts_helpers = matches!(
+                    child.kind(),
+                    SyntaxKind::VARIANT | SyntaxKind::RECORD_FIELD | SyntaxKind::TUPLE_FIELD
+                );
+                for attr in child.children().filter_map(ast::Attr::cast) {
+                    let range = attr.syntax().raw_range();
+                    if attr_name(attr) == Some("cfg_attr") {
+                        let configured = crate::cfg::Attrs::new([attr]);
+                        let mut derive_tokens = Vec::new();
+                        let mut retained_tokens = Vec::new();
+                        for attr in configured.iter() {
+                            let start = derive_tokens.len();
+                            macros::tt::tokens_of(attr.syntax(), &mut derive_tokens);
+                            if !accepts_helpers || !is_derive_helper(attr, &helper_names) {
+                                retained_tokens.extend_from_slice(&derive_tokens[start..]);
+                            }
+                        }
+                        derive_attrs.push((range, derive_tokens));
+                        retained_attrs.push((range, retained_tokens));
+                    } else if accepts_helpers && is_derive_helper(attr, &helper_names) {
+                        retained_attrs.push((range, Vec::new()));
+                    }
                 }
             }
+            // The token emitter consumes replacements in raw source order.
+            derive_attrs.sort_unstable_by_key(|(range, _)| range.start());
+            retained_attrs.sort_unstable_by_key(|(range, _)| range.start());
         }
         let mut derive_input = replacement.clone();
-        macros::tt::proc_tokens_ignoring(syntax, &skip, &mut derive_input);
+        macros::tt::configured_proc_tokens(syntax, &skip, &derive_attrs, &mut derive_input);
         let mut body = Vec::new();
         if let Some((index, _)) = attribute {
             active.remove(index);
@@ -269,63 +402,13 @@ impl Collector<'_> {
                 macros::tt::tokens_of(attr.syntax(), &mut replacement);
             }
         } else {
-            // Only declared helper attributes on the deriving item, its fields
-            // and variants are inert. Unknown attributes still reach admission.
-            for attr in syntax.descendants().filter_map(ast::Attr::cast) {
-                if attr_name(attr).is_some_and(|n| helper_names.contains(&Symbol::intern(n))) {
-                    let parent = attr.syntax().parent();
-                    if parent.is_some_and(|p| {
-                        matches!(
-                            p.kind(),
-                            SyntaxKind::STRUCT
-                                | SyntaxKind::ENUM
-                                | SyntaxKind::UNION
-                                | SyntaxKind::VARIANT
-                                | SyntaxKind::RECORD_FIELD
-                                | SyntaxKind::TUPLE_FIELD
-                        )
-                    }) {
-                        skip.push(attr.syntax().raw_range());
-                    }
-                }
-            }
-            // root helper attributes were copied to replacement; remove those
-            // by copying only the active non-helper attributes once more below.
-            if !helper_names.is_empty() {
-                // Remove helper groups from the already assembled root prefix.
-                let names = &helper_names;
-                let mut filtered = Vec::new();
-                let mut pos = 0;
-                while pos < replacement.len() {
-                    let start = pos;
-                    if replacement[pos].kind == T![#]
-                        && replacement.get(pos + 1).is_some_and(|t| t.kind == T!['['])
-                    {
-                        pos += 2;
-                        let mut depth = 1;
-                        while pos < replacement.len() && depth != 0 {
-                            match replacement[pos].kind {
-                                T!['['] => depth += 1,
-                                T![']'] => depth -= 1,
-                                _ => {}
-                            }
-                            pos += 1;
-                        }
-                        if replacement
-                            .get(start + 2)
-                            .is_some_and(|t| names.contains(&t.text))
-                        {
-                            continue;
-                        }
-                    } else {
-                        pos += 1;
-                    }
-                    filtered.extend_from_slice(&replacement[start..pos]);
-                }
-                replacement = filtered;
+            // Keep helpers on the derive's input and remove only those exact
+            // bare attributes from the retained item.
+            for range in root_helpers.into_iter().rev() {
+                replacement.drain(range);
             }
         }
-        macros::tt::proc_tokens_ignoring(syntax, &skip, &mut body);
+        macros::tt::configured_proc_tokens(syntax, &skip, &retained_attrs, &mut body);
         let mut input = replacement.clone();
         input.extend(body);
         let real = self.real_file(ctx.file);
@@ -386,6 +469,10 @@ impl Collector<'_> {
         if let Some(parse) = parse {
             let file = self.db.add_expansion(parse, real);
             self.items.expansion_files.insert(file, real);
+            if let Some(owner) = owner {
+                self.collect_assoc_expansion(ctx, owner, file);
+                return true;
+            }
             self.items.insert_file(file, self.db.shared(file));
             let shared = self.db.shared(file);
             let nodes = shared

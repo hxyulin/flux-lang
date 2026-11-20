@@ -25,6 +25,15 @@ pub const fn from_utf8(v: &[u8]) -> Result<&str, Utf8Error> {
     }
 }
 
+/// Views the bytes as mutable text after validating their UTF-8 encoding.
+pub const fn from_utf8_mut(v: &mut [u8]) -> Result<&mut str, Utf8Error> {
+    match validate_utf8(v) {
+        // SAFETY: the validator checked the entire slice.
+        Ok(()) => Ok(unsafe { from_utf8_unchecked_mut(v) }),
+        Err(e) => Err(e),
+    }
+}
+
 /// The `str` the bytes are, which must be UTF-8.
 pub const unsafe fn from_utf8_unchecked(v: &[u8]) -> &str {
     unsafe { &*(v as *const [u8] as *const str) }
@@ -1042,11 +1051,9 @@ impl<'a> Iterator for EncodeUtf16<'a> {
             self.extra = 0;
             return Some(unit);
         }
-        let code = self.chars.next()? as u32;
-        if code < 0x10000 { return Some(code as u16); }
-        let code = code - 0x10000;
-        self.extra = 0xDC00 | (code & 0x3FF) as u16;
-        Some(0xD800 | (code >> 10) as u16)
+        let (first, second) = self.chars.next()?.utf16_units();
+        self.extra = second;
+        Some(first)
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         let (low, high) = self.chars.size_hint();
@@ -1777,6 +1784,7 @@ impl<'a, P: Clone> Clone for RMatchIndices<'a, P> {
 }
 
 /// An iterator over a string's lines: what [`str::lines`] gives.
+#[derive(Clone)]
 pub struct Lines<'a> {
     rest: &'a str,
 }

@@ -19,6 +19,17 @@ pub trait Error: crate::fmt::Debug + crate::fmt::Display {
     }
 }
 
+impl<T: Error + ?Sized> Error for &T {
+    #[allow(deprecated)]
+    fn cause(&self) -> crate::option::Option<&dyn Error> {
+        Error::cause(*self)
+    }
+
+    fn source(&self) -> crate::option::Option<&(dyn Error + 'static)> {
+        Error::source(*self)
+    }
+}
+
 mod private { pub struct Internal; }
 impl dyn Error + 'static {
     pub fn is<T: Error + 'static>(&self) -> bool {

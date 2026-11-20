@@ -182,6 +182,10 @@ fn host_panic_cleanup_preserves_initialized_ring() {
         .replace(
             "core::slice::range(range, ..len)",
             "crate::checked_range(range, len)",
+        )
+        .replace(
+            "slice::range(range, ..self.len())",
+            "crate::checked_range(range, self.len())",
         );
     let actual = root.join("ring.rs");
     std::fs::write(&actual, source).unwrap();

@@ -133,6 +133,10 @@ const STD_FILES: &[(&str, &str)] = &[
         "net/lookup.rs",
         include_str!("../../../library/std/src/net/lookup.rs"),
     ),
+    (
+        "net/unix.rs",
+        include_str!("../../../library/std/src/net/unix.rs"),
+    ),
     ("os.rs", include_str!("../../../library/std/src/os.rs")),
     (
         "process.rs",
@@ -306,6 +310,10 @@ const ALLOC_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/alloc/src/sync.rs"),
     ),
     (
+        "sync/box_conversion.rs",
+        include_str!("../../../library/alloc/src/sync/box_conversion.rs"),
+    ),
+    (
         "task.rs",
         include_str!("../../../library/alloc/src/task.rs"),
     ),
@@ -376,6 +384,22 @@ const CORE_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/core/src/ascii.rs"),
     ),
     ("arch.rs", include_str!("../../../library/core/src/arch.rs")),
+    (
+        "arch/aarch64/neon_f32.rs",
+        include_str!("../../../library/core/src/arch/aarch64/neon_f32.rs"),
+    ),
+    (
+        "arch/aarch64/neon_f64.rs",
+        include_str!("../../../library/core/src/arch/aarch64/neon_f64.rs"),
+    ),
+    (
+        "arch/aarch64/neon_integer.rs",
+        include_str!("../../../library/core/src/arch/aarch64/neon_integer.rs"),
+    ),
+    (
+        "arch/aarch64/neon_lanes.rs",
+        include_str!("../../../library/core/src/arch/aarch64/neon_lanes.rs"),
+    ),
     (
         "runtime.rs",
         include_str!("../../../library/core/src/runtime.rs"),

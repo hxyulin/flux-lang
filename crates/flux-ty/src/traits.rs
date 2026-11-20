@@ -9,6 +9,7 @@ use flux_hir::{
 };
 use flux_intern::{Symbol, kw};
 use flux_syntax::TextRange;
+use flux_ty_ir::impl_index;
 
 use crate::regions::{ImplRegions, Outlives, Region, StructRegions};
 use crate::ty::{AliasTy, Ty, TyKind};
@@ -237,7 +238,7 @@ pub fn trait_ref(
         // `Output` of `FnOnce` in `Fn(A) -> B`, `Item` of `Iterator` in
         // `DoubleEndedIterator<Item = A>`.
         if !data.types.iter().any(|ty| ty.name == binding.name)
-            && let Some(sup_ref) = supertrait_with_type(items, trait_ref, self_ty, binding.name)
+            && let Ok(Some(sup_ref)) = supertrait_with_type(items, trait_ref, self_ty, binding.name)
         {
             let ty = resolve_type(items, module, &binding.ty, scope, binding.ty_range, errors);
             if let Some(alias) = resolve_binding_family(
@@ -313,6 +314,11 @@ fn resolve_binding_family(
     Some(alias)
 }
 
+pub(super) enum SupertraitLookupError {
+    Ambiguous,
+    Unsupported,
+}
+
 /// Find the declaring supertrait while preserving forwarded parameters and
 /// explicit `Self` arguments. An inherited binding belongs to that complete
 /// trait reference, not a prefix of the child trait's arguments.
@@ -321,7 +327,7 @@ pub(super) fn supertrait_with_type(
     root: TraitRef,
     self_ty: Ty,
     name: Symbol,
-) -> Option<TraitRef> {
+) -> Result<Option<TraitRef>, SupertraitLookupError> {
     fn argument(written: &TypeRef, data: &flux_hir::Trait, args: &[Ty], self_ty: Ty) -> Option<Ty> {
         let TypeRef::Path(path) = written else {
             return None;
@@ -358,7 +364,7 @@ pub(super) fn supertrait_with_type(
     let mut budget = 256;
     while let Some((current, ancestors)) = stack.pop() {
         if budget == 0 {
-            return None;
+            return Err(SupertraitLookupError::Unsupported);
         }
         budget -= 1;
         let data = &items.traits[current.trait_];
@@ -400,7 +406,7 @@ pub(super) fn supertrait_with_type(
                 // An unrepresented edge may compete with an otherwise supported
                 // declaration. Never select the first representable spelling.
                 if can_declare(items, sup, name) {
-                    return None;
+                    return Err(SupertraitLookupError::Unsupported);
                 }
                 continue;
             }
@@ -411,7 +417,7 @@ pub(super) fn supertrait_with_type(
             };
             if items.traits[sup].types.iter().any(|ty| ty.name == name) {
                 if found.is_some_and(|previous| previous != next) {
-                    return None;
+                    return Err(SupertraitLookupError::Ambiguous);
                 }
                 found = Some(next);
             } else {
@@ -421,7 +427,7 @@ pub(super) fn supertrait_with_type(
             }
         }
     }
-    found
+    Ok(found)
 }
 
 /// The bounds of `generics`, in its list and `where` clause, written in
@@ -1072,6 +1078,7 @@ fn check_type_bounds(
                 .map(|projection| projection.subst(&args)),
         );
     }
+    projections.extend(caller_supertrait_projections(sigs, &env));
     let projections = projections.as_slice();
     let mut declaration_parameters =
         flux_solve::unsized_params(items, Some(Owner::Impl(imp)), &ty.generics);
@@ -1371,7 +1378,9 @@ fn check_method(
         .zip(ranges)
         .chain([((&sig.ret, &expected.ret), ret_range)])
         .find(|((got, want), _)| {
-            !flux_solve::fn_regions::same_shape(**got, **want)
+            // Associated type substitution can leave equivalent callable
+            // binders represented by different region tables.
+            !flux_solve::fn_regions::same_mir_shape(items, **got, **want)
                 && **got != Ty::ERROR
                 && **want != Ty::ERROR
         });
@@ -1477,6 +1486,27 @@ fn check_method(
 /// Normalize a family selected by one local structural impl header. Generic
 /// families with abstract inputs, competing headers, or upstream declarations
 /// remain opaque; projection inversion never binds an intersection variable.
+/// An unresolved projection in another candidate's header can still match.
+/// Only use an associated definition when the headers admit one candidate.
+fn unique_coherence_impl(items: &ItemTree, sigs: &Signatures, goal: Predicate) -> Option<ImplId> {
+    let goal_header: Vec<Ty> = std::iter::once(goal.self_ty)
+        .chain(goal.trait_ref.args.iter().copied())
+        .collect();
+    let mut candidates = sigs
+        .impl_index
+        .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
+        .filter(|&imp| {
+            let Some(trait_ref) = sigs.impl_traits.get(imp) else {
+                return true;
+            };
+            let header: Vec<Ty> = std::iter::once(sigs.impls[imp])
+                .chain(trait_ref.args.iter().copied())
+                .collect();
+            unify_headers(&header, &goal_header).is_some()
+        });
+    candidates.next().filter(|_| candidates.next().is_none())
+}
+
 fn coherence_header_ty(items: &ItemTree, sigs: &Signatures, own: flux_hir::CrateId, ty: Ty) -> Ty {
     fn walk(
         items: &ItemTree,
@@ -1499,21 +1529,8 @@ fn coherence_header_ty(items: &ItemTree, sigs: &Signatures, own: flux_hir::Crate
             // rigid generic arguments. Competing headers remain possible under
             // specialization; their bounds are not negative evidence here.
             let goal = alias_predicate(alias);
-            let goal_header: Vec<Ty> = std::iter::once(goal.self_ty)
-                .chain(goal.trait_ref.args.iter().copied())
-                .collect();
-            let mut candidates = sigs
-                .impl_index
-                .impls_for(items, goal.trait_ref.trait_, goal.self_ty)
-                .filter(|&imp| {
-                    let header: Vec<Ty> = std::iter::once(sigs.impls[imp])
-                        .chain(sigs.impl_traits[imp].args.iter().copied())
-                        .collect();
-                    unify_headers(&header, &goal_header).is_some()
-                });
-            let unique = candidates.next().filter(|_| candidates.next().is_none());
             if let Some((imp, args)) = select_impl(items, sigs, goal)
-                && Some(imp) == unique
+                && Some(imp) == unique_coherence_impl(items, sigs, goal)
                 && items.modules[items.impls[imp].module].krate == own
                 && let Some(rhs) = instantiate_impl_type(sigs, imp, alias, &args)
             {
@@ -1530,6 +1547,37 @@ fn coherence_header_ty(items: &ItemTree, sigs: &Signatures, own: flux_hir::Crate
     walk(items, sigs, own, ty, &mut Vec::new())
 }
 
+/// The candidate fixed by the intersection is the only possible source of
+/// this output. An upstream definition cannot serve as a negative proof.
+fn coherence_projection_impossible(
+    items: &ItemTree,
+    sigs: &Signatures,
+    own: flux_hir::CrateId,
+    Projection { alias, ty }: Projection,
+) -> bool {
+    let closed = |ty: Ty| !ty.has_infer() && crate::regions::is_closed_region_free(items, ty);
+    if alias.owner_lifetimes != 0
+        || alias.family_lifetimes != 0
+        || !alias.family_args.is_empty()
+        || !alias.args.iter().copied().all(closed)
+        || !closed(ty)
+    {
+        return false;
+    }
+    let goal = alias_predicate(alias);
+    let Some(imp) = unique_coherence_impl(items, sigs, goal) else {
+        return false;
+    };
+    if items.modules[items.impls[imp].module].krate != own {
+        return false;
+    }
+    let Some(args) = match_impl(items, sigs, imp, goal) else {
+        return false;
+    };
+    instantiate_impl_type(sigs, imp, alias, &args)
+        .is_some_and(|actual| closed(actual) && unify_headers(&[actual], &[ty]).is_none())
+}
+
 /// Intersected headers retain implicit Sized requirements. A local bound also
 /// cannot hold for an orphan-closed constructor without an existing proof:
 /// downstream crates cannot add that impl (`&[T]`, for example).
@@ -1538,6 +1586,7 @@ fn intersection_excluded_by_bounds(
     sigs: &Signatures,
     a: ImplId,
     b: ImplId,
+    bindings: &HeaderBindings,
 ) -> bool {
     fn resolved(ty: Ty) -> bool {
         !ty.has_params() && !ty.has_infer() && !ty.has_aliases() && !ty.has_opaques()
@@ -1576,25 +1625,23 @@ fn intersection_excluded_by_bounds(
             &items.impls[id].generics,
             0,
         ));
-        bounds
+        (bounds, sigs.impl_projections.get(id).map_or(&[][..], |p| p))
     };
     let a_bounds = bounds_of(a);
     let b_bounds = bounds_of(b);
-    let local = |predicate: &Predicate| {
-        items.modules[items.traits[predicate.trait_ref.trait_].loc.module].krate == own
-    };
-    let header = |id| {
-        std::iter::once(sigs.impls[id])
-            .chain(sigs.impl_traits[id].args.iter().copied())
-            .map(|ty| coherence_header_ty(items, sigs, own, ty))
-            .collect::<Vec<_>>()
-    };
-    let Some((_, bounds)) =
-        unify_headers_with_predicates(&header(a), &header(b), &a_bounds, &b_bounds)
-    else {
-        return false;
-    };
-    bounds.iter().any(|predicate| {
+    let bounds = substitute_impl_bounds(
+        bindings,
+        (&a_bounds.0, a_bounds.1),
+        (&b_bounds.0, b_bounds.1),
+    );
+    if bounds
+        .projections
+        .into_iter()
+        .any(|projection| coherence_projection_impossible(items, sigs, own, projection))
+    {
+        return true;
+    }
+    if bounds.predicates.iter().any(|predicate| {
         if sigs.builtins.sized == Some(predicate.trait_ref.trait_)
             && sigs.is_unsized(predicate.self_ty)
         {
@@ -1609,20 +1656,34 @@ fn intersection_excluded_by_bounds(
             }
             _ => false,
         };
-        let absent_local = local(predicate)
+        let trait_ = predicate.trait_ref.trait_;
+        let data = &items.traits[trait_];
+        // With a local nominal self type, an ordinary foreign trait is
+        // orphan-closed too. The self constructor stays fixed when its
+        // nested associated types are normalized.
+        let local_self = data.lang.is_none()
+            && !is_auto_trait(items, trait_)
+            && matches!(predicate.self_ty.kind(), TyKind::Adt(adt, _)
+                if items.modules[items.structs[adt.strukt].loc.module].krate == own);
+        (items.modules[data.loc.module].krate == own || local_self)
             && closed(items, predicate.self_ty)
             && predicate.trait_ref.args.iter().copied().all(|ty| closed(items, ty))
             && !open_object_bound
-            // Objects and builtin traits can satisfy bounds without an impl
-            // block. Absence from the index alone is not a negative proof.
-            && !holds(items, sigs, &[], *predicate)
             && sigs
                 .impl_index
                 .impls_for(items, predicate.trait_ref.trait_, predicate.self_ty)
                 .next()
-                .is_none();
-        absent_local || coherence_goal_impossible(items, sigs, own, *predicate, &mut Vec::new())
-    })
+                .is_none()
+            // Objects and builtin traits can satisfy bounds without an impl
+            // block. Absence from the index alone is not a negative proof.
+            && !holds(items, sigs, &[], *predicate)
+    }) {
+        return true;
+    }
+    bounds
+        .predicates
+        .into_iter()
+        .any(|predicate| coherence_goal_impossible(items, sigs, own, predicate, &mut Vec::new()))
 }
 
 /// A negative proof for an orphan-knowable intersection goal. Generic inputs
@@ -1636,9 +1697,6 @@ fn coherence_goal_impossible(
     goal: Predicate,
     active: &mut Vec<Predicate>,
 ) -> bool {
-    fn represented(ty: Ty) -> bool {
-        !has_error(ty) && !ty.has_aliases() && !ty.has_opaques()
-    }
     fn known_shape(ty: Ty) -> bool {
         !has_error(ty) && !ty.has_opaques() && !matches!(ty.kind(), TyKind::Alias(_))
     }
@@ -1689,7 +1747,6 @@ fn coherence_goal_impossible(
     if !known_shape(goal.self_ty)
         || !goal.trait_ref.args.iter().copied().all(known_shape)
         || active.contains(&goal)
-        || holds(items, sigs, &[], goal)
     {
         return false;
     }
@@ -1704,7 +1761,7 @@ fn coherence_goal_impossible(
     let has_local_input = std::iter::once(goal.self_ty)
         .chain(goal.trait_ref.args.iter().copied())
         .any(|ty| local_input(items, own, ty));
-    if !local_trait && !has_local_input {
+    if (!local_trait && !has_local_input) || holds(items, sigs, &[], goal) {
         return false;
     }
     if std::iter::once(goal.self_ty)
@@ -1738,8 +1795,8 @@ fn coherence_goal_impossible(
         {
             return false;
         }
-        // Nested projections retain their outer constructors. A structural
-        // mismatch is disjoint; a matching projected header stays unknown.
+        // Nested projections retain their outer constructors. Treat their
+        // outputs as unknowns so the intersection can only be wider.
         let goal_header: Vec<Ty> = std::iter::once(goal.self_ty)
             .chain(goal.trait_ref.args.iter().copied())
             .collect();
@@ -1757,22 +1814,25 @@ fn coherence_goal_impossible(
                     .chain(trait_ref.args.iter().copied())
                     .map(|ty| coherence_header_ty(items, sigs, own, ty))
                     .collect();
-                if unify_headers(&header, &goal_header).is_none() {
+                let predicates = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+                let projections = sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+                let Some(bindings) = unify_header_types(&header, &goal_header) else {
                     return true;
-                }
-                if header.iter().copied().any(|ty| !represented(ty)) {
-                    return false;
-                }
-                // Matching an intersection variable against a narrower impl
-                // can fail without proving disjointness. Keep that unknown.
-                let Some(args) = match_impl(items, sigs, imp, goal) else {
-                    return false;
                 };
-                sigs.impl_predicates
-                    .get(imp)
-                    .into_iter()
-                    .flatten()
-                    .any(|p| coherence_goal_impossible(items, sigs, own, p.subst(&args), active))
+                let bounds =
+                    substitute_impl_bounds(&bindings, (predicates, projections), (&[], &[]));
+                // Other positions can still fix a predicate independently
+                // of the ignored projections. A refuted predicate excludes
+                // the candidate even in this wider intersection.
+                header.iter().all(|&ty| !has_error(ty) && !ty.has_opaques())
+                    && (bounds
+                        .predicates
+                        .into_iter()
+                        .any(|p| coherence_goal_impossible(items, sigs, own, p, active))
+                        || bounds
+                            .projections
+                            .into_iter()
+                            .any(|p| coherence_projection_impossible(items, sigs, own, p)))
             });
         active.pop();
         return impossible;
@@ -1802,15 +1862,35 @@ fn coherence_goal_impossible(
                 return false;
             };
             let Some(args) = match_impl(items, sigs, imp, goal) else {
-                // An unresolved projected header might match after its own
-                // constraints are solved. That is not a known disjoint candidate.
-                return !self_ty.has_aliases() && !trait_ref.args.iter().any(|ty| ty.has_aliases());
+                // A projection may change its own head, but cannot change a
+                // named constructor around it. Keep candidates with unknown
+                // heads unless a different input already makes them disjoint.
+                return (!self_ty.has_aliases()
+                    && !trait_ref.args.iter().any(|ty| ty.has_aliases()))
+                    || std::iter::once(self_ty)
+                        .chain(trait_ref.args.iter().copied())
+                        .zip(
+                            std::iter::once(goal.self_ty)
+                                .chain(goal.trait_ref.args.iter().copied()),
+                        )
+                        .any(|(header, input)| {
+                            matches!(
+                                (impl_index::head(header), impl_index::head(input)),
+                                (Some(a), Some(b)) if a != b
+                            )
+                        });
             };
             sigs.impl_predicates
                 .get(imp)
                 .into_iter()
                 .flatten()
                 .any(|p| coherence_goal_impossible(items, sigs, own, p.subst(&args), active))
+                || sigs
+                    .impl_projections
+                    .get(imp)
+                    .into_iter()
+                    .flatten()
+                    .any(|p| coherence_projection_impossible(items, sigs, own, p.subst(&args)))
         });
     active.pop();
     impossible
@@ -3247,28 +3327,27 @@ pub fn unmet_leaf(
 /// its unconstrained parameters as `_`, if they may be for the same
 /// types.
 fn unify_headers(a: &[Ty], b: &[Ty]) -> Option<Vec<Ty>> {
-    unify_headers_with_predicates(a, b, &[], &[]).map(|(header, _)| header)
+    let bound = unify_header_types(a, b)?;
+    let mut subst = HeaderSubstitution::new(&bound);
+    Some(b.iter().map(|&ty| subst.apply(true, ty, 0)).collect())
 }
 
-fn unify_headers_with_predicates(
-    a: &[Ty],
-    b: &[Ty],
-    a_bounds: &[Predicate],
-    b_bounds: &[Predicate],
-) -> Option<(Vec<Ty>, Vec<Predicate>)> {
-    /// A type in one block's header, and which block.
-    type Side = (bool, Ty);
-    type Bound = rustc_hash::FxHashMap<(bool, u32), Side>;
-    fn resolve(bound: &Bound, (mut side, mut ty): Side) -> Side {
-        while let TyKind::Param(p) = ty.kind()
-            && let Some(&next) = bound.get(&(side, p.index))
-        {
-            (side, ty) = next;
-        }
-        (side, ty)
+/// A type in one block's header, and which block.
+type HeaderSide = (bool, Ty);
+type HeaderBindings = rustc_hash::FxHashMap<(bool, u32), HeaderSide>;
+
+fn resolve_header_binding(bound: &HeaderBindings, (mut side, mut ty): HeaderSide) -> HeaderSide {
+    while let TyKind::Param(p) = ty.kind()
+        && let Some(&next) = bound.get(&(side, p.index))
+    {
+        (side, ty) = next;
     }
-    fn occurs(bound: &Bound, var: (bool, u32), ty: Side, depth: u32) -> bool {
-        let (side, ty) = resolve(bound, ty);
+    (side, ty)
+}
+
+fn unify_header_types(a: &[Ty], b: &[Ty]) -> Option<HeaderBindings> {
+    fn occurs(bound: &HeaderBindings, var: (bool, u32), ty: HeaderSide, depth: u32) -> bool {
+        let (side, ty) = resolve_header_binding(bound, ty);
         if depth > 64 {
             return false;
         }
@@ -3296,11 +3375,14 @@ fn unify_headers_with_predicates(
             _ => false,
         }
     }
-    fn unify(bound: &mut Bound, a: Side, b: Side, depth: u32) -> bool {
+    fn unify(bound: &mut HeaderBindings, a: HeaderSide, b: HeaderSide, depth: u32) -> bool {
         if depth > 64 {
             return true;
         }
-        let (a, b) = (resolve(bound, a), resolve(bound, b));
+        let (a, b) = (
+            resolve_header_binding(bound, a),
+            resolve_header_binding(bound, b),
+        );
         let mut all = |xs: &[Ty], ys: &[Ty]| {
             xs.len() == ys.len()
                 && xs
@@ -3351,76 +3433,108 @@ fn unify_headers_with_predicates(
             _ => a.1 == b.1,
         }
     }
-    fn apply(bound: &Bound, ty: Side, depth: u32) -> Ty {
-        let (side, ty) = resolve(bound, ty);
-        let apply_all = |list: &[Ty]| -> Vec<Ty> {
-            list.iter()
-                .map(|&t| apply(bound, (side, t), depth + 1))
-                .collect()
-        };
-        match ty.kind() {
-            _ if depth > 64 => ty,
+    let mut bound = HeaderBindings::default();
+    (a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(&x, &y)| unify(&mut bound, (false, x), (true, y), 0)))
+    .then_some(bound)
+}
+
+struct HeaderSubstitution<'a> {
+    bound: &'a HeaderBindings,
+    // Interned types can repeat the same argument many times, including
+    // through bindings to other parameters. Depth preserves the cutoff for
+    // a node that is also reached through a longer path.
+    memo: rustc_hash::FxHashMap<(HeaderSide, u32), Ty>,
+}
+
+impl<'a> HeaderSubstitution<'a> {
+    fn new(bound: &'a HeaderBindings) -> Self {
+        Self {
+            bound,
+            memo: Default::default(),
+        }
+    }
+
+    fn apply(&mut self, side: bool, ty: Ty, depth: u32) -> Ty {
+        let (side, ty) = resolve_header_binding(self.bound, (side, ty));
+        if depth > 64 || !ty.has_params() {
+            return ty;
+        }
+        let key = ((side, ty), depth);
+        if let Some(&known) = self.memo.get(&key) {
+            return known;
+        }
+        let mut subst = |ty| self.apply(side, ty, depth + 1);
+        let result = match ty.kind() {
             TyKind::Param(_) => Ty::infer(crate::ty::InferVar(0)),
-            TyKind::Adt(adt, list) => Ty::adt(adt.strukt, adt.name, &apply_all(list)),
-            TyKind::Tuple(list) => Ty::tuple(&apply_all(list)),
-            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, apply(bound, (side, t), depth + 1))),
-            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, apply(bound, (side, t), depth + 1)),
-            TyKind::Array(t, len) => Ty::array_of(
-                apply(bound, (side, t), depth + 1),
-                apply(bound, (side, len), depth + 1),
-            ),
-            TyKind::Slice(t) => Ty::slice(apply(bound, (side, t), depth + 1)),
-            TyKind::Alias(alias) => {
-                Ty::alias(alias.map_args(|t| apply(bound, (side, t), depth + 1)))
-            }
-            TyKind::FnPtr(signature) => Ty::new(TyKind::FnPtr(
-                signature.map(|ty| apply(bound, (side, ty), depth + 1)),
-            )),
+            TyKind::Adt(adt, list) => Ty::new(TyKind::Adt(adt, crate::ty::map_list(list, subst))),
+            TyKind::Tuple(list) => Ty::tuple(crate::ty::map_list(list, subst)),
+            TyKind::Ref(m, t) => Ty::new(TyKind::Ref(m, subst(t))),
+            TyKind::RawPtr(m, t) => Ty::raw_ptr(m, subst(t)),
+            TyKind::Array(t, len) => Ty::array_of(subst(t), subst(len)),
+            TyKind::Slice(t) => Ty::slice(subst(t)),
+            TyKind::Alias(alias) => Ty::alias(alias.map_args(subst)),
+            TyKind::FnPtr(signature) => Ty::new(TyKind::FnPtr(signature.map(subst))),
             TyKind::Dynamic(object) => Ty::new(TyKind::Dynamic(crate::DynTy {
-                quantified: object
-                    .quantified
-                    .map(|ty| apply(bound, (side, ty), depth + 1)),
-                callable: object
-                    .callable
-                    .map(|ty| apply(bound, (side, ty), depth + 1)),
-                args: Ty::list(&apply_all(object.args)),
-                assoc_tys: Ty::list(&apply_all(object.assoc_tys)),
+                quantified: object.quantified.map(&mut subst),
+                callable: object.callable.map(&mut subst),
+                args: crate::ty::map_list(object.args, &mut subst),
+                assoc_tys: crate::ty::map_list(object.assoc_tys, subst),
                 ..object
             })),
             _ => ty,
-        }
+        };
+        self.memo.insert(key, result);
+        result
     }
-    let mut bound = Bound::default();
-    let unified = a
-        .iter()
-        .zip(b)
-        .all(|(&x, &y)| unify(&mut bound, (false, x), (true, y), 0));
-    unified.then(|| {
-        let header = b.iter().map(|&t| apply(&bound, (true, t), 0)).collect();
-        let bounds = [(false, a_bounds), (true, b_bounds)]
-            .into_iter()
-            .flat_map(|(side, predicates)| {
-                predicates
-                    .iter()
-                    .map(|predicate| Predicate {
-                        self_ty: apply(&bound, (side, predicate.self_ty), 0),
-                        trait_ref: TraitRef {
-                            args: Ty::list(
-                                &predicate
-                                    .trait_ref
-                                    .args
-                                    .iter()
-                                    .map(|&ty| apply(&bound, (side, ty), 0))
-                                    .collect::<Vec<_>>(),
-                            ),
-                            ..predicate.trait_ref
-                        },
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        (header, bounds)
-    })
+}
+
+fn substitute_impl_bounds(
+    bound: &HeaderBindings,
+    a_bounds: (&[Predicate], &[Projection]),
+    b_bounds: (&[Predicate], &[Projection]),
+) -> Bounds {
+    let mut bounds = Bounds::default();
+    let mut substitution = HeaderSubstitution::new(bound);
+    for (side, (predicates, projections)) in [(false, a_bounds), (true, b_bounds)] {
+        let mut subst = |ty| substitution.apply(side, ty, 0);
+        bounds.predicates.extend(predicates.iter().map(|p| {
+            Predicate {
+                self_ty: subst(p.self_ty),
+                trait_ref: TraitRef {
+                    args: Ty::list(
+                        &p.trait_ref
+                            .args
+                            .iter()
+                            .copied()
+                            .map(&mut subst)
+                            .collect::<Vec<_>>(),
+                    ),
+                    ..p.trait_ref
+                },
+            }
+        }));
+        bounds
+            .projections
+            .extend(projections.iter().map(|p| Projection {
+                alias: p.alias.map_args(&mut subst),
+                ty: subst(p.ty),
+            }));
+    }
+    bounds
+}
+
+/// Whether two inherent impls can apply to the same receiver.
+pub(super) fn inherent_impls_overlap(
+    items: &ItemTree,
+    sigs: &Signatures,
+    a: ImplId,
+    b: ImplId,
+) -> bool {
+    unify_header_types(&[sigs.impls[a]], &[sigs.impls[b]])
+        .is_some_and(|bindings| !intersection_excluded_by_bounds(items, sigs, a, b, &bindings))
 }
 
 /// Reports `impl` blocks of one trait for types that may be the same.
@@ -3454,45 +3568,77 @@ fn check_overlap(
                 .chain(b_ref.args.iter().copied())
                 .map(|ty| coherence_header_ty(items, sigs, own, ty))
                 .collect();
-            let earlier = sigs.impl_index.earlier(items, sigs, t, i).find(|&a| {
+            let imp = &items.impls[later];
+            let diagnostic = |header: &[Ty]| {
+                let trait_ref = TraitRef {
+                    args: Ty::list(&header[1..]),
+                    ..*b_ref
+                };
+                let written = written_trait_ref(sigs, trait_ref.with_self(header[0]));
+                Diagnostic {
+                    file: imp.file,
+                    range: imp.def_range,
+                    message: format!(
+                        "conflicting implementations of trait `{written}` for type `{}`",
+                        header[0]
+                    ),
+                }
+            };
+            let mut leak_reported = false;
+            for a in sigs.impl_index.earlier(items, sigs, t, i) {
                 let (Some(&a_ty), Some(a_ref)) = (sigs.impls.get(a), sigs.impl_traits.get(a))
                 else {
-                    return false;
+                    continue;
                 };
+                if a_ty == Ty::ERROR || broken_header(items, sigs, a) {
+                    continue;
+                }
                 let a_header: Vec<Ty> = std::iter::once(a_ty)
                     .chain(a_ref.args.iter().copied())
                     .map(|ty| coherence_header_ty(items, sigs, own, ty))
                     .collect();
-                a_ty != Ty::ERROR
-                    && !broken_header(items, sigs, a)
-                    && unify_headers(&a_header, &b_header).is_some()
-                    && !intersection_excluded_by_bounds(items, sigs, a, later)
-            });
-            let Some(earlier) = earlier else {
-                continue;
-            };
-            // What both are for, as rustc names it: `From<_>` for `W<_>`.
-            let a_header: Vec<Ty> = std::iter::once(sigs.impls[earlier])
-                .chain(sigs.impl_traits[earlier].args.iter().copied())
-                .map(|ty| coherence_header_ty(items, sigs, own, ty))
-                .collect();
-            let header = unify_headers(&a_header, &b_header).unwrap_or(b_header);
-            let trait_ref = TraitRef {
-                args: Ty::list(&header[1..]),
-                ..*b_ref
-            };
-            let written = written_trait_ref(sigs, trait_ref.with_self(header[0]));
-            let imp = &items.impls[later];
-            diagnostics.push(Diagnostic {
-                file: imp.file,
-                range: imp.def_range,
-                message: format!(
-                    "conflicting implementations of trait `{written}` for type `{}`",
-                    header[0]
-                ),
-            });
-            if !conflicted.contains(&b_ref.trait_) {
-                conflicted.push(b_ref.trait_);
+                let Some(bindings) = unify_header_types(&a_header, &b_header) else {
+                    continue;
+                };
+                if intersection_excluded_by_bounds(items, sigs, a, later, &bindings) {
+                    continue;
+                }
+                let mut subst = HeaderSubstitution::new(&bindings);
+                let header: Vec<_> = b_header
+                    .iter()
+                    .map(|&ty| subst.apply(true, ty, 0))
+                    .collect();
+                let leaks = a_header.iter().zip(&header).any(|(&a, &b)| {
+                    let a = subst.apply(false, a, 0);
+                    flux_solve::fn_regions::callable_binder_mismatch(items, a, b)
+                });
+                if leaks {
+                    // A later impl can have both a lint-only overlap and a
+                    // hard overlap. Keep looking after the first lint.
+                    if !leak_reported {
+                        leak_reported = true;
+                        match items.lint_level_at(
+                            imp.module,
+                            imp.file,
+                            imp.def_range,
+                            "coherence_leak_check",
+                        ) {
+                            flux_hir::LintLevel::Warn => {
+                                items.record_lint_warning(diagnostic(&header))
+                            }
+                            flux_hir::LintLevel::Deny | flux_hir::LintLevel::Forbid => {
+                                diagnostics.push(diagnostic(&header))
+                            }
+                            flux_hir::LintLevel::Allow | flux_hir::LintLevel::Expect => {}
+                        }
+                    }
+                    continue;
+                }
+                diagnostics.push(diagnostic(&header));
+                if !conflicted.contains(&b_ref.trait_) {
+                    conflicted.push(b_ref.trait_);
+                }
+                break;
             }
         }
     }
@@ -3827,6 +3973,32 @@ fn check_drop_impls(
 #[cfg(test)]
 mod coherence_tests {
     use super::*;
+
+    #[test]
+    fn header_substitution_reuses_shared_children_per_side_and_depth() {
+        let deep = |mut ty, count| {
+            for _ in 0..count {
+                ty = Ty::tuple(&[ty, ty]);
+            }
+            ty
+        };
+        let left = Ty::int(crate::IntTy::U16);
+        let right = Ty::int(crate::IntTy::U32);
+        let param = Ty::param(0, Symbol::intern("T"));
+        let bound =
+            HeaderBindings::from_iter([((false, 0), (false, left)), ((true, 0), (true, right))]);
+        let mut subst = HeaderSubstitution::new(&bound);
+        let ty = deep(param, 32);
+        assert_eq!(subst.apply(false, ty, 0), deep(left, 32));
+        assert_eq!(subst.apply(true, ty, 0), deep(right, 32));
+        // When the cutoff is reached before unbound children, leave them
+        // intact even if this type was already substituted at a lower depth.
+        let unbound = Ty::param(1, Symbol::intern("U"));
+        let pair = Ty::tuple(&[unbound, unbound]);
+        assert_ne!(subst.apply(true, pair, 0), pair);
+        assert_eq!(subst.apply(true, pair, 64), pair);
+        assert!(subst.memo.len() <= 68);
+    }
 
     #[test]
     fn unresolved_impl_header_does_not_prove_a_goal_impossible() {

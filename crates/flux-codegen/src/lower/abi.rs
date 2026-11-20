@@ -56,8 +56,8 @@ impl Convention {
         {
             Argument::Scalar(scalar)
         } else if self.is_c() && c_aggregate(ty) {
-            let layout =
-                c_layout(sigs, layouts, ty).expect("C ABI preflight checked the parameter layout");
+            let layout = c_value_layout(sigs, layouts, ty)
+                .expect("C ABI preflight checked the parameter layout");
             if layout.size() == 0 {
                 Argument::Ignore
             } else {
@@ -166,6 +166,24 @@ fn c_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
     (layout.checked_size()? == actual.size && layout.align() == actual.align).then_some(layout)
 }
 
+/// Describe the bytes of a top-level aggregate that always crosses the call
+/// in memory. Packed fields can prevent a natural Keel layout even when both
+/// supported ABIs copy the whole value. Above 64 bytes the value also exceeds
+/// AArch64's largest homogeneous vector aggregate.
+fn c_value_layout(sigs: &Signatures, layouts: &Layouts, ty: Ty) -> Option<Layout> {
+    c_layout(sigs, layouts, ty).or_else(|| {
+        let actual = layouts.of(ty);
+        (c_aggregate(ty)
+            && !is_fat(sigs, ty)
+            && actual.exact
+            && actual.size > 64
+            && matches!(actual.align, 1 | 2 | 4 | 8)
+            && actual.size.is_multiple_of(actual.align)
+            && u32::try_from(actual.size / actual.align).is_ok())
+        .then(|| bytes_layout(actual.size, actual.align))
+    })
+}
+
 /// Physical scalar representation of admitted enum shapes. Source enum leaves
 /// still contain decoded discriminants and payloads; call boundaries marshal
 /// through the actual layout rather than exposing those internal leaves.
@@ -251,7 +269,7 @@ fn c_return_kind(sigs: &Signatures, layouts: &Layouts, ret: Ty) -> Return {
         Return::Values(vec![abi_param(scalar).unwrap()])
     } else if c_aggregate(ret) {
         let layout =
-            c_layout(sigs, layouts, ret).expect("C ABI preflight checked the return layout");
+            c_value_layout(sigs, layouts, ret).expect("C ABI preflight checked the return layout");
         if layout.size() == 0 {
             Return::Values(Vec::new())
         } else {
@@ -324,7 +342,7 @@ pub(super) fn check_c_abi(
     let supported = |sig: &FnSig| {
         sig.params.iter().copied().chain([sig.ret]).all(|ty| {
             c_admitted(&hir.items, &typed.sigs, &layouts, ty)
-                && c_layout(&typed.sigs, &layouts, ty).is_some()
+                && c_value_layout(&typed.sigs, &layouts, ty).is_some()
         })
     };
     let mut errors = Vec::new();

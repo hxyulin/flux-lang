@@ -31,9 +31,22 @@ struct P(i64);
 
 // `unwrap` is a `const fn`, as in rustc.
 const UNWRAPPED: i64 = Some(41).unwrap() + 1;
+const PRESENT: &[i64] = Some(42).as_slice();
+const EMPTY: &Option<i64> = &None;
+const ABSENT: &[i64] = EMPTY.as_slice();
+const TAKEN: (Option<i64>, Option<i64>) = {
+    let mut option = Some(21);
+    (option.take(), option)
+};
 
 fn main() {
     show(UNWRAPPED);
+    show(PRESENT[0]);
+    show(ABSENT.len() as i64);
+    show(TAKEN.0.unwrap());
+    assert!(TAKEN.1.is_none());
+    let option = find(10);
+    assert!(core::ptr::eq(&option.as_slice()[0], option.as_ref().unwrap()));
     show(find(10).unwrap());
     show(find(3).unwrap_or(-1));
     show(find(3).is_none() as i64);
@@ -47,6 +60,12 @@ fn main() {
     }
     show(div(7, 0).ok().unwrap_or(99));
     show(div(7, 7).is_ok() as i64);
+    let mut seen = 0;
+    let success = div(10, 2).inspect(|&n| seen += n);
+    let failure = div(10, 0).inspect(|_| panic!("unexpected success"));
+    assert_eq!(success, Ok(5));
+    assert!(failure.is_err());
+    show(seen);
     let a = Some(P(3));
     let b = a;
     show((a == b) as i64);

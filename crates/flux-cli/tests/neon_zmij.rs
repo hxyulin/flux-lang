@@ -17,6 +17,46 @@ fn immediate_boundaries_match_rustc() {
     std::fs::create_dir_all(&directory).unwrap();
     for (name, body, expected) in [
         (
+            "float_lane_last",
+            "let _=vgetq_lane_f32::<3>(vdupq_n_f32(1.0));",
+            true,
+        ),
+        (
+            "double_store_lane_invalid",
+            "let mut slot=0.0; let f:unsafe fn(*mut f64,float64x2_t)=vst1q_lane_f64::<2>; f(&mut slot,vmovq_n_f64(1.0));",
+            false,
+        ),
+        (
+            "doubleword_narrow_shift_last",
+            "let _=vshrn_n_u64::<32>(vmovq_n_u64(u64::MAX));",
+            true,
+        ),
+        (
+            "doubleword_narrow_shift_zero",
+            "let _=vshrn_n_u64::<0>(vmovq_n_u64(u64::MAX));",
+            false,
+        ),
+        (
+            "halfword_extract_invalid",
+            "let _=vextq_u16::<8>(vmovq_n_u16(1),vmovq_n_u16(2));",
+            false,
+        ),
+        (
+            "float_lane_reified_invalid",
+            "let f:unsafe fn(float32x4_t)->f32=vgetq_lane_f32::<4>;let _=f(vdupq_n_f32(1.0));",
+            false,
+        ),
+        (
+            "float_narrow_lane_invalid",
+            "let a:float32x2_t=core::mem::transmute([1.0f32;2]);let _=vdupq_lane_f32::<2>(a);",
+            false,
+        ),
+        (
+            "float_set_lane_negative",
+            "let _=vsetq_lane_f32::<-1>(2.0, vdupq_n_f32(1.0));",
+            false,
+        ),
+        (
             "half_left_min",
             "let _=vshlq_n_u16::<0>(core::mem::transmute([1u16;8]));",
             true,

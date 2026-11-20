@@ -38,6 +38,7 @@ impl traits::Reader for Reader { fn value(self) -> u32 { self.0 } }
 impl traits::Access for Adapter {
     fn key<S: traits::Seed>(&mut self, seed: S) -> S::Value { seed.read(Reader::new()) }
 }
+
 pub fn dispatch<V: traits::Visitor>(visitor: V) -> u32 { visitor.visit(Adapter) }
 
 // A different private implementation is not reachable through this callback.
@@ -151,4 +152,97 @@ fn main() { println!("{}", adapters::dispatch(Visitor)); }
         assert_eq!(actual.stdout, expected.stdout);
         assert_eq!(actual.stderr, expected.stderr);
     }
+}
+
+#[test]
+fn concrete_callback_matches_its_generic_call_after_import() {
+    let scratch = scratch::Scratch::new("out/flib-callable-recipe");
+    let directory = scratch.path().canonicalize().unwrap();
+    let library = r#"
+pub struct Callback<F: ?Sized>(pub Box<F>);
+fn dispatch<A, R>(callback: &mut Callback<dyn FnMut(A) -> R>, argument: A) -> R {
+    (callback.0)(argument)
+}
+pub fn answer(callback: &mut Callback<dyn FnMut(u8) -> u32>) -> u32 {
+    dispatch(callback, 7)
+}
+pub fn answer_static(callback: &mut Callback<dyn FnMut(&'static u8) -> u32>) -> u32 {
+    static ARGUMENT: u8 = 11;
+    dispatch(callback, &ARGUMENT)
+}
+fn dispatch_result<A, R>(
+    callback: &mut Callback<dyn FnMut(A) -> Result<R, ()>>,
+    argument: A,
+) -> Result<R, ()> {
+    (callback.0)(argument)
+}
+pub fn answer_result<A>(callback: &mut Callback<dyn FnMut(A) -> Result<u32, ()>>, argument: A) -> u32 {
+    dispatch_result(callback, argument).unwrap()
+}
+"#;
+    let program = r#"
+fn main() {
+    let callback: Box<dyn FnMut(u8) -> u32> = Box::new(|argument: u8| u32::from(argument) + 30);
+    println!("{}", callbacks::answer(&mut callbacks::Callback(callback)));
+    let static_callback: Box<dyn FnMut(&'static u8) -> u32> =
+        Box::new(|argument: &'static u8| u32::from(*argument) + 36);
+    println!("{}", callbacks::answer_static(&mut callbacks::Callback(static_callback)));
+    let fallible: Box<dyn FnMut(u8) -> Result<u32, ()>> =
+        Box::new(|argument: u8| Ok(u32::from(argument) + 34));
+    println!("{}", callbacks::answer_result(&mut callbacks::Callback(fallible), 7));
+}
+"#;
+    std::fs::write(directory.join("callbacks.rs"), library).unwrap();
+    std::fs::write(directory.join("main.rs"), program).unwrap();
+    successful(
+        Command::new("rustc").current_dir(&directory).args([
+            "--edition=2024",
+            "--crate-type=lib",
+            "callbacks.rs",
+            "-o",
+            "libcallbacks.rlib",
+        ]),
+        "oracle-library",
+    );
+    successful(
+        Command::new("rustc").current_dir(&directory).args([
+            "--edition=2024",
+            "main.rs",
+            "--extern",
+            "callbacks=libcallbacks.rlib",
+            "-o",
+            "oracle",
+        ]),
+        "oracle-program",
+    );
+    let expected = successful(&mut Command::new(directory.join("oracle")), "oracle-run");
+    assert_eq!(expected.stdout, b"37\n47\n41\n");
+    let flux = env!("CARGO_BIN_EXE_fluxc");
+    successful(
+        Command::new(flux).current_dir(&directory).args([
+            "build",
+            "--crate-type",
+            "lib",
+            "--fast-build",
+            "callbacks.rs",
+            "-o",
+            "callbacks.flib",
+        ]),
+        "flux-library",
+    );
+    std::fs::remove_file(directory.join("callbacks.rs")).unwrap();
+    successful(
+        Command::new(flux).current_dir(&directory).args([
+            "build",
+            "--fast-build",
+            "main.rs",
+            "--extern",
+            "callbacks=callbacks.flib",
+            "-o",
+            "program",
+        ]),
+        "flux-program",
+    );
+    let actual = successful(&mut Command::new(directory.join("program")), "flux-run");
+    assert_eq!(actual.stdout, expected.stdout);
 }

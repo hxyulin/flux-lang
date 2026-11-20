@@ -22,6 +22,16 @@ fn coroutine_storage_outlives_controls_match_rustc() {
             "use std::{future::Future,pin::Pin};fn bad<'a>(value:&'a u8)->Pin<Box<dyn Future<Output=u8>+Send+'static>>{Box::pin(async move{*value})}fn main(){}",
             false,
         ),
+        (
+            "await_argument_temporary",
+            "async fn length(value:&String)->usize{std::future::ready(()).await;value.len()}async fn forward()->usize{length(&String::from(\"kept\")).await}fn main(){}",
+            true,
+        ),
+        (
+            "await_explicit_block_temporary",
+            "async fn length(value:&String)->usize{value.len()}async fn forward()->usize{{length(&String::from(\"too short\"))}.await}fn main(){}",
+            false,
+        ),
     ] {
         let root = std::env::temp_dir().join(format!(
             "flux-coroutine-outlives-{name}-{}",

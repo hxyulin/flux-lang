@@ -49,6 +49,18 @@ unsafe fn invoke<A, R>(address: *mut u8, argument: A) -> R {
     let callback: unsafe extern "C" fn(A) -> R = unsafe { core::mem::transmute(address) };
     unsafe { callback(argument) }
 }
+#[repr(C, packed(4))]
+#[derive(Clone, Copy)]
+struct PackedWord {
+    address: u64,
+    value: u64,
+}
+
+extern "C" fn local_packed(mut values: [PackedWord; 5]) -> [PackedWord; 5] {
+    values[0].value += values[4].address;
+    values
+}
+
 fn main() {
     assert_eq!(inspect_node(Node { next: core::ptr::null() }), 42);
     let indirect: extern "C" fn(Node) -> u64 = inspect_node;
@@ -83,6 +95,15 @@ fn main() {
         assert_eq!(got.unwrap().get(), 201);
         let got: Option<core::num::NonZeroU8> = invoke(nonzero, None::<core::num::NonZeroU8>);
         assert!(got.is_none());
+        let packed = dlsym(lib, c"exchange_packed".as_ptr());
+        let mut values = [PackedWord { address: 7, value: 103 }; 5];
+        values[4].address = 991;
+        let returned: [PackedWord; 5] = invoke(packed, values);
+        let observed = (returned[0].value, returned[1].value, values[0].value);
+        assert_eq!(observed, (991, 103, 103));
+        let invoke_packed: unsafe extern "C" fn(extern "C" fn([PackedWord; 5]) -> [PackedWord; 5]) -> u64 =
+            core::mem::transmute(dlsym(lib, c"invoke_packed".as_ptr()));
+        assert_eq!(invoke_packed(local_packed), 116);
         let reference = dlsym(lib, c"nullable_reference".as_ptr());
         let word = 91u64;
         let got: Option<&u64> = invoke(reference, Some(&word));

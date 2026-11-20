@@ -150,6 +150,58 @@ fn const_pointer_offsets_match_rustc() {
             r#"static A:[u32;3]=[7,11,13];const R:&[u32]=unsafe{std::slice::from_raw_parts(A.as_ptr().add(1),3)};fn main(){}"#,
         ),
         (
+            "mutable_frame_slice",
+            true,
+            r#"
+const OUT: [u16; 3] = {
+    let mut data = [5, 7, 13];
+    let pointer = (&raw mut data).cast::<u16>();
+    let part = unsafe { std::slice::from_raw_parts_mut(pointer.add(1), 1) };
+    part[0] = 11;
+    data
+};
+fn main() { assert_eq!(OUT, [5, 11, 13]); }
+"#,
+        ),
+        (
+            "empty_slice_requires_aligned_address",
+            false,
+            r#"const VIEW:&[u32]=unsafe{std::slice::from_raw_parts(1usize as *const u32,0)};fn main(){println!("{}",VIEW.len());}"#,
+        ),
+        (
+            "empty_raw_slice_allows_null_address",
+            true,
+            r#"const VIEW:*const[u32]=std::ptr::slice_from_raw_parts(std::ptr::null(),0);fn main(){assert!(VIEW.cast::<u32>().is_null());}"#,
+        ),
+        (
+            "mutable_frame_slice_bounds",
+            false,
+            r#"
+const OUT: u16 = {
+    let mut data = [5u16, 7];
+    let pointer = (&raw mut data).cast::<u16>();
+    let part = unsafe { std::slice::from_raw_parts_mut(pointer.add(1), 2) };
+    part[1] = 11;
+    part[0]
+};
+fn main() {}
+"#,
+        ),
+        (
+            "mutable_frame_slice_readonly",
+            false,
+            r#"
+static DATA: [u16; 2] = [5, 7];
+const OUT: u16 = {
+    let pointer = DATA.as_ptr() as *mut u16;
+    let part = unsafe { std::slice::from_raw_parts_mut(pointer.add(1), 1) };
+    part[0] = 11;
+    part[0]
+};
+fn main() { println!("{OUT}"); }
+"#,
+        ),
+        (
             "array_unsize_offset",
             true,
             r#"static A:[[u32;2];2]=[[7,11],[13,17]];const P:*const [u32]=unsafe{A.as_ptr().add(1) as *const[u32]};const X:u32=unsafe{(&*P)[1]};fn main(){assert_eq!(X,17);}"#,

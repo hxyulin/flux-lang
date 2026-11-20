@@ -18,7 +18,6 @@ struct Header {
 // and `lang` items are unstable.
 #[cfg_attr(not(test), lang = "rc")]
 pub struct Rc<T: ?Sized> {
-    ptr: NonNull<Header>,
     data: NonNull<T>,
     owner: PhantomData<T>,
 }
@@ -26,8 +25,30 @@ pub struct Rc<T: ?Sized> {
 /// A single-threaded allocation owner that does not keep the payload alive.
 pub struct Weak<T: ?Sized> {
     ptr: Option<NonNull<Header>>,
-    data: Option<NonNull<T>>,
+    data: NonNull<T>,
     owner: PhantomData<T>,
+}
+
+// The allocation and payload offset are both aligned to Header, so the
+// all-ones address cannot be a payload address, even for zero-sized T.
+const EMPTY_WEAK_ADDR: usize = usize::MAX;
+
+impl Rc<dyn core::any::Any> {
+    /// Retains the allocation and its counts when the payload has type `T`.
+    pub fn downcast<T: core::any::Any>(self) -> Result<Rc<T>, Self> {
+        if (*self).is::<T>() {
+            let data = self.data.as_ptr() as *mut T;
+            core::mem::forget(self);
+            Ok(Rc {
+                // SAFETY: the type check proves T and casting preserves the
+                // nonnull data address. Forgetting self transfers its owner.
+                data: unsafe { NonNull::new_unchecked(data) },
+                owner: PhantomData,
+            })
+        } else {
+            Err(self)
+        }
+    }
 }
 
 fn increment(counter: &Cell<usize>) {
@@ -40,13 +61,12 @@ fn increment(counter: &Cell<usize>) {
 
 impl<T> Rc<T> {
     pub fn new(value: T) -> Rc<T> {
-        let (ptr, raw) = allocate(Layout::new::<T>());
+        let raw = allocate(Layout::new::<T>());
         // SAFETY: fresh aligned storage is initialized before publication.
         unsafe {
             let data = raw as *mut T;
             ptr::write(data, value);
             Rc {
-                ptr,
                 data: NonNull::new_unchecked(data),
                 owner: PhantomData,
             }
@@ -57,7 +77,7 @@ impl<T> Rc<T> {
         if Rc::strong_count(&this) != 1 {
             return Err(this);
         }
-        let header = this.ptr;
+        let header = this.header();
         let data = this.data;
         core::mem::forget(this);
         // SAFETY: the only owner was consumed without running Drop. Reading
@@ -72,28 +92,33 @@ impl<T> Rc<T> {
 }
 
 impl<T: ?Sized> Rc<T> {
+    fn header(&self) -> NonNull<Header> {
+        // SAFETY: this strong owner pins the payload and its allocation.
+        unsafe { header_of(self.data.as_ptr()) }
+    }
+
     pub fn strong_count(this: &Rc<T>) -> usize {
         // SAFETY: this handle keeps the header alive throughout the borrow.
-        unsafe { (*this.ptr.as_ptr()).strong.get() }
+        unsafe { (*this.header().as_ptr()).strong.get() }
     }
 
     pub fn weak_count(this: &Rc<T>) -> usize {
         // SAFETY: the borrowed strong owner retains the implicit weak count.
-        unsafe { (*this.ptr.as_ptr()).weak.get() - 1 }
+        unsafe { (*this.header().as_ptr()).weak.get() - 1 }
     }
 
     pub fn downgrade(this: &Rc<T>) -> Weak<T> {
         // SAFETY: this strong handle pins the header and its implicit weak.
-        increment(unsafe { &(*this.ptr.as_ptr()).weak });
+        increment(unsafe { &(*this.header().as_ptr()).weak });
         Weak {
-            ptr: Some(this.ptr),
-            data: Some(this.data),
+            ptr: Some(this.header()),
+            data: this.data,
             owner: PhantomData,
         }
     }
 
     pub fn ptr_eq(this: &Rc<T>, other: &Rc<T>) -> bool {
-        this.ptr.as_ptr() == other.ptr.as_ptr()
+        this.header().as_ptr() == other.header().as_ptr()
     }
 
     pub fn get_mut(this: &mut Rc<T>) -> Option<&mut T> {
@@ -114,16 +139,15 @@ impl<T: Clone> Rc<T> {
             let replacement = Rc::new((**this).clone());
             *this = replacement;
         } else if Rc::weak_count(this) != 0 {
-            let (header, raw) = allocate(Layout::new::<T>());
+            let raw = allocate(Layout::new::<T>());
             // SAFETY: allocation succeeded before changing this handle. The
             // sole payload moves into fresh aligned storage; weak owners of the
             // old header subsequently observe strong == 0.
             unsafe {
                 let data = raw as *mut T;
                 ptr::write(data, ptr::read(this.data.as_ptr()));
-                let old = this.ptr;
+                let old = this.header();
                 (*old.as_ptr()).strong.set(0);
-                this.ptr = header;
                 this.data = NonNull::new_unchecked(data);
                 drop(Release { ptr: old });
             }
@@ -142,9 +166,8 @@ impl<T: Clone> Rc<T> {
 impl<T: ?Sized> Clone for Rc<T> {
     fn clone(&self) -> Rc<T> {
         // SAFETY: self pins the header; this non-atomic owner cannot cross threads.
-        increment(unsafe { &(*self.ptr.as_ptr()).strong });
+        increment(unsafe { &(*self.header().as_ptr()).strong });
         Rc {
-            ptr: self.ptr,
             data: self.data,
             owner: PhantomData,
         }
@@ -188,18 +211,18 @@ impl<T: ?Sized> Drop for Rc<T> {
         // SAFETY: self owns one count. Only its final owner destroys T; the
         // allocation stays live until the release guard is dropped afterward.
         unsafe {
-            let count = &(*self.ptr.as_ptr()).strong;
+            let count = &(*self.header().as_ptr()).strong;
             let strong = count.get();
             count.set(strong - 1);
             if strong == 1 {
-                let _release = Release { ptr: self.ptr };
+                let _release = Release { ptr: self.header() };
                 ptr::drop_in_place(self.data.as_ptr());
             }
         }
     }
 }
 
-fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
+fn allocate(payload: Layout) -> *mut u8 {
     let header = Layout::new::<Header>();
     let align = header.align().max(payload.align());
     let padded = match header.size().checked_add(payload.align() - 1) {
@@ -231,7 +254,7 @@ fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
                 layout,
             },
         );
-        (NonNull::new_unchecked(ptr), base.add(offset))
+        base.add(offset)
     }
 }
 
@@ -242,7 +265,7 @@ impl<T> From<Vec<T>> for Rc<[T]> {
             Ok(layout) => layout,
             Err(_) => handle_alloc_error(Layout::new::<Header>()),
         };
-        let (ptr, raw) = allocate(layout);
+        let raw = allocate(layout);
         // SAFETY: the destination is separate aligned storage for len values.
         // Clearing the source length transfers ownership, including ZSTs.
         unsafe {
@@ -251,7 +274,6 @@ impl<T> From<Vec<T>> for Rc<[T]> {
             values.set_len(0);
             let slice = core::slice::from_raw_parts_mut(data, len);
             Rc {
-                ptr,
                 data: NonNull::new_unchecked(slice as *mut [T]),
                 owner: PhantomData,
             }
@@ -306,7 +328,6 @@ impl<T: ?Sized> Rc<T> {
         // SAFETY: forwarded from the caller's contract.
         unsafe {
             Rc {
-                ptr: header_of(ptr),
                 data: NonNull::new_unchecked(ptr as *mut T),
                 owner: PhantomData,
             }
@@ -358,7 +379,7 @@ impl From<&crate::string::String> for Rc<str> {
 impl<T: ?Sized> From<crate::boxed::Box<T>> for Rc<T> {
     fn from(value: crate::boxed::Box<T>) -> Rc<T> {
         let layout = Layout::for_value(&*value);
-        let (ptr, raw) = allocate(layout);
+        let raw = allocate(layout);
         let source = crate::boxed::Box::into_raw(value);
         // SAFETY: allocate reserves aligned storage for the entire payload.
         // Moving bytes transfers ownership without cloning or dropping T. The
@@ -372,7 +393,6 @@ impl<T: ?Sized> From<crate::boxed::Box<T>> for Rc<T> {
                 dealloc(source as *mut u8, layout);
             }
             Rc {
-                ptr,
                 data: NonNull::new_unchecked(data),
                 owner: PhantomData,
             }
@@ -482,12 +502,47 @@ impl<T> Weak<T> {
     pub const fn new() -> Weak<T> {
         Weak {
             ptr: None,
-            data: None,
+            // SAFETY: the sentinel is nonnull and is never dereferenced.
+            data: unsafe { NonNull::new_unchecked(EMPTY_WEAK_ADDR as *mut T) },
             owner: PhantomData,
         }
     }
 }
 impl<T: ?Sized> Weak<T> {
+    /// Returns the payload pointer without changing the weak count.
+    pub fn as_ptr(&self) -> *const T {
+        self.data.as_ptr()
+    }
+
+    /// Consumes the handle while retaining its weak count, if any.
+    pub fn into_raw(self) -> *const T {
+        let data = self.as_ptr();
+        core::mem::forget(self);
+        data
+    }
+
+    /// Rebuilds a weak handle transferred by `into_raw`.
+    ///
+    /// # Safety
+    /// `ptr` must come from `Weak::into_raw` for a layout-compatible payload.
+    /// Its weak count, if any, must not have been reclaimed already.
+    pub unsafe fn from_raw(ptr: *const T) -> Self {
+        // SAFETY: the transferred weak count pins the nonempty allocation
+        // header even after T drops. Empty handles carry a nonnull sentinel.
+        unsafe {
+            let header = if ptr.addr() == EMPTY_WEAK_ADDR {
+                None
+            } else {
+                Some(header_of(ptr))
+            };
+            Weak {
+                ptr: header,
+                data: NonNull::new_unchecked(ptr as *mut T),
+                owner: PhantomData,
+            }
+        }
+    }
+
     pub fn upgrade(&self) -> Option<Rc<T>> {
         let header = self.ptr?;
         // SAFETY: this weak owner pins the header. Nonzero strong means T is
@@ -498,8 +553,7 @@ impl<T: ?Sized> Weak<T> {
             }
             increment(&header.as_ref().strong);
             Some(Rc {
-                ptr: header,
-                data: self.data.unwrap(),
+                data: self.data,
                 owner: PhantomData,
             })
         }
@@ -566,7 +620,7 @@ mod tests {
             // SAFETY: the handle keeps this allocation live. Only its Cell
             // counter is changed, and this child must abort before destruction.
             unsafe {
-                (*owner.ptr.as_ptr()).strong.set(isize::MAX as usize);
+                (*owner.header().as_ptr()).strong.set(isize::MAX as usize);
             }
             let _ = owner.clone();
             panic!("overflow clone returned");

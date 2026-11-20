@@ -44,6 +44,49 @@ fn oracle(source: &str, accepted: bool) {
 }
 
 #[test]
+fn forwarded_object_bounds_match_rustc() {
+    let source = r#"
+trait Marker {}
+trait Kind { type Value: ?Sized; }
+trait Parent { type Base: Kind; }
+trait Permanent: 'static {}
+
+struct Root;
+impl Kind for Root { type Value = dyn Marker; }
+struct Child(core::marker::PhantomData<<Child as Kind>::Value>);
+impl Parent for Child { type Base = Root; }
+impl Kind for Child {
+    type Value = <<Self as Parent>::Base as Kind>::Value;
+}
+impl Permanent for Child {}
+fn main() {}
+"#;
+    oracle(source, true);
+    let (_, _, messages) = resolve(source);
+    assert!(messages.is_empty(), "{messages:?}");
+
+    let borrowed = source
+        .replace("struct Root;", "struct Root<'a>(&'a ());")
+        .replace("impl Kind for Root", "impl<'a> Kind for Root<'a>")
+        .replace("type Value = dyn Marker;", "type Value = dyn Marker + 'a;")
+        .replace(
+            "struct Child(core::marker::PhantomData<<Child as Kind>::Value>);",
+            "struct Child<'a>(core::marker::PhantomData<<Child<'a> as Kind>::Value>);",
+        )
+        .replace(
+            "impl Parent for Child { type Base = Root; }",
+            "impl<'a> Parent for Child<'a> { type Base = Root<'a>; }",
+        )
+        .replace("impl Kind for Child", "impl<'a> Kind for Child<'a>")
+        .replace(
+            "impl Permanent for Child",
+            "impl<'a> Permanent for Child<'a>",
+        );
+    oracle(&borrowed, false);
+    assert!(!resolve(&borrowed).2.is_empty());
+}
+
+#[test]
 fn declaration_arity_names_and_elision_match_rustc() {
     for (body, accepted, diagnostic) in [
         ("fn f<'x, N: Tr<'x>>() {}", true, ""),

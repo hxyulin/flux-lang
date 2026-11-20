@@ -202,10 +202,9 @@ pub(crate) fn caller_location() -> &'static crate::panic::Location<'static> {
     loop {}
 }
 
-/// An alignment-one scalar read from initialized, readable memory.
-/// Monomorphization rejects types outside the bounded unsigned subset.
+/// An alignment-one read of an initialized value with a sized layout.
 #[rustc_intrinsic]
-pub(crate) unsafe fn read_unaligned<T>(src: *const T) -> T {
+pub(crate) const unsafe fn read_unaligned<T>(src: *const T) -> T {
     loop {}
 }
 
@@ -528,6 +527,9 @@ pub(crate) unsafe fn __atomic_ptr_cas_seqcst<T>(p:*mut T,expected:T,new:T)->T {l
 /// Changes the data address without changing pointer metadata.
 #[rustc_intrinsic]
 pub(crate) fn ptr_with_addr<T:?Sized>(pointer:*const T,address:usize)->*const T {loop {}}
+
+#[rustc_intrinsic]
+pub(crate) fn ptr_with_metadata<T: ?Sized>(data: *mut u8, metadata: *const T) -> *mut T { loop {} }
 
 /// The pointer metadata word, or zero for a thin pointer. This private
 /// operation preserves the compiler's pointer representation without reads

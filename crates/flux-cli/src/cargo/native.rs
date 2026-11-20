@@ -687,7 +687,11 @@ impl Planner {
                         .names
                         .extend(requested);
                     edges.push(ResolvedDependency {
-                        alias: dep.alias.replace('-', "_"),
+                        alias: if dep.spec.contains_key("package") {
+                            dep.alias.replace('-', "_")
+                        } else {
+                            library.name.clone()
+                        },
                         package: child,
                         domain: child_domain,
                         build: dep.build,
@@ -1317,7 +1321,18 @@ fn predicate(input: &str, cfg: &BTreeSet<String>) -> Result<bool> {
     // `target_feature` atoms are decided by the same list the compiled
     // code sees (`crate::target::cfg`), so a dependency is planned exactly
     // when its users' `cfg(target_feature = ..)` is true.
-    if atom.starts_with("feature=") || atom == "test" || atom == "debug_assertions" {
+    // Cargo evaluates target predicates without the package's own features.
+    if let Some(value) = atom.strip_prefix("feature=") {
+        if value
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+            .is_some()
+        {
+            return Ok(false);
+        }
+        return Err(format!("invalid target dependency predicate {input}"));
+    }
+    if atom == "test" || atom == "debug_assertions" {
         return Err(format!("unsupported target dependency predicate {input}"));
     }
     if input.contains(['(', ')', ',']) || input.is_empty() {
@@ -1595,6 +1610,8 @@ mod tests {
             ),
             Ok(false)
         );
-        assert!(predicate("feature = \"std\"", &cfg).is_err());
+        assert_eq!(predicate("feature = \"std\"", &cfg), Ok(false));
+        assert_eq!(predicate("not(feature = \"std\")", &cfg), Ok(true));
+        assert!(predicate("feature = std", &cfg).is_err());
     }
 }

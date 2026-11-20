@@ -1,6 +1,6 @@
 //! Monotonic and system clocks on supported Unix targets.
 use core::ops::{Add, Sub};
-pub use core::time::Duration;
+pub use core::time::{Duration, TryFromFloatSecsError};
 
 const NANOS_PER_SEC: u32 = 1_000_000_000;
 

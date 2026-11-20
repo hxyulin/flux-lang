@@ -13,9 +13,9 @@ struct Fixture {
     rustc: PathBuf,
 }
 impl Fixture {
-    fn new() -> Self {
+    fn new(test: &str) -> Self {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!(
-            "../../out/native-host-tests/{}",
+            "../../out/native-host-tests/{test}-{}",
             std::process::id()
         ));
         std::fs::create_dir_all(root.join("tools")).unwrap();
@@ -108,7 +108,7 @@ impl Drop for Fixture {
 
 #[test]
 fn direct_host_tools_feed_native_flux_builds() {
-    let f = Fixture::new();
+    let f = Fixture::new("native");
     f.write(
         "Cargo.toml",
         "[workspace]\nmembers=[\"app\",\"shared\",\"macros\",\"child\"]\nresolver=\"3\"\n",
@@ -156,7 +156,7 @@ include!(concat!(env!("OUT_DIR"),"/value.rs"));
 fn main() {
     assert_eq!(env!("APP_VALUE"),"target-only");
     #[cfg(feature="derive")] assert_eq!(Derived::answer(),47);
-    println!("{}",shared::value()+alias::value()+GENERATED+47);
+    println!("{}",shared_library::value()+alias::value()+GENERATED+47);
 }
 "#,
     );
@@ -167,6 +167,8 @@ fn main() {
 name="shared"
 version="0.1.0"
 edition="2024"
+[lib]
+name="shared_library"
 [features]
 host=[]
 target=[]
@@ -413,4 +415,53 @@ dependencies=["shared"]
         );
         assert!(!f.root.join(format!("{label}.json")).exists());
     }
+}
+
+#[test]
+fn resolves_rustup_before_entering_a_dependency_directory() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let mut f = Fixture::new("rustup");
+    f.write(
+        "proxy/rustup",
+        r#"#!/bin/sh
+compiler="${0%/*}/selected-rustc"
+if [ "${0##*/}" = rustup ]; then
+    [ "$1" = which ] && [ "$2" = rustc ] || exit 91
+    printf '%s\n' "$compiler"
+elif [ "${PWD##*/}" = macros ] && [ -f rust-toolchain.toml ]; then
+    echo 'dependency override selected a different compiler' >&2
+    exit 92
+else
+    exec "$compiler" "$@"
+fi
+"#,
+    );
+    let proxy = f.root.join("proxy/rustup");
+    std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).unwrap();
+    symlink(&f.rustc, f.root.join("proxy/selected-rustc")).unwrap();
+    f.rustc = f.root.join("proxy/rustc");
+    std::fs::hard_link(&proxy, &f.rustc).unwrap();
+    f.write("Cargo.toml", "[workspace]\n[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nmacros={path='macros'}\n");
+    f.write(
+        "src/main.rs",
+        "fn main() { assert_eq!(macros::answer!(), 42); }",
+    );
+    f.write(
+        "macros/Cargo.toml",
+        "[package]\nname='macros'\nversion='0.1.0'\nedition='2024'\n[lib]\nproc-macro=true\n",
+    );
+    f.write(
+        "macros/rust-toolchain.toml",
+        "[toolchain]\nchannel='1.83.0'\n",
+    );
+    f.write("macros/src/lib.rs", "extern crate proc_macro; #[proc_macro] pub fn answer(_: proc_macro::TokenStream) -> proc_macro::TokenStream { \"42\".parse().unwrap() }");
+    f.write("Cargo.lock", "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['macros']\n[[package]]\nname='macros'\nversion='0.1.0'\n");
+
+    let output = f.run("build", "dependency-override", &[]);
+    support::oracle::success(&output, "Rustup toolchain reused for dependency");
+    let output = Command::new(f.root.join("target/flux/debug/app"))
+        .output()
+        .unwrap();
+    support::oracle::success(&output, "macro expanded by the selected toolchain");
 }

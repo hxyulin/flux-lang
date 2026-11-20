@@ -9,8 +9,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use flux_arena::ArenaMap;
 use flux_hir::{
     ArithOp, AssocItem, BinaryOp, Binding, BindingId, Body, BodySourceMap, CmpOp, ConstId,
-    Diagnostic, Expr, ExprId, FunctionId, Generics, ItemTree, Literal, LogicOp, LoopSource, Pat,
-    PatId, Res, SegmentArgs, Stmt, StructId, StructKind, TypeRefId, UnaryOp,
+    Diagnostic, Expr, ExprId, FunctionId, Generics, ItemTree, LifetimeRef, Literal, LogicOp,
+    LoopSource, Pat, PatId, RecordTarget, Res, SegmentArgs, Stmt, StructId, StructKind, TypeRefId,
+    UnaryOp,
 };
 use flux_intern::Symbol;
 use flux_solve::traits::{elaborate, predicates_of};
@@ -50,8 +51,8 @@ pub struct InferenceResult {
     pub binding_types: ArenaMap<Binding, Ty>,
     /// The field each `Field` expression reads, by index.
     pub field_indices: ArenaMap<Expr, u32>,
-    /// Unit variants named through a normalized associated type.
-    pub unit_variants: ArenaMap<Expr, (StructId, u32)>,
+    /// Variants named through a normalized associated type, indexed by the value expression.
+    pub associated_variants: ArenaMap<Expr, (StructId, u32)>,
     pub offsets: ArenaMap<Expr, (Ty, Box<[u32]>)>,
     /// How many references a `Field` or `Index` expression's base is
     /// dereferenced through first: one for `r.a` with `r: &S`, or `r[0]`
@@ -63,7 +64,7 @@ pub struct InferenceResult {
     pub unsized_indices: ArenaMap<Expr, ()>,
     /// The method each `MethodCall` calls, and how its receiver is passed.
     pub methods: ArenaMap<Expr, Method>,
-    /// Expressions of type `&mut T` that are reborrowed where they are
+    /// Reference expressions that are reborrowed where they are
     /// used, rather than moved: `&*r` or `&mut *r` with this mutability.
     /// rustc does this where a reference is expected.
     pub reborrows: ArenaMap<Expr, Mutability>,
@@ -446,7 +447,7 @@ impl<'a> Ctx<'a> {
             never_coercions: ArenaMap::new(),
             binding_types: ArenaMap::new(),
             field_indices: ArenaMap::new(),
-            unit_variants: ArenaMap::new(),
+            associated_variants: ArenaMap::new(),
             offsets: ArenaMap::new(),
             field_derefs: ArenaMap::new(),
             unsized_indices: ArenaMap::new(),
@@ -493,6 +494,8 @@ impl<'a> Ctx<'a> {
             signature_wf: FxHashSet::default(),
             deferred: Vec::new(),
             pending_try_returns: Vec::new(),
+            try_outputs: Vec::new(),
+            diverging_match_outputs: Vec::new(),
             unsizes: ArenaMap::new(),
             builtin_methods: ArenaMap::new(),
             lens: crate::ArrayLens::new(&sigs.array_lens, &sigs.arg_tys),
@@ -508,6 +511,7 @@ impl<'a> Ctx<'a> {
             coerced_tuples: FxHashSet::default(),
             for_heads: FxHashSet::default(),
             reified_closures: Vec::new(),
+            inferred_closure_pointers: FxHashSet::default(),
             own_opaques: Vec::new(),
             own_opaque_args: &[],
             diagnostics: Vec::new(),
@@ -560,6 +564,11 @@ enum TryResidual {
 /// A check that needs the final types.
 #[derive(Debug, Clone, Copy)]
 enum Deferred {
+    RepeatCopy {
+        value: ExprId,
+        elem: Ty,
+        len: Ty,
+    },
     InlineAsm {
         expr: ExprId,
     },
@@ -658,7 +667,7 @@ struct Ctx<'a> {
     never_coercions: ArenaMap<Expr, Ty>,
     binding_types: ArenaMap<Binding, Ty>,
     field_indices: ArenaMap<Expr, u32>,
-    unit_variants: ArenaMap<Expr, (StructId, u32)>,
+    associated_variants: ArenaMap<Expr, (StructId, u32)>,
     offsets: ArenaMap<Expr, (Ty, Box<[u32]>)>,
     field_derefs: ArenaMap<Expr, u32>,
     unsized_indices: ArenaMap<Expr, ()>,
@@ -735,6 +744,8 @@ struct Ctx<'a> {
     signature_wf: FxHashSet<Ty>,
     deferred: Vec<Deferred>,
     pending_try_returns: Vec<(ExprId, TryResidual, Ty)>,
+    try_outputs: Vec<Ty>,
+    diverging_match_outputs: Vec<Ty>,
     unsizes: ArenaMap<Expr, Ty>,
     builtin_methods: ArenaMap<Expr, (BuiltinMethod, u32)>,
     /// The values of the constants array lengths name.
@@ -767,6 +778,8 @@ struct Ctx<'a> {
     /// Closures coerced to function pointers, with their types and the
     /// pointers', which must capture nothing.
     reified_closures: Vec<(ExprId, Ty, Ty)>,
+    /// Pointers inferred while joining closure branches with unknown types.
+    inferred_closure_pointers: FxHashSet<Ty>,
     /// In a function with opaque types, the variables their hidden types
     /// are, by index, and the generic arguments for which they are its
     /// own (its parameters): where the body names them, as it returns
@@ -1646,11 +1659,12 @@ impl Ctx<'_> {
 
     /// [`InferenceResult::expr_regions`], after reporting the lifetime
     /// arguments of expression paths that flux cannot relate to regions:
-    /// on functions and methods themselves, on traits, on constants and
-    /// in patterns.
+    /// on functions and methods themselves, on traits and in patterns, and
+    /// on constants whose owner lifetimes cannot be erased.
     fn constructor_regions(
         &mut self,
         calls: &ArenaMap<Expr, Instance>,
+        consts: &ArenaMap<Expr, ConstInstance>,
     ) -> ArenaMap<Expr, Box<[crate::regions::Region]>> {
         const UNSUPPORTED: &str = "lifetime arguments in expressions are not supported yet";
         let body = self.body;
@@ -1667,10 +1681,11 @@ impl Ctx<'_> {
             // the constructor's type or an inherent function's self type.
             let (item_ok, ty_ok) = match body.exprs[expr] {
                 Expr::Record { .. } | Expr::Path(Res::Struct(_) | Res::Variant(..))
-                    if !generics.self_type && generics.alias.is_none() =>
+                    if !generics.self_type =>
                 {
                     // `instantiate_adt` takes the item's, else the type's.
                     let written = item.or(ty);
+                    let constructor_ty = generics.qualified_constructor.or(generics.alias);
                     let value = match body.exprs[expr] {
                         Expr::Record { .. } => Some(expr),
                         _ => call_of.get(&expr).copied().or_else(|| {
@@ -1680,19 +1695,30 @@ impl Ctx<'_> {
                         }),
                     };
                     let value_ty = value.and_then(|v| self.expr_types.get(v).copied());
-                    match (written, value, value_ty) {
-                        (Some(written), Some(value), Some(value_ty)) => {
-                            if let Some(regions) = self.written_adt_regions(written, value_ty)
-                                && regions.iter().any(|r| *r != crate::regions::Region::Erased)
-                            {
-                                out.insert(value, regions);
-                            }
+                    if let (Some(value), Some(value_ty)) = (value, value_ty) {
+                        let regions = if let Some(constructor_ty) = constructor_ty {
+                            self.written_type_regions(constructor_ty, value_ty)
+                        } else {
+                            written.and_then(|written| self.written_adt_regions(written, value_ty))
+                        };
+                        if let Some(regions) = regions
+                            && regions.iter().any(|r| *r != crate::regions::Region::Erased)
+                        {
+                            out.insert(value, regions);
                         }
-                        (Some(written), None, _) if !self.written_lifetimes(written).is_empty() => {
+                    } else if value.is_none() {
+                        let mut lifetimes =
+                            written.map_or_else(Vec::new, |w| self.written_lifetimes(w));
+                        if let Some(constructor_ty) = constructor_ty {
+                            crate::regions::lifetimes_in(
+                                &body.types[constructor_ty],
+                                &mut lifetimes,
+                            );
+                        }
+                        if lifetimes.iter().any(|l| !l.is_anonymous()) {
                             let message = "lifetimes in function item values are not supported yet";
                             self.report_walker_errors(vec![(self.range(expr), message.to_owned())]);
                         }
-                        _ => {}
                     }
                     (item.is_some(), item.is_none())
                 }
@@ -1744,8 +1770,7 @@ impl Ctx<'_> {
                     );
                 }
             }
-            // An associated constant's `impl` block, whose arguments are
-            // resolved as written, without regions.
+            // A by-name constant's owner arguments have no region rows.
             if let Expr::Path(Res::Const(_)) = body.exprs[expr]
                 && let Some(ty) = ty
             {
@@ -1761,8 +1786,30 @@ impl Ctx<'_> {
                 }
             }
         }
-        // `S::<'a>::N` names a constant of a type with lifetimes.
         for (expr, data) in body.exprs.iter() {
+            // A projected constructor does not yet have a row mapping the
+            // resolved ADT's regions to the associated type's definition.
+            if let Expr::Record {
+                target: RecordTarget::Associated(written),
+                ..
+            } = data
+                && let Some(&ty) = self.expr_types.get(expr)
+                && !ty.has_error()
+                && crate::regions::slots(self.items, ty) != 0
+            {
+                let range = self
+                    .source_map
+                    .types
+                    .get(*written)
+                    .copied()
+                    .unwrap_or_default();
+                self.error(
+                    range,
+                    "lifetimes in associated record constructors are not supported yet",
+                );
+            }
+            // Constant operands carry static regions. Check the written
+            // owner before allowing an associated constant to use that model.
             if let Expr::Path(Res::Assoc {
                 ty: Some(written), ..
             }) = data
@@ -1770,7 +1817,11 @@ impl Ctx<'_> {
             {
                 let mut found = Vec::new();
                 crate::regions::lifetimes_in(&body.types[*written], &mut found);
-                if let Some(l) = found.iter().find(|l| !l.is_anonymous()) {
+                if let Some(l) = found.iter().find(|l| !l.is_anonymous())
+                    && !consts.get(expr).is_some_and(|instance| {
+                        self.constant_owner_regions_hold(*written, *instance, &found)
+                    })
+                {
                     self.error(
                         l.range,
                         "named lifetimes in types in bodies are not supported yet",
@@ -1791,6 +1842,246 @@ impl Ctx<'_> {
         out
     }
 
+    /// Check a written constant owner before lowering the result as a
+    /// constant operand with static regions.
+    fn constant_owner_regions_hold(
+        &self,
+        written: TypeRefId,
+        instance: ConstInstance,
+        lifetimes: &[LifetimeRef],
+    ) -> bool {
+        use crate::regions::{Outlives, Region};
+        let (imp, impl_args, owner, predicate) = match self.items.consts[instance.konst].owner {
+            Some(flux_hir::Owner::Impl(imp)) => {
+                let Some(&template) = self.sigs.impls.get(imp) else {
+                    return false;
+                };
+                (imp, instance.args, template.subst(instance.args), None)
+            }
+            Some(flux_hir::Owner::Trait(trait_)) => {
+                let trait_data = &self.items.traits[trait_];
+                let Some(trait_sig) = self.sigs.traits.get(trait_) else {
+                    return false;
+                };
+                if !trait_data.generics.lifetimes.is_empty()
+                    || !trait_sig.header_projections.is_empty()
+                    || !trait_sig.supertraits.is_empty()
+                    || self
+                        .sigs
+                        .trait_predicates
+                        .get(trait_)
+                        .is_some_and(|p| !p.is_empty())
+                    || instance.args.len() != 1 + trait_data.generics.len()
+                    || !instance.args[1..].iter().copied().all(|ty| {
+                        crate::regions::slots(self.items, ty) == 0
+                            && self.closed_const_owner_type(ty)
+                    })
+                {
+                    return false;
+                }
+                let goal = flux_solve::traits::trait_self_predicate(self.items, trait_)
+                    .subst(instance.args);
+                let Some((imp, args)) =
+                    flux_solve::traits::select_definite_impl(self.items, self.sigs, goal)
+                else {
+                    return false;
+                };
+                (imp, Ty::list(&args), goal.self_ty, Some(goal))
+            }
+            None => return false,
+        };
+        let Some(block) = self.sigs.regions.impls.get(imp) else {
+            return false;
+        };
+        let represented = |&region| match region {
+            Region::Static => true,
+            Region::Param(index) => (index as usize) < block.names.len(),
+            Region::Erased | Region::Late(_) => false,
+        };
+        if block.self_ty.len() != crate::regions::slots(self.items, self.sigs.impls[imp])
+            || !block.self_ty.iter().all(represented)
+            || !block.trait_lifetimes.is_empty()
+            || block.trait_args.iter().any(|row| !row.is_empty())
+            || block.header_selections.iter().any(|row| !row.is_empty())
+            || !crate::regions::closed_impl_predicates_hold(self.items, self.sigs, imp, impl_args)
+            || self
+                .sigs
+                .impl_projections
+                .get(imp)
+                .is_some_and(|p| !p.is_empty())
+        {
+            return false;
+        }
+        if !matches!(owner.kind(), TyKind::Adt(..) | TyKind::Ref(..))
+            || !self.closed_const_owner_type(owner)
+        {
+            return false;
+        }
+
+        let mut walker = self.body_walker();
+        let constant_impl = match self.closure_owner {
+            crate::ClosureOwner::Const(konst) => self.items.consts[konst]
+                .owner
+                .and_then(flux_hir::Owner::as_impl)
+                .and_then(|imp| self.sigs.regions.impls.get(imp)),
+            crate::ClosureOwner::Function(_) => None,
+        };
+        if let Some(caller) = constant_impl {
+            walker.names = caller.names.iter().map(|n| n.name).collect();
+        }
+        walker.infer_unknown_owners = false;
+        walker.expand_alias_selections = true;
+        walker.selections = Some(Vec::new());
+        walker.module = self
+            .type_modules
+            .get(written)
+            .copied()
+            .unwrap_or(self.module);
+        let row = walker.regions(&self.body.types[written], owner);
+        if row.is_empty()
+            || !row
+                .iter()
+                .all(|r| matches!(r, Region::Static | Region::Param(_)))
+            || !walker.errors.is_empty()
+            || !walker.selected_inputs.is_empty()
+            || walker.selections.is_some_and(|s| !s.is_empty())
+        {
+            return false;
+        }
+        if block.bounds.is_empty()
+            && row.iter().all(|&r| r == Region::Static)
+            && lifetimes.iter().all(|l| l.is_static() || l.is_anonymous())
+        {
+            return true;
+        }
+        if row.len() != block.self_ty.len() || !self.constant_result_is_static(instance) {
+            return false;
+        }
+
+        let assumptions = self
+            .owner_fn
+            .and_then(|f| self.sigs.regions.fns.get(f))
+            .map(|f| &*f.outlives)
+            .or_else(|| constant_impl.map(|i| &*i.outlives))
+            .unwrap_or_default();
+        let outlives = |a, b| {
+            matches!(a, Region::Static | Region::Param(_))
+                && matches!(b, Region::Static | Region::Param(_))
+                && crate::regions::outlives_known(Outlives::Region(a, b), assumptions)
+        };
+        let mut bindings = vec![None; block.names.len()];
+        for (&declared, &written) in block.self_ty.iter().zip(&row) {
+            let required = match declared {
+                Region::Param(i) => *bindings[i as usize].get_or_insert(written),
+                r => r,
+            };
+            if !outlives(written, required) || !outlives(required, written) {
+                return false;
+            }
+        }
+        let map = |r| match r {
+            Region::Param(i) => bindings.get(i as usize).copied().flatten(),
+            Region::Static => Some(r),
+            _ => None,
+        };
+        if !block.bounds.iter().all(|bound| {
+            matches!(*bound, Outlives::Region(a, b)
+                if map(a).zip(map(b)).is_some_and(|(a, b)| outlives(a, b)))
+        }) {
+            return false;
+        }
+        let requirements = if let Some(predicate) = predicate {
+            let regions = crate::regions::TraitRefRegions {
+                args: vec![Box::default(); predicate.trait_ref.args.len()].into(),
+                ..Default::default()
+            };
+            let Some(requirements) = crate::regions::trait_requirements(
+                self.items, self.sigs, &predicate, &row, &regions,
+            ) else {
+                return false;
+            };
+            requirements
+        } else {
+            let mut requirements = Vec::new();
+            crate::regions::implied_outlives_with_static(
+                self.items,
+                self.sigs,
+                owner,
+                &row,
+                Some(Region::Static),
+                &mut requirements,
+            );
+            requirements
+        };
+        requirements
+            .iter()
+            .all(|requirement| matches!(*requirement, Outlives::Region(a, b) if outlives(a, b)))
+    }
+
+    /// Both the trait contract and the chosen definition must have a static
+    /// result. Substitution must preserve the declared result's region slots.
+    fn constant_result_is_static(&self, instance: ConstInstance) -> bool {
+        let selected = flux_solve::traits::resolve_const(self.items, self.sigs, instance);
+        [instance, selected].into_iter().all(|instance| {
+            let Some(&template) = self.sigs.consts.get(instance.konst) else {
+                return false;
+            };
+            let ty = template.subst(instance.args);
+            self.closed_const_owner_type(ty)
+                && self
+                    .sigs
+                    .regions
+                    .consts
+                    .get(instance.konst)
+                    .is_some_and(|row| {
+                        row.len() == crate::regions::slots(self.items, ty)
+                            && row.iter().all(|r| *r == crate::regions::Region::Static)
+                    })
+        })
+    }
+
+    /// Check the type constructors for obligations that the erased
+    /// well-formedness check cannot decide. All region slots are checked
+    /// separately against the written type.
+    fn closed_const_owner_type(&self, ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::Adt(adt, _) => {
+                if self
+                    .sigs
+                    .struct_predicates
+                    .get(adt.strukt)
+                    .is_some_and(|p| !p.is_empty())
+                    || self
+                        .sigs
+                        .struct_projections
+                        .get(adt.strukt)
+                        .is_some_and(|p| !p.is_empty())
+                {
+                    return false;
+                }
+            }
+            TyKind::Dynamic(object) => {
+                if crate::fn_trait_kind(self.items, object.trait_).is_none()
+                    || ty
+                        .children()
+                        .any(|ty| crate::regions::slots(self.items, ty) != 0)
+                {
+                    return false;
+                }
+            }
+            TyKind::Alias(_)
+            | TyKind::Closure(..)
+            | TyKind::Error
+            | TyKind::FnDef(_)
+            | TyKind::Infer(_)
+            | TyKind::Opaque(_)
+            | TyKind::Param(_) => return false,
+            _ => {}
+        }
+        ty.children()
+            .all(|child| self.closed_const_owner_type(child))
+    }
+
     /// A walker of the body's written types, whose lifetimes are those of
     /// the function the body is of.
     fn body_walker(&self) -> crate::regions::Walker<'_> {
@@ -1804,12 +2095,11 @@ impl Ctx<'_> {
         walker.caller_projections = &self.caller_projections;
         walker.infer_objects = true;
         walker.infer_unknown_owners = true;
-        walker.self_regions = self
-            .owner_fn
-            .and_then(|f| self.items.impl_of(f))
+        let owner_impl = self.owner_fn.and_then(|f| self.items.impl_of(f));
+        walker.self_regions = owner_impl
             .and_then(|imp| self.sigs.regions.impls.get(imp))
             .map(|r| &*r.self_ty);
-        if let Some(imp) = self.owner_fn.and_then(|f| self.items.impl_of(f))
+        if let Some(imp) = owner_impl
             && let Some(regions) = self.sigs.regions.impls.get(imp)
         {
             walker.self_types = &regions.types;
@@ -1818,9 +2108,23 @@ impl Ctx<'_> {
                 .impl_traits
                 .get(imp)
                 .map(|tr| (tr.trait_, regions.trait_lifetimes.clone()));
+        } else if let Some(f) = self.owner_fn
+            && let Some(flux_hir::Owner::Trait(owner)) = self.items.functions[f].owner
+            && let Some(regions) = self.sigs.regions.fns.get(f)
+        {
+            walker.self_projection_owner = Some((
+                owner,
+                (0..regions.owner)
+                    .map(crate::regions::Region::Param)
+                    .collect(),
+            ));
         }
         walker.scope = TypeScope {
             self_ty: self.self_ty,
+            self_trait: self.self_trait,
+            self_types: owner_impl
+                .and_then(|imp| self.sigs.impl_types.get(imp))
+                .map_or(&[], |types| types.as_ref()),
             generics: &self.generics,
             consts: &self.const_params,
             bounds: &self.param_env,
@@ -2302,9 +2606,16 @@ impl Ctx<'_> {
         {
             return self_ty;
         }
-        // Named through a type alias: its type.
-        if let Some(alias) = generics.and_then(|g| g.alias) {
-            let ty = self.resolve_path_type(alias, false);
+        if let Some(generics) = generics
+            && let Some(written) = generics.qualified_constructor.or(generics.alias)
+        {
+            // An explicit qualifier follows type syntax, including defaults
+            // and required arguments. Ordinary alias paths can infer arguments.
+            let ty = if generics.qualified_constructor.is_some() {
+                self.resolve_body_type(written, false, expr)
+            } else {
+                self.resolve_path_type(written, expr, true)
+            };
             return match ty.kind() {
                 TyKind::Adt(adt, _) if adt.strukt == strukt => ty,
                 _ => Ty::ERROR,
@@ -2434,10 +2745,7 @@ impl Ctx<'_> {
                 let mut found = candidates.iter().copied().filter(|&c| {
                     let imp = items.consts[c].owner.and_then(flux_hir::Owner::as_impl);
                     match (target, imp) {
-                        (Some(target), Some(imp)) => {
-                            let impl_ty = self.sigs.impls.get(imp).copied().unwrap_or(Ty::ERROR);
-                            self.impl_applies(impl_ty, target)
-                        }
+                        (Some(target), Some(imp)) => self.impl_applies(imp, target),
                         _ => true,
                     }
                 });
@@ -2515,7 +2823,7 @@ impl Ctx<'_> {
                     .unwrap_or(Ty::ERROR)
                     .subst(&vars);
                 if let Some(target) = target {
-                    self.unify(impl_ty, target);
+                    self.unify_impl_type(impl_ty, target, 0);
                 }
                 args.extend(vars);
             }
@@ -2594,8 +2902,16 @@ impl Ctx<'_> {
         })
     }
 
-    fn function_needs_unsafe(&self, function: FunctionId) -> bool {
-        self.items.functions[function].is_unsafe || !self.has_function_features(function)
+    fn function_needs_unsafe(&self, function: FunctionId, callee: ExprId) -> bool {
+        let data = &self.items.functions[function];
+        // These std functions became unsafe at direct call sites in 2024.
+        // Their function item and pointer types are unsafe in every edition.
+        let legacy_env_call = data.is_unsafe
+            && matches!(data.name.as_str(), "set_var" | "remove_var")
+            && self.expression_edition(callee) != flux_syntax::Edition::E2024
+            && self.items.is_std(data.loc.module)
+            && self.items.module_path(data.loc.module) == "std::env";
+        (data.is_unsafe && !legacy_env_call) || !self.has_function_features(function)
     }
 
     /// An inline constant's reification owner has no target features, even
@@ -2619,9 +2935,9 @@ impl Ctx<'_> {
         candidates: impl Iterator<Item = FunctionId>,
         target: Option<Ty>,
     ) -> Result<FunctionId, usize> {
-        let (items, sigs) = (self.items, self.sigs);
-        let mut found = None;
-        let mut count = 0;
+        let items = self.items;
+        let mut first = None;
+        let mut competing = Vec::new();
         for f in candidates {
             if items.is_std(items.functions[f].loc.module)
                 && items
@@ -2632,27 +2948,50 @@ impl Ctx<'_> {
                 continue;
             }
             let applies = match (target, items.impl_of(f)) {
-                (Some(target), Some(owner)) => {
-                    let impl_ty = sigs.impls.get(owner).copied().unwrap_or(Ty::ERROR);
-                    self.impl_applies(impl_ty, target)
-                }
+                (Some(target), Some(owner)) => self.impl_applies(owner, target),
                 _ => true,
             };
             if applies {
-                found.get_or_insert(f);
-                count += 1;
+                if first.is_none() {
+                    first = Some(f);
+                } else {
+                    competing.push(f);
+                }
             }
         }
-        match found {
-            Some(f) if count == 1 => Ok(f),
-            _ => Err(count),
+        if competing.is_empty() {
+            return first.ok_or(0);
+        }
+        let mut possible = first.into_iter().chain(competing).filter(|&f| {
+            target.is_none_or(|ty| {
+                items
+                    .impl_of(f)
+                    .is_none_or(|owner| items.impls[owner].trait_.is_some())
+                    || self.inherent_bounds_possible(f, ty)
+            })
+        });
+        let first = possible.next().ok_or(0usize)?;
+        let remaining = possible.count();
+        if remaining == 0 {
+            Ok(first)
+        } else {
+            Err(1 + remaining)
         }
     }
 
     /// Whether an `impl` block for `pattern`, in terms of its parameters,
     /// may be for `ty`: whether they unify, with variables standing for
     /// any type and each parameter for the type it first matched.
-    fn impl_applies(&mut self, pattern: Ty, ty: Ty) -> bool {
+    fn impl_applies(&mut self, owner: flux_hir::ImplId, ty: Ty) -> bool {
+        let pattern = self.sigs.impls.get(owner).copied().unwrap_or(Ty::ERROR);
+        if pattern.has_aliases() {
+            return self.probe(|cx| {
+                let args: Vec<_> = (0..cx.items.impls[owner].generics.len())
+                    .map(|_| cx.new_var(false, TextRange::default()))
+                    .collect();
+                cx.unify_impl_type(pattern.subst(&args), ty, 0)
+            });
+        }
         self.impl_applies_in(pattern, ty, &mut Vec::new())
     }
 
@@ -2731,7 +3070,7 @@ impl Ctx<'_> {
                 .subst(&vars);
             if let Some(target) = target {
                 // Selection checked that the block is for `target`.
-                let unified = self.unify(impl_ty, target);
+                let unified = self.unify_impl_type(impl_ty, target, 0);
                 debug_assert!(unified, "selected impl block is not for `{target:?}`");
             }
             args.extend(vars);
@@ -3444,21 +3783,21 @@ impl Ctx<'_> {
                 .copied()
                 .unwrap_or(Ty::ERROR),
             Expr::Path(Res::Assoc { ty, trait_, name }) => {
+                let receiver = ty.map(|written| self.resolve_assoc_self(id, written));
                 if trait_.is_none()
-                    && let Some(written) = *ty
+                    && let Some(receiver) = receiver
                 {
-                    let target = self.resolve_path_type(written, true);
-                    let target = self.normalize(target, self.range(id));
+                    let target = self.normalize(receiver, self.range(id));
                     if let TyKind::Adt(adt, _) = target.kind()
                         && let Some(variant) = self.items.structs[adt.strukt].variant_named(*name)
                         && self.items.structs[adt.strukt].variant(variant).kind == StructKind::Unit
                     {
-                        self.unit_variants.insert(id, (adt.strukt, variant));
+                        self.associated_variants.insert(id, (adt.strukt, variant));
                         self.meet_expectation(id, target);
                         return target;
                     }
                 }
-                match self.resolve_assoc(id, *ty, *trait_, *name) {
+                match self.resolve_assoc(id, receiver, *trait_, *name) {
                     Some((AssocItem::Const(c), target, trait_args)) => {
                         self.instantiate_const(id, c, target, trait_args.as_deref())
                     }
@@ -3631,28 +3970,35 @@ impl Ctx<'_> {
                     }
                     None => ty,
                 };
-                let mut errors = Vec::new();
-                let scope = TypeScope {
-                    self_ty: self.self_ty,
-                    generics: &self.generics,
-                    consts: &self.const_params,
-                    lens: Some(&self.lens),
-                    ..TypeScope::default()
+                let len = if let Some(count) = count {
+                    let mut errors = Vec::new();
+                    let scope = TypeScope {
+                        self_ty: self.self_ty,
+                        generics: &self.generics,
+                        consts: &self.const_params,
+                        lens: Some(&self.lens),
+                        ..TypeScope::default()
+                    };
+                    let len = crate::array_len(self.items, self.module, count, scope, &mut errors);
+                    for (range, message) in errors {
+                        self.error(range, message);
+                    }
+                    let Some(len) = len else {
+                        return Ty::ERROR;
+                    };
+                    len
+                } else {
+                    self.new_var(false, self.range(id))
                 };
-                let len = crate::array_len(self.items, self.module, count, scope, &mut errors);
-                for (range, message) in errors {
-                    self.error(range, message);
-                }
-                let Some(len) = len else {
-                    return Ty::ERROR;
-                };
-                // A constant is made anew for each element, an inline one
-                // (`const { .. }`) too.
-                let constant = matches!(
-                    body.exprs[*value],
-                    Expr::Path(Res::Const(_) | Res::Assoc { .. })
-                ) || body.const_blocks.get(*value).is_some();
-                if len.as_usize().is_none_or(|n| n > 1)
+                let constant = body.repeat_const_operand(*value);
+                if count.is_none() && !constant {
+                    // Lengths of zero and one do not require a Copy operand.
+                    self.deferred.push(Deferred::RepeatCopy {
+                        value: *value,
+                        elem,
+                        len,
+                    });
+                } else if len.as_usize().is_none_or(|n| n > 1)
                     && !constant
                     && let Some(&copy) = self.items.lang_traits.get(&flux_intern::sym::copy)
                 {
@@ -3672,11 +4018,10 @@ impl Ctx<'_> {
             }
             Expr::Index { base, index } => self.infer_index(id, *base, *index),
             Expr::Record {
-                strukt,
-                variant,
+                target,
                 fields,
                 spread,
-            } => self.infer_record(id, *strukt, *variant, &self.body.lists[*fields], *spread),
+            } => self.infer_record(id, *target, &self.body.lists[*fields], *spread),
             Expr::Let { pat, expr } => {
                 let ty = self.infer_expr(*expr);
                 self.check_pat(*pat, ty, false);
@@ -3994,8 +4339,9 @@ impl Ctx<'_> {
                     }
                 }
                 // `&a as &[i32]`, `r as &T`: a coercion, as rustc tries
-                // first.
-                if let TyKind::Ref(..) = to.kind()
+                // first. A placeholder may learn its pointee from later use.
+                if let TyKind::Ref(_, pointee) = to.kind()
+                    && !matches!(self.shallow(pointee).kind(), TyKind::Infer(_))
                     && self.can_coerce(from, to, *expr)
                 {
                     self.coerce(from, to, *expr);
@@ -4006,42 +4352,45 @@ impl Ctx<'_> {
                     self.coerce(from, to, *expr);
                     return to;
                 }
-                // Address exposure does not expose a callable lifetime recipe.
-                // Retain the real machine signature and monomorphized instance,
-                // then expose it as an integer address or a thin raw pointer.
-                let from = if (to.as_int().is_some() || matches!(to.kind(), TyKind::RawPtr(..)))
-                    && let TyKind::FnDef(def) = self.shallow(from).kind()
-                {
-                    if self.items.functions[def.function].intrinsic.is_some() {
-                        self.error(
-                            self.range(id),
-                            "cannot take the address of a compiler intrinsic",
-                        );
-                        return Ty::ERROR;
-                    }
-                    if matches!(
-                        self.items.functions[def.function].owner,
-                        Some(flux_hir::Owner::Trait(_))
-                    ) && def
-                        .args
-                        .first()
-                        .is_some_and(|&arg| self.shallow(arg).is_dyn())
-                    {
-                        self.error(
-                            self.range(id),
-                            "function pointers to trait objects' methods are not supported yet",
-                        );
-                        return Ty::ERROR;
-                    }
-                    let pointer = Ty::new(TyKind::FnPtr(def.sig));
-                    self.reified.insert(*expr, pointer);
-                    pointer
-                } else {
-                    from
-                };
+                let from = self.function_address_operand(id, *expr, from, to);
                 self.deferred.push(Deferred::Cast { expr: id, from, to });
                 to
             }
+        }
+    }
+
+    /// Reify a function item before exposing its address, preserving its
+    /// machine signature and the concrete instance to emit.
+    fn function_address_operand(&mut self, cast: ExprId, operand: ExprId, from: Ty, to: Ty) -> Ty {
+        let to = self.shallow(to);
+        if (to.as_int().is_some() || matches!(to.kind(), TyKind::RawPtr(..)))
+            && let TyKind::FnDef(def) = self.shallow(from).kind()
+        {
+            let function = &self.items.functions[def.function];
+            if function.intrinsic.is_some() {
+                self.error(
+                    self.range(cast),
+                    "cannot take the address of a compiler intrinsic",
+                );
+                return Ty::ERROR;
+            }
+            if matches!(function.owner, Some(flux_hir::Owner::Trait(_)))
+                && def
+                    .args
+                    .first()
+                    .is_some_and(|&arg| self.shallow(arg).is_dyn())
+            {
+                self.error(
+                    self.range(cast),
+                    "function pointers to trait objects' methods are not supported yet",
+                );
+                return Ty::ERROR;
+            }
+            let pointer = Ty::new(TyKind::FnPtr(def.sig));
+            self.reified.insert(operand, pointer);
+            pointer
+        } else {
+            from
         }
     }
 
@@ -4142,6 +4491,9 @@ impl Ctx<'_> {
             self.pending_try_returns.push((id, residual, self.ret));
         } else {
             self.check_try_return(id, residual, self.ret);
+        }
+        if matches!(self.shallow(output).kind(), TyKind::Infer(_)) {
+            self.try_outputs.push(output);
         }
         output
     }
@@ -4260,6 +4612,7 @@ impl Ctx<'_> {
         let target = self.coercion_target(id);
         let mut result: Option<Ty> = None;
         let mut values = Vec::new();
+        let mut diverges = false;
         // Whether an arm was coerced to the type of those before it.
         let mut coerced = false;
         // As rustc's `CoerceMany`, once an arm does not fit, the match's
@@ -4281,7 +4634,11 @@ impl Ctx<'_> {
                 result = Some(Ty::UNIT);
                 continue;
             }
-            if self.shallow(arm_ty) == Ty::NEVER || failed {
+            if self.shallow(arm_ty) == Ty::NEVER {
+                diverges = true;
+                continue;
+            }
+            if failed {
                 continue;
             }
             values.push((arm.body, arm_ty));
@@ -4340,7 +4697,16 @@ impl Ctx<'_> {
                 }
             }
         }
-        result.unwrap_or(Ty::NEVER)
+        let Some(result) = result else {
+            return Ty::NEVER;
+        };
+        // A diverging arm coerces to the common result type. Connecting
+        // those coercions allows an otherwise unconstrained result to use
+        // the edition's never-type fallback.
+        if diverges && matches!(self.shallow(result).kind(), TyKind::Infer(_)) {
+            self.diverging_match_outputs.push(result);
+        }
+        result
     }
 
     fn infer_block(&mut self, stmts: &[Stmt], tail: Option<ExprId>) -> Ty {
@@ -4371,8 +4737,14 @@ impl Ctx<'_> {
                         }
                         (None, Some(init)) => {
                             let ty = self.infer_expr(init);
-                            diverges |= self.shallow(ty) == Ty::NEVER;
-                            ty
+                            if self.shallow(ty) == Ty::NEVER {
+                                diverges = true;
+                                let binding_ty = self.new_var(false, self.range(init));
+                                self.coerce(ty, binding_ty, init);
+                                binding_ty
+                            } else {
+                                ty
+                            }
                         }
                         (Some(declared), None) => declared,
                         (None, None) => {
@@ -4452,6 +4824,7 @@ impl Ctx<'_> {
             TyKind::FnDef(def) => Some(def.sig),
             _ => None,
         });
+        let from_closures = sig.is_none();
         let sig = match sig {
             Some(sig) => sig,
             None => {
@@ -4465,11 +4838,45 @@ impl Ctx<'_> {
                 crate::FnSigTy::new(params, parts.ret(), false)
             }
         };
-        let ptr = Ty::new(TyKind::FnPtr(crate::FnSigTy { is_unsafe, ..sig }));
+        let sig = crate::FnSigTy { is_unsafe, ..sig };
+        let ptr = if from_closures && !sig.inputs_output.iter().any(|ty| ty.has_infer()) {
+            self.closure_pointer_type(sig)
+        } else {
+            let ptr = Ty::new(TyKind::FnPtr(sig));
+            if from_closures {
+                self.inferred_closure_pointers.insert(ptr);
+            }
+            ptr
+        };
         for (expr, ty) in found {
             self.coerce(ty, ptr, expr);
         }
         Some(ptr)
+    }
+
+    /// Give input-only closure pointers independent binders for their inferred
+    /// lifetimes. The borrow checker proves each closure against those binders.
+    fn closure_pointer_type(&self, sig: crate::FnSigTy) -> Ty {
+        if crate::regions::slots(self.items, sig.ret()) != 0
+            || sig
+                .inputs_output
+                .iter()
+                .any(|ty| ty.has_params() || ty.has_aliases() || ty.has_opaques() || ty.has_error())
+        {
+            return Ty::new(TyKind::FnPtr(sig));
+        }
+        let mut bound = 0;
+        let rows: Vec<Vec<_>> = sig
+            .inputs_output
+            .iter()
+            .map(|&ty| {
+                let start = bound;
+                bound += crate::regions::slots(self.items, ty) as u32;
+                (start..bound).map(crate::FnRegion::Bound).collect()
+            })
+            .collect();
+        let regions = (bound != 0).then(|| crate::FnPtrRegions::intern(bound, 0, &rows, &[]));
+        Ty::new(TyKind::FnPtr(crate::FnSigTy { regions, ..sig }))
     }
 
     /// The type the context of `expr` wants, as the target of coercions
@@ -4542,7 +4949,49 @@ impl Ctx<'_> {
         let found = match self.body.exprs[callee] {
             Expr::Path(Res::Function(function)) => self.select_path_fn(callee, function),
             Expr::Path(Res::Assoc { ty, trait_, name }) => {
-                match self.resolve_assoc(callee, ty, trait_, name) {
+                let receiver = ty.map(|written| self.resolve_assoc_self(callee, written));
+                if trait_.is_none()
+                    && let Some(receiver) = receiver
+                {
+                    let target = self.normalize(receiver, self.range(callee));
+                    if let TyKind::Adt(adt, _) = target.kind()
+                        && let Some(variant) = self.items.structs[adt.strukt].variant_named(name)
+                    {
+                        let range = self.range(callee);
+                        if self.items.externally_non_exhaustive_variant(
+                            adt.strukt,
+                            variant,
+                            self.module,
+                        ) {
+                            self.error(
+                                range,
+                                "cannot create non-exhaustive variant outside its defining crate",
+                            );
+                        }
+                        if let Some(written) = self
+                            .body
+                            .generic_args
+                            .get(callee)
+                            .and_then(|g| g.item.as_ref())
+                            && (!written.types.is_empty() || !written.lifetimes.is_empty())
+                        {
+                            self.error(
+                                written.range,
+                                "generic arguments are not allowed on this variant",
+                            );
+                        }
+                        self.associated_variants.insert(id, (adt.strukt, variant));
+                        return self.infer_constructor(
+                            id,
+                            callee,
+                            adt.strukt,
+                            variant,
+                            args,
+                            Some(target),
+                        );
+                    }
+                }
+                match self.resolve_assoc(callee, receiver, trait_, name) {
                     Some((AssocItem::Function(f), target, trait_args)) => {
                         Some((f, target, trait_args))
                     }
@@ -4555,10 +5004,10 @@ impl Ctx<'_> {
                 }
             }
             Expr::Path(Res::Struct(strukt)) => {
-                return self.infer_constructor(id, callee, strukt, 0, args);
+                return self.infer_constructor(id, callee, strukt, 0, args, None);
             }
             Expr::Path(Res::Variant(strukt, variant)) => {
-                return self.infer_constructor(id, callee, strukt, variant, args);
+                return self.infer_constructor(id, callee, strukt, variant, args, None);
             }
             Expr::Path(Res::Err) | Expr::Missing => None,
             _ => {
@@ -4670,7 +5119,7 @@ impl Ctx<'_> {
                     ty = slice;
                 }
                 match sig.params.get(i) {
-                    Some(&param) => self.coerce(ty, param, arg),
+                    Some(&param) => self.coerce_call_argument(ty, param, arg, function, i),
                     None if data.is_variadic => {
                         self.deferred.push(Deferred::VariadicArg { expr: arg, ty });
                     }
@@ -4678,7 +5127,7 @@ impl Ctx<'_> {
                 }
             }
         }
-        if self.function_needs_unsafe(function) && self.unsafe_depth == 0 {
+        if self.function_needs_unsafe(function, callee) && self.unsafe_depth == 0 {
             self.error(
                 self.range(id),
                 format!("call to unsafe function `{name}` is unsafe and requires unsafe function or block"),
@@ -4815,7 +5264,7 @@ impl Ctx<'_> {
             }
         }
         if function.map_or(sig.is_unsafe, |function| {
-            self.function_needs_unsafe(function)
+            self.function_needs_unsafe(function, callee)
         }) && self.unsafe_depth == 0
         {
             let message = match function {
@@ -4953,6 +5402,7 @@ impl Ctx<'_> {
         strukt: StructId,
         variant: u32,
         args: &[ExprId],
+        target: Option<Ty>,
     ) -> Ty {
         let def = self.items.structs[strukt].variant(variant);
         if def.enum_name.is_none() && self.items.externally_non_exhaustive(strukt, self.module) {
@@ -4970,7 +5420,8 @@ impl Ctx<'_> {
             self.infer_args(args);
             return Ty::ERROR;
         }
-        let ty = self.instantiate_struct(strukt, Some(callee), self.range(callee));
+        let ty = target
+            .unwrap_or_else(|| self.instantiate_struct(strukt, Some(callee), self.range(callee)));
         self.meet_expectation(call, ty);
         let fields = self.variant_fields_of(ty, variant, self.range(callee));
         if fields.len() != args.len() {
@@ -5626,15 +6077,42 @@ impl Ctx<'_> {
     fn infer_record(
         &mut self,
         id: ExprId,
-        strukt: StructId,
-        variant: u32,
+        target: RecordTarget,
         fields: &[(Symbol, ExprId)],
         spread: Option<ExprId>,
     ) -> Ty {
         let items = self.items;
+        let range = self.range(id);
+        let origin = self.source_map.paths.get(id).copied().unwrap_or(range);
+        let (strukt, variant, ty) = match target {
+            RecordTarget::Nominal(strukt, variant) => (
+                strukt,
+                variant,
+                self.instantiate_struct(strukt, Some(id), origin),
+            ),
+            RecordTarget::Associated(written) => {
+                let ty = self.resolve_body_type(written, false, true);
+                match ty.kind() {
+                    TyKind::Adt(adt, _) if !items.structs[adt.strukt].is_enum() => {
+                        (adt.strukt, 0, ty)
+                    }
+                    _ => {
+                        if !ty.has_error() {
+                            self.error(
+                                origin,
+                                format!("expected struct or union type, found `{ty}`"),
+                            );
+                        }
+                        for expr in fields.iter().map(|&(_, expr)| expr).chain(spread) {
+                            self.infer_expr(expr);
+                        }
+                        return Ty::ERROR;
+                    }
+                }
+            }
+        };
         let def = items.structs[strukt].variant(variant);
         let union = items.structs[strukt].is_union;
-        let range = self.range(id);
         if items.externally_non_exhaustive_variant(strukt, variant, self.module) {
             self.error(
                 range,
@@ -5651,8 +6129,6 @@ impl Ctx<'_> {
         if union && (fields.len() != 1 || spread.is_some()) {
             self.error(range, "union expressions must have exactly one field");
         }
-        let origin = self.source_map.paths.get(id).copied().unwrap_or(range);
-        let ty = self.instantiate_struct(strukt, Some(id), origin);
         self.meet_expectation(id, ty);
         let field_types = self.variant_fields_of(ty, variant, range);
         let names = self.source_map.expr_fields.get(id);
@@ -5834,7 +6310,16 @@ impl Ctx<'_> {
         // The arguments wait for the method's signature, which says
         // what each should be.
         let receiver_ty = self.infer_expr(receiver);
-        let receiver_ty = self.shallow(receiver_ty);
+        let mut receiver_ty = self.shallow(receiver_ty);
+        if matches!(receiver_ty.kind(), TyKind::Infer(_))
+            && (0..self.projections.len())
+                .any(|index| self.shallow(self.projections[index].var) == receiver_ty)
+        {
+            // Finishing the receiver's projection can expose its declared
+            // methods even while a family argument is still inferred.
+            self.select_projections();
+            receiver_ty = self.shallow(receiver_ty);
+        }
         if receiver_ty == Ty::ERROR {
             return Ty::ERROR;
         }
@@ -6351,6 +6836,24 @@ impl Ctx<'_> {
         }
         let sig = &self.instance_sig(function, &generic_args);
         self.check_signature_privacy(sig, id);
+        if let Some(flux_hir::Owner::Trait(trait_)) = data.owner
+            && matches!(self.shallow(sig.ret).kind(), TyKind::Infer(_))
+            && let Some(&expected) = self.expected.get(id)
+            && matches!(self.shallow(expected).kind(), TyKind::Adt(..))
+            && !self.sigs.is_unsized(self.shallow(expected))
+        {
+            let goal =
+                flux_solve::traits::trait_self_predicate(self.items, trait_).subst(&generic_args);
+            // Prefer a viable impl with the expected result. If that shape
+            // cannot satisfy the trait, select an impl before coercing its
+            // output, as for Box<T> coerced to Box<dyn Trait>.
+            if self.probe(|cx| {
+                cx.unify(sig.ret, expected)
+                    && cx.may_hold(goal.self_ty, trait_, Some(goal.trait_ref.args), 0)
+            }) {
+                self.meet_expectation(id, sig.ret);
+            }
+        }
         // The bounds first: an `impl` block they select may tell the
         // trait's generic arguments, and so the parameters' and return
         // types (`str: PartialOrd<?R>` is `str: PartialOrd<str>`, so
@@ -6382,7 +6885,7 @@ impl Ctx<'_> {
             }
             let ty = self.infer_expr(arg);
             if let Some(param) = param {
-                self.coerce(ty, param, arg);
+                self.coerce_call_argument(ty, param, arg, function, i + 1);
             }
         }
         let of_trait = matches!(data.owner, Some(flux_hir::Owner::Trait(_)));
@@ -6471,7 +6974,7 @@ impl Ctx<'_> {
             }
         }
         self.select_obligations();
-        if self.function_needs_unsafe(function) && self.unsafe_depth == 0 {
+        if self.function_needs_unsafe(function, id) && self.unsafe_depth == 0 {
             let name = self.items.function_path(&self.items.functions[function]);
             self.error(
                 self.range(id),
@@ -6595,6 +7098,9 @@ impl Ctx<'_> {
                 | TyKind::Str
                 | TyKind::CStr
                 | TyKind::Tuple([_, ..])
+        ) || matches!(
+            (operand.kind(), op),
+            (TyKind::FnPtr(_), BinaryOp::Cmp(_))
         ) || matches!(operand.kind(), TyKind::Infer(var) if !self.unknown(var).0 && !self.float_var(var));
         let op_range = self.source_map.ops.get(id).copied().unwrap_or_default();
         if let BinaryOp::Cmp(_) = op
@@ -7223,13 +7729,35 @@ impl Ctx<'_> {
         }
         // Resolve unconstrained outputs fed only by divergence before trait
         // obligations ask whether their fallback type implements a bound.
+        // `?` supplies a diverging break arm in every edition.
+        for output in std::mem::take(&mut self.try_outputs) {
+            if let TyKind::Infer(var) = self.shallow(output).kind()
+                && !self.unknown(var).0
+                && !self.float_var(var)
+            {
+                self.set_var(var, VarValue::Known(Ty::NEVER));
+            }
+        }
+        let match_outputs = std::mem::take(&mut self.diverging_match_outputs);
+        if match_outputs
+            .iter()
+            .any(|&ty| matches!(self.shallow(ty).kind(), TyKind::Infer(_)))
+        {
+            // A later use or associated output may still constrain the
+            // common type of a match. Keep its fallback until inference
+            // has finished with those uses.
+            self.select_obligations();
+            for output in match_outputs {
+                self.mark_diverging_result(output);
+            }
+        }
         for index in 0..self.vars.len() {
             if matches!(
                 self.vars[index].0,
                 VarValue::Unknown {
                     int: false,
                     float: false,
-                    diverging: true
+                    diverging: true,
                 }
             ) {
                 let fallback = if self.items.edition(self.module) == flux_syntax::Edition::E2024 {
@@ -7248,15 +7776,19 @@ impl Ctx<'_> {
         let deferred = std::mem::take(&mut self.deferred);
         for check in deferred {
             if let Deferred::Cast { expr, from, to } = check
-                && matches!(
-                    self.shallow(from).kind(),
-                    TyKind::FnDef(_) | TyKind::FnPtr(_)
-                )
-                && matches!(self.shallow(to).kind(), TyKind::FnPtr(_))
                 && let Expr::Cast { expr: operand, .. } = self.body.exprs[expr]
             {
-                self.coerce(from, to, operand);
-                continue;
+                match (self.shallow(from).kind(), self.shallow(to).kind()) {
+                    (TyKind::FnDef(_) | TyKind::FnPtr(_), TyKind::FnPtr(_)) => {
+                        self.coerce(from, to, operand);
+                        continue;
+                    }
+                    (_, TyKind::Ref(..)) if self.can_coerce(from, to, operand) => {
+                        self.coerce(from, to, operand);
+                        continue;
+                    }
+                    _ => {}
+                }
             }
             self.deferred.push(check);
         }
@@ -7273,22 +7805,28 @@ impl Ctx<'_> {
                 self.unify(source, target);
             }
         }
-        // An inferred `as _` target can become an object pointer only after
-        // its surrounding call is solved. Retry existing object coercions
-        // before snapshotting the adjustment maps: an upcast needs its real
-        // MIR Unsize, not just permission to cast the unchanged pointer.
+        // Once the surrounding expression fixes an inferred cast target,
+        // record any object coercion or shared reborrow in the operand's
+        // adjustments so MIR checks the resulting borrow or unsizing.
         let deferred = std::mem::take(&mut self.deferred);
         for check in deferred {
             if let Deferred::Cast { expr, from, to } = check {
                 let from = self.resolve(from, &mut reported);
                 let to = self.resolve(to, &mut reported);
                 let object_pointer = |ty: Ty| matches!(ty.kind(), TyKind::Ref(_, object) | TyKind::RawPtr(_, object) if object.is_dyn());
-                if object_pointer(from)
-                    && object_pointer(to)
-                    && let Expr::Cast { expr: operand, .. } = self.body.exprs[expr]
-                    && self.can_coerce(from, to, operand)
-                {
-                    self.coerce(from, to, operand);
+                if let Expr::Cast { expr: operand, .. } = self.body.exprs[expr] {
+                    let shared_reborrow = matches!(
+                        (from.kind(), to.kind()),
+                        (TyKind::Ref(Mutability::Mut, a), TyKind::Ref(Mutability::Not, b)) if a == b
+                    );
+                    if (shared_reborrow || object_pointer(from) && object_pointer(to))
+                        && self.can_coerce(from, to, operand)
+                    {
+                        self.coerce(from, to, operand);
+                        continue;
+                    }
+                    let from = self.function_address_operand(expr, operand, from, to);
+                    self.deferred.push(Deferred::Cast { expr, from, to });
                     continue;
                 }
             }
@@ -7343,6 +7881,7 @@ impl Ctx<'_> {
             }
         }
         let mut call_regions = ArenaMap::new();
+        let mut item_value_regions = Vec::new();
         for (expr, instance) in calls.iter() {
             let written = self
                 .body
@@ -7460,18 +7999,114 @@ impl Ctx<'_> {
             }
             if !tables.is_empty() {
                 // Immediate reification keeps these rows on its pointer temporary.
-                // Standalone item values still erase their instantiation.
-                if !direct.contains(&expr) && self.reified.get(expr).is_none() {
-                    self.error(
-                        self.range(expr),
-                        "lifetimes in function item values are not supported yet",
-                    );
-                } else {
+                // Immediate calls and reifications consume their written
+                // arguments directly. Stored items keep them with the value.
+                if direct.contains(&expr) || self.reified.get(expr).is_some() {
                     call_regions.insert(expr, tables);
+                } else if let Some(&ty) = self.expr_types.get(expr)
+                    && let TyKind::FnDef(def) = ty.kind()
+                    && crate::regions::item_owner_lifetimes(self.items, def) != 0
+                {
+                    use crate::regions::{
+                        Region, TRAIT_LIFETIMES_ARG, item_owner_lifetimes, slots,
+                    };
+                    let owner = item_owner_lifetimes(self.items, def);
+                    let mut row = vec![Region::Erased; slots(self.items, ty)];
+                    for (index, written) in tables {
+                        let span = if index == TRAIT_LIFETIMES_ARG {
+                            0..owner
+                        } else if let Some(arg) = def.args.get(index as usize) {
+                            let start = owner
+                                + def.args[..index as usize]
+                                    .iter()
+                                    .map(|&t| slots(self.items, t))
+                                    .sum::<usize>();
+                            start..start + slots(self.items, *arg)
+                        } else {
+                            self.error(
+                                self.range(expr),
+                                "unrepresented function item lifetime arguments",
+                            );
+                            continue;
+                        };
+                        if span.len() != written.len() {
+                            self.error(
+                                self.range(expr),
+                                "unrepresented function item lifetime arguments",
+                            );
+                            continue;
+                        }
+                        row[span].copy_from_slice(&written);
+                    }
+                    item_value_regions.push((expr, row.into_boxed_slice()));
+                } else {
+                    // A discarded transmute item asserts that the two layouts
+                    // have equal size. It cannot escape or use erased lifetimes.
+                    let assert_size = self.items.functions[instance.function].intrinsic
+                        == Some(flux_hir::Intrinsic::Transmute)
+                        && self.body.exprs.values().any(|body| {
+                            let Expr::Block { stmts, .. } = body else {
+                                return false;
+                            };
+                            self.body.lists[*stmts].iter().any(|stmt| {
+                                matches!(stmt,
+                                Stmt::Let { pat, ty: None, init: Some(init), else_branch: None }
+                                if *init == expr && matches!(self.body.pats[*pat], Pat::Wild))
+                            })
+                        });
+                    if !assert_size {
+                        self.error(
+                            self.range(expr),
+                            "lifetimes in function item values are not supported yet",
+                        );
+                    }
                 }
             }
         }
-        let mut expr_regions = self.constructor_regions(&calls);
+        let used = std::mem::take(&mut self.consts);
+        let mut consts = ArenaMap::new();
+        for (expr, (konst, args)) in used.iter() {
+            let konst = *konst;
+            let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
+            consts.insert(expr, ConstInstance { konst, args });
+        }
+        self.consts = used;
+        let mut expr_regions = self.constructor_regions(&calls, &consts);
+        for (expr, row) in item_value_regions {
+            expr_regions.insert(expr, row);
+        }
+        let variants = self
+            .associated_variants
+            .iter()
+            .map(|(expr, _)| expr)
+            .collect::<Vec<_>>();
+        for expr in variants {
+            let Expr::Call { callee, .. } = self.body.exprs[expr] else {
+                continue;
+            };
+            let Expr::Path(Res::Assoc {
+                ty: Some(written), ..
+            }) = self.body.exprs[callee]
+            else {
+                continue;
+            };
+            let Some(&ty) = self.expr_types.get(expr) else {
+                continue;
+            };
+            if ty.has_error() || crate::regions::slots(self.items, ty) == 0 {
+                continue;
+            }
+            match self.written_type_regions(written, ty) {
+                Some(row) if row.len() == crate::regions::slots(self.items, ty) => {
+                    expr_regions.insert(expr, row);
+                }
+                _ => self.error(
+                    self.range(callee),
+                    "associated variant lifetime arguments are not supported yet",
+                ),
+            }
+        }
+
         for (expr, data) in self.body.exprs.iter() {
             if let Expr::Cast { ty: written, .. } = data
                 && let Some(&ty) = self.expr_types.get(expr)
@@ -7501,14 +8136,6 @@ impl Ctx<'_> {
             }
         }
         self.try_conversions = converted;
-        let used = std::mem::take(&mut self.consts);
-        let mut consts = ArenaMap::new();
-        for (expr, (konst, args)) in used.iter() {
-            let konst = *konst;
-            let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
-            consts.insert(expr, ConstInstance { konst, args });
-        }
-        self.consts = used;
         let mut never_coercions = ArenaMap::new();
         for (expr, _) in self.body.exprs.iter() {
             if let Some(&ty) = self.never_coercions.get(expr) {
@@ -7553,31 +8180,32 @@ impl Ctx<'_> {
         let mut let_regions = ArenaMap::new();
         for (pat, &(written, ty)) in annotations.iter() {
             let ty = self.resolve(ty, &mut reported);
-            let names = self
-                .owner_fn
-                .and_then(|f| self.sigs.regions.fns.get(f))
-                .map_or_else(Vec::new, |r| r.names.iter().map(|n| n.name).collect());
             let module = self
                 .type_modules
                 .get(written)
                 .copied()
                 .unwrap_or(self.module);
             let inferred = self.inferred_body_alias(written);
-            let mut walker = crate::regions::Walker::new(self.items, module, names);
+            let mut walker = self.body_walker();
+            if (ty.has_aliases() || inferred.is_some())
+                && let Some(f) = self.owner_fn
+            {
+                // The annotation can be inside a block with its own imports.
+                // Resolve owner bounds in the function's declaration scope.
+                let function = &self.items.functions[f];
+                walker.module = function.loc.module;
+                for generics in self
+                    .items
+                    .owner_generics(function.owner)
+                    .into_iter()
+                    .chain([&function.generics])
+                {
+                    walker.add_projection_bounds(generics);
+                }
+            }
+            walker.module = module;
             walker.inferred_root_alias = inferred;
-            walker.body = true;
-            walker.signatures = Some(self.sigs);
-            walker.caller_projections = &self.caller_projections;
-            walker.infer_objects = true;
-            walker.scope = TypeScope {
-                self_ty: self.self_ty,
-                generics: &self.generics,
-                consts: &self.const_params,
-                bounds: &self.param_env,
-                defaults: Some(&self.sigs.trait_defaults),
-                struct_fields: Some(&self.sigs.structs),
-                ..TypeScope::default()
-            };
+            walker.infer_unknown_owners = false;
             let regions = walker.regions(&self.body.types[written], ty);
             for (range, message) in walker.errors {
                 // Normalization may reveal a selected projection only after
@@ -7699,7 +8327,7 @@ impl Ctx<'_> {
             expr_types: self.expr_types,
             binding_types: self.binding_types,
             field_indices: self.field_indices,
-            unit_variants: self.unit_variants,
+            associated_variants: self.associated_variants,
             offsets: self.offsets,
             field_derefs: self.field_derefs,
             unsized_indices: self.unsized_indices,
@@ -8144,6 +8772,10 @@ impl Ctx<'_> {
                 self.set_var(var, VarValue::Known(ty));
                 ty
             }
+            TyKind::FnPtr(sig) if self.inferred_closure_pointers.contains(&ty) => {
+                let sig = sig.map(|ty| self.resolve(ty, reported));
+                self.closure_pointer_type(sig)
+            }
             _ if ty.has_infer() => ty.map_children(|t| self.resolve(t, reported)),
             _ => ty,
         }
@@ -8275,6 +8907,21 @@ impl Ctx<'_> {
             .collect();
         for deferred in std::mem::take(&mut self.deferred) {
             match deferred {
+                Deferred::RepeatCopy { value, elem, len } => {
+                    let len = self.resolve(len, reported);
+                    let elem = self.resolve(elem, reported);
+                    if len != Ty::ERROR
+                        && elem != Ty::ERROR
+                        && len.as_usize().is_none_or(|n| n > 1)
+                        && !self.is_copy_ty(elem)
+                    {
+                        let ty = self.describe(elem);
+                        self.error(
+                            self.range(value),
+                            format!("the trait bound `{ty}: Copy` is not satisfied"),
+                        );
+                    }
+                }
                 Deferred::ConstUnstable {
                     function,
                     args,

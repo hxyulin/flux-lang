@@ -92,6 +92,7 @@ intrinsics! {
     X86MmExtractEpi32 => "__x86_mm_extract_epi32",
     X86MmPrefetch => "__x86_mm_prefetch",
     PtrWithAddr => "ptr_with_addr",
+    PtrWithMetadata => "ptr_with_metadata",
     PtrMetadataWord => "ptr_metadata_word",
     AtomicU16CasRelaxed => "__atomic_u16_cas_relaxed",
     AtomicU16CasAcquire => "__atomic_u16_cas_acquire",

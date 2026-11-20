@@ -43,6 +43,14 @@ fn check(source: &str, accepted: bool) {
 }
 
 #[test]
+fn successful_if_let_drops_its_tail_before_pattern_bindings() {
+    check(
+        include_str!("../../../tests/run/if_let_bound_guard.rs"),
+        true,
+    );
+}
+
+#[test]
 fn tail_borrows_end_at_each_iteration() {
     let prefix = "struct Read<'a>(&'a mut u32);impl Drop for Read<'_>{fn drop(&mut self){}}fn read(x:&mut u32)->Result<Read<'_>,()>{*x+=1;Ok(Read(x))}fn main(){let mut x=0;";
     for body in [
@@ -65,6 +73,18 @@ fn a_borrow_saved_across_iterations_remains_live() {
 fn a_reference_cannot_escape_the_loop_body() {
     check(
         "fn main(){let mut result=None;for _ in 0..1{let value=7;result=Some(&value);}println!(\"{}\",result.unwrap());}",
+        false,
+    );
+}
+
+#[test]
+fn a_ref_pattern_extends_the_initializer_to_its_binding_scope() {
+    check(
+        include_str!("../../../tests/run/ref_pattern_temporaries.rs"),
+        true,
+    );
+    check(
+        r#"fn main(){let escaped;{let (ref x, _)=(String::from("value"),());escaped=x;}println!("{escaped}");}"#,
         false,
     );
 }

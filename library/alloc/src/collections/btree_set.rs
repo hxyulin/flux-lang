@@ -21,6 +21,8 @@ impl<T> BTreeSet<T> {
 impl<T: Ord> BTreeSet<T> {
     /// Borrows the smallest element without removing it.
     pub fn first(&self) -> Option<&T> { self.map.first_key_value().map(|(key, _)| key) }
+    /// Borrows the largest element without removing it.
+    pub fn last(&self) -> Option<&T> { self.map.last_key_value().map(|(key, _)| key) }
     /// Whether the sets have no elements in common.
     pub fn is_disjoint(&self, other: &Self) -> bool {
         let (small, large) = if self.len() <= other.len() { (self, other) } else { (other, self) };

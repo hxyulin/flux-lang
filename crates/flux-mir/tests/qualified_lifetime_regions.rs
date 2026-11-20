@@ -85,6 +85,26 @@ fn qualified_lifetimes_match_rustc() {
             "trait Take{fn take(self)->Self;}impl<'a,T>Take for &'a mut T{fn take(self)->Self{self}}fn get<'a,T>(x:&'a mut T)->&'a mut T{<&'a mut T>::take(x)}fn main(){}",
         ),
         (
+            "qualified_variant_escape",
+            false,
+            "enum E<'a>{Value(&'a str)}fn escape<'a>(x:&'a str)->E<'a>{<E<'static>>::Value(x)}fn main(){}",
+        ),
+        (
+            "qualified_variant_alias_escape",
+            false,
+            "enum E<'a>{Value(&'a str)}type Alias<'a>=E<'a>;fn escape<'a>(x:&'a str)->E<'a>{<Alias<'static>>::Value(x)}fn main(){}",
+        ),
+        (
+            "qualified_variant_missing_type_argument",
+            false,
+            "enum E<T>{Value(T)}fn main(){let _=<E>::Value(7u8);}",
+        ),
+        (
+            "qualified_variant_default_applies",
+            false,
+            "enum E<T=u8>{Value(T)}fn main(){let _=<E>::Value(7u16);}",
+        ),
+        (
             "outer_reference_requires_bound",
             false,
             "struct S<'a,'b>{v:&'a <&'b [u32] as IntoIterator>::IntoIter}fn main(){}",

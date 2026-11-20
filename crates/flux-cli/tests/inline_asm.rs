@@ -37,6 +37,10 @@ fn inline_asm_contracts_match_rustc() {
             r#"fn main(){unsafe{core::arch::asm!("/*{}*/",in(reg)true)}}"#,
         ),
         (
+            "vreg_double_array",
+            r#"fn main(){unsafe{core::arch::asm!("/*{}*/",in(vreg)[1.0f64,2.0])}}"#,
+        ),
+        (
             "char_name",
             r#"fn main(){let mut x=0u64;unsafe{core::arch::asm!("/*{'a'}*/",'a'=inout(reg)x)}}"#,
         ),

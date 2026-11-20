@@ -210,12 +210,15 @@ pub fn parse_expansion_with_token_kinds(
             input.set_last_safe_keyword();
         }
         if kind == T!['(']
-            && origins
-                .binary_search_by_key(&lexed.token_start(index), |(start, _)| *start)
-                .ok()
-                .is_some_and(|at| origins[at].1.range.is_empty())
+            && let Ok(at) =
+                origins.binary_search_by_key(&lexed.token_start(index), |(start, _)| *start)
         {
-            input.set_last_invisible_paren();
+            let origin = origins[at].1;
+            if origin.is_type_fragment() {
+                input.set_last_type_paren();
+            } else if origin.range.is_empty() {
+                input.set_last_invisible_paren();
+            }
         }
         if index + 1 < lexed.len() && !lexed.kind(index + 1).is_trivia() {
             input.set_last_joint();

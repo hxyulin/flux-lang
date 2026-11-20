@@ -315,7 +315,7 @@ fn region_free_graph(
     sigs: &Signatures,
     trait_: TraitId,
 ) -> Result<bool, TraitProfileError> {
-    region_graph(items, sigs, trait_, false)
+    region_graph(items, sigs, trait_, false).map(|(copy, _)| copy)
 }
 
 fn region_graph(
@@ -323,9 +323,10 @@ fn region_graph(
     sigs: &Signatures,
     trait_: TraitId,
     associated: bool,
-) -> Result<bool, TraitProfileError> {
+) -> Result<(bool, bool), TraitProfileError> {
     // Iterative DFS keeps even long malformed cycles off the call stack.
     let mut copy = false;
+    let mut sized = false;
     let mut active = rustc_hash::FxHashSet::default();
     let mut done = rustc_hash::FxHashSet::default();
     let mut work = vec![(trait_, false)];
@@ -342,12 +343,13 @@ fn region_graph(
                 });
             }
             copy |= items.traits[id].lang == Some(flux_intern::sym::copy);
+            sized |= Some(id) == sigs.builtins.sized;
             let edges = region_free_edges(items, sigs, id, associated)?;
             work.push((id, true));
             work.extend(edges.into_iter().rev().map(|id| (id, false)));
         }
     }
-    Ok(copy)
+    Ok((copy, sized))
 }
 
 /// Check represented safe borrowed or Copy-by-value trait methods, including
@@ -499,12 +501,7 @@ fn method_profile(
             return Err(fail(None, TraitProfileReason::AssociatedItems));
         }
     }
-    let copy = region_graph(items, sigs, trait_, projected)?;
-    let sized = sigs.traits.get(trait_).is_some_and(|t| {
-        t.supertraits
-            .iter()
-            .any(|b| Some(b.trait_) == sigs.builtins.sized)
-    });
+    let (copy, sized) = region_graph(items, sigs, trait_, projected)?;
     let mut listed = rustc_hash::FxHashSet::default();
     for &method in &data.functions {
         let bad = |reason| fail(Some(method), reason);
@@ -576,7 +573,10 @@ fn method_profile(
                                 || !written_type(&binding.ty, false)
                         })
                         || (arguments.parenthesized && !callback)
-                        || !arguments.types.iter().all(|ty| written_type(ty, !callback))
+                        || !arguments
+                            .types
+                            .iter()
+                            .all(|ty| written_type(ty, !projected))
                 })
                 || items
                     .resolve_trait(function.loc.module, &predicate.bound)
@@ -586,11 +586,11 @@ fn method_profile(
                 return Err(bad(TraitProfileReason::MethodGenerics));
             }
         }
-        if !written_type(&function.ret, false)
-            || function.params.iter().any(|p| {
-                !written_type(&p.ty, false)
-                    && !matches!(p.ty,TypeRef::ImplParam(index) if synthetic(index))
-            })
+        if !written_signature_type(&function.ret, false, projected, &|_| false)
+            || function
+                .params
+                .iter()
+                .any(|p| !written_signature_type(&p.ty, false, projected, &synthetic))
         {
             return Err(bad(TraitProfileReason::SignatureType));
         }
@@ -766,6 +766,21 @@ fn method_slots(
                 Some(n + method_slots(items, sigs, t, params, projected)?)
             })
         }
+        TyKind::FnPtr(signature) if projected => {
+            let closed = !signature.inputs_output.is_empty()
+                && signature.regions.is_none_or(|regions| {
+                    regions.bound == 0
+                        && regions.free == 0
+                        && regions.types.is_empty()
+                        && regions.projections.is_empty()
+                        && regions.inputs_output.iter().all(|row| row.is_empty())
+                })
+                && signature
+                    .inputs_output
+                    .iter()
+                    .all(|&ty| method_slots(items, sigs, ty, params, true) == Some(0));
+            closed.then_some(0)
+        }
         _ => type_slots(items, sigs, ty, params),
     }
 }
@@ -784,9 +799,19 @@ fn has_predicates(g: &Generics) -> bool {
     !g.predicates.is_empty() || !g.outlives.is_empty() || !g.type_outlives.is_empty()
 }
 
-// Intentionally conservative syntax boundary. Fn pointers, opaque types and
-// qualified projections have independent binder/selection requirements.
 fn written_type(t: &TypeRef, region_free: bool) -> bool {
+    written_signature_type(t, region_free, false, &|_| false)
+}
+
+// Closed function pointers carry no owner lifetime rows. The method profile
+// still reconstructs their complete signature, including ABI and safety.
+fn written_signature_type(
+    t: &TypeRef,
+    region_free: bool,
+    closed_pointers: bool,
+    synthetic: &dyn Fn(u32) -> bool,
+) -> bool {
+    let child = |ty: &TypeRef| written_signature_type(ty, region_free, closed_pointers, synthetic);
     match t {
         TypeRef::Path(p) => {
             p.qself.is_none()
@@ -794,23 +819,34 @@ fn written_type(t: &TypeRef, region_free: bool) -> bool {
                     (!region_free || a.lifetimes.is_empty())
                         && a.bindings.is_empty()
                         && !a.parenthesized
-                        && a.types.iter().all(|t| written_type(t, region_free))
+                        && a.types.iter().all(child)
                 })
         }
-        TypeRef::Tuple(ts) => ts.iter().all(|t| written_type(t, region_free)),
-        TypeRef::Ptr { pointee, .. } => written_type(pointee, region_free),
-        TypeRef::Ref { pointee, .. } => !region_free && written_type(pointee, false),
-        TypeRef::Array { elem, .. } | TypeRef::Slice(elem) => written_type(elem, region_free),
+        TypeRef::Tuple(ts) => ts.iter().all(child),
+        TypeRef::Ptr { pointee, .. } => child(pointee),
+        TypeRef::Ref { pointee, .. } => !region_free && child(pointee),
+        TypeRef::Array { elem, .. } | TypeRef::Slice(elem) => child(elem),
+        TypeRef::FnPtr {
+            bound_lifetimes,
+            params,
+            ret,
+            ..
+        } if closed_pointers => {
+            let closed = |ty: &TypeRef| written_signature_type(ty, true, true, &|_| false);
+            bound_lifetimes.is_empty() && params.iter().all(closed) && closed(ret)
+        }
         TypeRef::Never => true,
+        TypeRef::ImplParam(index) => synthetic(*index),
         TypeRef::Dyn(object) if !region_free => object.bounds.iter().all(|bound| {
             bound.bound_lifetimes.is_empty()
                 && bound.path.args.iter().flatten().all(|args| {
                     !args.parenthesized
                         && (!region_free || args.lifetimes.is_empty())
-                        && args.types.iter().all(|ty| written_type(ty, false))
-                        && args.bindings.iter().all(|binding| {
-                            binding.args.is_none() && written_type(&binding.ty, false)
-                        })
+                        && args.types.iter().all(child)
+                        && args
+                            .bindings
+                            .iter()
+                            .all(|binding| binding.args.is_none() && child(&binding.ty))
                 })
         }),
         _ => false,
@@ -1298,6 +1334,7 @@ pub(crate) fn family_method_profile(
             ..TypeScope::default()
         };
         walker.self_projection_owner = Some((id, Box::new([Region::Param(0)])));
+        walker.add_trait_projection_bounds(id);
         walker.elided = Elided::Fresh;
         let mut distinct = Vec::new();
         for ((written, &ty), expected) in function
@@ -1359,12 +1396,7 @@ pub(crate) fn family_method_profile(
             return false;
         }
     }
-    data.supertraits.iter().all(|bound| {
-        items
-            .resolve_trait(data.loc.module, bound)
-            .0
-            .is_some_and(|t| items.traits[t].generics.lifetimes.is_empty())
-    })
+    region_graph(items, sigs, id, true).is_ok()
 }
 
 /// Reconstruct supertrait type-argument rows for a methodless marker. Targets

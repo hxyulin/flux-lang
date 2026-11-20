@@ -35,7 +35,7 @@ use resolve::{
     alias_cycle, check_type_defaults, reaches_alias, resolve_or_report, resolve_predicates,
     unsized_argument,
 };
-pub(crate) use resolve::{contains_ref, expand_alias, fill_type_defaults, type_arg_count};
+pub(crate) use resolve::{expand_alias, fill_type_defaults, type_arg_count};
 
 mod fn_regions;
 mod infer;
@@ -108,6 +108,7 @@ fn duplicate_assoc_items(
             if b.index() < from
                 || first.target != second.target
                 || !overlap(sigs.impls[a], sigs.impls[b])
+                || !traits::inherent_impls_overlap(items, sigs, a, b)
             {
                 continue;
             }
@@ -973,100 +974,108 @@ fn check(
         queue.extend(items.functions.iter().map(|(id, _)| id));
     }
     let mut pending_opaque_dependencies = rustc_hash::FxHashSet::default();
-    while let Some(id) = queue.pop() {
-        if bodies.get(id).is_some() {
-            continue;
-        }
-        let result = match origin(ClosureOwner::Function(id)) {
-            flib::BodyOrigin::Library => {
-                match library.expect("library ownership has a provider").body(id) {
-                    Some(result) => result.clone(),
-                    None => continue,
+    for resolve_body_lengths in [false, true] {
+        if resolve_body_lengths {
+            // Array lengths in bodies that name constants not evaluated yet:
+            // evaluated now, and those bodies inferred again; so are the
+            // constants of const generic arguments whose types they found.
+            let mut missing: Vec<ConstId> = Vec::new();
+            let mut new_tys: Vec<ConstId> = Vec::new();
+            let results = consts
+                .iter()
+                .map(|(_, r)| r)
+                .chain(bodies.iter().map(|(_, r)| r));
+            for result in results {
+                for &c in &result.missing_lens {
+                    if !missing.contains(&c) {
+                        missing.push(c);
+                    }
+                }
+                for &(c, ty) in &result.new_arg_tys {
+                    if sigs.arg_tys.insert(c, ty).is_none() {
+                        sigs.consts.insert(c, ty);
+                        new_tys.push(c);
+                    }
                 }
             }
-            flib::BodyOrigin::Imported => continue,
-            flib::BodyOrigin::Source => {
-                let Some((body, source_map)) = hir.body(id) else {
-                    continue;
-                };
-                infer_body(items, &sigs, id, body, source_map)
-            }
-        };
-        let providers: Vec<_> = result
-            .calls
-            .iter()
-            .map(|(_, call)| call.function)
-            .filter(|&provider| {
-                provider != id
-                    && bodies.get(provider).is_none()
-                    && !pending_opaque_dependencies.contains(&provider)
-                    && sigs
-                        .opaques
-                        .get(provider)
-                        .is_some_and(|types| !types.is_empty())
-                    && hir.body(provider).is_some()
-            })
-            .collect();
-        if !providers.is_empty() && pending_opaque_dependencies.insert(id) {
-            queue.push(id);
-            queue.extend(providers);
-            continue;
-        }
-        for (index, &hidden) in result.opaques.iter().enumerate() {
-            sigs.hidden.insert((id, index as u32), hidden);
-        }
-        pending_opaque_dependencies.remove(&id);
-        reached(&result, &mut queue);
-        bodies.insert(id, result);
-    }
-    // Array lengths in bodies that name constants not evaluated yet:
-    // evaluated now, and those bodies inferred again; so are the
-    // constants of const generic arguments whose types they found.
-    let mut missing: Vec<ConstId> = Vec::new();
-    let mut new_tys: Vec<ConstId> = Vec::new();
-    let results = consts
-        .iter()
-        .map(|(_, r)| r)
-        .chain(bodies.iter().map(|(_, r)| r));
-    for result in results {
-        for &c in &result.missing_lens {
-            if !missing.contains(&c) {
-                missing.push(c);
+            if !missing.is_empty() || !new_tys.is_empty() {
+                let (values, failures) = eval(hir, &sigs, &missing);
+                sigs.array_lens.extend(values);
+                // Signatures are not resolved again here, so a length the
+                // evaluator left out for that fails.
+                for &konst in &missing {
+                    sigs.array_lens.entry(konst).or_insert(None);
+                }
+                diagnostics.extend(failures);
+                let redo: Vec<ConstId> = consts
+                    .iter()
+                    .filter(|(id, r)| !r.missing_lens.is_empty() || new_tys.contains(id))
+                    .map(|(id, _)| id)
+                    .collect();
+                for id in redo {
+                    let (body, source_map) = hir.const_body(id).expect("inferred above");
+                    let result = infer_const(items, &sigs, id, body, source_map);
+                    reached(&result, &mut queue);
+                    consts.insert(id, result);
+                }
+                let redo: Vec<FunctionId> = bodies
+                    .iter()
+                    .filter(|(_, r)| !r.missing_lens.is_empty() || !r.new_arg_tys.is_empty())
+                    .map(|(id, _)| id)
+                    .collect();
+                for id in redo {
+                    let (body, source_map) = hir.body(id).expect("inferred above");
+                    let result = infer_body(items, &sigs, id, body, source_map);
+                    reached(&result, &mut queue);
+                    bodies.insert(id, result);
+                }
             }
         }
-        for &(c, ty) in &result.new_arg_tys {
-            if sigs.arg_tys.insert(c, ty).is_none() {
-                sigs.consts.insert(c, ty);
-                new_tys.push(c);
+        while let Some(id) = queue.pop() {
+            if bodies.get(id).is_some() {
+                continue;
             }
-        }
-    }
-    if !missing.is_empty() || !new_tys.is_empty() {
-        let (values, failures) = eval(hir, &sigs, &missing);
-        sigs.array_lens.extend(values);
-        // Signatures are not resolved again here, so a length the
-        // evaluator left out for that fails.
-        for &konst in &missing {
-            sigs.array_lens.entry(konst).or_insert(None);
-        }
-        diagnostics.extend(failures);
-        let redo: Vec<ConstId> = consts
-            .iter()
-            .filter(|(id, r)| !r.missing_lens.is_empty() || new_tys.contains(id))
-            .map(|(id, _)| id)
-            .collect();
-        for id in redo {
-            let (body, source_map) = hir.const_body(id).expect("inferred above");
-            consts.insert(id, infer_const(items, &sigs, id, body, source_map));
-        }
-        let redo: Vec<FunctionId> = bodies
-            .iter()
-            .filter(|(_, r)| !r.missing_lens.is_empty() || !r.new_arg_tys.is_empty())
-            .map(|(id, _)| id)
-            .collect();
-        for id in redo {
-            let (body, source_map) = hir.body(id).expect("inferred above");
-            bodies.insert(id, infer_body(items, &sigs, id, body, source_map));
+            let result = match origin(ClosureOwner::Function(id)) {
+                flib::BodyOrigin::Library => {
+                    match library.expect("library ownership has a provider").body(id) {
+                        Some(result) => result.clone(),
+                        None => continue,
+                    }
+                }
+                flib::BodyOrigin::Imported => continue,
+                flib::BodyOrigin::Source => {
+                    let Some((body, source_map)) = hir.body(id) else {
+                        continue;
+                    };
+                    infer_body(items, &sigs, id, body, source_map)
+                }
+            };
+            let providers: Vec<_> = result
+                .calls
+                .iter()
+                .map(|(_, call)| call.function)
+                .filter(|&provider| {
+                    provider != id
+                        && bodies.get(provider).is_none()
+                        && !pending_opaque_dependencies.contains(&provider)
+                        && sigs
+                            .opaques
+                            .get(provider)
+                            .is_some_and(|types| !types.is_empty())
+                        && hir.body(provider).is_some()
+                })
+                .collect();
+            if !providers.is_empty() && pending_opaque_dependencies.insert(id) {
+                queue.push(id);
+                queue.extend(providers);
+                continue;
+            }
+            for (index, &hidden) in result.opaques.iter().enumerate() {
+                sigs.hidden.insert((id, index as u32), hidden);
+            }
+            pending_opaque_dependencies.remove(&id);
+            reached(&result, &mut queue);
+            bodies.insert(id, result);
         }
     }
     // What code generation sees of opaque types.
@@ -1426,12 +1435,32 @@ fn function_name(items: &ItemTree, f: FunctionId) -> Symbol {
     items.functions[f].name
 }
 
-/// A sized subset with generic parameters. Check every substituted field,
-/// including enum variants and nested unions, rather than treating an ADT's
-/// Copy impl as proof that its representation is supported. Generic arguments
-/// retain their region slots; direct stored-reference declarations remain gated.
-/// Reject recursive
-/// generic arguments conservatively, even when they occur only in phantom data.
+/// A declared shared reference field may contribute a single static region.
+/// Its lifetime is checked through the field's existing declaration row.
+fn supported_union_member(
+    items: &ItemTree,
+    sigs: &Signatures,
+    owner: flux_hir::StructId,
+    index: usize,
+    ty: Ty,
+    checked: &mut FxHashMap<Ty, bool>,
+    depth: u32,
+) -> bool {
+    let static_pointer = matches!(ty.kind(), TyKind::Ref(Mutability::Not, pointee)
+        if !sigs.is_unsized(pointee) || matches!(pointee.kind(), TyKind::Str | TyKind::Slice(_)))
+        && regions::slots(items, ty) == 1
+        && sigs
+            .regions
+            .structs
+            .get(owner)
+            .and_then(|regions| regions.fields.get(index))
+            .is_some_and(|row| row.as_ref() == [regions::Region::Static]);
+    static_pointer || supported_union_field(items, sigs, ty, checked, depth)
+}
+
+/// Check each substituted field of a sized aggregate. A Copy impl alone
+/// says nothing about supported representations. The recursion guard also
+/// covers expanding generic types, including phantom arguments.
 fn supported_union_field(
     items: &ItemTree,
     sigs: &Signatures,
@@ -1469,6 +1498,16 @@ fn supported_union_field(
             (len.as_usize().is_some() || len.has_params())
                 && supported_union_field(items, sigs, elem, checked, depth + 1)
         }
+        // NonNull stores its raw pointer, including when the pointee is an
+        // associated type. Apply the same metadata and region checks as for
+        // a raw pointer field, without treating the pointee as stored data.
+        TyKind::Adt(adt, _) if flux_solve::is_lang_struct(items, adt.strukt, "non_null") => {
+            flux_solve::contents(sigs, ty).is_some_and(|fields| {
+                fields
+                    .iter()
+                    .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1))
+            })
+        }
         TyKind::Adt(adt, args) => {
             // Region slots also occur in type arguments, even when they are
             // phantom. Check these with the same memoized traversal rather
@@ -1479,9 +1518,17 @@ fn supported_union_field(
                         || supported_union_field(items, sigs, arg, checked, depth + 1)
                 })
                 && flux_solve::contents(sigs, ty).is_some_and(|fields| {
-                    fields
-                        .iter()
-                        .all(|&field| supported_union_field(items, sigs, field, checked, depth + 1))
+                    fields.iter().enumerate().all(|(i, &field)| {
+                        supported_union_member(
+                            items,
+                            sigs,
+                            adt.strukt,
+                            i,
+                            field,
+                            checked,
+                            depth + 1,
+                        )
+                    })
                 })
         }
         _ => false,

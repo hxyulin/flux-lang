@@ -86,6 +86,8 @@ impl From<bool> for u32 { fn from(b: bool) -> u32 { b as u32 } }
 impl From<bool> for u64 { fn from(b: bool) -> u64 { b as u64 } }
 impl From<bool> for u128 { fn from(b: bool) -> u128 { b as u128 } }
 impl From<bool> for usize { fn from(b: bool) -> usize { b as usize } }
+impl From<bool> for f32 { fn from(b: bool) -> f32 { if b { 1.0 } else { 0.0 } } }
+impl From<bool> for f64 { fn from(b: bool) -> f64 { if b { 1.0 } else { 0.0 } } }
 
 /// Conversion into a `T`: what `From` gives, the other way round. Every
 /// type converts into those that convert from it.

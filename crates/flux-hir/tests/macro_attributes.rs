@@ -94,6 +94,18 @@ fn macro_scope_attributes_match_rustc() {
                 false,
             ),
             (
+                "macro_use_on_definition",
+                "mod child{#[macro_use] macro_rules! make{()=>{pub struct Made;}}make!();}fn f(_:child::Made){}",
+                None,
+                true,
+            ),
+            (
+                "macro_use_on_definition_does_not_export",
+                "mod child{#[cfg_attr(all(),macro_use)] macro_rules! make{()=>{pub struct Made;}}make!();}make!();",
+                None,
+                false,
+            ),
+            (
                 "before",
                 "make!(); mod child;",
                 Some("#![macro_use] macro_rules! make{()=>{pub struct Made;}}"),
@@ -121,6 +133,104 @@ fn macro_scope_attributes_match_rustc() {
         ] {
             compare(name, source, child, accepted, edition);
         }
+    }
+}
+
+#[test]
+fn static_export_name_values_match_rustc() {
+    for (name, source, expected) in [
+        (
+            "macro_value",
+            r#"macro_rules! suffix { () => { "DATA" }; }
+               #[unsafe(export_name = concat!("TEST_", suffix!()))] static LOCAL: u32 = 1;"#,
+            true,
+        ),
+        (
+            "missing_unsafe",
+            r#"#[export_name = "DATA"] static LOCAL: u32 = 1;"#,
+            false,
+        ),
+        (
+            "numeric_value",
+            "#[unsafe(export_name = 17)] static LOCAL: u32 = 1;",
+            false,
+        ),
+    ] {
+        compare(name, source, None, expected, flux_syntax::Edition::E2024);
+    }
+}
+
+#[test]
+fn deprecation_macro_values_match_rustc() {
+    for (name, source, accepted) in [
+        (
+            "macro_note",
+            r#"macro_rules! note { ($name:ident) => { concat!("use ", stringify!($name)) }; }
+               pub(crate) use note;
+               mod child {
+                   use crate::note;
+                   #[deprecated = note!(New)]
+                   pub type Old = u32;
+                   pub type New = u32;
+               }"#,
+            true,
+        ),
+        (
+            "trait_and_method_notes",
+            r#"macro_rules! note { () => { "use the new API" }; }
+               #[deprecated = note!()]
+               trait Old {}
+               macro_rules! method { () => { #[deprecated = note!()] fn old(&self) {} }; }
+               struct Item;
+               impl Item { method!(); }"#,
+            true,
+        ),
+        (
+            "non_string_note",
+            "macro_rules! note{()=>{17};} #[deprecated=note!()] type Old=u32;",
+            false,
+        ),
+        (
+            "unknown_note_macro",
+            "#[deprecated=missing!()] type Old=u32;",
+            false,
+        ),
+    ] {
+        compare(name, source, None, accepted, flux_syntax::Edition::E2024);
+    }
+}
+
+#[test]
+fn forwarded_types_in_imports_match_rustc() {
+    let valid = r#"
+        struct Value;
+        macro_rules! install {
+            ($ty:ty) => { #[cfg(not(test))] mod imports { use super::{$ty}; fn take(_: Value) {} } };
+        }
+        macro_rules! forward { ($ty:ty) => { install!($ty); }; }
+        forward!(Value);
+    "#;
+    let import = r#"
+        struct Value<T>(T);
+        macro_rules! import { ($ty:ty) => { #[cfg(any())] use {$ty}; }; }
+    "#;
+    for (name, source, accepted) in [
+        ("qualified_grouped_import", valid.to_owned(), true),
+        ("non_path_type_import", format!("{import} import!((u32,));"), false),
+        ("type_arguments_in_import", format!("{import} import!(Value<u32>);"), false),
+        (
+            "expression_in_import",
+            "mod a { pub struct Value; } macro_rules! import { ($e:expr) => { use {$e}; }; } import!(a::Value);".into(),
+            false,
+        ),
+        (
+            "appended_path_segment",
+            "macro_rules! import { ($ty:ty) => { use $ty::Value; }; } import!(std::sync);".into(),
+            false,
+        ),
+        ("literal_parens_in_import", "use {(u32)};".into(), false),
+    ] {
+        compare(name, &source, None, accepted, flux_syntax::Edition::E2024);
     }
 }
 

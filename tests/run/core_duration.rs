@@ -2,6 +2,7 @@ use core::time::Duration;
 use std::time::Duration as Std;
 const NORMALIZED: Duration = Duration::new(7, 2_500_000_123);
 const SUM: Option<Duration> = Duration::new(1, 999_999_999).checked_add(Duration::from_nanos(2));
+const PRODUCT: Duration = Duration::new(1, 750_000_000).saturating_mul(3);
 fn hash(mut state: u64, text: &str) -> u64 {
     for byte in text.as_bytes() {
         state = (state ^ (*byte as u64)).wrapping_mul(1099511628211);
@@ -16,6 +17,10 @@ fn main() {
     assert_eq!(SUM, Some(Std::new(2, 1)));
     assert_eq!(Duration::default(), Std::ZERO);
     assert_eq!(Duration::MAX.checked_add(Std::from_nanos(1)), None);
+    assert_eq!(PRODUCT, Duration::new(5, 250_000_000));
+    assert_eq!(Duration::MAX.saturating_mul(0), Duration::ZERO);
+    assert_eq!(Duration::MAX.saturating_mul(2), Duration::MAX);
+    assert_eq!(Duration::new(u64::MAX / 3, 999_999_999).saturating_mul(3), Duration::MAX);
     assert_eq!(Duration::ZERO.checked_sub(Std::from_nanos(1)), None);
     assert_eq!(
         Duration::new(4, 5) - Std::new(2, 7),

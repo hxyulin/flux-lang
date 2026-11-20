@@ -31,6 +31,24 @@ pub fn unsize_trait(items: &ItemTree, target: Ty) -> Option<TraitId> {
     }
 }
 
+/// Box's callable impl forwards each argument to the object it contains. A
+/// matching independent input binder therefore needs no new lifetime proof.
+pub fn forwards_callable_input_binder(items: &ItemTree, source: Ty, target: DynTy) -> bool {
+    let Some(TyKind::Dynamic(source)) = flux_solve::box_pointee(source).map(Ty::kind) else {
+        return false;
+    };
+    crate::fn_trait_kind(items, target.trait_).is_some()
+        && source.trait_ == target.trait_
+        && source.callable_signature().is_none()
+        && target.callable_signature().is_none()
+        && source.args == target.args
+        && source.assoc_tys == target.assoc_tys
+        && target
+            .assoc_tys
+            .iter()
+            .all(|&ty| crate::regions::slots(items, ty) == 0)
+}
+
 /// The `Self` a trait object's bounds are resolved with: no type, so
 /// that a default naming `Self` shows (E0393).
 fn object_self() -> Ty {
@@ -258,21 +276,29 @@ pub(crate) fn resolve_dyn(
                     matches!(r, crate::regions::Region::Param(_)) && !regions[..i].contains(r)
                 })
         });
-    // Non-callable object arguments have explicit occurrence rows. Nested
-    // objects, pointers with binders, and projected/opaque arguments need
-    // independent schemas and retain their existing boundary.
-    fn represented_argument(ty: Ty) -> bool {
-        !matches!(
-            ty.kind(),
-            TyKind::Dynamic(_) | TyKind::FnPtr(_) | TyKind::Alias(_) | TyKind::Opaque(_)
-        ) && ty.children().all(represented_argument)
+    // A nested object with only a bound region has the same occurrence row
+    // as it does in an ordinary type. Nested binders require another schema.
+    fn represented_argument(items: &ItemTree, ty: Ty) -> bool {
+        match ty.kind() {
+            TyKind::Dynamic(object) => {
+                object.args.is_empty()
+                    && object.assoc_tys.is_empty()
+                    && object.callable_signature().is_none()
+                    && object.quantified_signature().is_none()
+                    && items.traits[object.trait_].generics.lifetimes.is_empty()
+            }
+            TyKind::FnPtr(_) | TyKind::Alias(_) | TyKind::Opaque(_) => false,
+            _ => ty
+                .children()
+                .all(|child| represented_argument(items, child)),
+        }
     }
     let represented = crate::fn_trait_kind(items, t).is_none()
         && trait_ref
             .args
             .iter()
             .chain(&tys)
-            .all(|&ty| represented_argument(ty));
+            .all(|&ty| represented_argument(items, ty));
     let callable = if !callable_inputs && crate::fn_trait_kind(items, t).is_some() {
         let bound = d
             .bounds

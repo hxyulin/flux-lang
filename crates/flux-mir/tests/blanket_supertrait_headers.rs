@@ -9,6 +9,8 @@ fn abstract_blanket_supertraits_match_rustc() {
     let root =
         std::env::temp_dir().join(format!("flux-blanket-supertraits-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
+    let projected_output = include_str!("../../../tests/run/projected_supertrait_output.rs");
+    let wrong_output = projected_output.replace("type Output = D;", "type Output = Dimension;");
     for (name, source, accepts) in [
         (
             "equivalent",
@@ -40,6 +42,22 @@ fn abstract_blanket_supertraits_match_rustc() {
             "trait Parent{}trait Child:Parent{}impl<'a:'static>Parent for &'a u32{}impl<'a>Child for &'a u32{}fn main(){}",
             false,
         ),
+        (
+            "caller_selects_const_parameter_supertrait",
+            include_str!("../../../tests/run/trait_static_superbounds.rs"),
+            true,
+        ),
+        (
+            "caller_bound_does_not_discharge_selected_static_requirement",
+            "struct Dim<const N: usize>;trait Known{}struct Wrapper<'a,const N:usize>(&'a u32);impl<const N:usize>PartialEq for Wrapper<'static,N> where Dim<N>:Known{fn eq(&self,_:&Self)->bool{true}}impl<'a,const N:usize>Eq for Wrapper<'a,N> where Dim<N>:Known{}fn main(){}",
+            false,
+        ),
+        (
+            "projections_in_selected_supertrait_output",
+            projected_output,
+            true,
+        ),
+        ("different_selected_supertrait_output", &wrong_output, false),
     ] {
         if !case_filter::selected(name) {
             continue;

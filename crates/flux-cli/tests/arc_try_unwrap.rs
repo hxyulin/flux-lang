@@ -18,11 +18,12 @@ fn production_arc_try_unwrap_host_races_and_unwind() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/alloc/src/sync.rs"),
     )
     .unwrap();
-    // Host-only adaptation removes Flux's lang registration and redirects its
-    // private abort hook. All allocation/refcount/payload code stays unchanged.
+    // The host probe uses Arc's ownership code and exercises neither builtin
+    // registration nor the boxed conversion that uses Flux's metadata intrinsic.
     std::fs::write(
         root.join("implementation.rs"),
         production
+            .replace("mod box_conversion;", "")
             .replace("#[lang = \"arc\"]", "")
             .replace("core::panicking::abort_now()", "std::process::abort()"),
     )

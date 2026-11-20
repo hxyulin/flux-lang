@@ -85,6 +85,11 @@ fn backend_macro_admission_matches_rustc() {
             true,
         ),
         (
+            "local_inner_negation",
+            "#[macro_export]macro_rules! helper{()=>{false}} #[macro_export(local_inner_macros)]macro_rules! outer{()=>{{let word=1;if !helper!() && word!=0{!false}else{false}}}} fn main(){assert!(outer!());}",
+            true,
+        ),
+        (
             "private_helper",
             "mod definitions{macro_rules! helper{()=>{17}} #[macro_export(local_inner_macros)]macro_rules! outer{()=>{helper!()}}} fn main(){let _=outer!();}",
             false,

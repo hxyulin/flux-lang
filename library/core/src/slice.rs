@@ -16,6 +16,80 @@ use crate::result::Result::{self, Err, Ok};
 
 mod sort;
 
+/// An invalid index array passed to a disjoint mutable slice borrow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetDisjointMutError {
+    /// At least one index or range is outside the slice.
+    IndexOutOfBounds,
+    /// Two indices refer to overlapping parts of the slice.
+    OverlappingIndices,
+}
+
+impl crate::fmt::Display for GetDisjointMutError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        let message = match self {
+            Self::IndexOutOfBounds => "an index is out of bounds",
+            Self::OverlappingIndices => "there were overlapping indices",
+        };
+        f.write_str(message)
+    }
+}
+
+impl crate::error::Error for GetDisjointMutError {}
+
+mod disjoint {
+    use super::{Range, RangeInclusive, SliceIndex};
+
+    // Only the index forms supported by the standard slice API implement this
+    // trait. Each implementation uses the same bounds for validation and access.
+    pub trait Index<T>: SliceIndex<[T]> {
+        fn bounds(&self) -> Option<(usize, usize)>;
+        /// The caller ensures the bounds are valid for the allocation at base.
+        unsafe fn project(&self, base: *mut T) -> *mut Self::Output;
+    }
+
+    impl<T> Index<T> for usize {
+        fn bounds(&self) -> Option<(usize, usize)> {
+            Some((*self, self.checked_add(1)?))
+        }
+
+        unsafe fn project(&self, base: *mut T) -> *mut T {
+            // SAFETY: the caller checked that this element is in bounds.
+            unsafe { base.add(*self) }
+        }
+    }
+
+    impl<T> Index<T> for Range<usize> {
+        fn bounds(&self) -> Option<(usize, usize)> {
+            Some((self.start, self.end))
+        }
+
+        unsafe fn project(&self, base: *mut T) -> *mut [T] {
+            // SAFETY: the caller checked the full half-open range.
+            let data = unsafe { base.add(self.start) };
+            crate::ptr::slice_from_raw_parts_mut(data, self.end - self.start)
+        }
+    }
+
+    impl<T> Index<T> for RangeInclusive<usize> {
+        fn bounds(&self) -> Option<(usize, usize)> {
+            if self.start > self.end {
+                return None;
+            }
+            Some((self.start, self.end.checked_add(1)?))
+        }
+
+        unsafe fn project(&self, base: *mut T) -> *mut [T] {
+            let end = self.end + 1;
+            let start = if self.exhausted { end } else { self.start };
+            // SAFETY: the caller checked the full inclusive range. An
+            // exhausted range produces an empty slice after its final element.
+            let data = unsafe { base.add(start) };
+            crate::ptr::slice_from_raw_parts_mut(data, end - start)
+        }
+    }
+}
+
 /// Views one initialized value as a shared one-element slice.
 pub const fn from_ref<T>(value: &T) -> &[T] {
     // SAFETY: [T; 1] has the same layout as T. The array reference borrows
@@ -174,6 +248,63 @@ impl<T> [T] {
     /// `None` if it is out of bounds.
     pub fn get<I: SliceIndex<[T]>>(&self, index: I) -> Option<&I::Output> {
         index.get(self)
+    }
+
+    /// Borrows the indexed elements or subslices mutably in input order.
+    ///
+    /// # Errors
+    /// Returns an error if an index is out of bounds or if two indices
+    /// overlap. The validation compares each pair of indices.
+    pub fn get_disjoint_mut<I: disjoint::Index<T>, const N: usize>(
+        &mut self,
+        indices: [I; N],
+    ) -> Result<[&mut I::Output; N], GetDisjointMutError> {
+        let mut ranges = [(0usize, 0usize); N];
+        let len = self.len();
+        let mut i = 0;
+        while i < N {
+            let Some((start, end)) = indices[i].bounds() else {
+                return Err(GetDisjointMutError::IndexOutOfBounds);
+            };
+            if start > end || end > len {
+                return Err(GetDisjointMutError::IndexOutOfBounds);
+            }
+            let mut j = 0;
+            while j < i {
+                let (other_start, other_end) = ranges[j];
+                if start < other_end && other_start < end {
+                    return Err(GetDisjointMutError::OverlappingIndices);
+                }
+                j += 1;
+            }
+            ranges[i] = (start, end);
+            i += 1;
+        }
+        // SAFETY: all indices were checked and no two results overlap.
+        unsafe { Ok(self.get_disjoint_unchecked_mut(indices)) }
+    }
+
+    /// Borrows the indexed elements or subslices without validating the indices.
+    ///
+    /// # Safety
+    /// Every index must be within this slice, and the indices must be
+    /// disjoint, even when the resulting references are unused.
+    pub unsafe fn get_disjoint_unchecked_mut<I: disjoint::Index<T>, const N: usize>(
+        &mut self,
+        indices: [I; N],
+    ) -> [&mut I::Output; N] {
+        let data = self.as_mut_ptr();
+        let mut result = crate::mem::MaybeUninit::<[&mut I::Output; N]>::uninit();
+        let output = result.as_mut_ptr() as *mut &mut I::Output;
+        let mut i = 0;
+        while i < N {
+            // SAFETY: the caller guarantees disjoint in-bounds projections.
+            // The output pointer writes a single initialized array slot.
+            unsafe { output.add(i).write(&mut *indices[i].project(data)) };
+            i += 1;
+        }
+        // SAFETY: every array slot was written once, including for N = 0.
+        unsafe { result.assume_init() }
     }
 
     /// Returns an element or subslice without checking the index's validity.
@@ -1678,6 +1809,12 @@ impl<'a, T> ChunksExact<'a, T> {
     /// The elements left over, fewer than a chunk.
     pub fn remainder(&self) -> &'a [T] {
         self.rem
+    }
+}
+
+impl<'a, T> Clone for ChunksExact<'a, T> {
+    fn clone(&self) -> Self {
+        Self { v: self.v, rem: self.rem, chunk_size: self.chunk_size }
     }
 }
 

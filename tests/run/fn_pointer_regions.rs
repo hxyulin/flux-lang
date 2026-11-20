@@ -24,6 +24,23 @@ impl InputContract for Specialize {
 trait Object { fn value(&self) -> u32; }
 impl Object for u32 { fn value(&self) -> u32 { *self } }
 fn read_box(value: &Box<dyn Object>) -> u32 { value.value() }
+struct Reader;
+trait Read<'a> { fn read(value: &'a u32) -> &'a u32; }
+impl<'a> Read<'a> for Reader {
+    fn read(value: &'a u32) -> &'a u32 { value }
+}
+fn read_explicit_owner<'a>(value: &'a u32) -> &'a u32 {
+    let read: fn(&'a u32) -> &'a u32 = <Reader as Read<'a>>::read;
+    read(value)
+}
+struct BorrowedReader<'a>(&'a u32);
+impl<'a> BorrowedReader<'a> {
+    fn read(value: &'a u32) -> &'a u32 { value }
+}
+fn read_explicit_impl<'a>(value: &'a u32) -> &'a u32 {
+    let read: fn(&'a u32) -> &'a u32 = BorrowedReader::<'a>::read;
+    read(value)
+}
 fn main() {
     let boxed: Box<dyn Object> = Box::new(17u32);
     let reader: fn(&Box<dyn Object>) -> u32 = read_box;
@@ -42,6 +59,8 @@ fn main() {
     let select: for<'a, 'b> fn(&'a u32, &'b u32) -> &'a u32 = left;
     let a = 29; let b = 31;
     assert_eq!(*select(&a, &b), 29);
+    assert_eq!(*read_explicit_owner(&a), 29);
+    assert_eq!(*read_explicit_impl(&b), 31);
     let edit: for<'a, 'b> fn(&'b mut &'a u32) -> &'b mut &'a u32 = nested;
     let mut value = &a;
     *edit(&mut value) = &b;

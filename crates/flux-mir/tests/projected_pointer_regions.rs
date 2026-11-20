@@ -96,6 +96,31 @@ fn projected_pointer_regions_match_rustc() {
     std::fs::remove_dir_all(root).unwrap();
 }
 
+#[test]
+fn access_to_raw_pointer_storage_matches_rustc() {
+    let root = std::env::temp_dir().join(format!("flux-raw-storage-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    check(
+        &root,
+        "raw_pointer_capture",
+        include_str!("../../../tests/run/raw_pointer_capture_access.rs"),
+        true,
+    );
+    check(
+        &root,
+        "raw_pointer_storage_borrowed",
+        r#"fn main() {
+            let mut x = 0u32;
+            let mut p = &raw mut x;
+            let loan = &mut p;
+            unsafe { *p += 1; }
+            assert!(!(*loan).is_null());
+        }"#,
+        false,
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn check(root: &std::path::Path, name: &str, source: &str, accepted: bool) {
     let path = root.join(format!("{name}.rs"));
     std::fs::write(&path, source).unwrap();

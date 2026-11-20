@@ -26,7 +26,7 @@ fn canonical(
         return Ok(result);
     }
     let input = ty;
-    let ty = crate::traits::reveal(sigs, crate::traits::normalize(items, sigs, &[], ty));
+    let ty = crate::traits::instance_ty(items, sigs, ty, &[]);
     match ty.kind() {
         TyKind::Error
         | TyKind::Infer(_)

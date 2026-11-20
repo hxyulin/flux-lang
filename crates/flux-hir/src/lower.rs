@@ -14,7 +14,7 @@ use flux_arena::ArenaMap;
 use crate::body::TypeRefId;
 use crate::body::{
     Binding, BindingId, Body, BodyLists, BodySourceMap, Expr, ExprId, Literal, LoopSource,
-    MatchArm, Pat, PatId, PathGenerics, Res, SegmentArgs, Stmt,
+    MatchArm, Pat, PatId, PathGenerics, RecordTarget, Res, SegmentArgs, Stmt,
 };
 use crate::def_map::{Def, Ns, ResolveError, Resolved};
 use crate::item_tree::{GenericArgs, PathAnchor, lower_generic_args, lower_generic_path};
@@ -360,8 +360,7 @@ fn derived_body(
             let record = alloc_expr!(
                 ctx,
                 Expr::Record {
-                    strukt,
-                    variant: 0,
+                    target: RecordTarget::Nominal(strukt, 0),
                     fields: ctx.lists.alloc(fields),
                     spread: None,
                 },
@@ -482,6 +481,7 @@ fn assert_param_is_clone(items: &ItemTree, module: ModuleId) -> Res {
 
     let path = Path {
         edition: None,
+        bare_trait_object: None,
         anchor,
         qself: None,
         segments,
@@ -500,6 +500,7 @@ fn assert_param_is_clone(items: &ItemTree, module: ModuleId) -> Res {
 fn discriminant_value_fn(items: &ItemTree, module: ModuleId) -> Option<FunctionId> {
     let path = Path {
         edition: None,
+        bare_trait_object: None,
         anchor: PathAnchor::DefinitionCrate(crate::CrateId(0)),
         qself: None,
         segments: ["intrinsics", "discriminant_value"]
@@ -546,6 +547,7 @@ fn derived_discriminant(
         );
         let ty = ctx.alloc_type(TypeRef::Path(Path {
             edition: None,
+            bare_trait_object: None,
             anchor: PathAnchor::DefinitionCrate(crate::CrateId(0)),
             qself: None,
             segments: [Symbol::intern("primitive"), repr].into(),
@@ -636,8 +638,7 @@ fn derived_default_body(items: &ItemTree, function: FunctionId, strukt: StructId
             let record = alloc_expr!(
                 ctx,
                 Expr::Record {
-                    strukt,
-                    variant: 0,
+                    target: RecordTarget::Nominal(strukt, 0),
                     fields: ctx.lists.alloc(fields),
                     spread: None,
                 },
@@ -1891,8 +1892,7 @@ fn build_variant(
             let id = alloc_expr!(
                 ctx,
                 Expr::Record {
-                    strukt,
-                    variant: v,
+                    target: RecordTarget::Nominal(strukt, v),
                     fields: ctx.lists.alloc(names.into_iter().zip(values)),
                     spread: None,
                 },
@@ -2982,15 +2982,20 @@ impl<'a> Ctx<'a> {
                 match array.semicolon_token() {
                     Some(semicolon) => {
                         let value = self.lower_opt(exprs.next(), syntax);
-                        let count = crate::item_tree::lower_array_len(
-                            exprs.next(),
-                            semicolon.text_range(),
-                            &mut self.diagnostics,
-                        );
-                        let mut count = count;
-                        if self.check_repeat_count(&count) {
-                            count.kind = crate::ArrayLenKind::Error;
-                        }
+                        let size = exprs.next().map(crate::item_tree::const_expr_root);
+                        let count = if matches!(size, Some(ast::Expr::UnderscoreExpr(_))) {
+                            None
+                        } else {
+                            let mut count = crate::item_tree::lower_array_len(
+                                size,
+                                semicolon.text_range(),
+                                &mut self.diagnostics,
+                            );
+                            if self.check_repeat_count(&count) {
+                                count.kind = crate::ArrayLenKind::Error;
+                            }
+                            Some(count)
+                        };
                         Expr::Repeat { value, count }
                     }
                     None => Expr::Array(self.lower_expr_list(exprs)),
@@ -3488,8 +3493,7 @@ impl<'a> Ctx<'a> {
             let id = alloc_expr!(
                 self,
                 Expr::Record {
-                    strukt,
-                    variant: 0,
+                    target: RecordTarget::Nominal(strukt, 0),
                     fields: self.lists.alloc(fields),
                     spread: None,
                 },
@@ -3518,7 +3522,7 @@ impl<'a> Ctx<'a> {
         let path_range = record.path().map_or(range, |p| p.syntax().text_range());
         let target = path
             .as_ref()
-            .and_then(|path| self.resolve_struct_path(path, path_range, true));
+            .and_then(|path| self.record_target(path, path_range));
         let fields_start = self.field_scratch.len();
         let ranges_start = self.field_range_scratch.len();
         let mut spread = None;
@@ -3552,7 +3556,7 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        let Some((strukt, variant)) = target else {
+        let Some(target) = target else {
             self.field_scratch.truncate(fields_start);
             self.field_range_scratch.truncate(ranges_start);
             return self.alloc_expr(Expr::Missing, range);
@@ -3560,8 +3564,7 @@ impl<'a> Ctx<'a> {
         let id = alloc_expr!(
             self,
             Expr::Record {
-                strukt,
-                variant,
+                target,
                 fields: self.lists.alloc(self.field_scratch.drain(fields_start..)),
                 spread,
             },
@@ -3573,13 +3576,42 @@ impl<'a> Ctx<'a> {
         if let Some(path) = record.path() {
             self.source_map.paths.insert(id, path.syntax().text_range());
         }
-        if let Some(path) = path {
+        if let (Some(path), RecordTarget::Nominal(strukt, _)) = (path, target) {
             let is_enum = self.items.structs[strukt].is_enum();
             if let Some(generics) = self.variant_generics(&path, path_range, is_enum) {
                 self.generic_args.insert(id, generics);
             }
         }
         id
+    }
+
+    fn record_target(&mut self, path: &Path, range: TextRange) -> Option<RecordTarget> {
+        if path.anchor == PathAnchor::Plain
+            && path.qself.is_none()
+            && let &[prefix, name] = path.segments.as_ref()
+        {
+            let associated = if prefix == kw::SelfUpper {
+                let trait_owner = match self.owner {
+                    Some(Owner::Trait(_)) => true,
+                    Some(Owner::Impl(imp)) => self.items.impls[imp].trait_.is_some(),
+                    None => false,
+                };
+                trait_owner
+                    && !self
+                        .self_struct()
+                        .is_some_and(|id| self.items.structs[id].variant_named(name).is_some())
+                    && self.self_associated_struct(name).is_none()
+            } else {
+                self.generics.contains(&prefix)
+            };
+            if associated {
+                let ty = self.alloc_type(TypeRef::Path(path.clone()));
+                self.source_map.types.insert(ty, range);
+                return Some(RecordTarget::Associated(ty));
+            }
+        }
+        self.resolve_struct_path(path, range, true)
+            .map(|(strukt, variant)| RecordTarget::Nominal(strukt, variant))
     }
 
     /// The generic arguments of a path to a struct, or to a variant if
@@ -4935,6 +4967,25 @@ impl<'a> Ctx<'a> {
             return (Res::Err, None);
         };
         path.reject_bindings(&mut self.diagnostics);
+        if let Some(candidate) = self.qualified_variant_path(&path) {
+            if let Some(args) = path
+                .args(0)
+                .filter(|args| !args.types.is_empty() || !args.lifetimes.is_empty())
+            {
+                self.error(args.range, "type arguments are not allowed on this type");
+            }
+            let res = self.resolve_value(&candidate, range, call);
+            let qself = path.qself.as_ref().expect("qualified constructor");
+            let written = self.alloc_type(qself.ty.clone());
+            self.source_map.types.insert(written, qself.ty_range);
+            return (
+                res,
+                Some(PathGenerics {
+                    qualified_constructor: Some(written),
+                    ..PathGenerics::default()
+                }),
+            );
+        }
         let res = self.resolve_value(&path, range, call);
         let last = path.segments.len() - 1;
         let (item, ty) = match res {
@@ -4994,6 +5045,9 @@ impl<'a> Ctx<'a> {
         if self_type {
             generics.get_or_insert_default().self_type = true;
         }
+        if path.qself.is_some() && matches!(res, Res::Assoc { .. }) {
+            generics.get_or_insert_default().qualified = true;
+        }
         // `<T as Tr<A>>::f`: the trait's arguments.
         if let Res::Assoc {
             trait_: Some(_), ..
@@ -5019,6 +5073,43 @@ impl<'a> Ctx<'a> {
             }
         }
         (res, generics)
+    }
+
+    /// A value constructor `<E<Args>>::Variant` names the same variant and
+    /// owner arguments as an ordinary path. Keep trait-qualified and other
+    /// type-relative paths for associated-item resolution.
+    fn qualified_variant_path(&self, path: &Path) -> Option<Path> {
+        let qself = path.qself.as_ref()?;
+        let TypeRef::Path(prefix) = &qself.ty else {
+            return None;
+        };
+        if qself.trait_.is_some() || prefix.qself.is_some() || path.segments.len() != 1 {
+            return None;
+        }
+        let last = prefix.segments.len();
+        let candidate = Path {
+            segments: prefix
+                .segments
+                .iter()
+                .chain(&path.segments)
+                .copied()
+                .collect(),
+            ranges: (0..last)
+                .map(|i| prefix.range(i, qself.ty_range))
+                .chain(path.ranges.iter().copied())
+                .collect(),
+            args: Box::default(),
+            ..prefix.clone()
+        };
+        matches!(
+            self.items.resolve(self.module, &candidate, Ns::Values),
+            Ok(Resolved::Def(Def::Variant(..)))
+                | Err(ResolveError::Private {
+                    resolved: Resolved::Def(Def::Variant(..)),
+                    ..
+                })
+        )
+        .then_some(candidate)
     }
 
     /// The generic arguments of `path`, which resolved to `res`, after its

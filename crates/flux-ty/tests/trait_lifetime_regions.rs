@@ -13,6 +13,56 @@ fn resolve(source: &str) -> (Hir, Signatures, Vec<flux_hir::Diagnostic>) {
 }
 
 #[test]
+fn projection_determined_lifetimes_match_rustc() {
+    let dir = std::env::temp_dir().join(format!("flux-projection-uses-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (declaration, accepted) in [
+        ("struct S<'a,I:Iterator<Item=&'a u32>>(I);", true),
+        (
+            "trait Tr{type Item;} struct S<'a,I,J>(I) where I:Tr<Item=J>,J:Tr<Item=&'a u32>;",
+            true,
+        ),
+        ("struct S<'a,I:Iterator<Item=&'a u32>>(u32);", false),
+        ("struct S<'a,T:'a>(T);", false),
+        (
+            "trait Tr<'a>{type Item;} struct S<'a,I:Tr<'a,Item=u32>>(I);",
+            false,
+        ),
+        (
+            "trait Tr<T>{type Item;} struct S<'a,I,J>(I) where I:Tr<J,Item=&'a u32>;",
+            false,
+        ),
+    ] {
+        let source = format!("{declaration}\nfn main(){{}}");
+        let file = dir.join("case.rs");
+        std::fs::write(&file, &source).unwrap();
+        let rustc = std::process::Command::new("rustc")
+            .args(["--edition=2024", "--emit=metadata", "--out-dir"])
+            .arg(&dir)
+            .arg(&file)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&rustc.stderr);
+        assert_eq!(rustc.status.success(), accepted, "{declaration}: {stderr}");
+        let (_, _, diagnostics) = resolve(&source);
+        assert_eq!(
+            diagnostics.is_empty(),
+            accepted,
+            "{declaration}: {diagnostics:?}"
+        );
+        if !accepted {
+            assert!(stderr.contains("lifetime parameter `'a` is never used"));
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|d| d.message == "lifetime parameter `'a` is never used")
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn ast_node_owner_regions_survive_erasure() {
     let (hir, sigs, diagnostics) = resolve(include_str!("data/trait_lifetime_regions/ast_node.rs"));
     assert!(diagnostics.is_empty(), "{diagnostics:?}");

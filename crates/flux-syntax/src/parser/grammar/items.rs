@@ -574,8 +574,22 @@ fn use_tree(p: &mut Parser<'_>) {
                 use_tree_list(p);
             }
         }
-        _ if paths::is_use_path_start(p) => {
+        _ if paths::is_use_path_start(p) || at_use_fragment(p) => {
+            // A forwarded path type is an entire import path. Keep the
+            // delimiters outside the path so ordinary use-tree suffixes
+            // are parsed after it.
+            let mut wrappers = 0;
+            while at_use_fragment(p) {
+                p.bump(T!['(']);
+                wrappers += 1;
+            }
+            if wrappers != 0 && !paths::is_use_path_start(p) {
+                p.error("expected a use path");
+            }
             paths::use_path(p);
+            for _ in 0..wrappers {
+                p.expect(T![')']);
+            }
             if p.at(T![as]) {
                 let rename = p.start();
                 p.bump(T![as]);
@@ -600,13 +614,17 @@ fn use_tree(p: &mut Parser<'_>) {
     m.complete(p, USE_TREE);
 }
 
+fn at_use_fragment(p: &mut Parser<'_>) -> bool {
+    p.at(T!['(']) && p.input.is_type_paren(p.pos)
+}
+
 fn use_tree_list(p: &mut Parser<'_>) {
     let m = p.start();
     delimited(
         p,
         T!['{'],
         T!['}'],
-        paths::USE_PATH_FIRST.union(TokenSet::new(&[T![*], T!['{']])),
+        paths::USE_PATH_FIRST.union(TokenSet::new(&[T![*], T!['{'], T!['(']])),
         "a use path",
         use_tree,
     );

@@ -39,6 +39,18 @@ fn concrete_output_does_not_store_selection_lifetimes() {
         true,
     );
 }
+
+#[test]
+fn field_projection_proves_the_inherited_static_owner() {
+    check(
+        "trait Base:'static{} trait Select:Base{type Out;} struct S; impl Base for S{} impl Select for S{type Out=[u32;3];} struct Holder{value:<S as Select>::Out} fn main(){assert_eq!(Holder{value:[2,3,5]}.value[1],3);}",
+        true,
+    );
+    check(
+        "trait Base:'static{} trait Select:Base{type Out;} struct S<'a>(&'a u32); impl Base for S<'static>{} impl Select for S<'static>{type Out=[u32;3];} struct Holder<'a>{value:<S<'a> as Select>::Out} fn main(){}",
+        false,
+    );
+}
 #[test]
 fn borrowed_output_cannot_escape() {
     check(
@@ -104,6 +116,42 @@ fn deferred_annotations_keep_local_type_and_alias_scopes() {
         true,
     );
 }
+
+#[test]
+fn local_projection_uses_the_impl_owner_lifetime() {
+    check(
+        include_str!("../../../tests/run/local_projection_owner.rs"),
+        true,
+    );
+}
+
+#[test]
+fn independent_projection_outlives_bounds_follow_the_call() {
+    let source = include_str!("../../../tests/run/projected_output_outlives.rs");
+    check(source, true);
+    check(
+        &format!(
+            "{source}\nfn requires_static<T: 'static>(_: T) {{}}\nfn escape<'a, 'b, F: Files<'a>>(id: &'b F::Id) {{ requires_static(*id); }}"
+        ),
+        false,
+    );
+}
+
+#[test]
+fn abbreviated_local_projection_needs_an_unambiguous_owner() {
+    check(
+        "trait Family<'a>{type Out;} fn f<'a,'b,C:Family<'a>+Family<'b>>(){let _: Option<C::Out>=None;} fn main(){}",
+        false,
+    );
+}
+
+#[test]
+fn nested_abstract_output_does_not_gain_a_static_bound() {
+    check(
+        "use core::{marker::PhantomData,ptr::NonNull}; trait Family<'a>{type Out:?Sized;} struct Wrap<T:?Sized>(PhantomData<T>); fn f<'a,T:Family<'a>>(ptr:NonNull<Wrap<T::Out>>) {let _: &'static Wrap<T::Out>=unsafe{ptr.as_ref()};} fn main(){}",
+        false,
+    );
+}
 #[test]
 fn local_alias_cannot_extend_a_borrow() {
     check(
@@ -131,6 +179,50 @@ fn closed_nested_outputs_and_type_only_families_keep_their_selection_proofs() {
     );
     check(
         "trait F{type Out<T:Copy>;}struct S;impl F for S{type Out<U:Copy>=u32;}fn main(){let _:<S as F>::Out<String>=7;}",
+        false,
+    );
+}
+
+#[test]
+fn nested_projection_inputs_preserve_inner_selection_and_output_regions() {
+    let source = include_str!("../../../tests/run/nested_projection_annotation.rs");
+    check(source, true);
+    check(
+        &source.replace(
+            "fn preserve_borrow<'a>(value: &'a u8) -> &'a u8",
+            "fn preserve_borrow<'a>(value: &'a u8) -> &'static u8",
+        ),
+        false,
+    );
+    check(
+        "trait Encode{type Abi;} impl Encode for &'static u8{type Abi=u32;} trait Word{type Prim;} impl Word for u32{type Prim=u32;} fn bad<'a>(_: &'a u8){let _: <<&'a u8 as Encode>::Abi as Word>::Prim=7;}fn main(){}",
+        false,
+    );
+    check(
+        "trait Encode{type Abi;} impl Encode for &'static u8{type Abi=u32;} struct Token<'a>(&'a u8); impl<'a> Encode for Token<'a>{type Abi=<&'a u8 as Encode>::Abi;} fn main(){let _: <Token<'_> as Encode>::Abi=7;}",
+        false,
+    );
+    check(
+        "trait Marker{} impl Marker for &'static u8{} trait Encode{type Abi;} impl<T:Marker> Encode for Option<T>{type Abi=u32;} fn bad<'a>(_: &'a u8){let _: <Option<&'a u8> as Encode>::Abi=7;}fn main(){}",
+        false,
+    );
+}
+
+#[test]
+fn closed_callable_and_nested_selections_keep_their_header_obligations() {
+    let source = include_str!("../../../tests/run/callable_projection_abi.rs");
+    check(source, true);
+    check(&source.replace("FnMut(u8)", "FnMut(bool)"), false);
+    check(
+        &format!(
+            "{source}\ntrait StaticObject {{type Abi;}} impl<A, R> StaticObject for &mut (dyn FnMut(A) -> R + 'static) {{type Abi = u32;}} fn reject<'a>(_: &'a u8) {{let _ = identity::<<&'a mut (dyn FnMut(u8) -> u32 + 'a) as StaticObject>::Abi>(37);}}"
+        ),
+        false,
+    );
+    check(
+        &format!(
+            "{source}\ntrait Fixed<'a> {{type Value;}} impl Fixed<'static> for () {{type Value = u32;}} fn reject<'a>(_: &'a u8) {{let _ = identity::<<&'static <() as Fixed<'a>>::Value as Convert>::Abi>(37);}}"
+        ),
         false,
     );
 }

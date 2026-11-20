@@ -126,6 +126,10 @@ pub struct Body {
     pub region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
     /// Written type-argument regions at direct calls, in the caller's environment.
     pub call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
+    /// Callable places whose function-item regions supply a direct call.
+    pub item_callees: ArenaMap<BasicBlockData, Place>,
+    /// Function-item locals whose regions supply a pointer reification.
+    pub item_reifications: ArenaMap<LocalDecl, Local>,
     /// Written generic argument regions at immediate function-item reifications.
     /// Each key names a dedicated temporary assigned the function pointer once.
     pub reification_regions: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
@@ -206,6 +210,7 @@ impl Body {
                 data.terminator.kind = TerminatorKind::Unreachable;
                 data.terminator.unwind = UnwindAction::Unreachable;
                 self.call_regions.remove(block);
+                self.item_callees.remove(block);
                 self.fn_spans.remove(&block);
             }
         }
@@ -278,6 +283,8 @@ impl Body {
         Body {
             locals: Arena::new(),
             call_regions: ArenaMap::new(),
+            item_callees: Default::default(),
+            item_reifications: Default::default(),
             reification_regions: ArenaMap::new(),
             region_annotations: Vec::new(),
             region_relations: Vec::new(),

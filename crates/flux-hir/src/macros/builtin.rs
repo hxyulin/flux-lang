@@ -158,8 +158,8 @@ impl BuiltinCx<'_> {
             [] => self.call,
             [one] => one.range(),
             [first, .., last] => {
-                if first.origin.group == last.origin.group
-                    && first.origin.group != TokenOrigin::SYNTHETIC
+                if first.origin.source_group() == last.origin.source_group()
+                    && first.origin.source_group() != TokenOrigin::SYNTHETIC
                     && first.range().start() <= last.range().end()
                 {
                     TextRange::new(first.range().start(), last.range().end())
@@ -174,10 +174,12 @@ impl BuiltinCx<'_> {
     /// they make is where `toks` are.
     fn origin_of(&self, toks: &[Tok]) -> TokenOrigin {
         match toks {
-            [first, .., last] | [first @ last] if first.origin.group == last.origin.group => {
+            [first, .., last] | [first @ last]
+                if first.origin.source_group() == last.origin.source_group() =>
+            {
                 TokenOrigin {
                     range: self.range_of(toks),
-                    group: first.origin.group,
+                    group: first.origin.source_group(),
                     ctxt: self.ctxt,
                 }
             }

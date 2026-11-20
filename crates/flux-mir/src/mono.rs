@@ -63,22 +63,36 @@ fn neon_immediate_error(items: &ItemTree, instance: Instance) -> Option<&'static
     if function.intrinsic == Some(flux_hir::Intrinsic::CoroutineAwait) {
         return Some("await reached code generation outside an async state machine");
     }
-    if !items.is_core(function.loc.module)
-        || items.modules[function.loc.module].name.as_str() != "aarch64"
+    if !items.is_core(function.loc.module) {
+        return None;
+    }
+    let module = &items.modules[function.loc.module];
+    if module.name.as_str() != "aarch64"
+        && !(matches!(module.name.as_str(), "neon_f32" | "neon_f64" | "neon_lanes")
+            && module
+                .parent
+                .is_some_and(|parent| items.modules[parent].name.as_str() == "aarch64"))
     {
         return None;
     }
     let (lower, upper, message) = match function.name.as_str() {
-        "vsetq_lane_u64" => (0, 2, "lane index out of range"),
+        "vsetq_lane_u64" | "vfmaq_laneq_f64" | "vld1q_lane_f64" | "vst1q_lane_f64"
+        | "vgetq_lane_f64" | "vgetq_lane_s64" => (0, 2, "lane index out of range"),
         "vshll_n_u16" => (0, 17, "shift amount out of range: expected 0..=16"),
         "vshr_n_u32" => (1, 33, "shift amount out of range: expected 1..=32"),
         "vshrq_n_u32" => (1, 33, "shift amount out of range: expected 1..=32"),
         "vshlq_n_u16" => (0, 16, "shift amount out of range: expected 0..=15"),
         "vshrq_n_u16" => (1, 17, "shift amount out of range: expected 1..=16"),
-        "vgetq_lane_u32" => (0, 4, "lane index out of range"),
+        "vgetq_lane_u32" | "vgetq_lane_f32" | "vdupq_laneq_f32" | "vmuls_laneq_f32"
+        | "vsetq_lane_f32" | "vsetq_lane_u32" | "vextq_f32" | "vfmaq_laneq_f32"
+        | "vld1q_lane_f32" | "vst1q_lane_f32" => (0, 4, "lane index out of range"),
+        "vget_lane_f32" | "vdupq_lane_f32" | "vmul_lane_f32" | "vfmaq_lane_f32"
+        | "vmlaq_lane_f32" => (0, 2, "lane index out of range"),
         "vshlq_n_u32" => (0, 32, "shift amount out of range: expected 0..=31"),
         "vshrq_n_u8" => (1, 9, "shift amount out of range: expected 1..=8"),
-        "vextq_u8" => (0, 16, "lane index out of range"),
+        "vshrn_n_u64" => (1, 33, "shift amount out of range: expected 1..=32"),
+        "vextq_u8" | "vgetq_lane_s8" | "vgetq_lane_u8" => (0, 16, "lane index out of range"),
+        "vextq_u16" | "vgetq_lane_u16" => (0, 8, "lane index out of range"),
         "vextq_u32" => (0, 4, "lane index out of range"),
         _ => return None,
     };
@@ -1202,6 +1216,8 @@ fn builtin_shim(
     Some(Body {
         locals,
         call_regions: flux_arena::ArenaMap::new(),
+        item_callees: Default::default(),
+        item_reifications: Default::default(),
         reification_regions: flux_arena::ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
@@ -1275,6 +1291,8 @@ fn pointer_address_shim(items: &ItemTree, sigs: &Signatures, instance: Instance)
         blocks,
         param_count: 1,
         call_regions: Default::default(),
+        item_callees: Default::default(),
+        item_reifications: Default::default(),
         reification_regions: Default::default(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
@@ -1373,6 +1391,8 @@ fn pointer_debug_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -
         blocks,
         param_count: 2,
         call_regions: Default::default(),
+        item_callees: Default::default(),
+        item_reifications: Default::default(),
         reification_regions: Default::default(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
@@ -1479,6 +1499,8 @@ fn fn_shim(items: &ItemTree, sigs: &Signatures, instance: Instance) -> Body {
     Body {
         locals,
         call_regions: flux_arena::ArenaMap::new(),
+        item_callees: Default::default(),
+        item_reifications: Default::default(),
         reification_regions: flux_arena::ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
@@ -1631,6 +1653,7 @@ pub fn expand_intrinsics(
             "__panic_catch"
                 | "caller_location"
                 | "ptr_metadata_word"
+                | "ptr_with_metadata"
                 | "read_unaligned"
                 | "read_volatile"
                 | "write_volatile"

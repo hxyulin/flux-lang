@@ -10,6 +10,33 @@ pub struct Duration {
     nanos: u32,
 }
 
+/// The error returned when floating point seconds cannot form a duration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TryFromFloatSecsError {
+    kind: TryFromFloatSecsErrorKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TryFromFloatSecsErrorKind {
+    Negative,
+    OverflowOrNan,
+}
+
+impl crate::fmt::Display for TryFromFloatSecsError {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.write_str(match self.kind {
+            TryFromFloatSecsErrorKind::Negative => {
+                "cannot convert float seconds to Duration: value is negative"
+            }
+            TryFromFloatSecsErrorKind::OverflowOrNan => {
+                "cannot convert float seconds to Duration: value is either too big or NaN"
+            }
+        })
+    }
+}
+
+impl crate::error::Error for TryFromFloatSecsError {}
+
 impl Duration {
     pub const ZERO: Self = Self::new(0, 0);
     pub const MAX: Self = Self::new(u64::MAX, NANOS_PER_SEC - 1);
@@ -45,6 +72,48 @@ impl Duration {
             (nanos % NANOS_PER_SEC as u64) as u32,
         )
     }
+
+    /// Converts finite, nonnegative seconds, rounding to the nearest
+    /// nanosecond with ties rounded to even.
+    pub fn try_from_secs_f64(secs: f64) -> Result<Self, TryFromFloatSecsError> {
+        if secs < 0.0 {
+            return Err(TryFromFloatSecsError {
+                kind: TryFromFloatSecsErrorKind::Negative,
+            });
+        }
+
+        const IMPLICIT_BIT: u64 = 1 << 52;
+        let bits = secs.to_bits();
+        let exponent = ((bits >> 52) & 0x7ff) as i32 - 1023;
+        if exponent >= 64 {
+            return Err(TryFromFloatSecsError {
+                kind: TryFromFloatSecsErrorKind::OverflowOrNan,
+            });
+        }
+        // This also covers zero and subnormals. The largest value with an
+        // exponent below -31 is less than half a nanosecond.
+        if exponent < -31 {
+            return Ok(Self::ZERO);
+        }
+        let mantissa = (bits & (IMPLICIT_BIT - 1)) | IMPLICIT_BIT;
+        if exponent >= 52 {
+            return Ok(Self::from_secs(mantissa << (exponent - 52) as u32));
+        }
+
+        // The fractional part is an exact integer divided by a power of
+        // two. Scale the numerator before rounding to avoid double rounding.
+        let shift = (52 - exponent) as u32;
+        let mask = (1u128 << shift) - 1;
+        let mantissa = mantissa as u128;
+        let seconds = (mantissa >> shift) as u64;
+        let scaled = (mantissa & mask) * NANOS_PER_SEC as u128;
+        let nanos = (scaled >> shift) as u32;
+        let remainder = scaled & mask;
+        let half = 1u128 << (shift - 1);
+        let round_up = remainder > half || (remainder == half && nanos & 1 != 0);
+        Ok(Self::new(seconds, nanos + round_up as u32))
+    }
+
     pub const fn as_secs(&self) -> u64 {
         self.secs
     }
@@ -68,6 +137,10 @@ impl Duration {
     }
     pub fn as_secs_f64(&self) -> f64 {
         self.secs as f64 + self.nanos as f64 / NANOS_PER_SEC as f64
+    }
+    /// Returns the elapsed seconds and fractional seconds as `f32`.
+    pub const fn as_secs_f32(&self) -> f32 {
+        self.secs as f32 + self.nanos as f32 / NANOS_PER_SEC as f32
     }
     pub const fn is_zero(&self) -> bool {
         self.secs == 0 && self.nanos == 0
@@ -125,6 +198,22 @@ impl Duration {
         match self.checked_sub(rhs) {
             Some(difference) => difference,
             None => Self::ZERO,
+        }
+    }
+
+    /// `self * rhs`, or [`Duration::MAX`] on overflow.
+    pub const fn saturating_mul(self, rhs: u32) -> Self {
+        let nanos = self.nanos as u64 * rhs as u64;
+        let Some(secs) = self.secs.checked_mul(rhs as u64) else {
+            return Self::MAX;
+        };
+        let scale = NANOS_PER_SEC as u64;
+        match secs.checked_add(nanos / scale) {
+            Some(secs) => Self {
+                secs,
+                nanos: (nanos % scale) as u32,
+            },
+            None => Self::MAX,
         }
     }
 }

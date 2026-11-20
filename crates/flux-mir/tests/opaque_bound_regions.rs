@@ -10,6 +10,57 @@ fn opaque_bound_regions_match_rustc() {
     for edition in ["2021", "2024"] {
         for (name, source, accepted) in [
             (
+                "opaque_iterator_output_type",
+                r#"
+fn iter<'a, T>(_: &'a [u8]) -> impl Iterator<Item = Result<T, ()>> + 'a {
+    std::iter::from_fn(|| None)
+}
+fn mapped<'a, T>(bytes: &'a [u8]) -> impl Iterator<Item = Option<Result<T, ()>>> + 'a {
+    iter(bytes).map(|item| Some(item))
+}
+fn main() {}
+"#,
+                true,
+            ),
+            (
+                "opaque_iterator_escape",
+                r#"
+fn iter<'a, T>(bytes: &'a [u8]) -> impl Iterator<Item = Result<T, ()>> + 'a {
+    bytes.iter().map(|_| Err(()))
+}
+fn mapped<T>(bytes: &[u8]) -> impl Iterator<Item = Option<Result<T, ()>>> + 'static {
+    iter(bytes).map(|item| Some(item))
+}
+fn main() {}
+"#,
+                false,
+            ),
+            (
+                "iterator_stores_output_type",
+                r#"
+fn mapped<'a, T>(_: &'a [u8], item: T) -> impl Iterator<Item = Option<Result<T, ()>>> + 'a {
+    std::iter::once(item).map(|value| Some(Ok(value)))
+}
+fn main() {}
+"#,
+                false,
+            ),
+            (
+                "shorten_covariant_member",
+                "fn pick<'a,'b:'a>(_:&'a str,x:&'b str)->impl Sized + use<'a>{x}fn main(){}",
+                true,
+            ),
+            (
+                "unrelated_opaque_member",
+                "fn pick<'a,'b>(_:&'a str,x:&'b str)->impl Sized + use<'a>{x}fn main(){}",
+                false,
+            ),
+            (
+                "invariant_opaque_member",
+                "use std::cell::Cell;fn pick<'a,'b:'a>(_:&'a str,x:Cell<&'b str>)->impl Sized + use<'a>{x}fn main(){}",
+                false,
+            ),
+            (
                 "abstract_conditional_impl",
                 "trait Stream{type Slice;fn take(&mut self)->Self::Slice;}\ntrait Compare<T>{}\ntrait Parser<I,O,E>{fn parse_next(&mut self,input:&mut I)->Result<O,E>;}\nstruct Literal<L>(L);\nimpl<L,I:Stream+Compare<L>,E>Parser<I,I::Slice,E>for Literal<L>{fn parse_next(&mut self,input:&mut I)->Result<I::Slice,E>{Ok(input.take())}}\nfn literal<L,I,E>(value:L)->impl Parser<I,I::Slice,E>where I:Stream+Compare<L>{Literal(value)}\n\n\ntrait Marker{}impl<T:Marker>Stream for T{type Slice=u32;fn take(&mut self)->u32{7}}fn run<I:Stream+Compare<()>>(input:&mut I)->Result<I::Slice,()>{literal(()).parse_next(input)}fn main(){}",
                 true,

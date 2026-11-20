@@ -35,6 +35,18 @@ impl Cx<'_> {
         env: &[ImplRegionGoal],
         depth: u32,
     ) -> Option<(Vec<Var>, Vec<ImplRegionGoal>)> {
+        let (lifetimes, inputs) = self.proven_family_inputs(alias, row, env, depth)?;
+        let bounds = self.declared_output_traits(alias, row, &lifetimes, &inputs, depth)?;
+        Some((lifetimes, bounds))
+    }
+
+    fn proven_family_inputs(
+        &mut self,
+        alias: AliasTy,
+        row: &[Var],
+        env: &[ImplRegionGoal],
+        depth: u32,
+    ) -> Option<(Vec<Var>, Vec<Vec<Var>>)> {
         if depth > DECLARATION_RECURSION_LIMIT {
             return None;
         }
@@ -71,6 +83,17 @@ impl Cx<'_> {
             vars: inputs.clone(),
             bound: Vec::new(),
         };
+        let assumptions;
+        let env = if let TyKind::Opaque(opaque) = owner_goal.predicate.self_ty.kind() {
+            // A projection from an opaque result uses the producer's written
+            // trait bounds instantiated on this occurrence's captured rows.
+            let mut known = env.to_vec();
+            known.extend(self.opaque_bound_goals(opaque, inputs.first()?)?);
+            assumptions = known;
+            assumptions.as_slice()
+        } else {
+            env
+        };
         if !self.impl_prove_super(&owner_goal, env, depth + 1) {
             return None;
         }
@@ -96,6 +119,9 @@ impl Cx<'_> {
             .iter()
             .find(|(name, _)| *name == alias.name)?
             .1;
+        if contract.owner != alias.owner_lifetimes || contract.names.len() != lifetimes.len() {
+            return None;
+        }
         let args = alias.template_args();
         for (index, &predicate) in schema.predicates.iter().enumerate() {
             let requirement = self.impl_region_goal_with_proof(
@@ -115,12 +141,12 @@ impl Cx<'_> {
                 return None;
             }
         }
-        let bounds = self.declared_output_traits(alias, row, &lifetimes, &types, depth)?;
-        Some((lifetimes, bounds))
+        Some((lifetimes, types))
     }
 
-    /// Declared bounds belong to a proven projection occurrence, including its
-    /// owner and family prerequisites. They are not facts about an erased Ty.
+    /// Use a signature assumption only for the exact projection occurrence.
+    /// Bounds obtained from the declaration instead require proving that
+    /// occurrence's owner and family prerequisites.
     fn family_outlives_sources(
         &mut self,
         value: Ty,
@@ -130,7 +156,6 @@ impl Cx<'_> {
         let TyKind::Alias(alias) = value.kind() else {
             return None;
         };
-        let (lifetimes, _) = self.proven_family_output(alias, row, env, 0)?;
         let contract = &self
             .sigs
             .regions
@@ -146,7 +171,18 @@ impl Cx<'_> {
             .filter(|(ty, inputs, _)| *ty == value && self.projection_inputs_equal(inputs, row))
             .map(|(_, _, target)| *target)
             .collect();
-        if self.declared_static_output(alias) {
+        let static_output = self.declared_static_output(alias);
+        // The signature already supplies well-formedness for this occurrence.
+        // Reconstructing unrelated output trait bounds adds no outlives facts.
+        if !sources.is_empty() && contract.output_outlives.is_empty() && !static_output {
+            return Some(sources);
+        }
+        // Output outlives promises and output trait guarantees are separate
+        // consequences of proving the same projection inputs.
+        let Some((lifetimes, _)) = self.proven_family_inputs(alias, row, env, 0) else {
+            return (!sources.is_empty()).then_some(sources);
+        };
+        if static_output {
             sources.push(STATIC);
         }
         sources.extend(
@@ -204,8 +240,7 @@ impl Cx<'_> {
     }
 
     /// Constrain an inferred call lifetime from an exact associated output row.
-    /// Multiple independent bounds need a disjunctive proof; keep that case on
-    /// the existing conservative path rather than choose an arbitrary bound.
+    /// Independent bounds can be tested once the call's regions are solved.
     pub(super) fn constrain_family_outlives(
         &mut self,
         value: Ty,
@@ -244,7 +279,7 @@ impl Cx<'_> {
             }
         }
         // A longer known bound subsumes shorter bounds on the same output.
-        // Unrelated bounds still require a disjunctive proof; do not choose one.
+        // Verify unrelated alternatives against the solved target.
         let Some(source) = independent.iter().copied().find(|&source| {
             independent.iter().all(|&other| {
                 source == other
@@ -257,7 +292,9 @@ impl Cx<'_> {
                     }
             })
         }) else {
-            return false;
+            self.family_outlives_tests
+                .push((independent, target, range));
+            return true;
         };
         self.outlives(source, target, Category::CallArgument, range);
         true
@@ -360,23 +397,63 @@ impl Cx<'_> {
         {
             return None;
         }
-        let args = alias.template_args();
-        // Bound arguments use the owner's parameters. Attach the separately
-        // represented output row after substituting those arguments.
+        let value = Ty::alias(alias);
+        let normalized = self.normalize(value);
+        let mut args = alias.template_args();
+        let output = Ty::param(args.len() as u32, flux_intern::kw::SelfUpper);
+        args.push(value);
+        let mut inputs = inputs.to_vec();
+        inputs.push(if normalized != value && self.slots(normalized) == 0 {
+            Vec::new()
+        } else {
+            row.to_vec()
+        });
+        // The bound's Self is the projected output. If an argument names
+        // that exact occurrence too (such as `PartialEq`'s default RHS),
+        // use the supplied row in both positions.
         let mut bounds = Vec::new();
         for (bound, table) in &contract.output_traits {
-            let mut bound = self.impl_region_goal_with_proof(
-                bound.with_self(Ty::param(0, flux_intern::kw::SelfUpper)),
+            let mut table = table.clone();
+            let args_of_bound = bound
+                .args
+                .iter()
+                .enumerate()
+                .map(|(index, &arg)| {
+                    if arg.subst(&args) == value
+                        && let Some(written) = table.args.get_mut(index)
+                        && written.len() == row.len()
+                        && written
+                            .iter()
+                            .zip(row)
+                            .all(|(written, actual)| match *written {
+                                Region::Param(index) => {
+                                    lifetimes.get(index as usize) == Some(actual)
+                                }
+                                Region::Static => *actual == STATIC,
+                                Region::Late(_) | Region::Erased => false,
+                            })
+                    {
+                        *written = Box::default();
+                        output
+                    } else {
+                        arg
+                    }
+                })
+                .collect::<Vec<_>>();
+            let bound = flux_ty::TraitRef {
+                args: Ty::list(&args_of_bound),
+                ..*bound
+            };
+            let bound = self.impl_region_goal_with_proof(
+                bound.with_self(output),
                 &[],
-                table,
+                &table,
                 lifetimes,
                 &args,
-                inputs,
+                &inputs,
                 None,
                 true,
             )?;
-            bound.predicate.self_ty = Ty::alias(alias);
-            bound.vars[0] = row.to_vec();
             if !self.impl_super_goals(bound, &mut bounds, depth + 1) {
                 return None;
             }
@@ -721,6 +798,16 @@ impl Cx<'_> {
             return Some(row.clone());
         }
         let selected = flux_solve::traits::select_definite_impl(self.items, self.sigs, goal);
+        if let Some((imp, _)) = &selected
+            && let Some(element) = self.array_element_projection(*imp, alias)
+            && let [row] = inputs
+            && row.len() == self.slots(element) as usize
+            && self.normalize(Ty::alias(alias)) == element
+        {
+            // The array element already owns this exact row. An unconditional
+            // impl with this RHS needs no caller assumptions or new binders.
+            return Some(row.clone());
+        }
         let mut assumptions = if self.body.owner.is_some() {
             self.caller_region_goals()
         } else {
@@ -773,7 +860,9 @@ impl Cx<'_> {
             row.extend(family_inputs.iter().flatten().copied());
             return Some(row);
         };
-        if self.body.owner.is_none() {
+        // A closure inside a constant has a body to generate constraints
+        // for, even though it has no enclosing function.
+        if self.body.owner.is_none() && self.body.upvars.is_none() {
             let requirement = ImplRegionGoal {
                 predicate: goal,
                 lifetimes: owner.to_vec(),
@@ -860,6 +949,55 @@ impl Cx<'_> {
             self.env.push(flux_ty::Projection { alias, ty });
         }
         Some(result)
+    }
+
+    /// Recognize an unconditional `impl<T, const N: usize> Trait for [T; N]`
+    /// whose associated output is exactly `T`.
+    fn array_element_projection(&self, imp: flux_hir::ImplId, alias: AliasTy) -> Option<Ty> {
+        let [receiver] = alias.args else { return None };
+        let TyKind::Array(element, _) = receiver.kind() else {
+            return None;
+        };
+        let TyKind::Array(parameter, _) = self.sigs.impls[imp].kind() else {
+            return None;
+        };
+        let declaration = self.sigs.traits.get(alias.trait_)?;
+        let impl_regions = self.sigs.regions.impls.get(imp)?;
+        let value = flux_solve::traits::impl_type(self.sigs, imp, alias.name)?;
+        (matches!(parameter.kind(), TyKind::Param(_))
+            && value == parameter
+            && alias.owner_lifetimes == 0
+            && alias.family_lifetimes == 0
+            && alias.family_args.is_empty()
+            && declaration.supertraits.is_empty()
+            && self
+                .sigs
+                .regions
+                .traits
+                .get(alias.trait_)?
+                .outlives
+                .is_empty()
+            && self
+                .sigs
+                .trait_predicates
+                .get(alias.trait_)
+                .is_none_or(|p| p.is_empty())
+            && self
+                .sigs
+                .impl_predicates
+                .get(imp)
+                .is_none_or(|p| p.is_empty())
+            && self
+                .sigs
+                .impl_projections
+                .get(imp)
+                .is_none_or(|p| p.is_empty())
+            && impl_regions.bounds.is_empty()
+            && impl_regions.names.is_empty()
+            && impl_regions.self_ty.is_empty()
+            && impl_regions.trait_lifetimes.is_empty()
+            && impl_regions.trait_args.is_empty())
+        .then_some(element)
     }
 }
 

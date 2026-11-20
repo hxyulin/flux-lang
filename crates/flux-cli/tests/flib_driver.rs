@@ -42,6 +42,18 @@ impl Counter for Token { fn count(&self, n: u32) -> u32 { n.count_ones() + self.
 pub const V: &dyn Counter = &Token(5);
 pub fn identity<T>(x: T) -> T { x }
 pub const fn next(x: usize) -> usize { x + 1 }
+pub trait Scalar: Copy { const VALUES: [Self; 2]; }
+impl Scalar for u32 { const VALUES: [Self; 2] = [13, 29]; }
+pub fn scalar<T: Scalar>(i: usize) -> T {
+    let values = &T::VALUES;
+    values[i]
+}
+trait Describe { fn view(&self) -> impl std::fmt::Debug; }
+impl Describe for Token {
+    fn view(&self) -> impl std::fmt::Debug { (&self.0, self.0) }
+}
+fn make_token() -> impl Describe { Token(42) }
+pub fn describe_token() -> String { format!("{:?}", make_token().view()) }
 "#,
     )
     .unwrap();
@@ -52,6 +64,8 @@ fn main() {
     assert_eq!(value.downcast_ref::<a::Token>().unwrap().0, 9);
     let array: [u8; a::next(a::N)] = [1, 2, 3, 4];
     println!("{} {} {} {} {}", (a::P)(7), (a::S)(15), a::V.count(3), a::identity(42u32), array.len());
+    println!("{}", a::describe_token());
+    println!("{}", a::scalar::<u32>(1));
 }
 
 "#).unwrap();

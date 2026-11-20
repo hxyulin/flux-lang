@@ -312,6 +312,11 @@ impl<T: 'static> LocalKey<core::cell::Cell<T>> {
             unsafe { &(*(pointer as *const Slot<core::cell::Cell<T>>)).value }.set(value);
         }
     }
+
+    /// Replaces the thread's value, running the initializer if needed.
+    pub fn replace(&'static self, value: T) -> T {
+        self.with(move |cell| cell.replace(value))
+    }
 }
 
 impl<T: Copy + 'static> LocalKey<core::cell::Cell<T>> {

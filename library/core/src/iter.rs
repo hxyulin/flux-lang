@@ -1826,6 +1826,7 @@ impl<I: DoubleEndedIterator> DoubleEndedIterator for Rev<I> {
 impl<I: DoubleEndedIterator + ExactSizeIterator> ExactSizeIterator for Rev<I> {}
 
 impl<B, I: ExactSizeIterator, F: FnMut(I::Item) -> B> ExactSizeIterator for Map<I, F> {}
+impl<B, I: FusedIterator, F: FnMut(I::Item) -> B> FusedIterator for Map<I, F> {}
 
 /// [`Iterator::copied`]'s.
 #[derive(Clone)]

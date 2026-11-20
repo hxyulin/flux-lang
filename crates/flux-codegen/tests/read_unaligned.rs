@@ -74,35 +74,22 @@ fn represented_substitutions_compile_in_generic_wrappers() {
 }
 
 #[test]
-fn calls_require_unsafe_and_const_calls_are_explicitly_rejected() {
+fn calls_require_unsafe_at_runtime_and_in_constants() {
     for call in [
         "p.read_unaligned()",
         "(p as *mut u32).read_unaligned()",
         "core::ptr::read_unaligned(p)",
     ] {
-        for (qualifier, expression, expected) in [
-            (
-                "",
-                call.to_owned(),
-                "unsafe and requires unsafe function or block",
-            ),
-            (
-                "const ",
-                format!("unsafe {{ {call} }}"),
-                "cannot call non-const",
-            ),
-        ] {
-            let text = format!(
-                "{qualifier}fn get(p: *const u32) -> u32 {{ {expression} }} fn main() {{}}"
-            );
+        for qualifier in ["", "const "] {
+            let text =
+                format!("{qualifier}fn get(p: *const u32) -> u32 {{ {call} }} fn main() {{}}");
             let (_, _, hir) = flux_hir::lower_text("main.rs", &text);
             assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
             let typed = flux_mir::check_file(&hir);
             assert!(
-                typed
-                    .diagnostics
-                    .iter()
-                    .any(|d| d.message.contains(expected)),
+                typed.diagnostics.iter().any(|d| d
+                    .message
+                    .contains("unsafe and requires unsafe function or block")),
                 "{text}: {:?}",
                 typed.diagnostics
             );

@@ -6,6 +6,8 @@ macro_rules! exported { () => { helper!() }; }
 macro_rules! captured { ($m:ident) => { $m!() }; }
 #[macro_export(local_inner_macros)]
 macro_rules! qualified { () => { core::stringify!(value) }; }
+#[macro_export(local_inner_macros)]
+macro_rules! negated { ($value:expr) => {{ let flag = $value; !false && flag != 0 }}; }
 macro_rules! ordinary { () => { helper!() }; }
 trait Marker {}
 #[::core::prelude::v1::derive(::core::clone::Clone,::core::marker::Copy)]
@@ -22,6 +24,7 @@ fn main() {
     assert_eq!(ordinary!(),99);
     assert_eq!(captured!(helper),99);
     assert_eq!(qualified!(),"value");
+    assert!(negated!(1));
     require(Value.clone());assert_eq!(generated(),31);
     println!("macros {} {} {}",exported!(),ordinary!(),captured!(helper));
 }

@@ -1252,6 +1252,8 @@ impl Decode for Body {
                 region_annotations,
                 region_relations,
                 call_regions: ArenaMap::new(),
+                item_callees: Default::default(),
+                item_reifications: Default::default(),
                 reification_regions: ArenaMap::new(),
                 blocks: decode_arena(d)?,
                 param_count: Decode::decode(d)?,
@@ -1860,6 +1862,46 @@ mod boundary_tests {
         let mut bad = decoded;
         bad.blocks[block].statements.remove(statement);
         assert!(boundary::body(&bad, &hir.items, &typed.sigs, true).is_err());
+    }
+
+    #[test]
+    fn reification_owner_rows_survive_metadata_validation() {
+        use flux_ty::regions::{IMPL_SELF_ARG, Region, TRAIT_LIFETIMES_ARG};
+
+        let (_, _, hir) = flux_hir::lower_text(
+            "owner-reification.rs",
+            "struct S; trait Tr<'a> {fn get();} impl Tr<'static> for S {fn get(){}}
+             struct Inherent<'a>(&'a u32); impl<'a> Inherent<'a> {fn get(){}}
+             fn probe(){let _:fn()=<S as Tr<'static>>::get; let _:fn()=Inherent::<'static>::get;}",
+        );
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = crate::build_file(&hir, &typed);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        let (id, _) = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "probe")
+            .unwrap();
+        let mut encoder = Encoder::new();
+        mir.bodies[id].encode(&mut encoder).unwrap();
+        let bytes = encoder.into_bytes();
+        let mut decoder = Decoder::new(&bytes);
+        let body = Body::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+        boundary::body(&body, &hir.items, &typed.sigs, true).unwrap();
+        for index in [TRAIT_LIFETIMES_ARG, IMPL_SELF_ARG] {
+            let (local, _) = body
+                .reification_regions
+                .iter()
+                .find(|(_, rows)| rows.as_slice() == [(index, [Region::Static].into())])
+                .unwrap();
+            let mut bad = body.clone();
+            bad.reification_regions
+                .insert(local, vec![(index, Box::new([]))]);
+            assert!(boundary::body(&bad, &hir.items, &typed.sigs, true).is_err());
+        }
     }
 
     #[test]

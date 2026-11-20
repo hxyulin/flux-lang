@@ -63,6 +63,21 @@ fn expression_macro_items_are_collected() {
             "fn f(){let _=crate::make!();}#[macro_export]macro_rules!make{()=>{{#[derive(Clone,Copy)]struct S(u8);S(7)}}}",
             true,
         ),
+        (
+            "forwarded_const_argument",
+            include_str!("../../../tests/run/macro_const_arguments.rs"),
+            true,
+        ),
+        (
+            "unbraced_forwarded_const_argument",
+            "fn get<const N:usize>(){}macro_rules! make{($e:expr)=>{get::<$e>()};}fn f(){make!(1+2);}",
+            false,
+        ),
+        (
+            "qualified_forwarded_const_argument",
+            "fn get<const N:u8>(){}macro_rules! make{($e:expr)=>{get::<$e>()};}fn f(){make!(u8::MAX);}",
+            false,
+        ),
     ] {
         let root =
             std::env::temp_dir().join(format!("flux-body-macro-{}-{name}", std::process::id()));

@@ -37,6 +37,16 @@ fn recursive_outlives_matches_rustc() {
             "trait Value{type Stored:Value;}struct R<T:Value>(Box<G<T>>,T::Stored);struct G<T:Value>(Box<R<T::Stored>>);struct Pair<T:Value>(R<T>,G<T>);fn static_value<T:'static>(_:T){}fn escape<T:Value>(x:Pair<T>){static_value(x);}fn main(){}",
             false,
         ),
+        (
+            "closed_field_projection_is_static",
+            "trait Source{type Out;} struct S; impl Source for S{type Out=&'static u32;} struct Record{value:<S as Source>::Out} fn erase(record:Record)->Box<dyn std::any::Any>{Box::new(record)} fn main(){}",
+            true,
+        ),
+        (
+            "field_projection_with_a_lifetime_input_cannot_escape",
+            "trait Source{type Out;} struct S<'a>(&'a u32); impl<'a> Source for S<'a>{type Out=&'a u32;} struct Record<'a>{value:<S<'a> as Source>::Out} fn erase<'a>(record:Record<'a>)->Box<dyn std::any::Any>{Box::new(record)} fn main(){}",
+            false,
+        ),
     ] {
         if !case_filter::selected(name) {
             continue;

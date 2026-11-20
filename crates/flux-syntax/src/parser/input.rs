@@ -18,6 +18,7 @@ pub struct Input {
     safe_keywords: Vec<u64>,
     default_keywords: Vec<u64>,
     invisible_parens: Vec<u64>,
+    type_parens: Vec<usize>,
 }
 
 impl Input {
@@ -39,6 +40,7 @@ impl Input {
             safe_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             default_keywords: Vec::with_capacity(lexed.len() / 64 + 1),
             invisible_parens: Vec::with_capacity(lexed.len() / 64 + 1),
+            type_parens: Vec::new(),
         };
         let mut was_joint = false;
         for (i, &kind) in lexed.kinds().iter().enumerate() {
@@ -112,6 +114,16 @@ impl Input {
         self.invisible_parens
             .get(index / 64)
             .is_some_and(|word| word & (1 << (index % 64)) != 0)
+    }
+
+    /// Marks the last opening delimiter as an invisible type fragment.
+    pub fn set_last_type_paren(&mut self) {
+        self.set_last_invisible_paren();
+        self.type_parens.push(self.kinds.len() - 1);
+    }
+
+    pub(crate) fn is_type_paren(&self, index: usize) -> bool {
+        self.type_parens.binary_search(&index).is_ok()
     }
 
     /// Marks the last token pushed as joint with the next.

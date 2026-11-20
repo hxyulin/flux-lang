@@ -17,6 +17,8 @@ const LAST: u32 = unsafe { *END.offset(-1) };
 const READ: &u32 = unsafe { &*MIDDLE };
 const TAIL: &[u32] = unsafe { std::slice::from_raw_parts(MIDDLE, 4) };
 const EMPTY: &[u32] = unsafe { std::slice::from_raw_parts(END, 0) };
+// SAFETY: the array views the initialized bytes of a u32 and has alignment one.
+const BYTES: &[u8] = unsafe { &*(&0x0403_0201u32 as *const u32 as *const [u8; 4]) };
 struct Pointers {
     first: *const u32,
     second: *const u32,
@@ -62,6 +64,7 @@ fn main() {
     assert_eq!(LAST, 23);
     assert_eq!(*READ, 13);
     assert_eq!(TAIL, &[13, 17, 19, 23]);
+    assert_eq!(BYTES, &0x0403_0201u32.to_ne_bytes());
     assert!(EMPTY.is_empty());
     assert_eq!(MIDDLE, unsafe { BLOCK.words.as_ptr().add(2) });
     assert_eq!(POINTERS.first, MIDDLE);

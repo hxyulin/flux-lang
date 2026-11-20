@@ -161,6 +161,11 @@ impl<T: Clone> Clone for Box<[T]> {
 }
 
 impl Box<str> {
+    /// Converts this box to a string without reallocating.
+    pub fn into_string(self) -> crate::string::String {
+        crate::string::String::from(self)
+    }
+
     /// Reuses the string allocation as its UTF-8 byte slice.
     pub fn into_boxed_bytes(self) -> Box<[u8]> {
         // SAFETY: str and [u8] have identical size, alignment and length metadata.

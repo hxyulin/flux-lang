@@ -38,16 +38,23 @@ pub(crate) fn tokens_of(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
 }
 
 pub(crate) fn tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
-    tokens_filtered(node, skip, false, out);
+    tokens_filtered(node, skip, &[], false, out);
 }
-pub(crate) fn proc_tokens_ignoring(node: SyntaxNode<'_>, skip: &[TextRange], out: &mut Vec<Tok>) {
-    tokens_filtered(node, skip, false, out);
+
+/// Emits a configured derive item. Replacements use disjoint raw ranges in source order.
+pub(crate) fn configured_proc_tokens(
+    node: SyntaxNode<'_>,
+    skip: &[TextRange],
+    replacements: &[(TextRange, Vec<Tok>)],
+    out: &mut Vec<Tok>,
+) {
+    tokens_filtered(node, skip, replacements, false, out);
 }
 
 /// [`tokens_of`] for the input of a `macro_rules!` call, keeping the
 /// [`EMPTY_VIS`] markers that an expansion left for empty visibilities.
 pub(crate) fn rules_call_tokens(node: SyntaxNode<'_>, out: &mut Vec<Tok>) {
-    tokens_filtered(node, &[], true, out);
+    tokens_filtered(node, &[], &[], true, out);
 }
 
 /// What a `macro_rules!` expansion writes for a `vis` fragment that
@@ -79,7 +86,13 @@ fn doc_comment(text: &str) -> Option<(bool, String)> {
         text.replace("\r\n", "\n").trim_end_matches('\r').to_owned(),
     ))
 }
-fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], markers: bool, out: &mut Vec<Tok>) {
+fn tokens_filtered(
+    node: SyntaxNode<'_>,
+    skip: &[TextRange],
+    replacements: &[(TextRange, Vec<Tok>)],
+    markers: bool,
+    out: &mut Vec<Tok>,
+) {
     let tree = node.tree();
     // Only an expansion's tree has origins, and only an expansion writes
     // the marker.
@@ -95,9 +108,29 @@ fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], markers: bool, out:
                 })
         })
         .peekable();
-    let mut last_end = None;
+    let mut replacements = replacements.iter().peekable();
     while let Some(token) = tokens.next() {
         let raw = token.raw_range();
+        while replacements
+            .peek()
+            .is_some_and(|(range, _)| range.end() <= raw.start())
+        {
+            replacements.next();
+        }
+        if replacements
+            .peek()
+            .is_some_and(|(range, _)| range.start() == raw.start())
+        {
+            let (range, replacement) = replacements.next().unwrap();
+            while tokens
+                .peek()
+                .is_some_and(|next| next.raw_range().start() < range.end())
+            {
+                tokens.next();
+            }
+            out.extend_from_slice(replacement);
+            continue;
+        }
         let origin = tree.token_origin(token.index()).unwrap_or(TokenOrigin {
             range: token.text_range(),
             group: SOURCE_GROUP,
@@ -132,7 +165,6 @@ fn tokens_filtered(node: SyntaxNode<'_>, skip: &[TextRange], markers: bool, out:
         let joint_next = tokens
             .peek()
             .is_some_and(|next| next.raw_range().start() == raw.end());
-        let _ = last_end.replace(raw.end());
         // Contextual keywords become identifiers again in token trees.
         let kind = match token.lexical_kind() {
             T![union] => SyntaxKind::IDENT,
@@ -347,7 +379,7 @@ pub(crate) fn write_text(toks: &[Tok], starts: &mut Vec<u32>) -> String {
                     || (p.kind.is_literal()
                         && !matches!(p.kind, SyntaxKind::INT_NUMBER | SyntaxKind::FLOAT_NUMBER)
                         && (t.kind == SyntaxKind::IDENT || t.kind.is_keyword())
-                        && p.origin.group == t.origin.group
+                        && p.origin.source_group() == t.origin.source_group()
                         && p.origin.ctxt == t.origin.ctxt
                         && (p.origin.range.end() == t.origin.range.start()
                             || p.origin.range == t.origin.range))))
@@ -373,14 +405,14 @@ pub(crate) fn pretty(toks: &[Tok]) -> String {
     let invisible = |t: &Tok| {
         matches!(t.kind, T!['('] | T![')'])
             && t.origin.range.is_empty()
-            && t.origin.group != TokenOrigin::SYNTHETIC
+            && t.origin.source_group() != TokenOrigin::SYNTHETIC
     };
     let mut text = String::new();
     let mut prev: Option<&Tok> = None;
     for t in toks.iter().filter(|t| !invisible(t)) {
         if let Some(p) = prev {
-            let from_source = p.origin.group == t.origin.group
-                && p.origin.group != TokenOrigin::SYNTHETIC
+            let from_source = p.origin.source_group() == t.origin.source_group()
+                && p.origin.source_group() != TokenOrigin::SYNTHETIC
                 && p.origin.range.end() <= t.origin.range.start();
             let space = if from_source {
                 p.origin.range.end() < t.origin.range.start()

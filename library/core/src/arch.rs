@@ -693,7 +693,7 @@ pub mod aarch64 {
             #[target_feature(enable = "neon")]
             pub fn $name(value: $from) -> $to {
                 // SAFETY: both vectors have the same size and alignment, and
-                // every integer lane bit pattern is valid.
+                // every destination lane bit pattern is valid.
                 unsafe { crate::mem::transmute(value) }
             }
         };
@@ -1378,4 +1378,62 @@ pub mod aarch64 {
         uint16x8_t(lanes)
     }
 
+    // Keep the instruction and operand types visible at each definition. The
+    // compiler handles the vector register moves at the Rust call boundary.
+    macro_rules! neon_unary {
+        ($name:ident, $input:ty, $output:ty, $instruction:literal) => {
+            #[inline]
+            #[target_feature(enable = "neon")]
+            pub fn $name(value: $input) -> $output {
+                let result;
+                // SAFETY: the instruction uses only the given SIMD registers.
+                unsafe {
+                    crate::arch::asm!($instruction, lateout(vreg) result, in(vreg) value,
+                                     options(nomem, nostack));
+                }
+                result
+            }
+        };
+    }
+
+    macro_rules! neon_binary {
+        ($name:ident, $left:ty, $right:ty, $output:ty, $instruction:literal) => {
+            #[inline]
+            #[target_feature(enable = "neon")]
+            pub fn $name(a: $left, b: $right) -> $output {
+                let result;
+                // SAFETY: the instruction reads both operands before writing
+                // the result and uses no memory or stack.
+                unsafe {
+                    crate::arch::asm!($instruction, lateout(vreg) result, in(vreg) a, in(vreg) b,
+                                     options(nomem, nostack));
+                }
+                result
+            }
+        };
+    }
+
+    macro_rules! vector_pair {
+        ($pair:ident, $vector:ty) => {
+            /// Two consecutive vectors.
+            #[allow(non_camel_case_types)]
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            pub struct $pair(pub $vector, pub $vector);
+        };
+    }
+
+    vector_pair!(int16x8x2_t, int16x8_t);
+    vector_pair!(int32x4x2_t, int32x4_t);
+    vector_pair!(uint16x8x2_t, uint16x8_t);
+    vector_pair!(uint32x4x2_t, uint32x4_t);
+
+    mod neon_f32;
+    mod neon_f64;
+    mod neon_integer;
+    mod neon_lanes;
+    pub use self::neon_f32::*;
+    pub use self::neon_f64::*;
+    pub use self::neon_integer::*;
+    pub use self::neon_lanes::*;
 }

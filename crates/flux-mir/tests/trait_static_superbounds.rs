@@ -49,6 +49,11 @@ fn static_superbounds_match_rustc() {
             true,
         ),
         (
+            "inherited_static_bound_does_not_lengthen_an_output_borrow",
+            "trait Stable:std::any::Any{}impl Stable for u32{} trait Read<'a,T:Stable>:Sized{type Output:'a;fn read(self,value:&'a T)->Self::Output;fn optional(self,value:&'a T)->Option<Self::Output>{Some(self.read(value))}} impl<'a>Read<'a,u32> for (){type Output=&'a u32;fn read(self,value:&'a u32)->&'a u32{value}}fn escape<'a>(value:&'a u32)->&'static u32{().optional(value).unwrap()}fn main(){}",
+            false,
+        ),
+        (
             "bounded_impl",
             "trait P:'static{}struct W<T>(T);impl<T:'static>P for W<T>{}fn main(){}",
             true,
@@ -101,6 +106,36 @@ fn static_superbounds_match_rustc() {
         (
             "trait_arg_does_not_imply_self_static",
             "trait P<T:'static>{}trait C<T:'static>:P<T>{}fn need<T:'static>(){}fn f<T:C<u32>>(){need::<T>();}fn main(){}",
+            false,
+        ),
+        (
+            "wrapped_subject_implies_self_static",
+            include_str!("../../../tests/run/wrapped_static_trait_bound.rs"),
+            true,
+        ),
+        (
+            "wrapped_subject_does_not_prove_a_distinct_argument_static",
+            "struct Holder<T>(T);trait Static:'static{}fn need<T:'static>(){}fn test<T,U>() where Holder<T>:Static {need::<Holder<U>>();}fn main(){}",
+            false,
+        ),
+        (
+            "wrapped_subject_does_not_imply_trait_argument_static",
+            "struct Holder<T>(T);trait StaticArg<T:'static>{}fn test<T>() where Holder<T>:StaticArg<T>{}fn main(){}",
+            false,
+        ),
+        (
+            "wrapped_subject_requires_static_at_the_call_site",
+            "struct Holder<T>(T);trait Static:'static{}impl<T:'static>Static for Holder<T>{}fn take<T>(_:T)where Holder<T>:Static{}fn escape<'a>(x:&'a u8){take(x);}fn main(){}",
+            false,
+        ),
+        (
+            "where_self_reuses_callable_header_lifetimes",
+            "trait Describe{}trait Into:Describe{}impl<A,R>Into for &'_ (dyn Fn(&A)->R+'_) where Self:Describe{}fn main(){}",
+            true,
+        ),
+        (
+            "renewed_lifetimes_do_not_prove_the_self_bound",
+            "trait Describe{}trait Into:Describe{}impl<'a,'b,A,R>Into for &'a (dyn Fn(&A)->R+'a) where &'b (dyn Fn(&A)->R+'b):Describe{}fn main(){}",
             false,
         ),
         (

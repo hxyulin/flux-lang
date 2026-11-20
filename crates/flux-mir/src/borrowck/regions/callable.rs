@@ -324,6 +324,7 @@ impl Cx<'_> {
         self.finish_pointer_proof(before, &bound, &[], universal, known, range);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn pointer_from_item(
         &mut self,
         function: flux_hir::FunctionId,
@@ -331,15 +332,24 @@ impl Cx<'_> {
         target: flux_ty::FnSigTy,
         own: &[Var],
         written: Option<&flux_ty::regions::TypeArgRegions>,
+        captured: Option<&[Var]>,
         range: TextRange,
     ) {
         let Some(r) = target.regions else {
             if (written.is_none()
+                && captured.is_none()
                 && args
                     .iter()
                     .any(|&ty| flux_ty::regions::slots(self.items, ty) != 0))
                 || self
-                    .item_instantiation(function, args, written, FunctionUse::Reification, range)
+                    .item_instantiation(
+                        function,
+                        args,
+                        written,
+                        FunctionUse::Reification,
+                        range,
+                        captured.unwrap_or_default(),
+                    )
                     .is_none()
             {
                 self.errors.push(Diagnostic::new(
@@ -348,6 +358,16 @@ impl Cx<'_> {
                 ));
             }
             return;
+        };
+        // Owner lifetimes belong to the function item. Allocate them outside
+        // the pointer binder so the leak check keeps them fixed across calls.
+        let fixed_owner = if let Some(captured) = captured {
+            captured.to_vec()
+        } else if r.bound == 0 {
+            Vec::new()
+        } else {
+            let count = self.sigs.regions.fns.get(function).map_or(0, |r| r.owner);
+            self.fresh_list(count)
         };
         let before = self.vars;
         let universal = self.universal.len();
@@ -414,16 +434,14 @@ impl Cx<'_> {
                     valid = true;
                 }
             } else if let Some(regions) = self.sigs.regions.fns.get(function) {
-                // An early-bound owner or a type argument carrying regions
-                // needs item-value provenance, not erased type equality.
-                // A fixed pointer signature can infer owner lifetimes through
-                // the same checked owner obligations as a direct call. A
-                // universal pointer binder still needs independent provenance.
-                if (regions.owner == 0 || r.bound == 0)
-                    && (written.is_some()
-                        || !args
-                            .iter()
-                            .any(|&t| flux_ty::regions::slots(self.items, t) != 0))
+                // Type arguments carrying regions still need written
+                // provenance. Only the method's own late input loans can
+                // be inferred independently inside a pointer binder.
+                if (written.is_some()
+                    || captured.is_some()
+                    || !args
+                        .iter()
+                        .any(|&t| flux_ty::regions::slots(self.items, t) != 0))
                     && !(r.bound != 0
                         && regions.callback_binder != flux_ty::regions::CallbackBinder::Independent)
                 {
@@ -447,6 +465,7 @@ impl Cx<'_> {
                         &inputs,
                         FunctionUse::Reification,
                         written,
+                        &fixed_owner,
                     ) {
                         self.relate_types(
                             signature.ret,

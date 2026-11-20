@@ -297,7 +297,7 @@ impl DefReader<'_> {
         let g = self.glued[g as usize];
         let first = self.toks[g.raw as usize].origin;
         let last = self.toks[(g.raw + g.len - 1) as usize].origin;
-        if first.group == last.group && first.range.start() <= last.range.end() {
+        if first.source_group() == last.source_group() && first.range.start() <= last.range.end() {
             TextRange::new(first.range.start(), last.range.end())
         } else {
             first.range
@@ -854,8 +854,12 @@ impl<'a> CallInput<'a> {
             if t.kind == SyntaxKind::IDENT && t.text.as_str() == "default" {
                 parser_input.set_last_default_keyword();
             }
-            if t.kind == T!['('] && t.origin.range.is_empty() {
-                parser_input.set_last_invisible_paren();
+            if t.kind == T!['('] {
+                if t.origin.is_type_fragment() {
+                    parser_input.set_last_type_paren();
+                } else if t.origin.range.is_empty() {
+                    parser_input.set_last_invisible_paren();
+                }
             }
             if t.joint {
                 parser_input.set_last_joint();
@@ -878,7 +882,7 @@ impl<'a> CallInput<'a> {
         let g = self.glued[g];
         let first = self.toks[g.raw as usize].origin;
         let last = self.toks[(g.raw + g.len - 1) as usize].origin;
-        if first.group == last.group && first.range.start() <= last.range.end() {
+        if first.source_group() == last.source_group() && first.range.start() <= last.range.end() {
             TextRange::new(first.range.start(), last.range.end())
         } else {
             first.range
@@ -1444,9 +1448,12 @@ impl Transcriber<'_, '_> {
             match tt {
                 &Tt::Token(i) => {
                     let token = &toks[i as usize];
+                    // Treat only names followed by a macro bang as calls.
+                    // Negations after keywords and the bang in `!=` are operators.
                     if self.rules.local_inner_macros
-                        && (token.kind == SyntaxKind::IDENT || token.kind.is_keyword())
+                        && token.kind == SyntaxKind::IDENT
                         && matches!(tts.get(position+1),Some(Tt::Token(next)) if toks[*next as usize].kind==T![!])
+                        && !matches!(tts.get(position+2),Some(Tt::Token(next)) if toks[*next as usize].kind==T![=])
                         && !matches!(position.checked_sub(1).and_then(|p|tts.get(p)),Some(Tt::Token(previous)) if matches!(toks[*previous as usize].kind,T![:] | T![::]))
                     {
                         (self.dollar_crate)(token, out);
@@ -1517,11 +1524,29 @@ impl Transcriber<'_, '_> {
                                 joint: false,
                                 origin: flux_syntax::TokenOrigin {
                                     range: TextRange::empty(first.range.start()),
+                                    group: if kind == FragKind::Ty {
+                                        first.source_group()
+                                            | flux_syntax::TokenOrigin::TYPE_FRAGMENT
+                                    } else {
+                                        first.source_group()
+                                    },
                                     ..first
                                 },
                             });
                         }
+                        let start = out.len();
                         out.extend_from_slice(raw);
+                        if kind == FragKind::Path {
+                            // Mark the path, underneath any invisible type
+                            // delimiters retained from an earlier substitution.
+                            if let Some(first) = out[start..].iter_mut().find(|token| {
+                                token.kind != T!['('] || !token.origin.range.is_empty()
+                            }) {
+                                first.origin = first
+                                    .origin
+                                    .with_path_fragment(toks[dollar as usize].edition);
+                            }
+                        }
                         if let Some(last) = out.last_mut() {
                             last.joint = false;
                         }

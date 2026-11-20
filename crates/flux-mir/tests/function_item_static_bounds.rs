@@ -11,6 +11,46 @@ fn function_item_static_bounds_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "stored_trait_item",
+            r#"
+trait Read<'a> { fn read(value: &'a u32) -> &'a u32; }
+impl<'a> Read<'a> for () { fn read(value: &'a u32) -> &'a u32 { value } }
+fn f<'a>(value: &'a u32) -> &'a u32 {
+    let item = <() as Read<'a>>::read;
+    item(value)
+}
+fn main() {}
+"#,
+            true,
+        ),
+        (
+            "stored_trait_item_short_input",
+            r#"
+trait Read<'a> { fn read(value: &'a u32) -> &'a u32; }
+impl<'a> Read<'a> for () { fn read(value: &'a u32) -> &'a u32 { value } }
+fn f<'a>(_: &'a u32) -> u32 {
+    let item = <() as Read<'a>>::read;
+    let local = 7;
+    *item(&local)
+}
+fn main() {}
+"#,
+            false,
+        ),
+        (
+            "stored_trait_item_cannot_generalize",
+            r#"
+trait Read<'a> { fn read(value: &'a u32) -> &'a u32; }
+impl<'a> Read<'a> for () { fn read(value: &'a u32) -> &'a u32 { value } }
+fn f<'a>(_: &'a u32) {
+    let item = <() as Read<'a>>::read;
+    let _: for<'b> fn(&'b u32) -> &'b u32 = item;
+}
+fn main() {}
+"#,
+            false,
+        ),
+        (
             "static_type_fnptr",
             "fn id<T:'static>(x:&T)->&T{x}fn get<T:'static>(){let _:fn(&T)->&T=id::<T>;}fn main(){get::<u32>();}",
             true,

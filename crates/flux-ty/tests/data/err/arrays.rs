@@ -28,6 +28,11 @@ fn copies<T>(t: T) -> [T; 2] {
     [t; 2]
 }
 
+fn inferred_repeats() {
+    let no_length = [0u8; _];
+    let not_copy: [S; 2] = [S; _];
+}
+
 fn unsized_values(s: &[i32]) {
     let u = *s;
     let q: [i32] = [1];

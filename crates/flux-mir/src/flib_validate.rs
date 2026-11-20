@@ -213,7 +213,13 @@ fn place(p: &Place, body: &Body, items: &ItemTree, sigs: &Signatures) -> Result<
     Ok(ty)
 }
 
-fn constant(c: &Constant, body: &Body, items: &ItemTree, sigs: &Signatures) -> Result<(), Error> {
+fn constant(
+    c: &Constant,
+    body: &Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    owner: flux_ty::ClosureOwner,
+) -> Result<(), Error> {
     match c {
         Constant::Fn { function, ty, .. } => {
             items.functions.get(*function).ok_or_else(invalid)?;
@@ -235,12 +241,24 @@ fn constant(c: &Constant, body: &Body, items: &ItemTree, sigs: &Signatures) -> R
             let TyKind::Ref(Mutability::Not, pointee) = ty.kind() else {
                 return Err(invalid());
             };
-            let env = body.owner.map_or_else(Vec::new, |f| {
-                flux_solve::traits::projections_of(items, sigs, f)
-            });
-            let bounds = body.owner.map_or_else(Vec::new, |f| {
-                flux_solve::traits::predicates_of(items, sigs, f)
-            });
+            use flux_solve::traits::{
+                elaborate, owner_predicates, owner_projections, predicates_of, projections_of,
+            };
+            let (env, bounds) = match owner {
+                flux_ty::ClosureOwner::Function(f) => (
+                    projections_of(items, sigs, f),
+                    predicates_of(items, sigs, f),
+                ),
+                flux_ty::ClosureOwner::Const(c) => {
+                    let owner = items.consts[c].owner;
+                    (
+                        owner_projections(items, sigs, owner),
+                        owner_predicates(items, sigs, owner),
+                    )
+                }
+            };
+            // MIR lowering qualifies a reference using the body's supertraits.
+            let bounds = elaborate(sigs, &bounds);
             let value_ty = flux_solve::traits::normalize(items, sigs, &env, value_ty.subst(args));
             if declaration.is_static.is_some() || value_ty != pointee {
                 return Err(Error::new("invalid imported constant reference type"));
@@ -289,12 +307,18 @@ fn constant(c: &Constant, body: &Body, items: &ItemTree, sigs: &Signatures) -> R
     }
     Ok(())
 }
-fn operand(o: &Operand, body: &Body, items: &ItemTree, sigs: &Signatures) -> Result<(), Error> {
+fn validate_operand(
+    o: &Operand,
+    body: &Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    owner: flux_ty::ClosureOwner,
+) -> Result<(), Error> {
     match o {
         Operand::Copy(p) | Operand::Move(p) => {
             place(p, body, items, sigs)?;
         }
-        Operand::Const(c) => constant(c, body, items, sigs)?,
+        Operand::Const(c) => constant(c, body, items, sigs, owner)?,
     };
     Ok(())
 }
@@ -336,20 +360,27 @@ fn named_call_regions(
     Ok(())
 }
 
-fn reification_regions(body: &Body, items: &ItemTree, names: usize) -> Result<(), Error> {
+fn reification_regions(
+    body: &Body,
+    items: &ItemTree,
+    sigs: &Signatures,
+    names: usize,
+) -> Result<(), Error> {
     if body.reification_regions.iter().next().is_none() {
         return Ok(());
     }
-    let mut definitions = flux_arena::ArenaMap::<LocalDecl, flux_ty::GenericArgs>::new();
+    let mut definitions = flux_arena::ArenaMap::new();
     for block in body.blocks.values() {
         for statement in &block.statements {
             if let StatementKind::Assign(dest, value) = &statement.kind
                 && body.reification_regions.get(dest.local).is_some()
             {
-                let Rvalue::Use(Operand::Const(Constant::Fn { args, .. })) = value else {
+                let Rvalue::Use(Operand::Const(Constant::Fn { function, args, .. })) = value else {
                     return Err(Error::new("invalid MIR reification assignment"));
                 };
-                if !dest.projection.is_empty() || definitions.insert(dest.local, *args).is_some() {
+                if !dest.projection.is_empty()
+                    || definitions.insert(dest.local, (*function, *args)).is_some()
+                {
                     return Err(Error::new("duplicate MIR reification assignment"));
                 }
             }
@@ -366,11 +397,31 @@ fn reification_regions(body: &Body, items: &ItemTree, names: usize) -> Result<()
         if data.kind != LocalKind::Temp || !matches!(data.ty.kind(), TyKind::FnPtr(_)) {
             return Err(Error::new("invalid MIR reification temporary"));
         }
-        let args = definitions.get(local).ok_or_else(invalid)?;
+        let &(function, args) = definitions.get(local).ok_or_else(invalid)?;
         let mut seen = rustc_hash::FxHashSet::default();
         for (index, row) in rows {
-            let &arg = args.get(*index as usize).ok_or_else(invalid)?;
-            if !seen.insert(*index) || row.len() != flux_ty::regions::slots(items, arg) {
+            let count = match *index {
+                flux_ty::regions::TRAIT_LIFETIMES_ARG => {
+                    let owner = items.functions.get(function).and_then(|f| f.owner);
+                    let Some(flux_hir::Owner::Trait(_)) = owner else {
+                        return Err(Error::new("invalid MIR reification trait owner"));
+                    };
+                    sigs.regions.fns.get(function).ok_or_else(invalid)?.owner as usize
+                }
+                flux_ty::regions::IMPL_SELF_ARG => {
+                    let owner = items.functions.get(function).and_then(|f| f.owner);
+                    let Some(flux_hir::Owner::Impl(imp)) = owner else {
+                        return Err(Error::new("invalid MIR reification impl owner"));
+                    };
+                    let self_ty = sigs.impls.get(imp).ok_or_else(invalid)?.subst(args);
+                    flux_ty::regions::slots(items, self_ty)
+                }
+                index => {
+                    let &arg = args.get(index as usize).ok_or_else(invalid)?;
+                    flux_ty::regions::slots(items, arg)
+                }
+            };
+            if !seen.insert(*index) || row.len() != count {
                 return Err(Error::new("invalid MIR reification argument rows"));
             }
             if row.iter().any(|r| match *r {
@@ -508,6 +559,7 @@ pub(super) fn body_for_owner(
         place(p, body, items, sigs)?;
         place(q, body, items, sigs)?;
     }
+    let operand = |value| validate_operand(value, body, items, sigs, owner);
     for block in body.blocks.values() {
         for statement in &block.statements {
             match &statement.kind {
@@ -515,8 +567,8 @@ pub(super) fn body_for_owner(
                     let dest_ty = place(dest, body, items, sigs)?;
                     match r {
                         Rvalue::WithAddr(pointer, address) => {
-                            operand(pointer, body, items, sigs)?;
-                            operand(address, body, items, sigs)?;
+                            operand(pointer)?;
+                            operand(address)?;
                             if body.operand_ty(pointer, sigs) != dest_ty
                                 || !matches!(dest_ty.kind(), TyKind::RawPtr(..))
                                 || body.operand_ty(address, sigs) != Ty::int(flux_ty::IntTy::Usize)
@@ -537,7 +589,7 @@ pub(super) fn body_for_owner(
                         }
                         Rvalue::Aggregate(kind, ops) => {
                             for o in ops {
-                                operand(o, body, items, sigs)?;
+                                operand(o)?;
                             }
                             match kind {
                                 AggregateKind::Variant(s, v) => {
@@ -573,14 +625,14 @@ pub(super) fn body_for_owner(
                         | Rvalue::UnaryOp(_, o)
                         | Rvalue::Cast(o, _)
                         | Rvalue::Repeat(o, _)
-                        | Rvalue::Unsize(o, _) => operand(o, body, items, sigs)?,
+                        | Rvalue::Unsize(o, _) => operand(o)?,
                         Rvalue::BinaryOp(_, a, b) => {
-                            operand(a, body, items, sigs)?;
-                            operand(b, body, items, sigs)?;
+                            operand(a)?;
+                            operand(b)?;
                         }
                         Rvalue::InlineAsm { inputs, .. } => {
                             for o in inputs {
-                                operand(o, body, items, sigs)?;
+                                operand(o)?;
                             }
                         }
                         Rvalue::Discriminant(p)
@@ -590,9 +642,9 @@ pub(super) fn body_for_owner(
                             place(p, body, items, sigs)?;
                         }
                         Rvalue::Subslice { slice, start, end } => {
-                            operand(slice, body, items, sigs)?;
-                            operand(start, body, items, sigs)?;
-                            operand(end, body, items, sigs)?;
+                            operand(slice)?;
+                            operand(start)?;
+                            operand(end)?;
                         }
                     }
                 }
@@ -609,7 +661,7 @@ pub(super) fn body_for_owner(
                 variants,
                 ..
             } => {
-                operand(discr, body, items, sigs)?;
+                operand(discr)?;
                 if let Some(s) = variants {
                     for (v, _) in targets {
                         variant(items, *s, u32::try_from(*v).map_err(|_| invalid())?)?;
@@ -622,16 +674,16 @@ pub(super) fn body_for_owner(
                 items.functions.get(*func).ok_or_else(invalid)?;
                 sigs.fns.get(*func).ok_or_else(invalid)?;
                 for o in args {
-                    operand(o, body, items, sigs)?;
+                    operand(o)?;
                 }
                 place(dest, body, items, sigs)?;
             }
             TerminatorKind::CallIndirect {
                 callee, args, dest, ..
             } => {
-                operand(callee, body, items, sigs)?;
+                operand(callee)?;
                 for o in args {
-                    operand(o, body, items, sigs)?;
+                    operand(o)?;
                 }
                 place(dest, body, items, sigs)?;
             }
@@ -639,16 +691,16 @@ pub(super) fn body_for_owner(
                 place(p, body, items, sigs)?;
             }
             TerminatorKind::Assert { cond, msg, .. } => {
-                operand(cond, body, items, sigs)?;
+                operand(cond)?;
                 match msg {
                     AssertMessage::DivisionByZero(a) | AssertMessage::RemainderByZero(a) => {
-                        operand(a, body, items, sigs)?
+                        operand(a)?
                     }
                     AssertMessage::DivisionOverflow(a, b)
                     | AssertMessage::RemainderOverflow(a, b)
                     | AssertMessage::BoundsCheck { len: a, index: b } => {
-                        operand(a, body, items, sigs)?;
-                        operand(b, body, items, sigs)?;
+                        operand(a)?;
+                        operand(b)?;
                     }
                 }
             }
@@ -664,7 +716,7 @@ pub(super) fn body_for_owner(
             .map_or(0, |r| r.names.len()),
     };
     named_call_regions(body, items, sigs, names)?;
-    reification_regions(body, items, names)?;
+    reification_regions(body, items, sigs, names)?;
     if !check_types {
         return Ok(());
     }
@@ -874,6 +926,8 @@ fn value_for_storage(
             if u32::try_from(*bits).ok().and_then(char::from_u32).is_some() => {}
         (Value::Bool(_), TyKind::Bool) => {}
         (Value::Float { ty, .. }, TyKind::Float(float)) if *ty == float => {}
+        (Value::Aggregate(values), TyKind::FnDef(def))
+            if values.is_empty() && def.args.is_empty() => {}
         (Value::Union { field, value }, TyKind::Adt(adt, _))
             if sigs.unions.contains(&adt.strukt) =>
         {

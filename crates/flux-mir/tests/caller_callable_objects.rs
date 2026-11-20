@@ -46,6 +46,21 @@ fn caller_callable_objects_match_rustc() {
             true,
         ),
         (
+            "reboxed",
+            "fn adapt<'a>(f:Box<dyn Fn(&u32)+'a>)->Box<dyn Fn(&u32)+'a>{Box::new(f)}fn main(){}",
+            true,
+        ),
+        (
+            "reboxed_fixed_input",
+            "fn adapt(f:Box<dyn Fn(&'static u32)>)->Box<dyn Fn(&u32)>{Box::new(f)}fn main(){}",
+            false,
+        ),
+        (
+            "reboxed_escape",
+            "fn adapt<'a>(f:Box<dyn Fn(&u32)+'a>)->Box<dyn Fn(&u32)+'static>{Box::new(f)}fn main(){}",
+            false,
+        ),
+        (
             "nested_valid",
             "fn adapt<F:Fn(&u32)->bool>(f:F){let g=||{let p:&dyn Fn(&u32)->bool=&f;assert!(p(&7));};g();}fn main(){}",
             true,

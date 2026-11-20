@@ -57,6 +57,157 @@ fn accepts(name: &str, source: &str) {
     assert!(found.is_empty(), "flux {name}: {found:?}");
 }
 
+#[test]
+fn type_alias_bounds_find_inherited_associated_types() {
+    accepts(
+        "inherited_type_alias_bound",
+        include_str!("../../../tests/run/type_alias_supertrait.rs"),
+    );
+    rejects(
+        "ambiguous_inherited_type_alias_bound",
+        "trait A { type Item; } trait B { type Item; } trait Both: A + B {} type Value<T: Both> = T::Item;",
+        "E0221",
+        "ambiguous associated type",
+    );
+}
+
+#[test]
+fn a_caller_projection_owner_disambiguates_an_inherent_constructor() {
+    let source = include_str!("../../../tests/run/projected_owner_constructor.rs");
+    accepts("projected_owner_constructor", source);
+    rejects(
+        "projected_owner_constructor_remains_ambiguous_without_caller_bound",
+        &format!("{source}\nfn ambiguous() -> Owned<u32, Fixed<3>> {{ Owned::fill(42) }}"),
+        "E0034",
+        "multiple applicable items in scope",
+    );
+}
+
+#[test]
+fn allocator_family_inputs_are_inferred_from_calls_and_receiver_bounds() {
+    let source = include_str!("../../../tests/run/allocator_family_inference.rs");
+    accepts("allocator_family_inference", source);
+    rejects(
+        "allocator_family_rejects_wrong_element_type",
+        &source.replace("42u32", "42u16"),
+        "E0308",
+        "mismatched types",
+    );
+}
+
+#[test]
+fn associated_output_uses_inherited_caller_equalities() {
+    let source = include_str!("../../../tests/run/simd_associated_bound.rs");
+    accepts("associated_output_inherited_equality", source);
+    let invalid = source.replace("type Real = T::Real;", "type Real = u64;")
+        + "\nimpl Mask for u64 { type Bool = u8; }\n";
+    rejects(
+        "associated_output_conflicting_equality",
+        &invalid,
+        "E0271",
+        "type mismatch resolving",
+    );
+}
+
+#[test]
+fn associated_record_constructors_use_the_resolved_adt() {
+    accepts(
+        "inherited_associated_record",
+        include_str!("../../../tests/run/inherited_associated_record.rs"),
+    );
+    rejects(
+        "associated_record_unknown_field",
+        "struct Row { x: u8 } trait Source { type Row; }
+         fn make<T: Source<Row = Row>>() { let _ = T::Row { y: 0 }; }",
+        "E0560",
+        "struct `Row` has no field named `y`",
+    );
+    rejects(
+        "associated_record_ambiguity",
+        "struct Row { x: u8 } struct S;
+         trait A { type Row; } trait B { type Row; }
+         trait C: A + B { fn make(); }
+         impl A for S { type Row = Row; }
+         impl B for S { type Row = Row; }
+         impl C for S { fn make() { let _ = Self::Row { x: 0 }; } }",
+        "E0221",
+        "ambiguous associated type",
+    );
+    for (name, source, message) in [
+        (
+            "associated_record_unresolved",
+            "trait Source { type Row; } fn make<T: Source>() { let _ = T::Row { x: 0 }; }",
+            "expected struct or union type",
+        ),
+        (
+            "associated_record_borrow_escape",
+            "struct Row<'a> { x: &'a u8 } trait Source { type Row; }
+             fn make<T: Source<Row = Row<'static>>>(x: &u8) { let _ = T::Row { x }; }",
+            "lifetimes in associated record constructors",
+        ),
+    ] {
+        let oracle = rustc(name, source);
+        assert!(!oracle.status.success(), "rustc accepted {name}");
+        let found = flux(name, source);
+        assert!(
+            found.iter().any(|m| m.starts_with(message)),
+            "{name}: {found:?}"
+        );
+    }
+}
+
+#[test]
+fn a_closed_projection_mismatch_removes_a_competing_impl() {
+    let source = include_str!("../../../tests/run/trait_candidate_projection_mismatch.rs");
+    accepts("projection_mismatch_winnows_impl", source);
+    rejects(
+        "matching_projection_keeps_both_impls",
+        &source.replace("type Thread = Worker;", "type Thread = Main;"),
+        "E0283",
+        "type annotations needed",
+    );
+}
+
+#[test]
+fn intersection_carries_a_source_type_into_blanket_conversion_bounds() {
+    let source = include_str!("../../../tests/run/conversion_intersection.rs");
+    accepts("conversion_source_intersection", source);
+    rejects(
+        "conversion_source_can_overlap",
+        &format!("{source}\nimpl<T> Array for &[T] {{ type Item = T; }}"),
+        "E0119",
+        "conflicting implementations of trait",
+    );
+}
+
+#[test]
+fn default_projection_keeps_independent_conversion_bounds() {
+    let source = include_str!("../../../tests/run/conversion_default_projection.rs");
+    accepts("conversion_default_projection", source);
+    rejects(
+        "default_projection_can_overlap",
+        &format!(
+            "{source}\nimpl Raw for u8 {{type Numeric=u8;}} impl Flag for u8 {{fn bits(self)->u8{{self}}}}"
+        ),
+        "E0119",
+        "conflicting implementations of trait",
+    );
+    let mismatched =
+        format!("{source}\nfn bad<T:Flag<Numeric=u8>>(n:u8){{Bits::<T,u16>::from_bits(n);}}");
+    let rustc = rustc("projected_self_type_mismatch", &mismatched);
+    assert!(
+        String::from_utf8_lossy(&rustc.stderr).contains("error[E0599]"),
+        "{rustc:?}"
+    );
+    let diagnostics = flux("projected_self_type_mismatch", &mismatched);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|message| message.contains("from_bits")),
+        "{diagnostics:?}"
+    );
+}
+
 // Failure to prove a generic or upstream bound is not proof of disjointness.
 
 #[test]
@@ -544,6 +695,74 @@ fn generic_trait_objects_retain_declared_callable_capabilities() {
         "trait Parser<I>{}impl<I,F:FnMut(&mut I)>Parser<I>for F{}impl<I>Parser<I>for Box<dyn FnMut(&mut I)>{}",
         "E0119",
         "conflicting implementations of trait `Parser<_>`",
+    );
+}
+
+#[test]
+fn callable_impl_coherence_distinguishes_late_binders() {
+    let source = include_str!("../../../tests/run/callable_impl_coherence.rs");
+    accepts("callable_impl_dispatch", source);
+    let (_, _, hir) = flux_hir::lower_text("callable_impl_warnings.rs", source);
+    let typed = flux_ty::check_file(&hir);
+    assert!(
+        typed
+            .warnings
+            .iter()
+            .any(|d| d.message.contains("conflicting implementations"))
+    );
+
+    for (name, source) in [
+        (
+            "callable_impl_trait_arg",
+            "trait Tr<D:?Sized>{}impl<F,A,R>Tr<dyn Fn(A)->R>for F{}impl<F,A,R>Tr<dyn Fn(&A)->R>for F{}",
+        ),
+        (
+            "callable_impl_nested",
+            "struct W<D:?Sized>(Box<D>);trait Tr{}impl<A,R>Tr for W<dyn Fn(A)->R>{}impl<A,R>Tr for W<dyn Fn(&A)->R>{}",
+        ),
+        (
+            "callable_impl_bare_fn",
+            "trait Tr{}impl<A,R>Tr for fn(A)->R{}impl<A,R>Tr for fn(&A)->R{}",
+        ),
+        (
+            "callable_impl_repeated_lifetime",
+            "trait Tr{}impl Tr for &dyn for<'a,'b> Fn(&'a u8,&'b u8){}impl Tr for &dyn for<'a> Fn(&'a u8,&'a u8){}",
+        ),
+    ] {
+        accepts(name, source);
+    }
+    for (name, source) in [
+        (
+            "callable_impl_early_borrow",
+            "trait Tr{}impl<A>Tr for &dyn Fn(A){}impl<'a,A>Tr for &dyn Fn(&'a A){}",
+        ),
+        (
+            "callable_impl_static_borrow",
+            "trait Tr{}impl<A>Tr for &dyn Fn(A){}impl<A>Tr for &dyn Fn(&'static A){}",
+        ),
+        (
+            "callable_impl_alpha_renamed",
+            "trait Tr{}impl Tr for &dyn for<'a,'b> Fn(&'a u8,&'b u8){}impl Tr for &dyn for<'b,'a> Fn(&'a u8,&'b u8){}",
+        ),
+        (
+            "callable_impl_hard_overlap_after_warning",
+            "trait Tr{}impl<A>Tr for &dyn Fn(A){}impl<A>Tr for &dyn Fn(&A){}impl<A>Tr for &dyn Fn(&A){}",
+        ),
+    ] {
+        rejects(
+            name,
+            source,
+            "E0119",
+            "conflicting implementations of trait `Tr`",
+        );
+    }
+
+    let denied = format!("#![deny(coherence_leak_check)]\n{source}");
+    assert!(!rustc("callable_impl_deny_lint", &denied).status.success());
+    assert!(
+        flux("callable_impl_deny_lint", &denied)
+            .iter()
+            .any(|m| m.contains("conflicting implementations"))
     );
 }
 

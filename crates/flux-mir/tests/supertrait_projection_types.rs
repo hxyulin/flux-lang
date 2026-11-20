@@ -53,6 +53,11 @@ fn selected_impl_projection_types_match_rustc() {
             include_str!("../../../tests/run/impl_supertrait_projection_types.rs"),
             true,
         ),
+        (
+            "projected_supertrait_arguments",
+            include_str!("../../../tests/run/projected_supertrait_arguments.rs"),
+            true,
+        ),
     ];
     let dir = std::env::temp_dir().join(format!(
         "flux-supertrait-projection-types-{}",

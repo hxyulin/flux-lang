@@ -5,6 +5,20 @@ use std::f32::consts as c32;
 use std::f64::consts::{self, PI};
 
 fn main() {
+    const STEP_FROM_ZERO: u64 = 0.0_f64.next_down().to_bits();
+    const STEP_FROM_INFINITY: u32 = f32::INFINITY.next_down().to_bits();
+    println!("{STEP_FROM_ZERO:x} {STEP_FROM_INFINITY:x}");
+    for value in [0.0_f64, -0.0, f64::MAX, f64::MIN, f64::INFINITY, f64::NEG_INFINITY,
+                  f64::from_bits(1), f64::from_bits(0xfff8_0000_0000_0013)] {
+        println!("{:x} {:x}", value.next_down().to_bits(), value.next_up().to_bits());
+    }
+    for value in [0.0_f32, -0.0, f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY,
+                  f32::from_bits(1), f32::from_bits(0xffc0_0013)] {
+        println!("{:x} {:x}", value.next_down().to_bits(), value.next_up().to_bits());
+    }
+    for value in [false, true] {
+        println!("{:x} {:x}", f32::from(value).to_bits(), f64::from(value).to_bits());
+    }
     let samples = [0.0f64, -0.0, 0.5, -0.5, 1.5, 2.5, -2.5, 0.7, 3.25, 1e300, f64::INFINITY, f64::NAN, -7.9];
     for x in samples {
         println!("{x:?}: {:?} {:?} {:?} {:?} {:?} {:?}", x.round(), x.fract(), x.signum(), x.to_degrees(), x.to_radians(), x.to_le_bytes());

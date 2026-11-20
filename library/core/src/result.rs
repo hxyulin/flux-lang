@@ -41,6 +41,17 @@ impl<T, E> Result<T, E> {
         }
     }
 
+    /// Mutably borrows the dereferenced success value or the original error.
+    pub fn as_deref_mut(&mut self) -> Result<&mut T::Target, &mut E>
+    where
+        T: crate::ops::DerefMut,
+    {
+        match self {
+            Ok(value) => Ok(crate::ops::DerefMut::deref_mut(value)),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Whether it is `Ok`.
     pub const fn is_ok(&self) -> bool {
         match self {
@@ -193,6 +204,12 @@ impl<T, E> Result<T, E> {
             Ok(value) => f(value),
             Err(_) => false,
         }
+    }
+
+    /// Observes a successful value by reference and returns the original result.
+    pub fn inspect<F: FnOnce(&T)>(self, f: F) -> Self {
+        if let Ok(value) = &self { f(value); }
+        self
     }
 
     /// Observes an error by reference, returning the original result unchanged.

@@ -166,6 +166,10 @@ fn generic_arg(p: &mut Parser<'_>) {
             m.abandon(p);
             const_arg(p);
         }
+        T!['('] if p.input.is_invisible_paren(p.pos) && !p.input.is_type_paren(p.pos) => {
+            m.abandon(p);
+            const_arg(p);
+        }
         _ => {
             types::type_(p);
             m.complete(p, TYPE_ARG);
@@ -215,7 +219,21 @@ fn skip_angle_brackets(p: &mut Parser<'_>, n: usize) -> Option<usize> {
 /// A const generic argument: a literal, `-literal`, or a block.
 pub(super) fn const_arg(p: &mut Parser<'_>) {
     let m = p.start();
+    const_arg_value(p, false);
+    m.complete(p, CONST_ARG);
+}
+
+fn const_arg_value(p: &mut Parser<'_>, forwarded: bool) {
     match p.current() {
+        T!['('] if p.input.is_invisible_paren(p.pos) && !p.input.is_type_paren(p.pos) => {
+            // Macro grouping preserves the captured expression's token
+            // boundaries without making a const argument parenthesized.
+            let group = p.start();
+            p.bump(T!['(']);
+            const_arg_value(p, true);
+            p.expect(T![')']);
+            group.complete(p, PAREN_EXPR);
+        }
         T!['{'] => expressions::block_expr(p),
         T![-] => {
             let neg = p.start();
@@ -223,14 +241,13 @@ pub(super) fn const_arg(p: &mut Parser<'_>) {
             expressions::literal(p);
             neg.complete(p, PREFIX_EXPR);
         }
-        _ if paths::is_path_start(p) => {
+        _ if paths::is_path_start(p) && (!forwarded || p.nth(1) == T![')']) => {
             let path = p.start();
             expr_path(p);
             path.complete(p, PATH_EXPR);
         }
         _ => expressions::literal(p),
     }
-    m.complete(p, CONST_ARG);
 }
 
 /// `(A, B)` in `Fn(A, B) -> C`.

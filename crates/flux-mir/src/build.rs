@@ -3,7 +3,7 @@
 use flux_arena::{Arena, ArenaMap};
 use flux_hir::{
     ArithOp, BinaryOp, Binding, BindingId, CmpOp, ConstId, Expr, ExprId, FunctionId, Hir, ItemTree,
-    Literal, LogicOp, MatchArm, Pat, PatId, Res, Stmt, StructId, UnaryOp,
+    Literal, LogicOp, MatchArm, Pat, PatId, RecordTarget, Res, Stmt, StructId, StructKind, UnaryOp,
 };
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
@@ -16,6 +16,16 @@ use crate::{
     FileMir, Local, LocalDecl, LocalKind, Operand, Place, PlaceTy, ProjectionElem, Rvalue,
     Statement, StatementKind, Terminator, TerminatorKind, UnOp,
 };
+
+fn record_variant(target: RecordTarget, ty: Ty) -> Option<(StructId, u32)> {
+    match target {
+        RecordTarget::Nominal(strukt, variant) => Some((strukt, variant)),
+        RecordTarget::Associated(_) => match ty.kind() {
+            TyKind::Adt(adt, _) => Some((adt.strukt, 0)),
+            _ => None,
+        },
+    }
+}
 
 /// Builds every body of a file and checks initialization. The file must
 /// have no diagnostics from lowering or type checking.
@@ -1433,6 +1443,8 @@ pub fn closure_shims_with_panic_strategy(
             Body {
                 locals,
                 call_regions: ArenaMap::new(),
+                item_callees: Default::default(),
+                item_reifications: Default::default(),
                 reification_regions: ArenaMap::new(),
                 region_annotations: Vec::new(),
                 region_relations: Vec::new(),
@@ -1544,6 +1556,8 @@ fn build_body_inner(
         const_initializer: inline_root.is_some() || matches!(item, Item::Const(_)),
         locals: Arena::new(),
         call_regions: ArenaMap::new(),
+        item_callees: Default::default(),
+        item_reifications: Default::default(),
         reification_regions: ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
@@ -1784,6 +1798,8 @@ fn build_body_inner(
     let mut built = Body {
         locals: b.locals,
         call_regions: b.call_regions,
+        item_callees: b.item_callees,
+        item_reifications: b.item_reifications,
         reification_regions: b.reification_regions,
         region_annotations: b.region_annotations,
         region_relations: b.region_relations,
@@ -1960,6 +1976,8 @@ struct Builder<'a> {
     const_initializer: bool,
     locals: Arena<LocalDecl>,
     call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
+    item_callees: ArenaMap<BasicBlockData, Place>,
+    item_reifications: ArenaMap<LocalDecl, Local>,
     reification_regions: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
     region_annotations: Vec<(Local, Box<[flux_ty::regions::Region]>, TextRange)>,
     region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
@@ -3183,7 +3201,7 @@ impl Builder<'_> {
             let item = self.temp(self.own_ty(expr));
             self.lower_value(expr, &item.into());
             let ty = self.place_ty(dest);
-            let pointer = self.reify_item(expr, def, ty);
+            let pointer = self.reify_item(expr, def, ty, Some(item));
             self.assign(dest, Rvalue::Use(pointer), self.range(expr));
             return;
         }
@@ -3350,6 +3368,14 @@ impl Builder<'_> {
             if !seen_exprs.insert(expr) {
                 continue;
             }
+            // An independently promoted shared reference already has
+            // static storage. Its active value can qualify even when another
+            // variant of its pointee would drop or use interior mutability.
+            if matches!(self.body.exprs[expr], Expr::Ref { mutable: false, .. })
+                && self.promotable(expr).is_some()
+            {
+                continue;
+            }
             let ty = self
                 .types
                 .expr_types
@@ -3390,6 +3416,16 @@ impl Builder<'_> {
             let args =
                 match &self.body.exprs[expr] {
                     Expr::Literal(_) | Expr::Path(Res::Const(_) | Res::Assoc { .. }) => continue,
+                    Expr::Path(Res::Struct(id))
+                        if self.items.structs[*id].variant(0).kind == StructKind::Unit =>
+                    {
+                        continue;
+                    }
+                    Expr::Path(Res::Variant(id, variant))
+                        if self.items.structs[*id].variant(*variant).kind == StructKind::Unit =>
+                    {
+                        continue;
+                    }
                     Expr::Array(fields) | Expr::Tuple(fields) => *fields,
                     Expr::Call { callee, args } => {
                         let constructor = matches!(
@@ -3460,29 +3496,40 @@ impl Builder<'_> {
     /// Retain an immediate item's instantiation separately from its erased
     /// address. A distinct temporary prevents a later assignment from borrowing
     /// the proof attached to another reification of the same local.
-    fn reify_item(&mut self, expr: ExprId, def: flux_ty::FnDefTy, ty: Ty) -> Operand {
+    fn reify_item(
+        &mut self,
+        expr: ExprId,
+        def: flux_ty::FnDefTy,
+        ty: Ty,
+        source: Option<Local>,
+    ) -> Operand {
         let pointer = Operand::Const(Constant::Fn {
             function: def.function,
             args: def.args,
             ty,
         });
-        if !matches!(
+        let written = self.types.call_regions.get(expr);
+        let path = matches!(
             self.body.exprs[expr],
             Expr::Path(Res::Function(_) | Res::Assoc { .. })
-        ) || !def
-            .args
-            .iter()
-            .any(|&ty| flux_ty::regions::slots(self.items, ty) != 0)
+        );
+        let stored = source
+            .filter(|_| !path && flux_ty::regions::item_owner_lifetimes(self.items, def) != 0);
+        if stored.is_none()
+            && (!path
+                || (written.is_none()
+                    && !def
+                        .args
+                        .iter()
+                        .any(|&ty| flux_ty::regions::slots(self.items, ty) != 0)))
         {
             return pointer;
         }
         let local = self.temp(ty);
-        let tables = self
-            .types
-            .call_regions
-            .get(expr)
-            .cloned()
-            .unwrap_or_default();
+        if let Some(source) = stored {
+            self.item_reifications.insert(local, source);
+        }
+        let tables = written.cloned().unwrap_or_default();
         if self.in_const_closure
             && tables.iter().any(|(_, row)| {
                 row.iter()
@@ -3508,7 +3555,7 @@ impl Builder<'_> {
             if let Some(&ty) = self.types.reified.get(expr)
                 && let TyKind::FnDef(def) = self.own_ty(expr).kind()
             {
-                let pointer = self.reify_item(expr, def, ty);
+                let pointer = self.reify_item(expr, def, ty, None);
                 // A reification without generic region arguments still needs
                 // its signature proof when the aggregate itself is promoted.
                 if matches!(pointer, Operand::Const(_)) {
@@ -3599,6 +3646,11 @@ impl Builder<'_> {
             return None;
         }
         match &body.exprs[expr] {
+            // A function item is a zero-sized value. Its type, not its
+            // storage, names the function selected by a callable coercion.
+            Expr::Path(Res::Function(_)) if matches!(ty.kind(), TyKind::FnDef(def) if def.args.is_empty()) => {
+                Some(Value::unit())
+            }
             Expr::Path(res @ (Res::Const(_) | Res::Assoc { .. })) => {
                 let instance = types.consts.get(expr).copied().or(match res {
                     Res::Const(konst) => Some(flux_ty::ConstInstance {
@@ -3701,15 +3753,15 @@ impl Builder<'_> {
                 Some(self.promoted_aggregate(strukt, index, fields))
             }
             Expr::Record {
-                strukt,
-                variant,
+                target,
                 fields,
                 spread,
             } => {
-                if self.items.structs[*strukt].is_union {
+                let (strukt, variant) = record_variant(*target, ty)?;
+                if self.items.structs[strukt].is_union {
                     return None;
                 }
-                let count = self.items.structs[*strukt].variant(*variant).fields.len();
+                let count = self.items.structs[strukt].variant(variant).fields.len();
                 let mut values = if let Some(base) = spread {
                     match self.promotable_in(body, types, *base, active)? {
                         Value::Aggregate(fields) | Value::Variant { fields, .. } => {
@@ -3721,12 +3773,12 @@ impl Builder<'_> {
                     vec![None; count]
                 };
                 for &(name, value) in &body.lists[*fields] {
-                    let index = self.struct_field(*strukt, *variant, name) as usize;
+                    let index = self.struct_field(strukt, variant, name) as usize;
                     values[index] = Some(self.promotable_in(body, types, value, active)?);
                 }
                 Some(self.promoted_aggregate(
-                    *strukt,
-                    *variant,
+                    strukt,
+                    variant,
                     values.into_iter().collect::<Option<Vec<_>>>()?,
                 ))
             }
@@ -3944,7 +3996,14 @@ impl Builder<'_> {
             .get(expr)
             .cloned()
             .unwrap_or_default();
-        let place = if is_place(self.body, self.types, expr) {
+        // A projection can be borrowed directly even when its base needs a
+        // temporary. Reading the projection first would move the reference
+        // out of that temporary, which is illegal for an indexed array.
+        let place = if is_place(self.body, self.types, expr)
+            || matches!(
+                self.body.exprs[expr],
+                Expr::Field { .. } | Expr::Index { .. }
+            ) {
             self.lower_place_deref(expr, derefs, &overloads)
         } else {
             let temp = self.temp(self.expr_ty(expr));
@@ -4144,8 +4203,8 @@ impl Builder<'_> {
                 let operand = self.direct_operand(expr);
                 self.assign(dest, Rvalue::Use(operand), range);
             }
-            Expr::Path(Res::Assoc { .. }) if self.types.unit_variants.get(expr).is_some() => {
-                let &(strukt, variant) = &self.types.unit_variants[expr];
+            Expr::Path(Res::Assoc { .. }) if self.types.associated_variants.get(expr).is_some() => {
+                let &(strukt, variant) = &self.types.associated_variants[expr];
                 self.assign(
                     dest,
                     Rvalue::Aggregate(AggregateKind::Variant(strukt, variant), Vec::new()),
@@ -4337,18 +4396,21 @@ impl Builder<'_> {
                 );
             }
             Expr::Record {
-                strukt,
-                variant,
+                target,
                 fields,
                 spread,
-            } => self.lower_record(
-                *strukt,
-                *variant,
-                &self.body.lists[*fields],
-                *spread,
-                dest,
-                range,
-            ),
+            } => {
+                let (strukt, variant) = record_variant(*target, self.own_ty(expr))
+                    .expect("type checking resolved the record constructor");
+                self.lower_record(
+                    strukt,
+                    variant,
+                    &self.body.lists[*fields],
+                    *spread,
+                    dest,
+                    range,
+                );
+            }
             Expr::Array(elements) => {
                 let elem = match self.expr_ty(expr).kind() {
                     TyKind::Array(elem, _) => elem,
@@ -4365,12 +4427,28 @@ impl Builder<'_> {
                 );
             }
             Expr::Repeat { value, .. } => {
-                let count = match self.expr_ty(expr).kind() {
-                    TyKind::Array(_, count) => count,
-                    _ => Ty::usize_value(0),
+                let (elem, count) = match self.expr_ty(expr).kind() {
+                    TyKind::Array(elem, count) => (elem, count),
+                    _ => (Ty::ERROR, Ty::usize_value(0)),
                 };
                 let operand = self.lower_operand(*value);
-                self.assign(dest, Rvalue::Repeat(operand, count), range);
+                if count.as_usize() == Some(0)
+                    && !self.body.repeat_const_operand(*value)
+                    && self.needs_drop(elem)
+                {
+                    // A non-constant operand is evaluated once even for an
+                    // empty array. Its value has no element to own it.
+                    let temp = self.temp(elem);
+                    self.assign(&temp.into(), Rvalue::Use(operand), range);
+                    self.drop_place(temp.into(), range);
+                    self.assign(
+                        dest,
+                        Rvalue::Aggregate(AggregateKind::Array(elem), Vec::new()),
+                        range,
+                    );
+                } else {
+                    self.assign(dest, Rvalue::Repeat(operand, count), range);
+                }
             }
             Expr::MethodCall { receiver, .. }
                 if let Some(&(method, derefs)) = self.types.builtin_methods.get(expr) =>
@@ -4622,6 +4700,19 @@ impl Builder<'_> {
                 self.record_call_regions(expr);
                 self.call(instance.function, instance.args, operands, dest, range);
             }
+            Expr::Call { args, .. }
+                if let Some(&(strukt, variant)) = self.types.associated_variants.get(expr) =>
+            {
+                let operands = self.body.lists[*args]
+                    .iter()
+                    .map(|&arg| self.lower_operand(arg))
+                    .collect();
+                self.assign(
+                    dest,
+                    Rvalue::Aggregate(AggregateKind::Variant(strukt, variant), operands),
+                    range,
+                );
+            }
             Expr::Call { callee, args } => match body.exprs[*callee] {
                 Expr::Path(Res::Function(_) | Res::Assoc { .. })
                     if self.types.consts.get(*callee).is_none() =>
@@ -4637,7 +4728,17 @@ impl Builder<'_> {
                         let Expr::Ref { expr: future, .. } = self.body.exprs[argument] else {
                             unreachable!("await owns a borrowed temporary");
                         };
-                        self.lower_await(instance, *callee, future, dest, range);
+                        // HIR wraps the operand in a synthetic block to make
+                        // its moved value a place for polling. Keep the
+                        // operand's temporaries in the enclosing scope.
+                        let Expr::Block {
+                            tail: Some(operand),
+                            ..
+                        } = self.body.exprs[future]
+                        else {
+                            unreachable!("await has a synthetic operand block");
+                        };
+                        self.lower_await(instance, *callee, operand, dest, range);
                         return;
                     }
                     let args = self.body.lists[*args]
@@ -4685,12 +4786,35 @@ impl Builder<'_> {
                     }
                     match callable.kind() {
                         TyKind::FnDef(def) => {
-                            // Evaluated for what it does; it holds nothing.
-                            self.lower_operand(*callee);
+                            let place =
+                                if flux_ty::regions::item_owner_lifetimes(self.items, def) != 0 {
+                                    let place = adjusted.or_else(|| {
+                                        (derefs != 0)
+                                            .then(|| self.lower_place_deref(*callee, derefs, &[]))
+                                    });
+                                    let value = match place {
+                                        Some(place) => self.read(place),
+                                        None => self.lower_operand(*callee),
+                                    };
+                                    match value {
+                                        Operand::Copy(place) | Operand::Move(place) => Some(place),
+                                        Operand::Const(_) => {
+                                            self.bug("missing function item place", range);
+                                            return;
+                                        }
+                                    }
+                                } else {
+                                    self.lower_operand(*callee);
+                                    None
+                                };
                             let args = self.body.lists[*args]
                                 .iter()
                                 .map(|&arg| self.lower_operand(arg))
                                 .collect();
+                            if let Some(place) = place {
+                                let block = self.block();
+                                self.item_callees.insert(block, place);
+                            }
                             self.call(def.function, def.args, args, dest, range);
                         }
                         TyKind::FnPtr(sig) => {
@@ -5560,6 +5684,20 @@ impl Builder<'_> {
         }
     }
 
+    fn extending_pattern(&self, pat: PatId) -> bool {
+        let pattern = &self.body.pats[pat];
+        match pattern {
+            Pat::Bind { binding, .. } => self.body.bindings[*binding].by_ref.is_some(),
+            Pat::Tuple { .. }
+            | Pat::TupleStruct { .. }
+            | Pat::Record { .. }
+            | Pat::Slice { .. } => pattern
+                .children(&self.body.lists)
+                .any(|child| self.extending_pattern(child)),
+            _ => false,
+        }
+    }
+
     fn lower_let(&mut self, pat: PatId, init: ExprId) {
         match self.body.pats[pat] {
             Pat::Bind { binding, sub: None } if self.types.pat_refs.get(pat).is_none() => {
@@ -5600,7 +5738,12 @@ impl Builder<'_> {
                 });
             }
             _ => {
+                // A ref binding borrows the whole initializer's place. Its
+                // temporary lives with the bindings, as for a written borrow.
+                let extend = self.extending_pattern(pat);
+                let saved = std::mem::replace(&mut self.extending, extend);
                 let place = self.pat_place(init);
+                self.extending = saved;
                 self.annotate_pat_source(pat, &place);
 
                 self.match_irrefutable(pat, place, self.range(init));
@@ -6544,7 +6687,10 @@ impl Builder<'_> {
         self.lower_condition(condition, then_block, leave);
         self.temporary_scope_override = saved;
         self.current = Some(then_block);
-        self.lower_into(then_branch, dest);
+        // The branch's tail temporaries drop before the condition's
+        // bindings, even when pre-2024 block tails extend past their own
+        // block's locals.
+        self.scoped(ScopeKind::Temps, range, |b| b.lower_into(then_branch, dest));
         self.leave_scopes(depth, true, range);
         self.goto(join, range);
         self.current = Some(leave);

@@ -733,6 +733,16 @@ impl<K: PartialEq, V: PartialEq> PartialEq for BTreeMap<K, V> {
     }
 }
 impl<K: Eq, V: Eq> Eq for BTreeMap<K, V> {}
+impl<K: PartialOrd, V: PartialOrd> PartialOrd for BTreeMap<K, V> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.iter().partial_cmp(other.iter())
+    }
+}
+impl<K: Ord, V: Ord> Ord for BTreeMap<K, V> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.iter().cmp(other.iter())
+    }
+}
 impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for BTreeMap<K, V> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_map().entries(self.iter()).finish()

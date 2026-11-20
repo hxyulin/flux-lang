@@ -30,6 +30,7 @@ fn main() {
     assert_eq!(map.values().len(), 257);
     let copy = map.clone();
     assert_eq!(map, copy);
+    assert_eq!(map.cmp(&copy), std::cmp::Ordering::Equal);
     let mut it = map.keys();
     assert_eq!(it.next(), Some(&0));
     assert_eq!(it.clone().count(), 256);
@@ -69,6 +70,13 @@ fn main() {
     let removed = names.remove_entry("beta").unwrap();
     assert_eq!(removed.0, "beta");
     assert!(names.is_empty());
+
+    let mut left = BTreeMap::from([(1, f64::NAN)]);
+    let right = BTreeMap::from([(2, 0.0)]);
+    assert_eq!(left.partial_cmp(&right), Some(std::cmp::Ordering::Less));
+    left.insert(2, f64::NAN);
+    left.remove(&1);
+    assert_eq!(left.partial_cmp(&right), None);
 
     let drops = Cell::new(0);
     let mut owned = BTreeMap::new();

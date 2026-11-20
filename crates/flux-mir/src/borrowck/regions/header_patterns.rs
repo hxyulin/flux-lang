@@ -83,7 +83,23 @@ impl Cx<'_> {
             return None;
         }
         let output_rows = if alias.owner_lifetimes == 0 {
-            self.normalize_regions(instance, &input_rows, depth + 1)?
+            self.normalize_regions(instance, &input_rows, depth + 1)
+                .or_else(|| {
+                    // A caller equality such as H::Message = M carries
+                    // no region row when both sides have no region slots.
+                    // Use it only after proving the original trait owner.
+                    let function = self.body.owner?;
+                    let output = self.normalize(Ty::alias(instance));
+                    (input_rows.iter().all(Vec::is_empty)
+                        && output != Ty::alias(instance)
+                        && self.slots(output) == 0
+                        && flux_solve::traits::caller_projections_of(
+                            self.items, self.sigs, function,
+                        )
+                        .iter()
+                        .any(|p| p.alias == instance && self.normalize(p.ty) == output))
+                    .then(Vec::new)
+                })?
         } else {
             // Retain the occurrence's owner binders while selecting the RHS;
             // erased normalization alone cannot recover these lifetimes.

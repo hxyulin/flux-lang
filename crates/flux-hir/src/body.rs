@@ -197,10 +197,10 @@ pub enum Expr {
     },
     /// `[a, b, c]`.
     Array(SliceId<ExprId>),
-    /// `[value; count]`.
+    /// `[value; count]`. The count is absent for an inferred length (`_`).
     Repeat {
         value: ExprId,
-        count: crate::ArrayLen,
+        count: Option<crate::ArrayLen>,
     },
     /// `base[index]`, of an array or slice.
     Index {
@@ -222,12 +222,19 @@ pub enum Expr {
     },
     /// `S { a: 1, b, ..base }` or `E::V { a: 1 }`, in source order.
     Record {
-        strukt: StructId,
-        /// The variant of an enum; 0 for a struct.
-        variant: u32,
+        target: RecordTarget,
         fields: SliceId<(Symbol, ExprId)>,
         spread: Option<ExprId>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordTarget {
+    /// A struct or union (variant 0), or an enum variant.
+    Nominal(StructId, u32),
+    /// An unqualified associated type such as `Self::Mask`. Inference
+    /// has the trait bounds and projection equalities needed to resolve it.
+    Associated(TypeRefId),
 }
 
 /// Register class and direction of an inline assembly operand.
@@ -348,10 +355,14 @@ pub struct PathGenerics {
     /// The type is `Self`, whose generic arguments are the `impl`
     /// block's parameters: `Self::f`, `Self(x)`, `Self { .. }`.
     pub self_type: bool,
+    /// An associated path with an explicit receiver type, `<S>::f` or `<S as Tr>::f`.
+    pub qualified: bool,
     /// The struct or enum is named by a type alias, whose type, with
     /// the arguments written for the alias, gives its generic
     /// arguments: `A { .. }`, `A::V(x)` for `type A = E<u8>;`.
     pub alias: Option<TypeRefId>,
+    /// The complete written type before a qualified variant, as in `<E<u8>>::V`.
+    pub qualified_constructor: Option<TypeRefId>,
 }
 
 /// The generic arguments after one segment of a path.
@@ -540,6 +551,14 @@ impl Pat {
 }
 
 impl Body {
+    /// A named or inline constant supplies a fresh value for each array element.
+    pub fn repeat_const_operand(&self, value: ExprId) -> bool {
+        matches!(
+            self.exprs[value],
+            Expr::Path(Res::Const(_) | Res::Assoc { .. })
+        ) || self.const_blocks.get(value).is_some()
+    }
+
     /// The `match` of `Iterator::next` in a `for` loop's `loop`, and the
     /// loop's own pattern, inside its `Some`.
     pub fn for_loop_match(&self, loop_expr: ExprId) -> Option<(ExprId, PatId)> {

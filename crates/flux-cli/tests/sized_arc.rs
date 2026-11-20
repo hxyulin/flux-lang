@@ -110,6 +110,7 @@ fn make_mut_preserves_ownership_when_clone_or_allocation_panics() {
     let dir = std::env::temp_dir().join(format!("flux-arc-clone-panic-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let library = include_str!("../../../library/alloc/src/sync.rs")
+        .replace("mod box_conversion;", "")
         .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
@@ -120,11 +121,11 @@ fn make_mut_preserves_ownership_when_clone_or_allocation_panics() {
         )
         .replace("core::panicking::abort_now()", "std::process::abort()")
         .replace(
-            "fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {",
+            "fn allocate(payload: Layout) -> *mut u8 {",
             r#"
 static FAIL_ALLOCATION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 pub fn fail_next_allocation() { FAIL_ALLOCATION.store(true, std::sync::atomic::Ordering::SeqCst); }
-fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
+fn allocate(payload: Layout) -> *mut u8 {
     if FAIL_ALLOCATION.swap(false, std::sync::atomic::Ordering::SeqCst) { panic!("allocation"); }
 "#,
         );
@@ -630,6 +631,7 @@ fn checked_counter_limits_abort_without_wrapping() {
     // this can only leak ownership, not permit premature destruction.
     // An ordinary test module must not claim the trusted alloc lang item.
     let library = include_str!("../../../library/alloc/src/sync.rs")
+        .replace("mod box_conversion;", "")
         .replace("#[lang = \"arc\"]\n", "")
         .replace("use crate::alloc::", "use std::alloc::")
         .replace("use crate::vec::Vec;", "use std::vec::Vec;")
@@ -641,22 +643,22 @@ fn checked_counter_limits_abort_without_wrapping() {
     for (name, setup, operation) in [
         (
             "strong_clone",
-            "unsafe { (*a.ptr.as_ptr()).strong.store(limit - 1, Relaxed); } let _b = a.clone(); assert_eq!(unsafe { (*a.ptr.as_ptr()).strong.load(Relaxed) }, limit);",
+            "unsafe { (*a.header().as_ptr()).strong.store(limit - 1, Relaxed); } let _b = a.clone(); assert_eq!(unsafe { (*a.header().as_ptr()).strong.load(Relaxed) }, limit);",
             "let _ = a.clone();",
         ),
         (
             "downgrade",
-            "unsafe { (*a.ptr.as_ptr()).weak.store(limit - 1, Relaxed); } let _w = Arc::downgrade(&a); assert_eq!(unsafe { (*a.ptr.as_ptr()).weak.load(Relaxed) }, limit);",
+            "unsafe { (*a.header().as_ptr()).weak.store(limit - 1, Relaxed); } let _w = Arc::downgrade(&a); assert_eq!(unsafe { (*a.header().as_ptr()).weak.load(Relaxed) }, limit);",
             "let _ = Arc::downgrade(&a);",
         ),
         (
             "weak_clone",
-            "let w = Arc::downgrade(&a); unsafe { (*a.ptr.as_ptr()).weak.store(limit - 1, Relaxed); } let _w = w.clone(); assert_eq!(unsafe { (*a.ptr.as_ptr()).weak.load(Relaxed) }, limit);",
+            "let w = Arc::downgrade(&a); unsafe { (*a.header().as_ptr()).weak.store(limit - 1, Relaxed); } let _w = w.clone(); assert_eq!(unsafe { (*a.header().as_ptr()).weak.load(Relaxed) }, limit);",
             "let _ = w.clone();",
         ),
         (
             "upgrade",
-            "let w = Arc::downgrade(&a); unsafe { (*a.ptr.as_ptr()).strong.store(limit - 1, Relaxed); } let _b = w.upgrade().unwrap(); assert_eq!(unsafe { (*a.ptr.as_ptr()).strong.load(Relaxed) }, limit);",
+            "let w = Arc::downgrade(&a); unsafe { (*a.header().as_ptr()).strong.store(limit - 1, Relaxed); } let _b = w.upgrade().unwrap(); assert_eq!(unsafe { (*a.header().as_ptr()).strong.load(Relaxed) }, limit);",
             "let _ = w.upgrade();",
         ),
     ] {

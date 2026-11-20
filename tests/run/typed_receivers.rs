@@ -55,7 +55,30 @@ impl<F: std::future::Future + Unpin + ?Sized> std::future::Future for BorrowedFu
     }
 }
 
+trait Allocate {
+    type Storage<T>;
+}
+
+struct Heap;
+
+impl Allocate for Heap {
+    type Storage<T> = Box<T>;
+}
+
+struct Matrix<T, Storage>(T, Storage);
+type Owned<T> = Matrix<T, <Heap as Allocate>::Storage<T>>;
+
+impl<T> Owned<T> {
+    fn replace(&mut self, value: T) {
+        *self.1 = value;
+    }
+}
+
 fn main() {
+    let mut matrix = Matrix(1, Box::new(2));
+    matrix.replace(42);
+    assert_eq!(*matrix.1, 42);
+
     let mut ready = std::future::ready(31);
     let mut borrowed = BorrowedFuture { inner: &mut ready };
     let mut cx = std::task::Context::from_waker(std::task::Waker::noop());

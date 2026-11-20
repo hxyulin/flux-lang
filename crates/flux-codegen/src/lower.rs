@@ -572,7 +572,7 @@ fn lower_inner(
         .iter()
         .filter(|(_, c)| c.is_static.is_some())
         .map(|(id, c)| {
-            if let Some(symbol) = c.extern_symbol {
+            if let Some(symbol) = c.extern_symbol.or(c.export_symbol) {
                 return (id, symbol.to_string());
             }
             let mut path = Vec::new();
@@ -741,22 +741,33 @@ fn lower_inner(
         };
         let ty = typed.sigs.consts[id];
         let (bytes, align) = ctx.value_bytes(value, ty);
-        ctx.data.push(DataObject {
+        let exported = items.consts[id].export_symbol.is_some();
+        let data = DataObject {
             name: symbol.clone(),
             thread_local: false,
-            local: compilation.is_none(),
+            local: compilation.is_none() && !exported,
             weak_odr: false,
             weak: false,
             section: None,
-            retain: false,
-            hidden: compilation.is_some(),
+            retain: exported,
+            hidden: compilation.is_some() && !exported,
             init: Some(DataInit {
                 constant: !items.consts[id].is_static_mut()
                     && !flux_solve::traits::has_interior_mutability(items, &typed.sigs, ty),
                 align,
                 items: bytes,
             }),
-        });
+        };
+        if exported
+            && let Some(declaration) = ctx
+                .data
+                .iter_mut()
+                .find(|d| d.name == *symbol && d.init.is_none())
+        {
+            *declaration = data;
+        } else {
+            ctx.data.push(data);
+        }
     }
     if !ctx.data_errors.is_empty() {
         Diagnostic::sort(&mut ctx.data_errors);
@@ -3926,7 +3937,7 @@ impl Lower<'_, '_, '_> {
                     flux_ty::shared_pointee(&self.ctx.hir.items, from).expect("Arc or Rc source");
                 let target =
                     flux_ty::shared_pointee(&self.ctx.hir.items, *to).expect("Arc or Rc target");
-                // Header and data addresses survive the ownership transfer.
+                // Preserve the payload address when changing its metadata.
                 let values = self.operand(operand);
                 let object_pair = flux_solve::object_unsize(self.sigs, source, target);
                 let metadata = match (source.kind(), target.kind(), object_pair) {
@@ -3946,7 +3957,7 @@ impl Lower<'_, '_, '_> {
                             target,
                         )
                         .expect("object supertrait");
-                        let address = self.offset(values[2], 8 * index as u64);
+                        let address = self.offset(values[1], 8 * index as u64);
                         self.b.ins().load_with_flags(
                             Type::Ptr,
                             address,
@@ -3960,7 +3971,7 @@ impl Lower<'_, '_, '_> {
                     }
                     _ => unreachable!("represented Arc or Rc unsizing"),
                 };
-                smallvec![values[0], values[1], metadata]
+                smallvec![values[0], metadata]
             }
             Rvalue::Unsize(operand, to)
                 if is_dyn_ptr(self.sigs, *to)
@@ -5021,6 +5032,18 @@ impl Lower<'_, '_, '_> {
                         }
                     };
                     self.write(dest, &[metadata]);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
+                if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::PtrWithMetadata) {
+                    let data = self.scalar(&args[0]).expect("thin pointer argument");
+                    let mut parts = self.operand(&args[1]);
+                    parts[0] = data;
+                    self.write(dest, &parts);
                     if let Some(target) = target {
                         self.b.ins().jump(self.blocks[target.index()], &[]);
                     } else {

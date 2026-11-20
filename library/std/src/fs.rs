@@ -23,6 +23,7 @@ mod native {
         pub fn fchmod(fd: i32, mode: Mode) -> i32;
         pub fn chmod(path: *const core::ffi::c_char, mode: Mode) -> i32;
         pub fn mkdir(path: *const core::ffi::c_char, mode: Mode) -> i32;
+        pub fn rmdir(path: *const core::ffi::c_char) -> i32;
         pub fn rename(from: *const core::ffi::c_char, to: *const core::ffi::c_char) -> i32;
         pub fn unlink(path: *const core::ffi::c_char) -> i32;
         #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
@@ -472,6 +473,17 @@ pub fn remove_file<P:AsRef<Path>>(path:P)->Result<()>{
     // SAFETY: the NUL-terminated path remains live; unlink never follows a
     // final symlink and does not remove an existing open file description.
     if unsafe{native::unlink(name.as_ptr() as *const core::ffi::c_char)}<0{Err(Error::last_os_error())}else{Ok(())}
+}
+
+/// Removes an empty directory.
+pub fn remove_dir<P: AsRef<Path>>(path: P) -> Result<()> {
+    let name = c_path(path.as_ref())?;
+    // SAFETY: the NUL-terminated path remains live throughout the call.
+    if unsafe { native::rmdir(name.as_ptr() as *const core::ffi::c_char) } < 0 {
+        Err(Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 /// The kind of a directory entry, without following symbolic links.

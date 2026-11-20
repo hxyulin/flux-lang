@@ -160,7 +160,39 @@ fn round_robin() {
     }
     assert_eq!(outputs,[7,8,9]);
 }
+fn erased_future() {
+    trait Transport: Send {}
+    impl<T: Send> Transport for T {}
+    trait Erased: Future<Output = u32> + Transport + 'static {}
+    impl<F: Future<Output = u32> + Transport + 'static> Erased for F {}
+
+    fn erased() -> Pin<Box<dyn Erased>> {
+        Box::pin(Yield(true))
+    }
+    fn forwarded() -> impl Future<Output = u32> + Send {
+        let pending = erased();
+        async move { pending.await }
+    }
+
+    let mut future = pin!(forwarded());
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert_eq!(future.as_mut().poll(&mut context), Poll::Ready(7));
+}
+fn await_argument_temporary() {
+    async fn length(value: &String) -> usize {
+        Yield(true).await;
+        value.len()
+    }
+
+    let mut future = pin!(async { length(&String::from("borrowed")).await });
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(future.as_mut().poll(&mut context).is_pending());
+    assert_eq!(future.as_mut().poll(&mut context), Poll::Ready(8));
+}
 fn main() {
+    erased_future();
+    await_argument_temporary();
     round_robin();
     for polls in 0..=3 {cancellation(polls);}
     nested_and_outputs();

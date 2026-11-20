@@ -36,13 +36,14 @@ const BUILTINS: [Builtin; 24] = [
 impl Encode for TokenOrigin {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.range.encode(e)?;
-        let group = if self.group == 0 {
+        let source = self.source_group();
+        let group = if source == 0 {
             0
         } else {
             let next = e.groups.len() as u32 + 1;
-            *e.groups.entry(self.group).or_insert(next)
+            *e.groups.entry(source).or_insert(next)
         };
-        group.encode(e)?;
+        (group | self.fragment_flags()).encode(e)?;
         if let Some(krate) = crate::macros::definition_crate(self.ctxt) {
             2u8.encode(e)?;
             krate.encode(e)
@@ -60,11 +61,12 @@ impl Decode for TokenOrigin {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
         let range = Decode::decode(d)?;
         let wire = u32::decode(d)?;
-        let group = if wire == 0 {
+        let source = wire & (TokenOrigin::MAX_SOURCE_GROUP + 1);
+        let group = if source == 0 {
             0
         } else {
             *d.groups
-                .entry(wire)
+                .entry(source)
                 .or_insert_with(crate::macros::fresh_group)
         };
         let ctxt = match u8::decode(d)? {
@@ -84,7 +86,11 @@ impl Decode for TokenOrigin {
             }
             _ => return Err(Error("invalid macro context tag")),
         };
-        Ok(Self { range, group, ctxt })
+        Ok(Self {
+            range,
+            group: group | (wire ^ source),
+            ctxt,
+        })
     }
 }
 impl Encode for Tok {

@@ -645,11 +645,16 @@ A call of a generic function or method must meet its bounds, and an
 `impl` block must define its trait's required methods with its
 signatures; flux reports what rustc does where they do not (E0277,
 E0599, E0046, E0053, ...), and conflicting `impl` blocks of a trait.
+Callable impls with incompatible late-bound lifetime binders emit the
+`coherence_leak_check` lint when their erased headers intersect. Actual
+overlaps remain errors.
 In a trait impl, unqualified `Self::Out` can name an associated type of a
 supertrait. Lookup substitutes generic arguments through every edge and
 rejects ambiguous declarations or distinct instantiations. Represented function
 signatures map selected-impl lifetime parameters through Self's header slots;
 references returned by an iterator can therefore outlive its receiver borrow.
+Record expressions can use `Self::Out { ... }` or `T::Out { ... }` when
+the projection resolves to a struct or union without region slots.
 Callable method bounds use the same selected associated-item rows as their
 function signatures. Generic Fn/FnMut/FnOnce calls check these input rows;
 captured callbacks carry the requirements through their closure contracts.
@@ -1472,8 +1477,9 @@ parameters with represented region-free trait bounds. It reconstructs signatures
 region rows, predicates and outlives requirements before admission.
 A generic-method profile additionally admits static methods, Sized by-value
 receivers, unsafe methods, method-local lifetimes and `?Sized` type parameters,
-anonymous argument parameters, Fn-family callback bounds, ordinary associated
-outputs, and method bounds such as `D: Reader<'de>` or
+anonymous argument parameters, Fn-family callback bounds, closed function
+pointer signatures, ordinary associated outputs, and method bounds such as
+`D: Reader<'de>` or
 `V: Visitor<'de, Value = &'de str>`. It reconstructs the full signature,
 owner/local region namespace, bound occurrence rows and projection equalities.
 This profile also admits unsafe traits and `Self: 'a` requirements when all
@@ -1517,15 +1523,16 @@ An unconditional impl can determine an associated output even when the caller
 also names its trait bound. A merely possible conditional impl keeps that output
 abstract.
 Projection occurrences such as `A::Error` retain the trait-owner lifetimes from
-their written bounds in impl headers, associated definitions, predicate subjects
-and trait arguments. Associated-value selection proves those same lifetime
-arguments against the impl header. A trait's own owner row applies only to its
+their written bounds in impl headers, associated definitions, predicate subjects,
+trait arguments and local type annotations. Associated-value selection proves
+those same lifetime arguments against the impl header. A trait's own owner row applies only to its
 `Self` type; another generic parameter cannot inherit that row. Missing or
 inconsistent selection metadata rejects explicitly. This does not widen the
 trait declaration profiles described above.
 Selection inputs do not become stored output regions: `S::Out: 'static` does
 not imply that the lifetime argument in `S: Source<'a>` is `'static`. References
-and nominal types containing a projection preserve the same distinction.
+and nominal types containing a projection preserve the same distinction. Calls
+can use a signature's outlives fact when all of the projection inputs match.
 Explicit type-outlives bounds on lifetime-bearing projections remain unsupported
 until their selected output rows can be enforced at callers; this includes
 qualified spellings and nested projection subjects.
@@ -1570,9 +1577,13 @@ block's self type, or of a trait method's `Self`, for that call. A direct
 call through a trait path may write the trait's lifetimes,
 `<T as Arbitrary<'a>>::arbitrary(u)` or `Arbitrary::<'a>::arbitrary(u)`:
 they fix the trait's lifetimes in the callee for that call. A wrong count
-of lifetime arguments is E0107. Lifetime arguments on functions and methods
-themselves (`f::<'a>()`), on associated constants' types, in patterns, in
-function item values, and named ones in constant-owned closures are not supported yet.
+of lifetime arguments is E0107. An inherent impl with no owner bounds beyond
+`Sized` or `?Sized` can supply a constant for a fully static concrete owner type,
+such as `Header::<dyn Fn() + 'static>::FLAGS`. Lifetime arguments
+on functions and methods themselves (`f::<'a>()`), lifetime parameters of
+associated constant owners, and lifetime arguments in patterns and function item
+values are unsupported. Named lifetime arguments in constant-owned closures
+are also unsupported.
 Function-pointer casts retain named enclosing lifetimes through their input and
 output rows, including casts inside function-owned closures.
 Raw-pointer casts retain written nested reference lifetimes. A raw-to-raw cast
@@ -1587,6 +1598,11 @@ inputs remain invariant and contribute their well-formedness requirements even
 when the selected output erases them. This mapping requires a fully resolved
 output, represented header substitutions, and no additional lifetime-dependent
 impl or trait prerequisites. Other selections retain explicit rejection.
+In body annotations, a qualified projection may take another qualified
+projection as a receiver or type argument. Each occurrence checks its own
+inputs. A concrete output with no lifetime slots can forward through an
+associated type definition once its impl header and the represented lifetimes
+of its prerequisites have been checked.
 Before relying on a normalized non-generic associated projection in a function
 or method's ordinary trait bound, flux checks the selected impl's lifetime prerequisites
 against the original declaration. This includes nested inputs, equality results
@@ -1720,10 +1736,10 @@ Repeat arrays such as `&mut [0; 0]` remain unsupported for this promotion.
 Nonempty mutable temporaries, other zero-sized values and named local storage
 retain their ordinary borrowing restrictions.
 
-Raw pointers and `core::ptr::read_unaligned` provide unsafe unaligned reads
-of u8/u16/u32/u64/u128/usize. They use alignment-one loads without creating source
-references. Other type substitutions and const calls remain explicitly
-unsupported; callers must provide initialized, readable memory.
+Raw pointer methods and `core::ptr::read_unaligned` support exact sized
+layouts through alignment-one reads. In constants, the evaluator reads the
+value from its tracked allocation and checks the destination representation.
+Callers must provide initialized, readable memory.
 
 Slices and strings provide unsafe `get_unchecked` and `get_unchecked_mut`
 through `SliceIndex`, including range indices. The caller must supply an
@@ -1833,9 +1849,12 @@ arguments, including borrowed values passed as type parameters.
 Thin raw pointers are storage boundaries; their pointees need not be Copy.
 Pointers whose types retain lifetime slots, including pointers to references,
 and wide pointers remain unsupported. Direct stored-reference field declarations,
-patterns, constant union storage, other derives/representation hints and field reinitialization after
-a move remain explicitly unsupported. Whole-value assignment can initialize
-or reinitialize a union; type-only size/alignment queries are supported.
+patterns, other derives and representation hints, and field reinitialization after
+a move remain unsupported. Whole-value assignment can initialize or reinitialize a
+union. Constants can construct and carry union values. Reads of another field
+use the initialized field's storage and validate the destination type.
+Field writes during constant evaluation remain unsupported. Type-only size and
+alignment queries are supported.
 
 Values are laid out in memory as rustc lays them out, so
 `core::mem::{size_of, align_of, size_of_val, align_of_val}` (in the
@@ -2208,9 +2227,10 @@ write the object lifetime explicitly in that case.
 
 Shared borrows of immutable statics may appear inside promoted arrays and enum
 values, including cyclic static graphs. The promoted reference retains the
-static allocation's address. Non-generic free functions accept `no_mangle`;
-edition 2024 requires the `unsafe(no_mangle)` spelling. These definitions are
-retained even when only native code references their symbol.
+static allocation's address. Non-generic free functions and defined statics
+accept `no_mangle`. Edition 2024 requires the `unsafe(no_mangle)` spelling.
+These definitions are retained even when only native code references their
+symbol.
 
 Inline assembly also accepts tied `inlateout` operands, `lateout` places and
 integer-literal `const` operands. Late outputs use conservatively tied registers
@@ -2229,7 +2249,9 @@ byte arithmetic, saturation, comparison and selection masks, byte maximum
 reduction, word/halfword bitwise operations, reversal and reinterpretations used
 by aho-corasick, chacha20, base64 and httparse. Immediate ranges are checked on collected instances,
 including reified function pointers. Scalar implementations preserve lane
-results and do not establish hardware acceleration.
+results and do not establish hardware acceleration. The AArch64 floating-point
+NEON operations used by Glam include native vector arithmetic, comparisons,
+rounding, reductions, shuffles, and fused multiply-add.
 
 Modern futures-util 0.3.34 builds from unchanged registry sources with its
 default features and with `io`, `sink` and `channel` enabled. The maintained
@@ -2301,7 +2323,8 @@ Generic inline constants wait for instantiation. Constant pointer views retain
 allocation, bounds, alignment and value-validity checks. Transparent slice
 wrappers may include zero-sized marker fields. Byte-backed union slice views
 retain initialized byte storage without requiring every overlapping field to be
-valid. Evaluating arbitrary union values by value remains unsupported.
+valid. Direct reads of an overlapping field use the same initialized-storage
+and value-validity checks.
 
 Free functions may receive explicit lifetime arguments when every named lifetime
 has an explicit outlives bound and the signature introduces no additional elided

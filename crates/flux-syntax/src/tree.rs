@@ -197,14 +197,61 @@ impl TokenOrigin {
     /// A token with no place of its own in the file: a node that has one
     /// is at the expansion's call site.
     pub const SYNTHETIC: u32 = 0;
+    /// Flag on the synthetic opening delimiter of a substituted type.
+    pub const TYPE_FRAGMENT: u32 = 1 << 31;
+    const LEGACY_PATH_FRAGMENT: u32 = 1 << 30;
+    const MODERN_PATH_FRAGMENT: u32 = 1 << 29;
+    /// Largest representable source group before the reserved trivia group.
+    pub const MAX_SOURCE_GROUP: u32 = Self::MODERN_PATH_FRAGMENT - 2;
     /// Trivia, which do not count for a node's range.
     const TRIVIA: u32 = u32::MAX;
+
+    /// The group used for source ranges, without delimiter metadata.
+    pub fn source_group(self) -> u32 {
+        if self.group == Self::TRIVIA {
+            self.group
+        } else {
+            self.group & (Self::MAX_SOURCE_GROUP + 1)
+        }
+    }
+
+    /// Whether this origin marks the opening delimiter of a type fragment.
+    pub fn is_type_fragment(self) -> bool {
+        self.fragment_flags() & Self::TYPE_FRAGMENT != 0
+    }
+
+    /// The fragment metadata stored beside the source group.
+    pub fn fragment_flags(self) -> u32 {
+        self.group ^ self.source_group()
+    }
+
+    /// The edition of a path substitution controls its bare trait-object
+    /// syntax. Keep the captured tokens' lexical editions for resolution.
+    pub fn with_path_fragment(self, edition: crate::Edition) -> Self {
+        let flag = match edition {
+            crate::Edition::E2015 | crate::Edition::E2018 => Self::LEGACY_PATH_FRAGMENT,
+            crate::Edition::E2021 | crate::Edition::E2024 => Self::MODERN_PATH_FRAGMENT,
+        };
+        Self {
+            group: self.source_group() | flag,
+            ..self
+        }
+    }
+
+    /// Whether a path's substitution site permits bare trait objects, if any.
+    pub fn path_allows_bare_trait(self) -> Option<bool> {
+        match self.fragment_flags() {
+            Self::LEGACY_PATH_FRAGMENT => Some(true),
+            Self::MODERN_PATH_FRAGMENT => Some(false),
+            _ => None,
+        }
+    }
 }
 
 /// Whether token `b`, after `a`, continues `a`'s stretch of the file.
 fn in_order(a: TokenOrigin, b: TokenOrigin) -> bool {
-    a.group == b.group
-        && b.group != TokenOrigin::SYNTHETIC
+    a.source_group() == b.source_group()
+        && b.source_group() != TokenOrigin::SYNTHETIC
         && a.range.start <= b.range.start
         && a.range.end <= b.range.end
 }
@@ -340,7 +387,7 @@ impl SyntaxTree {
             if t.group == TokenOrigin::TRIVIA {
                 continue;
             }
-            if t.group == TokenOrigin::SYNTHETIC {
+            if t.source_group() == TokenOrigin::SYNTHETIC {
                 synth += 1;
             }
             if last.is_some_and(|l| !in_order(tokens[l], *t)) {

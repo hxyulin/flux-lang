@@ -35,6 +35,28 @@ impl Cx<'_> {
         depth: u32,
     ) -> Option<bool> {
         let requirements = self.structural_requirements(goal.predicate)?;
+        // A closed structural goal can use the same proof as a saved
+        // coroutine witness when none of its edges depend on occurrence rows.
+        let ty = goal.predicate.self_ty;
+        if depth == 0
+            && env.is_empty()
+            && self.env.is_empty()
+            && flux_solve::traits::is_auto_trait(self.items, goal.predicate.trait_ref.trait_)
+            && !ty.has_error()
+            && !ty.has_infer()
+            && !ty.has_params()
+            && !ty.has_aliases()
+            && !ty.has_opaques()
+            && goal.lifetimes.is_empty()
+            && goal.bound.is_empty()
+            && goal.vars.iter().all(Vec::is_empty)
+            && self.saved_auto_trait_rows_independent(goal.predicate, &mut FxHashSet::default(), 0)
+            && !self.requires_lifetime_proof(goal.predicate, &mut FxHashSet::default(), 0)
+            && flux_solve::traits::RigidSolver::new(self.items, self.sigs, &[], &[], &[])
+                .holds(goal.predicate, &mut Vec::new())
+        {
+            return Some(true);
+        }
         Some(
             self.auto_super_goals(goal, &requirements, env, depth)
                 .is_some_and(|goals| {
@@ -228,12 +250,63 @@ impl Cx<'_> {
             return true;
         }
         if let Some(requirements) = self.structural_requirements(goal) {
-            requirements.into_iter().all(|requirement| {
+            return requirements.into_iter().all(|requirement| {
                 self.saved_auto_trait_rows_independent(requirement, seen, depth + 1)
-            })
-        } else {
-            self.slots(goal.self_ty) == 0
+            });
         }
+        if self.slots(goal.self_ty) == 0 {
+            return true;
+        }
+        if let TyKind::Dynamic(object) = goal.self_ty.kind()
+            && self.items.traits[goal.trait_ref.trait_]
+                .lang
+                .is_some_and(|lang| matches!(lang.as_str(), "send" | "sync"))
+            && self
+                .sigs
+                .regions
+                .traits
+                .get(goal.trait_ref.trait_)
+                .is_some_and(|regions| regions.names.is_empty() && regions.outlives.is_empty())
+        {
+            // An inherited marker is part of the object's declared contract.
+            // Its membership does not depend on the object's lifetime slot.
+            return flux_solve::traits::dyn_bounds(self.sigs, goal.self_ty, object).contains(&goal);
+        }
+        // A forwarding impl such as `Box<T>: Send where T: Send` can
+        // carry regions through T without inspecting or relating any of
+        // them. Check the original header and recurse on each prerequisite.
+        let Some((imp, arguments)) = self.matching_impl(goal) else {
+            return false;
+        };
+        let Some(regions) = self.sigs.regions.impls.get(imp) else {
+            return false;
+        };
+        regions.names.is_empty()
+            && regions.self_ty.is_empty()
+            && regions.trait_lifetimes.is_empty()
+            && regions.trait_args.iter().all(|row| row.is_empty())
+            && regions.header_selections.iter().all(|row| row.is_empty())
+            && regions.bounds.is_empty()
+            && regions.bound_selfs.iter().all(|row| row.is_empty())
+            && regions.bound_traits.iter().all(|bound| {
+                bound.bound == 0
+                    && bound.lifetimes.is_empty()
+                    && bound.args.iter().all(|row| row.is_empty())
+            })
+            && self
+                .sigs
+                .impl_projections
+                .get(imp)
+                .is_none_or(|p| p.is_empty())
+            && self.sigs.impl_predicates.get(imp).is_none_or(|predicates| {
+                predicates.iter().all(|&predicate| {
+                    self.saved_auto_trait_rows_independent(
+                        predicate.subst(&arguments),
+                        seen,
+                        depth + 1,
+                    )
+                })
+            })
     }
 
     fn auto_component_goals(

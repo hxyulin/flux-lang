@@ -11,6 +11,16 @@ fn ordinary_header_projections_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "projected_handler_argument",
+            include_str!("../../../tests/run/projected_handler_argument.rs"),
+            true,
+        ),
+        (
+            "projected_handler_wrong_argument",
+            "trait Handler{type Message:'static;}trait App<M>{}struct Driver<'a,H:Handler>(&'a mut H);impl<H:Handler>App<H::Message>for Driver<'_,H>{}fn require<M,A:App<M>>(_:A){}fn run<H:Handler<Message=u32>>(handler:&mut H){require::<bool,_>(Driver(handler));}fn main(){}",
+            false,
+        ),
+        (
             "literal_shared",
             r###"trait Stream{type Slice;fn take(&mut self)->Self::Slice;}
 trait Compare<T>{}

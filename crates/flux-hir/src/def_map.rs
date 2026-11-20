@@ -109,13 +109,13 @@ impl Scope {
 pub struct DefMap {
     /// Each module's scope, by module index.
     pub scopes: Vec<Scope>,
-    /// `core::prelude::rust_2024`, whose names every module of `core`
-    /// and `alloc` sees.
+    /// `core::prelude::rust_2024`, used by 2024 `core` and `no_std` modules.
     pub prelude: Option<ModuleId>,
     /// `alloc::prelude::rust_2024`, `core`'s and `alloc`'s names (`Vec`,
-    /// `String`, `Box`), as rustc's `std` prelude: what the program's
-    /// modules see.
+    /// `String`, `Box`), used as the 2024 `std` prelude.
     pub std_prelude: Option<ModuleId>,
+    pub prelude_2021: Option<ModuleId>,
+    pub std_prelude_2021: Option<ModuleId>,
     pub prelude_2018: Option<ModuleId>,
     pub std_prelude_2018: Option<ModuleId>,
     /// Names whose import failed, by module: uses of them are not
@@ -242,8 +242,18 @@ impl ItemTree {
 
     /// Resolves `path`, written in `from`, in namespace `ns`.
     pub fn resolve(&self, from: ModuleId, path: &Path, ns: Ns) -> Result<Resolved, ResolveError> {
+        self.resolve_with_visibility(from, path, ns, &mut None)
+    }
+
+    fn resolve_with_visibility(
+        &self,
+        from: ModuleId,
+        path: &Path,
+        ns: Ns,
+        visibility: &mut Option<Visibility>,
+    ) -> Result<Resolved, ResolveError> {
         let mut private = None;
-        let resolved = self.resolve_inner(from, path, ns, &mut private)?;
+        let resolved = self.resolve_inner(from, path, ns, &mut private, visibility)?;
         if matches!(resolved, Resolved::Def(def) if self.unavailable_c_void_variant(from, def)) {
             return Err(ResolveError::Failed {
                 at: At::Whole,
@@ -277,6 +287,7 @@ impl ItemTree {
         path: &Path,
         ns: Ns,
         private: &mut Option<(usize, String)>,
+        visibility: &mut Option<Visibility>,
     ) -> Result<Resolved, ResolveError> {
         let fail = |at: At, message: String| ResolveError::Failed { at, message };
         let segments = &path.segments;
@@ -357,10 +368,16 @@ impl ItemTree {
                     return Err(ResolveError::Reported);
                 }
                 if segments.len() == 1 {
-                    return self.lookup(from, first, ns).ok_or(ResolveError::NotFound {
+                    let resolved = self.lookup(from, first, ns).ok_or(ResolveError::NotFound {
                         segment: 0,
                         module: None,
-                    });
+                    })?;
+                    if let Some(binding) = self.scope_binding(from, first, ns)
+                        && resolved == Resolved::Def(binding.def)
+                    {
+                        *visibility = Some(binding.vis);
+                    }
+                    return Ok(resolved);
                 }
                 match self.lookup(from, first, Ns::Types) {
                     Some(Resolved::Def(Def::Module(module))) => (module, 1),
@@ -439,6 +456,9 @@ impl ItemTree {
             }
             if private.is_none() && !self.is_visible(binding.vis, from) {
                 *private = Some((i, self.private_message(binding, name, ns_here)));
+            }
+            if last {
+                *visibility = Some(binding.vis);
             }
             match binding.def {
                 Def::Module(m) if !last => module = m,
@@ -752,19 +772,13 @@ impl ItemTree {
     /// The prelude is selected by the consuming crate's edition.
     pub fn prelude_for(&self, module: ModuleId) -> Option<ModuleId> {
         let own = &self.crates[self.modules[module].krate.0 as usize];
-        let old = matches!(
-            own.edition,
-            flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
-        );
-        let core = if old {
-            self.def_map.prelude_2018
-        } else {
-            self.def_map.prelude
-        };
-        let std = if old {
-            self.def_map.std_prelude_2018
-        } else {
-            self.def_map.std_prelude
+        use flux_syntax::Edition;
+        let (core, std) = match own.edition {
+            Edition::E2015 | Edition::E2018 => {
+                (self.def_map.prelude_2018, self.def_map.std_prelude_2018)
+            }
+            Edition::E2021 => (self.def_map.prelude_2021, self.def_map.std_prelude_2021),
+            Edition::E2024 => (self.def_map.prelude, self.def_map.std_prelude),
         };
         if own.is_core || own.no_std {
             core
@@ -923,6 +937,8 @@ pub(crate) fn resolve_namespaces(items: &mut ItemTree, from: ItemCounts) {
     define_items(items, from);
     items.def_map.prelude = find_prelude(items, sym::core, "rust_2024");
     items.def_map.std_prelude = find_prelude(items, sym::alloc, "rust_2024");
+    items.def_map.prelude_2021 = find_prelude(items, sym::core, "rust_2021");
+    items.def_map.std_prelude_2021 = find_prelude(items, sym::alloc, "rust_2021");
     items.def_map.prelude_2018 = find_prelude(items, sym::core, "rust_2018");
     items.def_map.std_prelude_2018 = find_prelude(items, sym::alloc, "rust_2018");
     resolve_imports(items, from.uses as usize);
@@ -1103,6 +1119,7 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
         .filter(|&i| items.uses[i].kind == UseKind::Glob)
         .collect();
     let mut private_imports = FxHashMap::default();
+    let mut reexports = vec![(false, None); items.uses.len() - from];
     loop {
         let mut progress = false;
         let mut still = Vec::new();
@@ -1122,26 +1139,31 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 if module_only && ns != Ns::Types {
                     continue;
                 }
-                let def = match items.resolve(u.module, &u.path, ns) {
-                    Ok(Resolved::Def(def)) => def,
-                    Ok(Resolved::Primitive(name)) if ns == Ns::Types => Def::Primitive(name),
-                    Err(ResolveError::Private {
-                        resolved: Resolved::Def(def),
-                        segment,
-                        message,
-                    }) => {
-                        // Import the public type without importing its crate-private constructor.
-                        if ns == Ns::Values
-                            && let Def::Struct(s) = def
-                            && items.externally_non_exhaustive(s, u.module)
-                        {
+                let mut visibility = None;
+                let def =
+                    match items.resolve_with_visibility(u.module, &u.path, ns, &mut visibility) {
+                        Ok(Resolved::Def(def)) => def,
+                        Ok(Resolved::Primitive(name)) if ns == Ns::Types => Def::Primitive(name),
+                        Err(ResolveError::Private {
+                            resolved: Resolved::Def(def),
+                            segment,
+                            message,
+                        }) => {
+                            // Import the public type without importing its crate-private constructor.
+                            if ns == Ns::Values
+                                && let Def::Struct(s) = def
+                                && items.externally_non_exhaustive(s, u.module)
+                            {
+                                continue;
+                            }
+                            private_imports.entry(i).or_insert((segment, message));
                             continue;
                         }
-                        private_imports.entry(i).or_insert((segment, message));
-                        continue;
-                    }
-                    _ => continue,
-                };
+                        _ => continue,
+                    };
+                if ns == Ns::Values && !constructor_importable(items, def, u.module) {
+                    continue;
+                }
                 // `{self}` imports a module, or an enum.
                 let module_like = match def {
                     Def::Module(_) => true,
@@ -1150,7 +1172,7 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 };
                 let anonymous_self = matches!(u.kind, UseKind::Anonymous { module_only: true });
                 if !module_only || module_like || (anonymous_self && ns == Ns::Types) {
-                    found.push((ns, def));
+                    found.push((ns, def, visibility.unwrap_or_else(|| items.def_vis(def))));
                     remaining &= !(1 << bit);
                 }
             }
@@ -1159,8 +1181,16 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 continue;
             }
             progress = true;
-            for (ns, def) in found {
-                bind_import(items, i, ns, def);
+            for (ns, def, visibility) in found {
+                let requested = items.uses[i].vis;
+                let vis = restrict_reexport(items, requested, visibility);
+                let (has_visible_namespace, restricted) = &mut reexports[i - from];
+                if vis == requested {
+                    *has_visible_namespace = true;
+                } else {
+                    restricted.get_or_insert(visibility);
+                }
+                bind_import(items, i, ns, def, vis);
             }
             // Finding a module does not finish an import's value or macro
             // namespace: a later reexport may provide either binding.
@@ -1175,6 +1205,31 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
         if !progress {
             break;
         }
+    }
+    // A single import can name several namespaces. Report a visibility error
+    // only when none of them can be re-exported at the requested visibility.
+    for (i, (has_visible_namespace, restricted)) in reexports.into_iter().enumerate() {
+        let (false, Some(restricted)) = (has_visible_namespace, restricted) else {
+            continue;
+        };
+        let import = &items.uses[from + i];
+        let name = import
+            .path
+            .segments
+            .last()
+            .copied()
+            .or(match import.kind {
+                UseKind::Named(name) | UseKind::Module(name) => Some(name),
+                _ => None,
+            })
+            .expect("named import has a name");
+        let message = match restricted {
+            Visibility::Crate(_) => format!(
+                "`{name}` is only public within the crate, and cannot be re-exported outside"
+            ),
+            _ => format!("`{name}` is private, and cannot be re-exported"),
+        };
+        error(items, import.file, import.range, message);
     }
     for (i, remaining) in pending {
         if remaining != 0b111 {
@@ -1213,6 +1268,17 @@ fn error(items: &mut ItemTree, file: FileId, range: TextRange, message: impl Int
     items.diagnostics.push(d);
 }
 
+/// A tuple constructor is imported only where all its fields are visible.
+fn constructor_importable(items: &ItemTree, def: Def, module: ModuleId) -> bool {
+    match def {
+        Def::Struct(s) if items.structs[s].kind == StructKind::Tuple => items.structs[s]
+            .fields
+            .iter()
+            .all(|field| items.is_visible(field.vis, module)),
+        _ => true,
+    }
+}
+
 /// Reexports keep the public type and the crate-private value constructor separate.
 fn non_exhaustive_ctor_vis(items: &ItemTree, ns: Ns, def: Def, vis: Visibility) -> Visibility {
     if ns == Ns::Values
@@ -1233,8 +1299,18 @@ fn non_exhaustive_ctor_vis(items: &ItemTree, ns: Ns, def: Def, vis: Visibility) 
     vis
 }
 
+/// Re-exports are limited by the visibility of the binding they name.
+fn restrict_reexport(items: &ItemTree, requested: Visibility, binding: Visibility) -> Visibility {
+    let visible = match requested {
+        Visibility::Public => binding == Visibility::Public,
+        Visibility::Crate(krate) => items.is_visible(binding, items.module_of(krate)),
+        Visibility::Module(module) => items.is_visible(binding, module),
+    };
+    if visible { requested } else { binding }
+}
+
 /// Puts what import `index` names in its module's scope.
-fn bind_import(items: &mut ItemTree, index: usize, ns: Ns, def: Def) {
+fn bind_import(items: &mut ItemTree, index: usize, ns: Ns, def: Def, vis: Visibility) {
     let u = &items.uses[index];
     let anonymous = matches!(u.kind, UseKind::Anonymous { .. });
     let name = match u.kind {
@@ -1243,27 +1319,6 @@ fn bind_import(items: &mut ItemTree, index: usize, ns: Ns, def: Def) {
         UseKind::Glob => unreachable!("globs are applied elsewhere"),
     };
     let (module, file, range) = (u.module, u.file, u.range);
-    // A re-export may not make an item more visible than it is.
-    let item_vis = items.def_vis(def);
-    let wider = match (u.vis, item_vis) {
-        (_, Visibility::Public) => false,
-        (Visibility::Public, Visibility::Crate(_)) => true,
-        (Visibility::Public | Visibility::Crate(_), Visibility::Module(_)) => true,
-        _ => false,
-    };
-    let vis = if wider {
-        let original = u.path.segments.last().copied().unwrap_or(name);
-        let message = match item_vis {
-            Visibility::Crate(_) => format!(
-                "`{original}` is only public within the crate, and cannot be re-exported outside"
-            ),
-            _ => format!("`{original}` is private, and cannot be re-exported"),
-        };
-        error(items, file, range, message);
-        item_vis
-    } else {
-        u.vis
-    };
     let vis = non_exhaustive_ctor_vis(items, ns, def, vis);
     if anonymous {
         if ns == Ns::Types && matches!(def, Def::Trait(_)) {
@@ -1480,18 +1535,7 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
             .map(|&binding| {
                 // A glob cannot reexport an anonymous import beyond its
                 // original visibility, even when importing from a parent.
-                let vis = match (vis, binding.vis) {
-                    (vis, Visibility::Public) | (Visibility::Public, vis) => vis,
-                    (Visibility::Module(a), Visibility::Module(b)) => {
-                        Visibility::Module(if items.is_visible(Visibility::Module(a), b) {
-                            b
-                        } else {
-                            a
-                        })
-                    }
-                    (vis @ Visibility::Module(_), _) | (_, vis @ Visibility::Module(_)) => vis,
-                    (vis, _) => vis,
-                };
+                let vis = restrict_reexport(items, vis, binding.vis);
                 (binding, vis)
             })
             .collect();
@@ -1518,13 +1562,16 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
                 .ns(ns)
                 .iter()
                 .filter(|(_, b)| {
-                    b.kind != BindingKind::AmbiguousGlob && items.is_visible(b.vis, module)
+                    b.kind != BindingKind::AmbiguousGlob
+                        && items.is_visible(b.vis, module)
+                        && (ns != Ns::Values || constructor_importable(items, b.def, module))
                 })
                 .map(|(n, b)| (*n, *b))
                 .collect(),
             Err(e) => enum_variants(items, e, ns),
         };
         for (name, binding) in names {
+            let vis = restrict_reexport(items, vis, binding.vis);
             let vis = non_exhaustive_ctor_vis(items, ns, binding.def, vis);
             let scope = items.def_map.scopes[module.index()].ns_mut(ns);
             match scope.get(&name) {

@@ -439,6 +439,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
                 macro_server.as_deref().expect("discovered macro server"),
                 &host.artifact,
                 &host.source,
+                edition(&host.edition)?,
                 host_cfg,
             )
         })?;

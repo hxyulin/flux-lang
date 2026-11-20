@@ -176,7 +176,12 @@ pub(crate) fn definition_crate(ctxt: u32) -> Option<CrateId> {
 
 /// A token group for a new macro definition.
 pub(crate) fn fresh_group() -> u32 {
-    NEXT_GROUP.fetch_add(1, Ordering::Relaxed)
+    let group = NEXT_GROUP.fetch_add(1, Ordering::Relaxed);
+    assert!(
+        group <= TokenOrigin::MAX_SOURCE_GROUP,
+        "too many macro source groups"
+    );
+    group
 }
 
 /// Macros `std` defines and `core` does not, which flux has no `std` for.
@@ -455,6 +460,25 @@ fn resolve_predecessor_inner(
     // current scopes exist. Resolve through that crate's completed scope.
     if items.def_map.scopes.len() < items.modules.len() {
         let mut lookup_module = module;
+        // A named macro brought in by `use super::*` or `use crate::*`
+        // can already come from a completed dependency through that module's
+        // imports, even though the local def map has no entry for it yet.
+        if ns == crate::def_map::Ns::Macros && lowered.segments.len() == 1 {
+            match lowered.anchor {
+                crate::PathAnchor::Super(n) => {
+                    lookup_module = items.named_module(module);
+                    for _ in 0..n {
+                        lookup_module = items.modules[lookup_module].parent?;
+                    }
+                    lowered.anchor = crate::PathAnchor::Plain;
+                }
+                crate::PathAnchor::Crate => {
+                    lookup_module = items.module_of(krate);
+                    lowered.anchor = crate::PathAnchor::Plain;
+                }
+                _ => {}
+            }
+        }
         let mut followed_imports = followed.to_vec();
         for _ in 0..RECURSION_LIMIT {
             if !matches!(
@@ -507,16 +531,28 @@ fn resolve_predecessor_inner(
                 lookup_module = import.module;
                 continue;
             }
+            // A bare macro name can coexist with a module or extern crate
+            // of the same name. Only a qualified macro path uses that
+            // type-namespace name as its prefix.
+            let bare_macro = lowered.anchor == crate::PathAnchor::Plain
+                && lowered.segments.len() == 1
+                && ns == crate::def_map::Ns::Macros;
             // A local module shadows the implicit extern prelude. Its
             // current-crate scope is audited after item collection.
-            if lowered.anchor == crate::PathAnchor::Plain
+            if !bare_macro
+                && lowered.anchor == crate::PathAnchor::Plain
                 && items.modules.iter().any(|(_, m)| {
                     m.parent == Some(items.named_module(lookup_module)) && m.name == first
                 })
             {
                 return None;
             }
-            let Some(external) = items.loaded_extern_crate(first, lookup_module) else {
+            let external = if bare_macro {
+                None
+            } else {
+                items.loaded_extern_crate(first, lookup_module)
+            };
+            let Some(external) = external else {
                 // Dependency scopes are complete before this crate's scopes.
                 // Resolve each imported glob independently and retain ambiguity.
                 // Only failed prefix lookups need the glob seed scan. Normal
@@ -667,7 +703,7 @@ fn expand_at_depth(
         .children()
         .find(|c| c.kind() == SyntaxKind::TOKEN_TREE)?;
     match def.kind {
-        MacroKind::ProcMacro(_) => tt::proc_tokens_ignoring(tt, &[], &mut toks),
+        MacroKind::ProcMacro(_) => tt::tokens_of(tt, &mut toks),
         MacroKind::Rules(_) => tt::rules_call_tokens(tt, &mut toks),
         _ => tokens_of(tt, &mut toks),
     }
@@ -743,20 +779,24 @@ fn expand_at_depth(
                         new
                     })
                 };
-                let origin = if in_file && t.origin.group != TokenOrigin::SYNTHETIC {
-                    TokenOrigin {
-                        range: t.origin.range,
-                        group: def.group,
-                        ctxt,
-                    }
+                let range = if in_file && t.origin.source_group() != TokenOrigin::SYNTHETIC {
+                    t.origin.range
                 } else {
-                    TokenOrigin {
-                        range: call_range,
-                        group: def.group,
-                        ctxt,
-                    }
+                    call_range
                 };
-                Tok { origin, ..*t }
+                let range = if t.origin.is_type_fragment() {
+                    TextRange::empty(range.start())
+                } else {
+                    range
+                };
+                Tok {
+                    origin: TokenOrigin {
+                        range,
+                        group: def.group | t.origin.fragment_flags(),
+                        ctxt,
+                    },
+                    ..*t
+                }
             };
             let crate_tokens = |t: &Tok, out: &mut Vec<Tok>| {
                 let mut t = mark(t);
@@ -1007,6 +1047,17 @@ fn expand_at_depth(
     })
 }
 
+/// Expands macros in an attribute value before validating its literal.
+pub(crate) fn expand_attribute_value(
+    expr: ast::Expr<'_>,
+    site: &CallSite<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Vec<Tok>> {
+    let mut tokens = Vec::new();
+    tokens_of(expr.syntax(), &mut tokens);
+    eager_arguments(&tokens, site, diagnostics, 0, false)
+}
+
 /// Eager builtins expand nested macro arguments before interpreting literals.
 /// Parse each argument as an expression, preserving token origins for resolution.
 fn eager_arguments(
@@ -1139,8 +1190,8 @@ pub(crate) fn call_range(call: SyntaxNode<'_>) -> TextRange {
         tree.token_origin(last.index()),
     ) {
         (Some(a), Some(b))
-            if a.group == b.group
-                && a.group != TokenOrigin::SYNTHETIC
+            if a.source_group() == b.source_group()
+                && a.source_group() != TokenOrigin::SYNTHETIC
                 && a.range.start() <= b.range.end() =>
         {
             TextRange::new(a.range.start(), b.range.end())

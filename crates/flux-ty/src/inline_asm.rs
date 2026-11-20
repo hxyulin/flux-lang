@@ -14,7 +14,11 @@ pub fn is_vector(items: &ItemTree, ty: Ty) -> bool {
             || (items.modules[data.loc.module].name.as_str() == "aarch64"
                 && matches!(
                     data.name.as_str(),
-                    "int8x8_t"
+                    "float32x2_t"
+                        | "float32x4_t"
+                        | "float64x1_t"
+                        | "float64x2_t"
+                        | "int8x8_t"
                         | "int8x16_t"
                         | "uint8x8_t"
                         | "uint8x16_t"

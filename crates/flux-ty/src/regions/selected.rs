@@ -185,6 +185,51 @@ struct ZeroRowSelection<'a> {
     goals: Vec<crate::Predicate>,
 }
 
+/// Check a selected impl's nested memberships when its type arguments
+/// contribute no lifetime slots to those memberships.
+pub(crate) fn closed_impl_predicates_hold(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: flux_hir::ImplId,
+    args: &[Ty],
+) -> bool {
+    let predicates = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+    if predicates.is_empty() {
+        return true;
+    }
+    let Some(rows) = sigs.regions.impls.get(imp) else {
+        return false;
+    };
+    if rows.bound_selfs.len() != predicates.len()
+        || rows.bound_traits.len() != predicates.len()
+        || rows.bound_selfs.iter().any(|row| !row.is_empty())
+        || rows
+            .bound_traits
+            .iter()
+            .any(|row| !ZeroRowSelection::row_free(row))
+    {
+        return false;
+    }
+    let mut check = ZeroRowSelection {
+        items,
+        sigs,
+        env: &[],
+        proof: flux_solve::traits::RigidSolver::new(items, sigs, &[], &[], &[]),
+        aliases: Vec::new(),
+        goals: Vec::new(),
+    };
+    predicates.iter().all(|predicate| {
+        let predicate = predicate.subst(args);
+        is_closed_region_free(items, predicate.self_ty)
+            && predicate
+                .trait_ref
+                .args
+                .iter()
+                .all(|&ty| is_closed_region_free(items, ty))
+            && check.goal(predicate, 0)
+    })
+}
+
 impl ZeroRowSelection<'_> {
     fn ty(&mut self, ty: Ty, depth: u32) -> bool {
         if depth > 32
@@ -334,57 +379,57 @@ pub(crate) fn projection(
     alias: crate::AliasTy,
     inputs: &[Region],
 ) -> Option<Vec<Region>> {
-    projection_inner(items, sigs, alias, inputs, false)
+    projection_at(items, sigs, alias, inputs, 0).map(|(_, row)| row)
 }
 
-/// A closed output still requires a definite membership with matching owner
-/// lifetimes. Its zero output slots do not prove the impl header.
-pub(super) fn closed_projection(
+fn projection_at(
     items: &ItemTree,
     sigs: &Signatures,
-    alias: crate::AliasTy,
+    mut alias: crate::AliasTy,
     inputs: &[Region],
-) -> Option<Vec<Region>> {
-    let output = flux_solve::traits::normalize(items, sigs, &[], Ty::alias(alias));
-    is_closed_region_free(items, output).then_some(())?;
-    projection_inner(items, sigs, alias, inputs, true)
-}
-
-fn projection_inner(
-    items: &ItemTree,
-    sigs: &Signatures,
-    alias: crate::AliasTy,
-    inputs: &[Region],
-    allow_owner: bool,
-) -> Option<Vec<Region>> {
-    let goal = crate::Predicate {
-        self_ty: *alias.args.first()?,
-        trait_ref: crate::TraitRef {
-            trait_: alias.trait_,
-            name: alias.trait_name,
-            args: &alias.args[1..],
-        },
-    };
-    let (imp, args) = if allow_owner {
-        flux_solve::traits::select_definite_impl(items, sigs, goal)?
-    } else {
-        flux_solve::traits::select_impl(items, sigs, goal)?
-    };
+    depth: u32,
+) -> Option<(Ty, Vec<Region>)> {
+    if depth >= 32 || has_declared_projection_inputs(alias) {
+        return None;
+    }
+    if alias.args.iter().any(|ty| ty.has_aliases()) {
+        let mut args = Vec::with_capacity(alias.args.len());
+        for &ty in alias.args {
+            if let TyKind::Alias(input) = ty.kind() {
+                // A forwarded owner such as Self::Super may change type
+                // without adding or changing any input regions.
+                if slots(items, ty) != 0 {
+                    return None;
+                }
+                let (actual, row) = projection_at(items, sigs, input, &[], depth + 1)?;
+                if !row.is_empty() || slots(items, actual) != 0 {
+                    return None;
+                }
+                args.push(actual);
+            } else if ty.has_aliases() {
+                return None;
+            } else {
+                args.push(ty);
+            }
+        }
+        alias.args = Ty::list(&args);
+    }
+    let goal = flux_solve::traits::alias_predicate(alias);
+    let (imp, args) = flux_solve::traits::select_impl(items, sigs, goal)?;
     let metadata = sigs.regions.impls.get(imp)?;
-    if (!allow_owner && !metadata.trait_lifetimes.is_empty())
+    if !metadata.trait_lifetimes.is_empty()
         || !metadata.bounds.is_empty()
-        || (has_declared_projection_inputs(alias)
-            && (!allow_owner || alias.family_lifetimes != 0 || !alias.family_args.is_empty()))
-        || (allow_owner && (metadata.header_selections.iter().any(|rows| !rows.is_empty())
-            || metadata.type_selections.iter().any(|(name, rows)| *name == alias.name && !rows.is_empty())))
-        // A nested projection's zero-slot legacy type is not its input row.
-        // It needs an independent occurrence mapping before header binding.
-        || alias.args.iter().any(|ty| ty.has_aliases())
-        || sigs
-            .regions
-            .traits
-            .get(alias.trait_)
-            .is_some_and(|r| !r.outlives.is_empty())
+        || sigs.regions.traits.get(alias.trait_).is_some_and(|r| {
+            // A concrete region-free subject satisfies a static owner
+            // bound without adding anything to this projection's row.
+            r.outlives.iter().any(|bound| match *bound {
+                Outlives::Type(ty, Region::Static) => {
+                    let subject = ty.subst(alias.args);
+                    subject.has_infer() || !is_closed_region_free(items, subject)
+                }
+                _ => true,
+            })
+        })
         || sigs.impl_predicates.get(imp).is_some_and(|predicates| {
             predicates.iter().any(|predicate| {
                 let predicate = predicate.subst(&args);
@@ -403,33 +448,199 @@ fn projection_inner(
     {
         return None;
     }
+    let binding = bind_header(items, sigs, imp, &args, goal, inputs)?;
+    let template = flux_solve::traits::impl_type(sigs, imp, alias.name)?;
+    let own = &metadata
+        .types
+        .iter()
+        .find(|(name, _)| *name == alias.name)?
+        .1;
+    let row = binding.instantiate(template, own)?;
+    let instance = template.subst(&args);
+    let output = flux_solve::traits::normalize(items, sigs, &[], Ty::alias(alias));
+    if instance == output {
+        Some((output, row))
+    } else if let TyKind::Alias(forwarded) = instance.kind() {
+        let (selected, row) = projection_at(items, sigs, forwarded, &row, depth + 1)?;
+        (selected == output).then_some((selected, row))
+    } else if row.is_empty()
+        && is_closed_region_free(items, output)
+        && closed_projection_children(items, sigs, instance, depth + 1)
+    {
+        Some((output, row))
+    } else {
+        None
+    }
+}
+
+/// A nested selection can change an aggregate's type without changing its
+/// region row. Check the written children before accepting the empty row.
+fn closed_projection_children(items: &ItemTree, sigs: &Signatures, ty: Ty, depth: u32) -> bool {
+    if depth >= 32 || ty.has_infer() || ty.has_error() || slots(items, ty) != 0 {
+        return false;
+    }
+    if !ty.has_aliases() {
+        return is_closed_region_free(items, ty);
+    }
+    if let TyKind::Alias(alias) = ty.kind() {
+        let proof = flux_solve::traits::RigidSolver::new(items, sigs, &[], &[], &[]);
+        let Some((imp, args)) = proof.select_impl(flux_solve::traits::alias_predicate(alias))
+        else {
+            return false;
+        };
+        return flux_solve::traits::instantiate_impl_type(sigs, imp, alias, &args)
+            .is_some_and(|value| closed_type_projection(items, sigs, alias, value));
+    }
+    !ty.has_params()
+        && !ty.has_opaques()
+        && ty
+            .children()
+            .all(|child| closed_projection_children(items, sigs, child, depth + 1))
+}
+
+/// A closed output still requires a definite membership with matching owner
+/// lifetimes. Its zero output slots do not prove the impl header.
+pub(super) fn closed_projection(
+    items: &ItemTree,
+    sigs: &Signatures,
+    alias: crate::AliasTy,
+    inputs: &[Region],
+    output: Ty,
+) -> Option<Vec<Region>> {
+    if alias.family_lifetimes != 0 || !alias.family_args.is_empty() {
+        return None;
+    }
+    let proof = flux_solve::traits::RigidSolver::new(items, sigs, &[], &[], &[]);
+    if !is_closed_region_free(items, output) || proof.normalize_ty(Ty::alias(alias), None) != output
+    {
+        return None;
+    }
+    ClosedSelection { items, sigs, proof }.prove(
+        flux_solve::traits::alias_predicate(alias),
+        inputs,
+        0,
+    )?;
+    // Associated value declarations check projections under their impl
+    // header. Applying that header to a closed output leaves no output row.
+    Some(Vec::new())
+}
+
+struct ClosedSelection<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    proof: flux_solve::traits::RigidSolver<'a>,
+}
+
+impl ClosedSelection<'_> {
+    fn prove(&self, goal: crate::Predicate, inputs: &[Region], depth: u32) -> Option<()> {
+        let (items, sigs) = (self.items, self.sigs);
+        if depth >= 32
+            || goal.self_ty.has_aliases()
+            || goal.trait_ref.args.iter().any(|ty| ty.has_aliases())
+            || sigs
+                .regions
+                .traits
+                .get(goal.trait_ref.trait_)
+                .is_some_and(|r| !r.outlives.is_empty())
+        {
+            return None;
+        }
+        let (imp, args) = self.proof.select_impl(goal)?;
+        let block = sigs.regions.impls.get(imp)?;
+        if !block.bounds.is_empty() || block.header_selections.iter().any(|rows| !rows.is_empty()) {
+            return None;
+        }
+        // The erased solver verified these equalities. Here only types
+        // without lifetime slots can use that proof directly.
+        if sigs
+            .impl_projections
+            .get(imp)
+            .into_iter()
+            .flatten()
+            .any(|p| {
+                let p = p.subst(&args);
+                has_declared_projection_inputs(p.alias)
+                    || p.alias.args.iter().any(|&ty| slots(items, ty) != 0)
+                    || slots(items, p.ty) != 0
+            })
+        {
+            return None;
+        }
+        let binding = bind_header(items, sigs, imp, &args, goal, inputs)?;
+        let predicates = sigs.impl_predicates.get(imp).map_or(&[][..], |p| p);
+        if predicates.len() != block.bound_selfs.len()
+            || predicates.len() != block.bound_traits.len()
+        {
+            return None;
+        }
+        for ((predicate, subjects), owner) in predicates
+            .iter()
+            .zip(&block.bound_selfs)
+            .zip(&block.bound_traits)
+        {
+            let actual = predicate.subst(&args);
+            if owner.bound != 0
+                || predicate.trait_ref.args.len() != owner.args.len()
+                || owner.lifetimes.len()
+                    != items.traits[actual.trait_ref.trait_]
+                        .generics
+                        .lifetimes
+                        .len()
+            {
+                return None;
+            }
+            let mut nested = owner
+                .lifetimes
+                .iter()
+                .map(|&region| binding.region(region))
+                .collect::<Option<Vec<_>>>()?;
+            nested.extend(binding.instantiate(predicate.self_ty, subjects)?);
+            for (&ty, row) in predicate.trait_ref.args.iter().zip(&owner.args) {
+                nested.extend(binding.instantiate(ty, row)?);
+            }
+            if !nested.is_empty() {
+                self.prove(actual, &nested, depth + 1)?;
+            }
+        }
+        Some(())
+    }
+}
+
+fn bind_header<'a>(
+    items: &'a ItemTree,
+    sigs: &Signatures,
+    imp: flux_hir::ImplId,
+    args: &'a [Ty],
+    goal: crate::Predicate,
+    inputs: &[Region],
+) -> Option<Binding<'a>> {
+    let metadata = sigs.regions.impls.get(imp)?;
     let mut binding = Binding {
         items,
-        args: &args,
+        args,
         lifetimes: vec![None; metadata.names.len()],
         types: vec![None; args.len()],
     };
     let trait_args = sigs.impl_traits.get(imp)?.args;
-    if metadata.trait_args.len() != trait_args.len() || alias.args.len() != trait_args.len() + 1 {
+    let owner_count = items.traits[goal.trait_ref.trait_].generics.lifetimes.len();
+    if metadata.trait_args.len() != trait_args.len()
+        || goal.trait_ref.args.len() != trait_args.len()
+        || metadata.trait_lifetimes.len() != owner_count
+    {
         return None;
+    }
+    for (&formal, &actual) in metadata
+        .trait_lifetimes
+        .iter()
+        .zip(inputs.get(..owner_count)?)
+    {
+        binding.bind_lifetime(formal, actual)?;
     }
     let patterns = std::iter::once(sigs.impls[imp]).chain(trait_args.iter().copied());
     let tables = std::iter::once(&metadata.self_ty).chain(metadata.trait_args.iter());
-    let mut at = 0;
-    if allow_owner {
-        if metadata.trait_lifetimes.len() != alias.owner_lifetimes as usize {
-            return None;
-        }
-        for (&formal, &actual) in metadata
-            .trait_lifetimes
-            .iter()
-            .zip(inputs.get(..alias.owner_lifetimes as usize)?)
-        {
-            binding.bind_lifetime(formal, actual)?;
-        }
-        at = alias.owner_lifetimes as usize;
-    }
-    for ((pattern, table), &actual) in patterns.zip(tables).zip(alias.args) {
+    let actuals = std::iter::once(goal.self_ty).chain(goal.trait_ref.args.iter().copied());
+    let mut at = owner_count;
+    for ((pattern, table), actual) in patterns.zip(tables).zip(actuals) {
         let count = slots(items, actual);
         binding.bind(pattern, table, actual, inputs.get(at..at + count)?)?;
         at += count;
@@ -443,47 +654,7 @@ fn projection_inner(
     }) {
         return None;
     }
-    let template = flux_solve::traits::impl_type(sigs, imp, alias.name)?;
-    // Unresolved child projections keep their original identity and slots.
-    // A further selection that changes this RHS shape needs its own occurrence
-    // mapping; never infer that row from a recursively normalized output.
-    let output = template.subst(&args);
-    if output != flux_solve::traits::normalize(items, sigs, &[], Ty::alias(alias)) {
-        return None;
-    }
-    let own = &metadata
-        .types
-        .iter()
-        .find(|(name, _)| *name == alias.name)?
-        .1;
-    let mut complete = true;
-    let mut map = |region| match region {
-        Region::Static => Region::Static,
-        Region::Param(i) => binding
-            .lifetimes
-            .get(i as usize)
-            .copied()
-            .flatten()
-            .unwrap_or_else(|| {
-                complete = false;
-                Region::Erased
-            }),
-        _ => {
-            complete = false;
-            Region::Erased
-        }
-    };
-    let types = |index: u32| {
-        binding
-            .types
-            .get(index as usize)
-            .cloned()
-            .flatten()
-            .unwrap_or_else(|| vec![Region::Erased; slots(items, args[index as usize])])
-    };
-    let mut result = Vec::new();
-    instantiate(items, template, own, &mut map, &types, &mut result);
-    (complete && result.len() == slots(items, output)).then_some(result)
+    Some(binding)
 }
 
 struct Binding<'a> {
@@ -494,6 +665,37 @@ struct Binding<'a> {
 }
 
 impl Binding<'_> {
+    fn region(&self, region: Region) -> Option<Region> {
+        match region {
+            Region::Static => Some(Region::Static),
+            Region::Param(i) => self.lifetimes.get(i as usize).copied().flatten(),
+            Region::Erased | Region::Late(_) => None,
+        }
+    }
+
+    fn instantiate(&self, template: Ty, own: &[Region]) -> Option<Vec<Region>> {
+        let mut complete = true;
+        let mut map = |region| {
+            self.region(region).unwrap_or_else(|| {
+                complete = false;
+                Region::Erased
+            })
+        };
+        let types = |index: u32| {
+            self.types
+                .get(index as usize)
+                .cloned()
+                .flatten()
+                .unwrap_or_default()
+        };
+        let mut row = Vec::new();
+        instantiate(self.items, template, own, &mut map, &types, &mut row);
+        (complete
+            && own.len() == slots(self.items, template)
+            && row.len() == slots(self.items, template.subst(self.args)))
+        .then_some(row)
+    }
+
     fn bind_lifetime(&mut self, formal: Region, actual: Region) -> Option<()> {
         match formal {
             Region::Param(i) => {
@@ -510,7 +712,14 @@ impl Binding<'_> {
     }
 
     fn bind(&mut self, pattern: Ty, own: &[Region], actual: Ty, row: &[Region]) -> Option<()> {
-        if pattern.subst(self.args) != actual || row.len() != slots(self.items, actual) {
+        let substituted = pattern.subst(self.args);
+        if row.len() != slots(self.items, actual)
+            || !flux_solve::fn_regions::same_type_with_empty_callable_recipes(
+                self.items,
+                substituted,
+                actual,
+            )
+        {
             return None;
         }
         if let TyKind::Param(param) = pattern.kind() {
@@ -544,6 +753,15 @@ impl Binding<'_> {
             }
         }
         let (mut p, mut a) = (direct, direct);
+        if substituted != actual
+            && p == own.len()
+            && a == row.len()
+            && matches!(pattern.kind(), TyKind::Dynamic(_))
+        {
+            // An empty callable recipe and the compact object carry the same
+            // row here. Their logical arguments have no further slots to bind.
+            return Some(());
+        }
         for (pattern, actual) in pattern.children().zip(actual.children()) {
             let pn = slots(self.items, pattern);
             let an = slots(self.items, actual);

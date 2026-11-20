@@ -67,3 +67,6 @@ macro_rules! socket_owner {
 socket_owner!(TcpStream);
 socket_owner!(TcpListener);
 socket_owner!(UdpSocket);
+
+#[path = "net/unix.rs"]
+pub(crate) mod unix;

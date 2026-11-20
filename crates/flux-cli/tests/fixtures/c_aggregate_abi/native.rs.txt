@@ -70,3 +70,23 @@ pub extern "C" fn borrowed_word(value: &u64) -> u64 { *value + 1 }
 pub extern "C" fn nullable_nonzero(value: Option<core::num::NonZeroU8>) -> Option<core::num::NonZeroU8> { value }
 #[unsafe(no_mangle)]
 pub extern "C" fn nullable_reference(value: Option<&u64>) -> Option<&u64> { value }
+
+#[repr(C, packed(4))]
+#[derive(Clone, Copy)]
+pub struct PackedWord {
+    address: u64,
+    value: u64,
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn exchange_packed(mut values: [PackedWord; 5]) -> [PackedWord; 5] {
+    values[0].value = values[4].address;
+    values
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn invoke_packed(callback: extern "C" fn([PackedWord; 5]) -> [PackedWord; 5]) -> u64 {
+    let mut values = [PackedWord { address: 2, value: 7 }; 5];
+    values[4].address = 109;
+    callback(values)[0].value
+}

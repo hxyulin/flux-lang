@@ -111,6 +111,26 @@ fn send_sync_storage_matches_rustc() {
             false,
         ),
         (
+            "static_only_saved_state_behind_box",
+            "struct Token<'a>(&'a u32);unsafe impl Send for Token<'static>{}fn check<'a>(p:&'a u32){send(async move{let value=Box::new(Token(p));ready(()).await;drop(value)});}fn main(){}",
+            false,
+        ),
+        (
+            "await_erased_send_future",
+            "use std::pin::Pin;fn check<'a>(future:Pin<Box<dyn Future<Output=u32>+Send+'a>>)->impl Future<Output=u32>+Send+'a{async move{future.await}}fn main(){}",
+            true,
+        ),
+        (
+            "await_erased_future_without_send",
+            "use std::pin::Pin;fn check<'a>(future:Pin<Box<dyn Future<Output=u32>+'a>>)->impl Future<Output=u32>+Send+'a{async move{future.await}}fn main(){}",
+            false,
+        ),
+        (
+            "await_future_with_inherited_send",
+            "use std::pin::Pin;trait Transport:Send{}trait Erased:Future<Output=u32>+Transport{}fn check<'a>(future:Pin<Box<dyn Erased+'a>>)->impl Future<Output=u32>+Send+'a{async move{future.await}}fn main(){}",
+            true,
+        ),
+        (
             "ambiguous_deferred_send_method",
             "trait A{fn choose(&self){}}trait B{fn choose(&self){}}impl<F:Future+Send>A for F{}impl<F:Future>B for F{}fn main(){let f=async{};f.choose();}",
             false,

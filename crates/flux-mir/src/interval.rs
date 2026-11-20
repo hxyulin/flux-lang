@@ -66,6 +66,13 @@ impl IntervalSet {
         self.run_of(point).is_some()
     }
 
+    pub fn contains_all(&self, other: &Self) -> bool {
+        other.runs.iter().all(|&(start, end)| {
+            self.run_of(start)
+                .is_some_and(|(_, containing_end)| end <= containing_end)
+        })
+    }
+
     /// The run containing `point`.
     pub fn run_of(&self, point: u32) -> Option<(u32, u32)> {
         let i = self.runs.partition_point(|&(_, end)| end <= point);

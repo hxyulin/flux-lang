@@ -399,6 +399,14 @@ pub fn object_associated_range(
     None
 }
 
+/// The fixed trait binder of an associated function item, when tracked.
+pub fn item_owner_lifetimes(items: &ItemTree, def: crate::FnDefTy) -> usize {
+    items.functions[def.function]
+        .owner
+        .and_then(flux_hir::Owner::as_trait)
+        .map_or(0, |owner| items.traits[owner].generics.lifetimes.len())
+}
+
 /// How many region slots `ty` has.
 pub fn slots(items: &ItemTree, ty: Ty) -> usize {
     match ty.kind() {
@@ -428,6 +436,10 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
                 + object_region_types(items, object)
                     .map(|ty| slots(items, ty))
                     .sum::<usize>()
+        }
+        TyKind::FnDef(def) if item_owner_lifetimes(items, def) != 0 => {
+            item_owner_lifetimes(items, def)
+                + def.args.iter().map(|&ty| slots(items, ty)).sum::<usize>()
         }
         TyKind::FnPtr(sig) => sig.regions.map_or(0, |r| {
             r.free as usize + r.types.iter().map(|&ty| slots(items, ty)).sum::<usize>()
@@ -523,6 +535,14 @@ fn instantiate_at<R: Copy>(
                 own_slot(next, out);
             }
             for ty in object_region_types(items, object) {
+                instantiate_at(items, ty, own, next, region, args, out);
+            }
+        }
+        TyKind::FnDef(def) if item_owner_lifetimes(items, def) != 0 => {
+            for _ in 0..item_owner_lifetimes(items, def) {
+                own_slot(next, out);
+            }
+            for &ty in def.args {
                 instantiate_at(items, ty, own, next, region, args, out);
             }
         }

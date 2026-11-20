@@ -21,6 +21,9 @@ macro_rules! saturating_integer {
         impl crate::ops::AddAssign for Saturating<$ty> {
             fn add_assign(&mut self,rhs:Self) {*self=*self + rhs;}
         }
+        impl crate::ops::AddAssign<$ty> for Saturating<$ty> {
+            fn add_assign(&mut self, rhs: $ty) { self.0 = self.0.saturating_add(rhs); }
+        }
         impl crate::ops::Sub for Saturating<$ty> {
             type Output=Self;
             fn sub(self,rhs:Self)->Self {Self(self.0.saturating_sub(rhs.0))}

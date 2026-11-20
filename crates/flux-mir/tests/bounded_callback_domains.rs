@@ -46,6 +46,21 @@ fn bounded_callback_domain_controls_match_rustc() {
             "struct Input<'a,'b>(&'a u8,&'b u8);fn restricted(_:&mut Input<'_, 'static>){}fn require<I,F:FnMut(&mut I)>(_:F){}fn check<'a,'b>(_:Input<'a,'b>){require::<Input<'a,'b>,_>(restricted);}fn main(){}",
             false,
         ),
+        (
+            "owner_ties_receiver_callback",
+            "struct Node<'a>(&'a str);impl<'a> Node<'a>{fn tied(&'a self)->bool{self.0.is_empty()}} fn bad<'a>(node:Option<Node<'a>>)->Option<Node<'a>>{node.filter(Node::tied)}fn main(){}",
+            false,
+        ),
+        (
+            "owner_ties_receiver_pointer",
+            "struct Node<'a>(&'a str);impl<'a> Node<'a>{fn tied(&'a self)->bool{self.0.is_empty()}} fn bad<'a>()->fn(&Node<'a>)->bool{Node::tied}fn main(){}",
+            false,
+        ),
+        (
+            "receiver_cannot_supply_owner_output",
+            "struct Node<'a>(&'a str);impl<'a> Node<'a>{fn borrowed(&self)->&str{self.0}} fn bad<'a>()->fn(&Node<'a>)->&'a str{Node::borrowed}fn main(){}",
+            false,
+        ),
     ] {
         let directory = std::env::temp_dir().join(format!(
             "flux-bounded-callback-{name}-{}",
@@ -74,6 +89,17 @@ fn bounded_callback_domain_controls_match_rustc() {
             errors.extend(flux_mir::build_file(&hir, &typed).diagnostics);
         }
         assert_eq!(errors.is_empty(), accepted, "flux {name}: {errors:?}");
+        if matches!(
+            name,
+            "owner_ties_receiver_callback" | "owner_ties_receiver_pointer"
+        ) {
+            assert!(
+                errors
+                    .iter()
+                    .any(|d| d.message.contains("not general enough")),
+                "flux {name}: {errors:?}"
+            );
+        }
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

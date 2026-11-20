@@ -111,7 +111,17 @@ impl<'a> Codec<'a> {
             } {
                 let child = self.group(tree, tokens, pos, Some(close), depth + 1)?;
                 let end = tokens.get(*pos).ok_or("unclosed proc-macro delimiter")?;
-                let end = self.span(end.origin)?;
+                let mut end = end.origin;
+                let delimiter = if delimiter == 1 && t.origin.is_type_fragment() {
+                    // Rustc exposes a forwarded macro_rules type as an
+                    // invisible group. Both endpoints retain its origin
+                    // when a proc macro uses the group's combined span.
+                    end.group |= TokenOrigin::TYPE_FRAGMENT;
+                    0
+                } else {
+                    delimiter
+                };
+                let end = self.span(end)?;
                 tree.subtree[child as usize * 5..child as usize * 5 + 3]
                     .copy_from_slice(&[span, end, delimiter]);
                 *pos += 1;
@@ -290,16 +300,37 @@ impl<'a> Codec<'a> {
             .ok_or("invalid host subtree")?;
         let pair = match row[2] {
             0 if depth != 0 => {
-                return Err("invisible proc-macro delimiter groups are not supported yet".into());
+                let mut open = self.origin(row[0], spans)?;
+                if !open.is_type_fragment() {
+                    return Err(
+                        "invisible proc-macro delimiter groups are not supported yet".into(),
+                    );
+                }
+                let mut close = self.origin(row[1], spans)?;
+                open.range = TextRange::empty(open.range.start());
+                close.range = TextRange::empty(close.range.end());
+                close.group &= !TokenOrigin::TYPE_FRAGMENT;
+                Some((("(", open), (")", close)))
             }
             0 => None,
-            1 => Some(("(", ")")),
-            2 => Some(("{", "}")),
-            3 => Some(("[", "]")),
+            1..=3 => {
+                let (open, close) = [("(", ")"), ("{", "}"), ("[", "]")][row[2] as usize - 1];
+                let mut open_origin = self.origin(row[0], spans)?;
+                if open_origin.is_type_fragment() {
+                    // A macro can give a visible group the span of a
+                    // forwarded type. The visible delimiter still wins.
+                    open_origin.group &= !TokenOrigin::TYPE_FRAGMENT;
+                    if open_origin.range.is_empty() {
+                        open_origin.range = self.input.call;
+                        open_origin.group = TokenOrigin::SYNTHETIC;
+                    }
+                }
+                Some(((open, open_origin), (close, self.origin(row[1], spans)?)))
+            }
             _ => return Err("invalid host delimiter".into()),
         };
-        if let Some((open, _)) = pair {
-            self.atom(open, self.origin(row[0], spans)?, false, out)?;
+        if let Some(((open, origin), _)) = pair {
+            self.atom(open, origin, false, out)?;
         }
         let tokens = tree
             .token_tree
@@ -364,8 +395,8 @@ impl<'a> Codec<'a> {
                 _ => unreachable!(),
             }
         }
-        if let Some((_, close)) = pair {
-            self.atom(close, self.origin(row[1], spans)?, false, out)?;
+        if let Some((_, (close, origin))) = pair {
+            self.atom(close, origin, false, out)?;
         }
         Ok(())
     }

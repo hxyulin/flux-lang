@@ -1,8 +1,9 @@
 //! Attribute admission and representation hints.
 use super::{
-    AstChildren, AstNode, Diagnostic, NativeKind, NativeLibrary, REPR_INTS, Symbol, SyntaxElement,
-    SyntaxKind, T, TextRange, ast, cfg_position, macros, unsupported,
+    AstChildren, AstNode, CrateData, Diagnostic, NativeKind, NativeLibrary, REPR_INTS, SourceDb,
+    Symbol, SyntaxElement, SyntaxKind, T, TextRange, ast, cfg_position, macros, unsupported,
 };
+use crate::source::SourceFile;
 
 /// `non_exhaustive` is a safe, bare attribute; lists and values are errors.
 pub(super) fn non_exhaustive_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) -> bool {
@@ -23,6 +24,14 @@ pub(crate) fn check_attrs(
     attrs: AstChildren<'_, ast::Attr<'_>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    check_attrs_with(attrs, diagnostics, check_attr);
+}
+
+pub(super) fn check_attrs_with(
+    attrs: AstChildren<'_, ast::Attr<'_>>,
+    diagnostics: &mut Vec<Diagnostic>,
+    mut check: impl FnMut(ast::Attr<'_>, &mut Vec<Diagnostic>),
+) {
     let attrs = crate::cfg::Attrs::new(attrs);
     diagnostics.extend(
         attrs
@@ -31,7 +40,7 @@ pub(crate) fn check_attrs(
             .map(|(r, m)| Diagnostic::new(*r, m.clone())),
     );
     for attr in attrs.iter() {
-        check_attr(attr, diagnostics);
+        check(attr, diagnostics);
     }
 }
 
@@ -69,6 +78,8 @@ pub(super) fn check_inner_attrs(
     is_core: bool,
     crate_root: bool,
     output_overridden: bool,
+    source: &SourceFile,
+    krate: &CrateData,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let attrs = crate::cfg::Attrs::new(attrs);
@@ -79,6 +90,10 @@ pub(super) fn check_inner_attrs(
             .map(|(r, m)| Diagnostic::new(*r, m.clone())),
     );
     for attr in attrs.iter() {
+        if attr_name(attr) == Some("debugger_visualizer") {
+            check_debugger_visualizer(attr, source, krate, diagnostics);
+            continue;
+        }
         if let Some(name @ ("recursion_limit" | "type_length_limit")) = attr_name(attr) {
             if integer_limit_attr(attr).is_none() {
                 diagnostics.push(Diagnostic::new(
@@ -183,6 +198,58 @@ pub(super) fn check_inner_attrs(
     }
 }
 
+/// On macOS rustc validates the input without embedding GDB or Natvis data.
+pub(super) fn check_debugger_visualizer(
+    attr: ast::Attr<'_>,
+    source: &SourceFile,
+    krate: &CrateData,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let range = attr.syntax().text_range();
+    if !cfg!(target_os = "macos") {
+        unsupported(
+            diagnostics,
+            range,
+            "`debugger_visualizer` attributes on this target",
+        );
+        return;
+    }
+    let result = (|| {
+        let malformed = || "malformed `debugger_visualizer` attribute input".to_owned();
+        let tree = attr
+            .meta()
+            .filter(|meta| meta.unsafe_token().is_none() && meta.eq_token().is_none())
+            .and_then(|meta| meta.token_tree())
+            .ok_or_else(malformed)?;
+        let mut tokens = Vec::new();
+        macros::tt::tokens_of(tree.syntax(), &mut tokens);
+        let [open, key, eq, value, tail @ .., close] = tokens.as_slice() else {
+            return Err(malformed());
+        };
+        let name = key.text.as_str();
+        if open.kind != T!['(']
+            || !matches!(
+                name.strip_prefix("r#").unwrap_or(name),
+                "gdb_script_file" | "natvis_file"
+            )
+            || eq.kind != T![=]
+            || value.kind != SyntaxKind::STRING
+            || tail.len() > 1
+            || tail.first().is_some_and(|comma| comma.kind != T![,])
+            || close.kind != T![')']
+        {
+            return Err(malformed());
+        }
+        let filename = crate::literal::unescape_str(value.text.as_str())?;
+        let bytes = SourceDb::read_include_bytes(source, &filename)?;
+        let path = SourceDb::include_path(source, &filename)?;
+        krate.record_file_input(path, &bytes)
+    })();
+    if let Err(message) = result {
+        diagnostics.push(Diagnostic::new(range, message));
+    }
+}
+
 /// Only baseline NEON and scalar CRC implementations on explicitly unsafe
 /// functions are supported. Neither requires extra codegen ISA flags, and
 /// ordinary unsafe function items retain all call/coercion rules.
@@ -250,7 +317,10 @@ pub(super) fn target_feature_attr(
                 for feature in features.split(',') {
                     if !match std::env::consts::ARCH {
                         "aarch64" => {
-                            matches!(feature, "neon" | "crc" | "sha2" | "sha3" | "dit" | "sb")
+                            matches!(
+                                feature,
+                                "neon" | "fp16" | "crc" | "sha2" | "sha3" | "dit" | "sb"
+                            )
                         }
                         "x86_64" => matches!(
                             feature,
@@ -512,7 +582,7 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
         return;
     }
     if name == Some("deprecated") {
-        deprecated_attr(attr, diagnostics);
+        deprecated_attr(attr, None, diagnostics);
         return;
     }
     if let Some(meta) = attr.meta()
@@ -618,6 +688,64 @@ pub(super) fn link_name_attr(
             range,
             "raw assembler-prefixed link names are not supported yet",
         ));
+        return None;
+    }
+    Some(Symbol::intern(&name))
+}
+
+/// A defined static's native export name, after expanding its literal value.
+pub(super) fn static_export_name(
+    attr: ast::Attr<'_>,
+    site: &crate::macros::CallSite<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Symbol> {
+    let range = attr.syntax().text_range();
+    let meta = attr.meta()?;
+    let edition = meta
+        .path()
+        .and_then(|path| {
+            path.syntax()
+                .tokens()
+                .find(|token| !token.kind().is_trivia())
+        })
+        .map_or_else(|| site.items.edition(site.module), |token| token.edition());
+    if edition == flux_syntax::Edition::E2024 && meta.unsafe_token().is_none() {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "unsafe attribute used without unsafe",
+        ));
+    }
+    let tokens = if meta.eq_token().is_some()
+        && meta.token_tree().is_none()
+        && let Some(expr) = meta.expr()
+    {
+        crate::macros::expand_attribute_value(expr, site, diagnostics)?
+    } else {
+        Vec::new()
+    };
+    let [token] = tokens.as_slice() else {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "malformed `export_name` attribute input",
+        ));
+        return None;
+    };
+    if token.kind != SyntaxKind::STRING {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "malformed `export_name` attribute input",
+        ));
+        return None;
+    }
+    let name = match crate::literal::unescape_str(token.text.as_str()) {
+        Ok(name) => name,
+        Err(message) => {
+            diagnostics.push(Diagnostic::new(range, message));
+            return None;
+        }
+    };
+    if name.is_empty() || name.contains('\0') || name.starts_with('\u{1}') {
+        diagnostics.push(Diagnostic::new(range, "unsupported `export_name` symbol"));
         return None;
     }
     Some(Symbol::intern(&name))
@@ -731,7 +859,11 @@ pub(super) fn link_attr(
 
 /// Deprecation is lint metadata; validate its payload as for other accepted
 /// lint attributes. Flux does not currently emit deprecation warnings.
-fn deprecated_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
+pub(super) fn deprecated_attr(
+    attr: ast::Attr<'_>,
+    site: Option<&macros::CallSite<'_>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
     let meta = attr.meta().expect("named attribute");
     let range = attr.syntax().text_range();
     let malformed = |diagnostics: &mut Vec<Diagnostic>| {
@@ -745,8 +877,19 @@ fn deprecated_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>) {
         return;
     }
     if meta.eq_token().is_some() {
-        if !matches!(meta.expr(), Some(ast::Expr::Literal(literal)) if literal.value().is_some_and(|token| token.kind() == SyntaxKind::STRING))
-        {
+        let Some(expr) = meta.expr() else {
+            malformed(diagnostics);
+            return;
+        };
+        let valid = if let Some(site) = site {
+            let Some(tokens) = macros::expand_attribute_value(expr, site, diagnostics) else {
+                return;
+            };
+            matches!(tokens.as_slice(), [token] if token.kind == SyntaxKind::STRING)
+        } else {
+            matches!(expr, ast::Expr::Literal(literal) if literal.value().is_some_and(|token| token.kind() == SyntaxKind::STRING))
+        };
+        if !valid {
             malformed(diagnostics);
         }
         return;

@@ -73,7 +73,7 @@ pub fn exports(
     cfg: flux_hir::CrateCfg,
 ) -> Result<Vec<ProcMacro>, String> {
     let server = rustc_server(rustc)?;
-    exports_from_server(&server, dylib, source, cfg)
+    exports_from_server(&server, dylib, source, flux_syntax::Edition::E2024, cfg)
 }
 
 /// Discover once for the matching toolchain, then share across one preparation.
@@ -96,6 +96,7 @@ pub(crate) fn exports_from_server(
     server: &Path,
     dylib: &Path,
     source: &Path,
+    edition: flux_syntax::Edition,
     cfg: flux_hir::CrateCfg,
 ) -> Result<Vec<ProcMacro>, String> {
     let identity = flib::HostIdentity::rustc(server, dylib)?;
@@ -116,9 +117,15 @@ pub(crate) fn exports_from_server(
         }),
     });
     let mut db = flux_hir::SourceDb::empty();
-    let root = db.load(source)?;
+    let root = db.load_with_edition(source, edition)?;
     db.set_crate_cfg(root, cfg)?;
-    let helpers = flux_hir::proc_macro_declarations(db.file(root))?;
+    let derives: Vec<_> = names
+        .iter()
+        .filter_map(|(name, kind)| {
+            matches!(kind, protocol::ProcMacroKind::CustomDerive).then_some(name.as_str())
+        })
+        .collect();
+    let helpers = flux_hir::proc_macro_declarations(&mut db, root, &derives)?;
     names
         .into_iter()
         .map(|(name, kind)| {

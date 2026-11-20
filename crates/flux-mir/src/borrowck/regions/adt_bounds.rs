@@ -490,23 +490,51 @@ pub(crate) fn check_adt_declarations(
         }
         let mut env = Vec::new();
         let mut complete = true;
-        for (index, &predicate) in sigs
-            .struct_predicates
-            .get(id)
-            .map_or(&[][..], |p| p)
+        let predicates = sigs.struct_predicates.get(id).map_or(&[][..], |p| p);
+        complete &= predicates.len() == metadata.bound_selfs.len()
+            && predicates.len() == metadata.bound_traits.len();
+        let mut pending = Vec::new();
+        for (index, ((&predicate, subject), traits)) in predicates
             .iter()
+            .zip(&metadata.bound_selfs)
+            .zip(&metadata.bound_traits)
             .enumerate()
         {
-            let goal = metadata
-                .bound_selfs
-                .get(index)
-                .zip(metadata.bound_traits.get(index))
-                .and_then(|(s, t)| cx.impl_region_goal(predicate, s, t, &lifetimes, &[], &[]));
-            match goal {
-                Some(goal) => {
-                    complete &= cx.impl_super_goals(goal, &mut env, 0);
-                }
-                None => complete = false,
+            if let Some(goal) =
+                cx.impl_region_goal(predicate, subject, traits, &lifetimes, &[], &[])
+            {
+                complete &= cx.impl_super_goals(goal, &mut env, 0);
+            } else {
+                pending.push(index);
+            }
+        }
+        // A bound on an associated output needs the projection owner's
+        // original assumption, wherever it appears in the where clause.
+        cx.family_goals.clone_from(&env);
+        while !pending.is_empty() {
+            let count = pending.len();
+            pending.retain(|&index| {
+                let goal = cx.impl_region_goal_with_inputs(
+                    predicates[index],
+                    &metadata.bound_selfs[index],
+                    &metadata.bound_traits[index],
+                    &lifetimes,
+                    &[],
+                    &[],
+                    None,
+                    false,
+                    Some(&env),
+                );
+                let Some(goal) = goal else {
+                    return true;
+                };
+                complete &= cx.impl_super_goals(goal, &mut env, 0);
+                cx.family_goals.clone_from(&env);
+                false
+            });
+            if pending.len() == count {
+                complete = false;
+                break;
             }
         }
         for (projection, table) in cx.env.clone().iter().zip(metadata.projections.iter()) {
@@ -516,7 +544,6 @@ pub(crate) fn check_adt_declarations(
                 complete = false;
             }
         }
-        cx.family_goals = env.clone();
         cx.close_known();
         complete &= cx.adt_environment_uses(&env);
         for (projection, row) in cx.env.clone().iter().zip(cx.env_regions.clone().iter()) {

@@ -19,6 +19,13 @@ struct Owner<'a>(&'a Cell<usize>, usize);
 impl Drop for Owner<'_> { fn drop(&mut self) { self.0.set(self.0.get() + 1); } }
 
 fn main() {
+    struct Opaque;
+    let single = HashMap::from([(9, Opaque)]);
+    let mut remaining = single.keys();
+    assert_eq!(format!("{remaining:?}"), "[9]");
+    assert_eq!(remaining.next(), Some(&9));
+    assert_eq!(format!("{remaining:?}"), "[]");
+
     let mut map = Map::default();
     for key in 0..1024 { assert_eq!(map.insert(key, key * 3), None); }
     for key in (0..1024).step_by(2) { assert_eq!(map.remove(&key), Some(key * 3)); }
@@ -94,5 +101,16 @@ fn main() {
         for key in 0..64 { assert_eq!(reused.remove(&key), Some(cycle)); }
     }
     reused.clear();
+    reused.reserve(256);
+    let before_shrink = reused.capacity();
+    assert_eq!(reused.insert(17, 29), None);
+    assert_eq!(reused.insert(21, 37), None);
+    assert_eq!(reused.remove(&17), Some(29));
+    reused.shrink_to_fit();
+    assert!(reused.capacity() < before_shrink);
+    assert_eq!(reused.remove(&21), Some(37));
+    reused.shrink_to_fit();
+    assert_eq!(reused.insert(9, 11), None);
+    assert_eq!(reused.get(&9), Some(&11));
     println!("maps {sum} set {set_sum} drops {}", drops.get());
 }

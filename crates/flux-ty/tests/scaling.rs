@@ -277,6 +277,121 @@ fn recursive_storage_paths_preserve_nested_projections() {
     );
 }
 
+/// Both sides of each diamond reach the same stored associated type. Once
+/// a visit finishes without an ancestor cutoff, the other paths can reuse it.
+#[test]
+fn shared_storage_outlives_paths() {
+    use flux_ty::TyKind;
+    use std::fmt::Write;
+
+    let make = |n| {
+        let mut source =
+            String::from("trait Value { type Stored; } struct Node0<T: Value>(T::Stored);");
+        for index in 1..=n {
+            let previous = index - 1;
+            write!(
+                source,
+                "struct Left{index}<T: Value>(Node{previous}<T>);
+                 struct Right{index}<T: Value>(Node{previous}<T>);
+                 struct Node{index}<T: Value>(Left{index}<T>, Right{index}<T>);",
+            )
+            .unwrap();
+        }
+        write!(
+            source,
+            "fn probe<T: Value>(_: Node{n}<T>) {{}} fn main() {{}}"
+        )
+        .unwrap();
+        let hir = lowered(source);
+        let (sigs, errors) = flux_ty::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (probe, _) = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, function)| function.name.as_str() == "probe")
+            .unwrap();
+        let ty = sigs.fns[probe].params[0];
+        (hir.items, sigs, ty)
+    };
+    assert_scales("shared stored outlives", 4, make, |(items, sigs, ty)| {
+        for _ in 0..32 {
+            let components = flux_ty::regions::outlives_type_components(items, sigs, *ty);
+            assert!(
+                components
+                    .iter()
+                    .any(|ty| matches!(ty.kind(), TyKind::Alias(_))),
+                "{components:?}"
+            );
+        }
+    });
+}
+
+#[test]
+fn shared_projection_outlives_paths_keep_each_region_row() {
+    use std::fmt::Write;
+
+    let make = |n| {
+        let mut source = String::from(
+            "trait Value<'a> { type Stored; }
+             struct Node0<'a, T: Value<'a>>(<T as Value<'a>>::Stored);",
+        );
+        for index in 1..=n {
+            let previous = index - 1;
+            write!(
+                source,
+                "struct Left{index}<'a, T: Value<'a>>(Node{previous}<'a, T>);
+                 struct Right{index}<'a, T: Value<'a>>(Node{previous}<'a, T>);
+                 struct Node{index}<'a, T: Value<'a>>(Left{index}<'a, T>, Right{index}<'a, T>);",
+            )
+            .unwrap();
+        }
+        write!(
+            source,
+            "fn probe<'a, 'b, 'c, T: Value<'b>>(
+                 _: (&'a Node{n}<'b, T>, &'c Node{n}<'b, T>)
+             ) {{}} fn main() {{}}"
+        )
+        .unwrap();
+        let hir = lowered(source);
+        let (sigs, errors) = flux_ty::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (probe, _) = hir
+            .items
+            .functions
+            .iter()
+            .find(|(_, f)| f.name.as_str() == "probe")
+            .unwrap();
+        (hir.items, sigs, probe)
+    };
+    assert_scales(
+        "shared projection outlives",
+        4,
+        make,
+        |(items, sigs, probe)| {
+            let mut row = sigs.regions.fns[*probe].params[0].to_vec();
+            assert_eq!(row.len(), 4);
+            // Aliases with the same erased type can carry different inputs after
+            // instantiation. Exercise both rows within the same traversal.
+            row[3] = flux_ty::regions::Region::Static;
+            for _ in 0..16 {
+                let requirements = flux_ty::regions::type_projection_outlives(
+                    items,
+                    sigs,
+                    sigs.fns[*probe].params[0],
+                    &row,
+                );
+                assert_eq!(requirements.len(), 2, "{requirements:?}");
+                assert_eq!(requirements[0].ty, requirements[1].ty);
+                for (requirement, pair) in requirements.iter().zip(row.as_chunks::<2>().0) {
+                    assert_eq!(requirement.target, pair[0]);
+                    assert_eq!(requirement.regions.as_ref(), &pair[1..]);
+                }
+            }
+        },
+    );
+}
+
 /// Concrete recursive HIR types form many field paths but store no hidden
 /// associated outputs. Their traversal must depend on declarations, not paths.
 #[test]

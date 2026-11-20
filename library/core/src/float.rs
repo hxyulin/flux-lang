@@ -60,6 +60,34 @@ macro_rules! float_impl {
             pub const fn is_sign_positive(self) -> bool { !self.is_sign_negative() }
             pub const fn is_normal(self) -> bool { let e = self.to_bits() & $exp; e != 0 && e != $exp }
             pub const fn is_subnormal(self) -> bool { (self.to_bits() & $exp) == 0 && (self.to_bits() & $frac) != 0 }
+            /// Returns the next representable value toward positive infinity.
+            pub const fn next_up(self) -> Self {
+                let bits = self.to_bits();
+                let magnitude = bits & !$sign;
+                if magnitude > $exp || bits == $exp {
+                    self
+                } else if magnitude == 0 {
+                    Self::from_bits(1)
+                } else if bits & $sign != 0 {
+                    Self::from_bits(bits - 1)
+                } else {
+                    Self::from_bits(bits + 1)
+                }
+            }
+            /// Returns the next representable value toward negative infinity.
+            pub const fn next_down(self) -> Self {
+                let bits = self.to_bits();
+                let magnitude = bits & !$sign;
+                if magnitude > $exp || bits == ($sign | $exp) {
+                    self
+                } else if magnitude == 0 {
+                    Self::from_bits($sign | 1)
+                } else if bits & $sign != 0 {
+                    Self::from_bits(bits + 1)
+                } else {
+                    Self::from_bits(bits - 1)
+                }
+            }
             /// Copies the sign bit, including for zeros and NaNs.
             pub const fn copysign(self, sign: Self) -> Self {
                 Self::from_bits((self.to_bits() & !$sign) | (sign.to_bits() & $sign))
@@ -133,6 +161,7 @@ float_impl!(f32,u32,0x80000000u32,0x7f800000u32,0x007fffffu32,0x7f7fffffu32,0x00
 float_impl!(f64,u64,0x8000000000000000u64,0x7ff0000000000000u64,0x000fffffffffffffu64,0x7fefffffffffffffu64,0x0010000000000000u64,0x3cb0000000000000u64);
 
 mod decimal;
+use self::decimal::DecimalSeq;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FloatErrorKind { Empty, Invalid }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -150,7 +179,6 @@ fn special(bytes: &[u8], text: &[u8]) -> bool {
     true
 }
 fn parse_bits(text: &str, single: bool) -> Result<u64, ParseFloatError> {
-    use decimal::DecimalSeq;
     let invalid = ParseFloatError { kind: FloatErrorKind::Invalid };
     let bytes=text.as_bytes();
     if bytes.is_empty() { return Err(ParseFloatError { kind: FloatErrorKind::Empty }); }
@@ -205,114 +233,350 @@ impl crate::str::FromStr for f64 {
     fn from_str(text:&str)->Result<Self,ParseFloatError>{ Ok(Self::from_bits(parse_bits(text,false)?)) }
 }
 
-fn format_float(bits:u64,single:bool,f:&mut crate::fmt::Formatter<'_>,debug:bool)->crate::fmt::Result {
-    let sign=if single {1u64<<31} else {1u64<<63};
-    let magnitude=bits&!sign;
-    let infinity=if single {0x7f800000u64} else {0x7ff0000000000000u64};
-    if magnitude>infinity { return f.pad_float_nan(); }
-    if magnitude==infinity { return f.pad_integral(bits&sign==0,"","inf"); }
-    if let Some(precision)=f.precision() {return fixed_float(bits,single,precision,f);}
-    if magnitude==0 { return f.pad_integral(bits&sign==0,"",if debug {"0.0"}else{"0"}); }
-    let (mut coefficient,exponent)=decimal::shortest(magnitude,single);
-    let mut reversed=[0u8;20]; let mut digits=0usize;
-    while coefficient!=0 { reversed[digits]=b'0'+(coefficient%10) as u8; coefficient/=10; digits+=1; }
-    let scientific=digits as i32+exponent-1;
-    let mut buffer=[0u8;768]; let mut n=0usize;
-    if debug && (scientific < -4 || scientific >= 16) {
-        buffer[n]=reversed[digits-1]; n+=1;
-        if digits>1 {
-            buffer[n]=b'.'; n+=1;
-            let mut i=1; while i<digits { buffer[n]=reversed[digits-1-i]; n+=1; i+=1; }
-        }
-        buffer[n]=b'e'; n+=1;
-        let mut exp=scientific;
-        if exp<0 {buffer[n]=b'-'; n+=1; exp=-exp;}
-        let mut r=[0u8;4]; let mut count=0usize;
-        while exp!=0 {r[count]=b'0'+(exp%10) as u8; exp/=10; count+=1;}
-        if count==0 {r[0]=b'0'; count=1;}
-        while count!=0 {count-=1; buffer[n]=r[count]; n+=1;}
+#[derive(Clone, Copy)]
+enum FloatFormat {
+    Display,
+    Debug,
+    LowerExp,
+    UpperExp,
+}
+
+fn format_float(
+    bits: u64,
+    single: bool,
+    f: &mut crate::fmt::Formatter<'_>,
+    style: FloatFormat,
+) -> crate::fmt::Result {
+    let sign = if single { 1u64 << 31 } else { 1u64 << 63 };
+    let positive = bits & sign == 0;
+    let magnitude = bits & !sign;
+    let infinity = if single {
+        0x7f800000u64
     } else {
-        let point=digits as i32+exponent;
-        if point<=0 {
-            buffer[n]=b'0'; n+=1; buffer[n]=b'.'; n+=1;
-            let mut zeros=-point; while zeros>0 {buffer[n]=b'0'; n+=1; zeros-=1;}
+        0x7ff0000000000000u64
+    };
+    if magnitude > infinity {
+        return f.pad_float_nan();
+    }
+    if magnitude == infinity {
+        return f.pad_integral(positive, "", "inf");
+    }
+    let debug = matches!(style, FloatFormat::Debug);
+    let marker = match style {
+        FloatFormat::LowerExp => Some(b'e'),
+        FloatFormat::UpperExp => Some(b'E'),
+        _ => None,
+    };
+    if let Some(precision) = f.precision() {
+        if let Some(marker) = marker {
+            let mut decimal = exact_decimal(magnitude, single);
+            round_decimal(&mut decimal, precision.saturating_add(1));
+            let exponent = if magnitude == 0 {
+                0
+            } else {
+                decimal.decimal_point - 1
+            };
+            return scientific_float(
+                positive,
+                &decimal.digits[..decimal.num_digits],
+                exponent,
+                precision,
+                marker,
+                f,
+            );
         }
-        let mut i=0usize;
-        while i<digits {
-            if point>0 && i as i32==point {buffer[n]=b'.'; n+=1;}
-            buffer[n]=reversed[digits-1-i]; n+=1; i+=1;
+        return fixed_float(bits, single, precision, f);
+    }
+    if magnitude == 0 {
+        if let Some(marker) = marker {
+            return scientific_float(positive, &[0], 0, 0, marker, f);
         }
-        if point>=digits as i32 {
-            let mut zeros=point-digits as i32;
-            while zeros>0 {buffer[n]=b'0'; n+=1; zeros-=1;}
-            if debug {buffer[n]=b'.'; n+=1; buffer[n]=b'0'; n+=1;}
+        return f.pad_integral(positive, "", if debug { "0.0" } else { "0" });
+    }
+    let (mut coefficient, exponent) = decimal::shortest(magnitude, single);
+    let mut digits = [0u8; 20];
+    let mut start = digits.len();
+    while coefficient != 0 {
+        start -= 1;
+        digits[start] = (coefficient % 10) as u8;
+        coefficient /= 10;
+    }
+    let digits = &digits[start..];
+    let scientific = digits.len() as i32 + exponent - 1;
+    if let Some(marker) = marker {
+        return scientific_float(positive, digits, scientific, digits.len() - 1, marker, f);
+    }
+    if debug && (scientific < -4 || scientific >= 16) {
+        return scientific_float(positive, digits, scientific, digits.len() - 1, b'e', f);
+    }
+    let point = digits.len() as i32 + exponent;
+    let mut buffer = [0u8; 768];
+    let mut n = 0;
+    if point <= 0 {
+        buffer[0] = b'0';
+        buffer[1] = b'.';
+        n = 2;
+        let mut zeros = -point;
+        while zeros > 0 {
+            buffer[n] = b'0';
+            n += 1;
+            zeros -= 1;
+        }
+    }
+    for (i, &digit) in digits.iter().enumerate() {
+        if point > 0 && i as i32 == point {
+            buffer[n] = b'.';
+            n += 1;
+        }
+        buffer[n] = b'0' + digit;
+        n += 1;
+    }
+    if point >= digits.len() as i32 {
+        let mut zeros = point - digits.len() as i32;
+        while zeros > 0 {
+            buffer[n] = b'0';
+            n += 1;
+            zeros -= 1;
+        }
+        if debug {
+            buffer[n] = b'.';
+            n += 1;
+            buffer[n] = b'0';
+            n += 1;
         }
     }
     // SAFETY: the buffer contains only ASCII digits and punctuation.
-    f.pad_integral(bits&sign==0,"",unsafe { crate::str::from_utf8_unchecked(&buffer[..n]) })
+    f.pad_integral(positive, "", unsafe {
+        crate::str::from_utf8_unchecked(&buffer[..n])
+    })
 }
-impl crate::fmt::Debug for f32 { fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits() as u64,true,f,true)} }
-impl crate::fmt::Debug for f64 { fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits(),false,f,true)} }
 
-fn fixed_float(bits:u64,single:bool,precision:usize,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {
-    let fraction_bits=if single {23u32} else {52};
-    let sign=if single {1u64<<31} else {1u64<<63};
-    let magnitude=bits&!sign;
-    let power=(magnitude>>fraction_bits)&if single {255} else {2047};
-    let fraction=magnitude&((1u64<<fraction_bits)-1);
-    let mantissa=if power==0 {fraction} else {fraction|(1u64<<fraction_bits)};
-    let exponent=(if power==0 {1} else {power as i32})-if single {127} else {1023}-fraction_bits as i32;
-    let mut d=decimal::binary(mantissa,exponent);
-    let cutoff=d.decimal_point as i128+precision as i128;
-    if cutoff<0 {d.num_digits=0;}
-    else if cutoff<d.num_digits as i128 {
-        let end=cutoff as usize;
-        let mut later=d.truncated;
-        let mut i=end+1;
-        while i<d.num_digits {later=later || d.digits[i]!=0;i+=1;}
-        let up=d.digits[end]>5 || d.digits[end]==5 && (later || end!=0 && d.digits[end-1]%2!=0);
-        d.num_digits=end;
-        if up {
-            let mut i=end;
-            while i!=0 && d.digits[i-1]==9 {i-=1;d.digits[i]=0;}
-            if i==0 {d.digits[0]=1;d.num_digits=1;d.decimal_point+=1;}
-            else {d.digits[i-1]+=1;}
+fn scientific_float(
+    positive: bool,
+    digits: &[u8],
+    exponent: i32,
+    precision: usize,
+    marker: u8,
+    f: &mut crate::fmt::Formatter<'_>,
+) -> crate::fmt::Result {
+    // Space for all 768 digits of DecimalSeq and the decimal point.
+    let mut buffer = [0u8; 769];
+    buffer[0] = b'0' + digits.first().copied().unwrap_or(0);
+    let mut len = 1;
+    let fractional = precision.min(digits.len().saturating_sub(1));
+    if precision != 0 {
+        buffer[len] = b'.';
+        len += 1;
+        for i in 0..fractional {
+            buffer[len] = b'0' + digits[i + 1];
+            len += 1;
         }
     }
-    if d.num_digits==0 {d.decimal_point=1;d.digits[0]=0;}
-    let integers=d.decimal_point.max(1) as usize;
-    let fractional=precision.min(1074);
-    let mut buffer=[0u8;1400]; let mut n=0usize;
-    while n<integers {
-        buffer[n]=b'0'+if d.decimal_point>0 && n<d.num_digits {d.digits[n]} else {0};n+=1;
+
+    let mut suffix = [0u8; 5];
+    let mut start = suffix.len();
+    let mut magnitude = exponent.abs();
+    loop {
+        start -= 1;
+        suffix[start] = b'0' + (magnitude % 10) as u8;
+        magnitude /= 10;
+        if magnitude == 0 {
+            break;
+        }
     }
-    if precision!=0 {buffer[n]=b'.';n+=1;}
-    let mut i=0usize;
-    while i<fractional {
-        let at=d.decimal_point+i as i32;
-        buffer[n]=b'0'+if at>=0 && (at as usize)<d.num_digits {d.digits[at as usize]} else {0};
-        n+=1;i+=1;
+    if exponent < 0 {
+        start -= 1;
+        suffix[start] = b'-';
+    }
+    start -= 1;
+    suffix[start] = marker;
+    // SAFETY: the mantissa and exponent only contain ASCII digits and punctuation.
+    let (text, suffix) = unsafe {
+        (
+            crate::str::from_utf8_unchecked(&buffer[..len]),
+            crate::str::from_utf8_unchecked(&suffix[start..]),
+        )
+    };
+    pad_float(positive, text, precision - fractional, suffix, f)
+}
+
+macro_rules! float_format_impl {
+    ($t:ty, $single:literal, $trait:ident, $style:ident) => {
+        impl crate::fmt::$trait for $t {
+            fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+                format_float(self.to_bits() as u64, $single, f, FloatFormat::$style)
+            }
+        }
+    };
+}
+float_format_impl!(f32, true, Debug, Debug);
+float_format_impl!(f64, false, Debug, Debug);
+float_format_impl!(f32, true, Display, Display);
+float_format_impl!(f64, false, Display, Display);
+float_format_impl!(f32, true, LowerExp, LowerExp);
+float_format_impl!(f64, false, LowerExp, LowerExp);
+float_format_impl!(f32, true, UpperExp, UpperExp);
+float_format_impl!(f64, false, UpperExp, UpperExp);
+
+fn exact_decimal(magnitude: u64, single: bool) -> DecimalSeq {
+    let fraction_bits = if single { 23u32 } else { 52 };
+    let power = (magnitude >> fraction_bits) & if single { 255 } else { 2047 };
+    let fraction = magnitude & ((1u64 << fraction_bits) - 1);
+    let mantissa = if power == 0 {
+        fraction
+    } else {
+        fraction | (1u64 << fraction_bits)
+    };
+    let exponent = (if power == 0 { 1 } else { power as i32 })
+        - if single { 127 } else { 1023 }
+        - fraction_bits as i32;
+    decimal::binary(mantissa, exponent)
+}
+
+fn round_decimal(decimal: &mut DecimalSeq, cutoff: usize) {
+    if cutoff >= decimal.num_digits {
+        return;
+    }
+    let mut later = decimal.truncated;
+    let mut i = cutoff + 1;
+    while i < decimal.num_digits {
+        later = later || decimal.digits[i] != 0;
+        i += 1;
+    }
+    let up = decimal.digits[cutoff] > 5
+        || decimal.digits[cutoff] == 5
+            && (later || cutoff != 0 && decimal.digits[cutoff - 1] % 2 != 0);
+    decimal.num_digits = cutoff;
+    if up {
+        let mut i = cutoff;
+        while i != 0 && decimal.digits[i - 1] == 9 {
+            i -= 1;
+            decimal.digits[i] = 0;
+        }
+        if i == 0 {
+            decimal.digits[0] = 1;
+            decimal.num_digits = 1;
+            decimal.decimal_point += 1;
+        } else {
+            decimal.digits[i - 1] += 1;
+        }
+    }
+}
+
+fn fixed_float(
+    bits: u64,
+    single: bool,
+    precision: usize,
+    f: &mut crate::fmt::Formatter<'_>,
+) -> crate::fmt::Result {
+    let sign = if single { 1u64 << 31 } else { 1u64 << 63 };
+    let mut d = exact_decimal(bits & !sign, single);
+    let cutoff = d.decimal_point as i128 + precision as i128;
+    if cutoff < 0 {
+        d.num_digits = 0;
+    } else if cutoff < d.num_digits as i128 {
+        round_decimal(&mut d, cutoff as usize);
+    }
+    if d.num_digits == 0 {
+        d.decimal_point = 1;
+        d.digits[0] = 0;
+    }
+    let integers = d.decimal_point.max(1) as usize;
+    let fractional = precision.min(1074);
+    let mut buffer = [0u8; 1400];
+    let mut n = 0usize;
+    while n < integers {
+        buffer[n] = b'0'
+            + if d.decimal_point > 0 && n < d.num_digits {
+                d.digits[n]
+            } else {
+                0
+            };
+        n += 1;
+    }
+    if precision != 0 {
+        buffer[n] = b'.';
+        n += 1;
+    }
+    let mut i = 0usize;
+    while i < fractional {
+        let at = d.decimal_point + i as i32;
+        buffer[n] = b'0'
+            + if at >= 0 && (at as usize) < d.num_digits {
+                d.digits[at as usize]
+            } else {
+                0
+            };
+        n += 1;
+        i += 1;
     }
     // SAFETY: only ASCII decimal digits and '.' were written.
-    let text=unsafe {crate::str::from_utf8_unchecked(&buffer[..n])};
-    pad_float(bits&sign==0,text,precision-fractional,f)
+    let text = unsafe { crate::str::from_utf8_unchecked(&buffer[..n]) };
+    pad_float(bits & sign == 0, text, precision - fractional, "", f)
 }
-fn pad_float(positive:bool,text:&str,tail:usize,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {
-    use crate::fmt::{Write,Alignment};
-    if tail==0 {return f.pad_integral(positive,"",text);}
-    let has_sign=!positive || f.sign_plus();
-    let length=text.len().saturating_add(tail).saturating_add(has_sign as usize);
-    let padding=f.width().unwrap_or(0).saturating_sub(length);
-    let align=f.align().unwrap_or(Alignment::Right);
-    let zero_pad=f.sign_aware_zero_pad();
-    let left=if zero_pad {0} else {match align {Alignment::Left=>0,Alignment::Right=>padding,Alignment::Center=>padding/2}};
-    let fill=f.fill();let mut i=0;
-    while i<left {f.write_char(fill)?;i+=1;}
-    if !positive {f.write_str("-")?;} else if f.sign_plus() {f.write_str("+")?;}
-    if zero_pad {i=0;while i<padding {f.write_str("0")?;i+=1;}}
+fn pad_float(
+    positive: bool,
+    text: &str,
+    tail: usize,
+    suffix: &str,
+    f: &mut crate::fmt::Formatter<'_>,
+) -> crate::fmt::Result {
+    use crate::fmt::{Alignment, Write};
+    if tail == 0 && suffix.is_empty() {
+        return f.pad_integral(positive, "", text);
+    }
+    let has_sign = !positive || f.sign_plus();
+    let length = text
+        .len()
+        .saturating_add(tail)
+        .saturating_add(suffix.len())
+        .saturating_add(has_sign as usize);
+    let padding = f.width().unwrap_or(0).saturating_sub(length);
+    let align = f.align().unwrap_or(Alignment::Right);
+    let zero_pad = f.sign_aware_zero_pad();
+    let left = if zero_pad {
+        0
+    } else {
+        match align {
+            Alignment::Left => 0,
+            Alignment::Right => padding,
+            Alignment::Center => padding / 2,
+        }
+    };
+    let fill = f.fill();
+    let mut i = 0;
+    while i < left {
+        f.write_char(fill)?;
+        i += 1;
+    }
+    if !positive {
+        f.write_str("-")?;
+    } else if f.sign_plus() {
+        f.write_str("+")?;
+    }
+    if zero_pad {
+        i = 0;
+        while i < padding {
+            f.write_str("0")?;
+            i += 1;
+        }
+    }
     f.write_str(text)?;
-    i=0;while i<tail {f.write_str("0")?;i+=1;}
-    if !zero_pad {i=left;while i<padding {f.write_char(fill)?;i+=1;}}
+    i = 0;
+    while i < tail {
+        f.write_str("0")?;
+        i += 1;
+    }
+    if !suffix.is_empty() {
+        f.write_str(suffix)?;
+    }
+    if !zero_pad {
+        i = left;
+        while i < padding {
+            f.write_char(fill)?;
+            i += 1;
+        }
+    }
     Ok(())
 }
 
@@ -328,8 +592,6 @@ impl crate::convert::From<i16> for f64 { fn from(value:i16)->f64 {value as f64} 
 impl crate::convert::From<u32> for f64 { fn from(value:u32)->f64 {value as f64} }
 impl crate::convert::From<i32> for f64 { fn from(value:i32)->f64 {value as f64} }
 
-impl crate::fmt::Display for f32 {fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits() as u64,true,f,false)}}
-impl crate::fmt::Display for f64 {fn fmt(&self,f:&mut crate::fmt::Formatter<'_>)->crate::fmt::Result {format_float(self.to_bits(),false,f,false)}}
 
 macro_rules! float_bits_impl {
     ($t:ident, $u:ty, $s:ty, $n:expr, $shift:expr, $degrees:expr) => {

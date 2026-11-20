@@ -50,6 +50,96 @@ fn unsized_callback_place() {
 }
 
 #[test]
+fn elided_trait_object_arguments() {
+    let object = "trait Painter<'a> { fn paint(&mut self, color: &'a u32); }";
+    compare(
+        "elided_trait_object_return",
+        &format!("{object} fn take<'a>(p: &'a mut dyn Painter<'a>) -> &'a mut dyn Painter {{ p }}"),
+        true,
+    );
+    compare(
+        "elided_trait_object_impl",
+        &format!("{object} trait Marker {{}} impl Marker for &dyn Painter {{}}"),
+        false,
+    );
+    compare(
+        "invariant_trait_object_lifetime",
+        &format!(
+            "{object} fn take<'a, 'b>(p: &'a mut dyn Painter<'b>) -> &'a mut dyn Painter<'static> {{ p }}"
+        ),
+        false,
+    );
+}
+
+#[test]
+fn associated_variant_keeps_owner_lifetime_when_discarded() {
+    compare(
+        "associated_variant_discarded",
+        r#"
+enum Value<'a> { Text(&'a str) }
+trait Produce { type Output; fn output(&self); }
+struct Producer<'a>(&'a str);
+impl<'a> Produce for Producer<'a> {
+    type Output = Value<'a>;
+    fn output(&self) {
+        let text = String::from("temporary");
+        let _ = Self::Output::Text(&text);
+    }
+}
+"#,
+        false,
+    );
+}
+
+#[test]
+fn associated_method_bound_uses_enclosing_trait_contract() {
+    compare(
+        "associated_method_static_bound",
+        "trait Handler<T: 'static> {} trait Dispatch { type Event: 'static; fn run<A: Handler<Self::Event>>(&self); }",
+        true,
+    );
+    compare(
+        "associated_method_missing_static_bound",
+        "trait Handler<T: 'static> {} trait Dispatch { type Event; fn run<A: Handler<Self::Event>>(&self); }",
+        false,
+    );
+}
+
+#[test]
+fn discarded_try_outputs_keep_trait_requirements() {
+    compare(
+        "try_output_requires_trait",
+        r#"
+trait UnitOnly {}
+impl UnitOnly for () {}
+fn fail<T: UnitOnly>() -> Result<T, u8> { Err(6) }
+fn run() -> Result<(), u8> { fail()?; Ok(()) }
+"#,
+        false,
+    );
+    compare(
+        "plain_result_has_no_never_fallback",
+        "fn run() -> Result<(), u8> { Err(6u8); Ok(()) }",
+        false,
+    );
+}
+
+#[test]
+fn nested_dyn_iterator_output_keeps_its_bound() {
+    compare(
+        "nested_dyn_cannot_become_static",
+        r#"
+use std::fmt::Debug;
+fn borrowed<'a>(values: &'a [Box<dyn Debug + 'a>])
+    -> Box<dyn Iterator<Item = &'a (dyn Debug + 'static)> + 'a> {
+    Box::new(values.iter().map(|value| value.as_ref()))
+}
+"#,
+        false,
+    );
+}
+
+#[test]
 fn ordinary_const_arguments_during_legacy_collection() {
     compare(
         "ordinary_const_arguments_during_legacy_collection",
@@ -1056,6 +1146,80 @@ fn call(x:&S)->u8{<S as Choice>::choose(x,&x)}
 }
 
 #[test]
+fn qualified_receivers_use_type_defaults() {
+    compare(
+        "qualified_receiver_constant_default",
+        r#"
+trait Word { const VALUE: usize; }
+struct Wrapper<T: ?Sized = u32>(core::marker::PhantomData<*const T>);
+impl<T: ?Sized> Word for Wrapper<T> { const VALUE: usize = 42; }
+const VALUE: usize = <Wrapper as Word>::VALUE;
+"#,
+        true,
+    );
+    compare(
+        "qualified_receiver_missing_argument",
+        "struct S<T>(T); impl<T> S<T>{ fn new(x:T)->Self{S(x)} } fn bad(){ let _=<S>::new(1u32); }",
+        false,
+    );
+    compare(
+        "qualified_receiver_does_not_infer_default",
+        "struct S<T=u8>(T); impl<T> S<T>{ fn new(x:T)->Self{S(x)} } fn bad(){ let _:S<u32>=<S>::new(1u32); }",
+        false,
+    );
+    compare(
+        "plain_receiver_infers_arguments",
+        "struct S<T=u8>(T); impl<T> S<T>{ fn new(x:T)->Self{S(x)} } fn good(){ let _:S<u32>=S::new(1u32); }",
+        true,
+    );
+}
+
+#[test]
+fn discarded_transmute_items_still_check_size() {
+    compare(
+        "discarded_transmute_bad_size",
+        "const _: fn() = || { let _ = core::mem::transmute::<[u8; 0], &'static str>; };",
+        false,
+    );
+    compare(
+        "discarded_transmute_dependent_size",
+        "fn check<T>() { let _ = core::mem::transmute::<T, u8>; }",
+        false,
+    );
+}
+
+#[test]
+fn projected_tail_transmute_checks_pointer_width() {
+    for (name, bound, accepted) in [
+        ("sized_projection_pointer", "", true),
+        ("maybe_unsized_projection_pointer", ": ?Sized", false),
+    ] {
+        let source = format!(
+            "trait Store {{ type Tail{bound}; }}
+             struct Record<T: Store>(u64, T::Tail);
+             fn bits<T: Store>(record: *const Record<T>) -> usize {{
+                 unsafe {{ core::mem::transmute(record) }}
+             }}"
+        );
+        compare(name, &source, accepted);
+    }
+}
+
+#[test]
+fn named_shared_reborrow_preserves_output_lifetime() {
+    compare(
+        "named_shared_reborrow_escape",
+        r#"
+fn identity<'a>(value: &'a u32) -> &'a u32 { value }
+fn escape<'a>(value: &'a u32) -> impl Fn() -> &'static u32 + 'a {
+    || identity(value)
+}
+"#,
+        false,
+    );
+}
+
+#[test]
 fn inherited_binding_rejects_unrepresented_competitors() {
     for (name, supers) in [
         ("concrete_after", "Base<Self>+Base<u8>"),
@@ -1194,6 +1358,30 @@ fn const_pointer_copy_validity() {
         ),
     ] {
         compare(name, source, accepted);
+    }
+}
+
+#[test]
+fn constant_unaligned_reads_check_storage() {
+    for (name, source) in [
+        (
+            "transmute_copy_too_large",
+            "const N:u32=unsafe{std::mem::transmute_copy(&[1u8,2,3])};",
+        ),
+        (
+            "transmute_copy_invalid_bool",
+            "const N:bool=unsafe{std::mem::transmute_copy(&2u8)};",
+        ),
+        (
+            "unaligned_read_past_end",
+            "const N:u32=unsafe{[1u8,2,3,4].as_ptr().add(1).cast::<u32>().read_unaligned()};",
+        ),
+        (
+            "unaligned_read_of_uninit",
+            "const N:u32={let a=std::mem::MaybeUninit::<u32>::uninit();unsafe{a.as_ptr().read_unaligned()}};",
+        ),
+    ] {
+        compare(name, source, false);
     }
 }
 

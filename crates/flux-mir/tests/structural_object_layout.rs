@@ -37,7 +37,7 @@ fn transparent(_: &Transparent<dyn Value>){}
 fn slice(_: &Header<[u8]>){}
 fn main(){}
 "#;
-    let (_, _, hir) = flux_hir::lower_text("dynamic-prefix-layout.rs", source);
+    let (_, file, hir) = flux_hir::lower_text("dynamic-prefix-layout.rs", source);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
     let typed = flux_mir::check_file(&hir);
     assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
@@ -49,7 +49,7 @@ fn main(){}
             .items
             .functions
             .iter()
-            .find(|(_, f)| f.name.as_str() == name)
+            .find(|(_, f)| f.loc.file == file && f.name.as_str() == name)
             .unwrap();
         let TyKind::Ref(_, pointee) = typed.sigs[id].params[0].kind() else {
             panic!("reference parameter");
@@ -62,7 +62,9 @@ fn main(){}
             panic!("struct parameter");
         };
         let source = Ty::adt(adt.strukt, adt.name, &[Ty::int(IntTy::U128)]);
-        let descriptor = layouts.vtable_layout(dynamic).unwrap();
+        let descriptor = layouts
+            .vtable_layout(dynamic)
+            .unwrap_or_else(|| panic!("missing vtable layout for {name}: {dynamic:?}"));
         assert_eq!(descriptor.layers.len(), if name == "outer" { 2 } else { 1 });
         let (mut size, mut align) = (16u64, 16u64);
         for layer in descriptor.layers.iter().rev() {

@@ -83,6 +83,16 @@ fn print_pieces(n: u32) {
     println!("{}", n);
 }
 
+struct LegacyFlags;
+
+impl std::fmt::Debug for LegacyFlags {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        #[allow(deprecated)]
+        let flags = f.flags();
+        write!(f, "{flags}")
+    }
+}
+
 fn main() {
     ints(-5, 300, 255, -1234567890123, -170141183460469231731687303715884105728, 42);
     ints(127, -32768, -1, 9223372036854775807, 12345678901234567890123, -7);
@@ -98,4 +108,5 @@ fn main() {
     exps(123456, 1000, -170141183460469231731687303715884105728);
     exps(-7, 99999, 0);
     print_pieces(9);
+    println!("{:?} {:*^6.2?} {:+?} {:-?} {:#?} {:05?} {:x?} {:X?}", LegacyFlags, LegacyFlags, LegacyFlags, LegacyFlags, LegacyFlags, LegacyFlags, LegacyFlags, LegacyFlags);
 }

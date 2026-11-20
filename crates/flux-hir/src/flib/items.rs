@@ -88,6 +88,7 @@ record!(Const {
     discriminant,
     is_static,
     extern_symbol,
+    export_symbol,
     specialization,
     anon,
     macro_scope
@@ -266,6 +267,7 @@ record!(Use {
 });
 record!(Path {
     edition,
+    bare_trait_object,
     anchor,
     qself,
     segments,

@@ -50,7 +50,35 @@ impl<'a> Future for Borrowed<'a> {
 impl Drop for Borrowed<'_> {
     fn drop(&mut self) { self.drops.set(self.drops.get() + 1); }
 }
+
+fn inherited_callback_hint() {
+    use std::sync::Arc;
+
+    enum Event {
+        Closed,
+    }
+    impl std::fmt::Display for Event {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("closed")
+        }
+    }
+    trait Handler: Fn(Event) + Send + Sync + 'static {}
+    impl<F: Fn(Event) + Send + Sync + 'static> Handler for F {}
+
+    fn invoke(handler: Arc<dyn Handler>) {
+        handler(Event::Closed);
+    }
+
+    invoke(Arc::new(move |event| {
+        let message = event.to_string();
+        match event {
+            Event::Closed => assert_eq!(message, "closed"),
+        }
+    }));
+}
+
 fn main() {
+    inherited_callback_hint();
     let value = 37;
     let drops = Rc::new(Cell::new(0));
     let mut cx = Context::from_waker(Waker::noop());

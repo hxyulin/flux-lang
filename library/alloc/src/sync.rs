@@ -18,7 +18,6 @@ struct Header {
 /// Shared ownership of a value or slice. Cloning shares the allocation.
 #[lang = "arc"]
 pub struct Arc<T: ?Sized> {
-    ptr: NonNull<Header>,
     data: NonNull<T>,
     owner: PhantomData<T>,
 }
@@ -26,7 +25,7 @@ pub struct Arc<T: ?Sized> {
 /// An allocation owner that does not keep its payload alive.
 pub struct Weak<T: ?Sized> {
     ptr: Option<NonNull<Header>>,
-    data: Option<NonNull<T>>,
+    data: NonNull<T>,
     owner: PhantomData<T>,
 }
 
@@ -72,12 +71,12 @@ impl<T> Arc<T> {
     /// Outstanding weak owners retain the allocation but can no longer upgrade.
     pub fn try_unwrap(this: Self) -> Result<T, Self> {
         // SAFETY: this owner retains the initialized header and implicit weak.
-        let strong = unsafe { &(*this.ptr.as_ptr()).strong };
+        let strong = unsafe { &(*this.header().as_ptr()).strong };
         if strong.compare_exchange(1, 0, Relaxed, Relaxed).is_err() {
             return Err(this);
         }
         fence(Acquire);
-        let weak = Weak { ptr: Some(this.ptr), data: Some(this.data), owner: PhantomData };
+        let weak = Weak { ptr: Some(this.header()), data: this.data, owner: PhantomData };
         let data = this.data.as_ptr();
         core::mem::forget(this);
         // SAFETY: the successful CAS excluded every other strong owner and
@@ -89,13 +88,12 @@ impl<T> Arc<T> {
 
     /// Moves a value into a new allocation, including for zero-sized T.
     pub fn new(value: T) -> Arc<T> {
-        let (ptr, raw) = allocate(Layout::new::<T>());
+        let raw = allocate(Layout::new::<T>());
         // SAFETY: aligned fresh payload storage, initialized before publication.
         unsafe {
             let data = raw as *mut T;
             ptr::write(data, value);
             Arc {
-                ptr,
                 data: NonNull::new_unchecked(data),
                 owner: PhantomData,
             }
@@ -117,6 +115,12 @@ impl<T: ?Sized> core::convert::AsRef<T> for Arc<T> {
 }
 
 impl<T: ?Sized> Arc<T> {
+
+    fn header(&self) -> NonNull<Header> {
+        // SAFETY: this strong owner pins the payload and its allocation.
+        unsafe { header_of(self.data.as_ptr()) }
+    }
+
     /// Returns the payload pointer without changing the strong owner count.
     /// The pointer remains valid while a strong owner keeps the value alive.
     pub fn as_ptr(this: &Self) -> *const T {
@@ -126,10 +130,10 @@ impl<T: ?Sized> Arc<T> {
     /// Creates a weak owner without extending the payload's lifetime.
     pub fn downgrade(this: &Arc<T>) -> Weak<T> {
         // SAFETY: a strong owner pins the header and its implicit weak count.
-        increment_weak(unsafe { &(*this.ptr.as_ptr()).weak });
+        increment_weak(unsafe { &(*this.header().as_ptr()).weak });
         Weak {
-            ptr: Some(this.ptr),
-            data: Some(this.data),
+            ptr: Some(this.header()),
+            data: this.data,
             owner: PhantomData,
         }
     }
@@ -137,17 +141,17 @@ impl<T: ?Sized> Arc<T> {
     /// A snapshot of the current number of strong owners.
     pub fn strong_count(this: &Arc<T>) -> usize {
         // SAFETY: a strong owner pins its allocation header.
-        unsafe { (*this.ptr.as_ptr()).strong.load(Acquire) }
+        unsafe { (*this.header().as_ptr()).strong.load(Acquire) }
     }
 
     /// Whether two handles share an allocation.
     pub fn ptr_eq(this: &Arc<T>, other: &Arc<T>) -> bool {
-        this.ptr.as_ptr() == other.ptr.as_ptr()
+        this.header().as_ptr() == other.header().as_ptr()
     }
 
     pub fn get_mut(this: &mut Arc<T>) -> Option<&mut T> {
         // SAFETY: this strong owner pins the initialized header.
-        let header = unsafe { this.ptr.as_ref() };
+        let header = unsafe { this.header().as_ref() };
         if header.weak.compare_exchange(1, usize::MAX, Acquire, Relaxed).is_err() { return None; }
         let unique = header.strong.load(Acquire) == 1;
         header.weak.store(1, Release);
@@ -174,13 +178,13 @@ trait ClonePayload {
 impl<T: Clone> ClonePayload for T {
     fn clone_arc(&self) -> Arc<T> { Arc::new(self.clone()) }
     unsafe fn move_arc(raw: *const T) -> Arc<T> {
-        let (ptr, storage) = allocate(Layout::new::<T>());
+        let storage = allocate(Layout::new::<T>());
         // SAFETY: allocate completed before the move. The fresh storage is
         // aligned, and make_mut suppresses destruction of the old payload.
         unsafe {
             let data = storage as *mut T;
             ptr::write(data, ptr::read(raw));
-            Arc { ptr, data: NonNull::new_unchecked(data), owner: PhantomData }
+            Arc { data: NonNull::new_unchecked(data), owner: PhantomData }
         }
     }
 }
@@ -192,21 +196,21 @@ impl<T: Clone> ClonePayload for [T] {
             Ok(layout) => layout,
             Err(_) => crate::raw_vec::capacity_overflow(),
         };
-        let (ptr, storage) = allocate(layout);
+        let storage = allocate(layout);
         // SAFETY: allocation completed before transferring ownership. No
         // fallible operation remains after moving the initialized elements.
         unsafe {
             let data = storage as *mut T;
             ptr::copy_nonoverlapping(raw as *const T, data, len);
             let slice = ptr::slice_from_raw_parts_mut(data, len);
-            Arc { ptr, data: NonNull::new_unchecked(slice), owner: PhantomData }
+            Arc { data: NonNull::new_unchecked(slice), owner: PhantomData }
         }
     }
 }
 #[allow(private_bounds)]
 impl<T: ?Sized + ClonePayload> Arc<T> {
     pub fn make_mut(this: &mut Self) -> &mut T {
-        let header = this.ptr;
+        let header = this.header();
         // SAFETY: this owns a strong count and the associated implicit weak count.
         let counter = unsafe { &(*header.as_ptr()).strong };
         // SAFETY: the same strong owner pins the weak counter in this header.
@@ -224,7 +228,7 @@ impl<T: ?Sized + ClonePayload> Arc<T> {
             let old = core::mem::replace(this, replacement);
             // The old payload moved; release only its implicit weak owner. Any
             // surviving weak handles now observe strong == 0 and cannot upgrade.
-            let weak = Weak { ptr: Some(old.ptr), data: Some(old.data), owner: PhantomData };
+            let weak = Weak { ptr: Some(old.header()), data: old.data, owner: PhantomData };
             core::mem::forget(old);
             drop(weak);
         } else { counter.store(1, Release); }
@@ -237,9 +241,8 @@ impl<T: ?Sized + ClonePayload> Arc<T> {
 impl<T: ?Sized> Clone for Arc<T> {
     fn clone(&self) -> Arc<T> {
         // SAFETY: self pins the header and keeps strong above zero.
-        increment(unsafe { &(*self.ptr.as_ptr()).strong });
+        increment(unsafe { &(*self.header().as_ptr()).strong });
         Arc {
-            ptr: self.ptr,
             data: self.data,
             owner: PhantomData,
         }
@@ -264,15 +267,15 @@ impl<T: ?Sized> Drop for Arc<T> {
     fn drop(&mut self) {
         // SAFETY: self owns one strong count; only the last owner destroys T.
         unsafe {
-            if (*self.ptr.as_ptr()).strong.fetch_sub(1, Release) != 1 {
+            if (*self.header().as_ptr()).strong.fetch_sub(1, Release) != 1 {
                 return;
             }
             fence(Acquire);
             // Retain the implicit weak through destruction, including reentrant
             // weak drops. The guard also releases it if destruction unwinds.
             let guard: Weak<T> = Weak {
-                ptr: Some(self.ptr),
-                data: Some(self.data),
+                ptr: Some(self.header()),
+                data: self.data,
                 owner: PhantomData,
             };
             // Dynamic drop uses payload metadata, never a reference to the header.
@@ -287,13 +290,35 @@ impl<T> Weak<T> {
     pub const fn new() -> Weak<T> {
         Weak {
             ptr: None,
-            data: None,
+            // SAFETY: the sentinel is nonnull and is never dereferenced.
+            data: unsafe { NonNull::new_unchecked(usize::MAX as *mut T) },
             owner: PhantomData,
         }
     }
 }
 
 impl<T: ?Sized> Weak<T> {
+    /// Returns a snapshot of the allocation's strong count, or zero if empty.
+    pub fn strong_count(&self) -> usize {
+        match self.ptr {
+            // SAFETY: this weak owner keeps the allocation header alive.
+            Some(header) => unsafe { (*header.as_ptr()).strong.load(Relaxed) },
+            None => 0,
+        }
+    }
+
+    /// Returns the stored payload pointer without acquiring a strong count.
+    /// Access through it requires a live strong owner of that payload.
+    pub fn as_ptr(&self) -> *const T {
+        self.data.as_ptr()
+    }
+
+    /// Tests whether the handles refer to the same allocation. Two empty
+    /// handles compare equal, and pointer metadata does not affect identity.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        self.ptr == other.ptr
+    }
+
     /// Acquires a strong owner only while the payload is still alive.
     pub fn upgrade(&self) -> Option<Arc<T>> {
         let ptr = self.ptr?;
@@ -310,8 +335,7 @@ impl<T: ?Sized> Weak<T> {
             match strong.compare_exchange_weak(old, old + 1, Acquire, Relaxed) {
                 Ok(_) => {
                     return Some(Arc {
-                        ptr,
-                        data: self.data.unwrap(),
+                        data: self.data,
                         owner: PhantomData,
                     });
                 }
@@ -354,7 +378,7 @@ impl<T: ?Sized> Drop for Weak<T> {
 
 // Header layout is erased and stable under future array-to-slice owner unsizing.
 // Keep the original allocation layout alive independently of payload metadata.
-fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
+fn allocate(payload: Layout) -> *mut u8 {
     let header = Layout::new::<Header>();
     let align = if header.align() > payload.align() {
         header.align()
@@ -389,7 +413,7 @@ fn allocate(payload: Layout) -> (NonNull<Header>, *mut u8) {
                 layout,
             },
         );
-        (NonNull::new_unchecked(raw), base.add(offset))
+        base.add(offset)
     }
 }
 
@@ -400,7 +424,7 @@ impl<T> From<Vec<T>> for Arc<[T]> {
             Ok(layout) => layout,
             Err(_) => crate::raw_vec::capacity_overflow(),
         };
-        let (ptr, raw) = allocate(layout);
+        let raw = allocate(layout);
         // SAFETY: separate aligned storage for len elements; moving bytes then
         // clearing the source length transfers ownership without cloning. The
         // slice is formed only after all elements are initialized (also ZSTs).
@@ -410,7 +434,6 @@ impl<T> From<Vec<T>> for Arc<[T]> {
             values.set_len(0);
             let slice = core::slice::from_raw_parts_mut(data, len);
             Arc {
-                ptr,
                 data: NonNull::new_unchecked(slice as *mut [T]),
                 owner: PhantomData,
             }
@@ -439,43 +462,7 @@ impl<T: ?Sized + core::hash::Hash> core::hash::Hash for Arc<T> {
     }
 }
 
-impl<T> From<crate::boxed::Box<T>> for Arc<T> {
-    fn from(value: crate::boxed::Box<T>) -> Self {
-        // Allocate before moving, so allocation failure cannot consume T.
-        let (ptr, raw) = allocate(Layout::new::<T>());
-        let source = crate::boxed::Box::into_raw(value);
-        // SAFETY: source is an initialized owned Box allocation; raw is a
-        // distinct aligned destination. Transfer T once, then free only the
-        // source allocation, never its moved payload.
-        unsafe {
-            let data = raw as *mut T;
-            ptr::write(data, ptr::read(source));
-            let layout = Layout::new::<T>();
-            if layout.size() != 0 { dealloc(source as *mut u8, layout); }
-            Arc { ptr, data: NonNull::new_unchecked(data), owner: PhantomData }
-        }
-    }
-}
-impl<T> From<crate::boxed::Box<[T]>> for Arc<[T]> {
-    fn from(value: crate::boxed::Box<[T]>) -> Self { Arc::from(value.into_vec()) }
-}
-impl From<crate::boxed::Box<str>> for Arc<str> {
-    fn from(value: crate::boxed::Box<str>) -> Self {
-        let len = value.len();
-        let layout = Layout::array::<u8>(len).unwrap();
-        let (ptr, raw) = allocate(layout);
-        let source = crate::boxed::Box::into_raw(value);
-        // SAFETY: both allocations hold len bytes, raw is distinct storage,
-        // and copying UTF-8 preserves validity. Transfer ownership before
-        // freeing the original allocation using its exact layout.
-        unsafe {
-            ptr::copy_nonoverlapping(source as *const u8, raw, len);
-            if len != 0 { dealloc(source as *mut u8, layout); }
-            let bytes = core::slice::from_raw_parts_mut(raw, len);
-            Arc { ptr, data: NonNull::new_unchecked(bytes as *mut [u8] as *mut str), owner: PhantomData }
-        }
-    }
-}
+mod box_conversion;
 
 // Moving the owner does not pin or move the separately allocated payload.
 impl<T: ?Sized> core::marker::Unpin for Arc<T> {}
@@ -485,12 +472,11 @@ impl Arc<dyn core::any::Any + Send + Sync> {
     /// Retains the allocation and counts when its payload has the requested type.
     pub fn downcast<T: core::any::Any + Send + Sync>(self) -> Result<Arc<T>, Self> {
         if (*self).is::<T>() {
-            let ptr = self.ptr;
             let data = self.data.as_ptr() as *mut T;
             core::mem::forget(self);
             // SAFETY: dynamic identity proves T; forgetting the source transfers
             // exactly one strong owner and retains the original header/layout.
-            Ok(Arc { ptr, data: unsafe { NonNull::new_unchecked(data) }, owner: PhantomData })
+            Ok(Arc { data: unsafe { NonNull::new_unchecked(data) }, owner: PhantomData })
         } else {
             Err(self)
         }
@@ -528,7 +514,7 @@ impl<T: ?Sized> Arc<T> {
     /// strong count must not have been reclaimed already.
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         // SAFETY: forwarded from the caller's contract.
-        unsafe { Arc { ptr: header_of(ptr), data: NonNull::new_unchecked(ptr as *mut T), owner: PhantomData } }
+        unsafe { Arc { data: NonNull::new_unchecked(ptr as *mut T), owner: PhantomData } }
     }
     /// # Safety
     /// `ptr` must come from `Arc::into_raw` and its allocation must be alive.
@@ -545,7 +531,7 @@ impl<T: ?Sized> Arc<T> {
     /// A snapshot of the current number of weak owners.
     pub fn weak_count(this: &Self) -> usize {
         // SAFETY: a strong owner pins its allocation header.
-        let weak = unsafe { (*this.ptr.as_ptr()).weak.load(Acquire) };
+        let weak = unsafe { (*this.header().as_ptr()).weak.load(Acquire) };
         // The implicit weak owner is not counted; usize::MAX marks get_mut's probe.
         if weak == usize::MAX { 0 } else { weak - 1 }
     }

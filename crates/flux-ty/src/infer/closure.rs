@@ -470,25 +470,49 @@ impl Ctx<'_> {
         at: TextRange,
     ) {
         for (&arg, &param) in args.iter().zip(params) {
-            let mut closure = self.blame(arg);
-            let mut shared = false;
-            let mut borrowed = false;
-            while let Expr::Ref { mutable, expr } = self.body.exprs[closure] {
-                borrowed = true;
-                shared |= !mutable;
-                closure = expr;
+            self.hint_closure_arg(function, generic_args, param, arg, at);
+        }
+    }
+
+    fn hint_closure_arg(
+        &mut self,
+        function: FunctionId,
+        generic_args: &[Ty],
+        param: Ty,
+        arg: ExprId,
+        at: TextRange,
+    ) {
+        let mut closure = self.blame(arg);
+        if let Expr::Tuple(fields) = self.body.exprs[closure] {
+            if let TyKind::Tuple(elements) = self.shallow(param).kind()
+                && self.body.lists[fields].len() == elements.len()
+            {
+                self.hint_closure_args(
+                    function,
+                    generic_args,
+                    elements,
+                    &self.body.lists[fields],
+                    at,
+                );
             }
-            if !matches!(self.body.exprs[closure], Expr::Closure { .. }) {
-                continue;
+            return;
+        }
+        let mut shared = false;
+        let mut borrowed = false;
+        while let Expr::Ref { mutable, expr } = self.body.exprs[closure] {
+            borrowed = true;
+            shared |= !mutable;
+            closure = expr;
+        }
+        if matches!(self.body.exprs[closure], Expr::Closure { .. })
+            && let Some(mut hint) = self.closure_hint(function, generic_args, param)
+        {
+            if shared {
+                hint.kind = ClosureKind::Fn;
+            } else if borrowed {
+                hint.kind = hint.kind.min(ClosureKind::FnMut);
             }
-            if let Some(mut hint) = self.closure_hint(function, generic_args, param) {
-                if shared {
-                    hint.kind = ClosureKind::Fn;
-                } else if borrowed {
-                    hint.kind = hint.kind.min(ClosureKind::FnMut);
-                }
-                self.closure_hints.insert(closure, Hint { at, ..hint });
-            }
+            self.closure_hints.insert(closure, Hint { at, ..hint });
         }
     }
 
@@ -513,14 +537,33 @@ impl Ctx<'_> {
         else {
             return;
         };
-        let TyKind::Dynamic(object) = self.shallow(wanted).kind() else {
+        let wanted = self.shallow(wanted);
+        let TyKind::Dynamic(object) = wanted.kind() else {
             return;
         };
-        let Some(kind) = crate::fn_trait_kind(self.items, object.trait_) else {
+        let direct = crate::fn_trait_kind(self.items, object.trait_);
+        let Some((kind, inputs)) = direct.map(|kind| (kind, object.args)).or_else(|| {
+            self.fn_bound(wanted)
+                .map(|(kind, bound)| (kind, bound.args))
+        }) else {
             return;
         };
-        let [tupled] = object.args else {
+        let [tupled] = inputs else {
             return;
+        };
+        let output = Symbol::intern("Output");
+        let ret = if direct.is_some() {
+            object.assoc(output)
+        } else {
+            flux_solve::traits::dyn_projections(self.items, self.sigs, wanted, object)
+                .into_iter()
+                .find(|projection| {
+                    projection.alias.name == output
+                        && crate::fn_trait_kind(self.items, projection.alias.trait_)
+                            == Some(ClosureKind::FnOnce)
+                        && projection.alias.args == [wanted, *tupled]
+                })
+                .map(|projection| projection.ty)
         };
         for (&argument, &param) in args.iter().zip(params) {
             if self.shallow(param) != self.shallow(actual) {
@@ -536,7 +579,7 @@ impl Ctx<'_> {
                     Hint {
                         kind,
                         params: *tupled,
-                        ret: object.assoc(Symbol::intern("Output")),
+                        ret,
                         at: self.range(argument),
                     },
                 );
@@ -1134,6 +1177,12 @@ impl Ctx<'_> {
         self.capture_place_in(expr).map(|(place, _)| place)
     }
 
+    pub(super) fn captures_place(&self, expr: ExprId) -> bool {
+        self.closure_locals.last().is_some_and(|locals| {
+            matches!(self.capture_place_in(expr), Some(((binding, _), None)) if !locals.contains(&binding))
+        })
+    }
+
     /// [`Self::capture_place`], and whether it stops before `expr`: at an
     /// index, whose array or slice it is, or at an overloaded
     /// dereference, whose base it is.
@@ -1210,7 +1259,7 @@ impl Ctx<'_> {
         }
     }
 
-    fn is_copy_ty(&mut self, ty: Ty) -> bool {
+    pub(super) fn is_copy_ty(&mut self, ty: Ty) -> bool {
         let ty = self.known(ty);
         flux_solve::traits::is_copy(self.items, self.sigs, &self.param_env, ty)
     }

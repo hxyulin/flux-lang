@@ -181,6 +181,12 @@ impl<'a> Formatter<'a> {
         self.options.flags & flags::SIGN_PLUS_FLAG != 0
     }
 
+    /// Returns the sign, alternate, zero padding, and debug hex flags in their legacy bit positions.
+    #[deprecated(note = "use the individual formatting option accessors")]
+    pub fn flags(&self) -> u32 {
+        self.options.flags >> 21 & 0x3f
+    }
+
     /// `{:-}`
     pub fn sign_minus(&self) -> bool {
         self.options.flags & flags::SIGN_MINUS_FLAG != 0

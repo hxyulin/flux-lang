@@ -143,9 +143,7 @@ impl Validator<'_> {
     /// its hidden types where its callers have the opaque ones, and an
     /// instance's are revealed.
     fn norm(&self, ty: Ty) -> Ty {
-        let ty = flux_solve::traits::normalize(self.items, self.sigs, self.env, ty);
-        let ty = flux_solve::traits::reveal(self.sigs, ty);
-        flux_solve::traits::normalize(self.items, self.sigs, self.env, ty)
+        flux_solve::traits::normalize_revealed(self.items, self.sigs, self.env, ty)
     }
 
     fn place_ty(&self, place: &Place) -> Ty {
@@ -163,10 +161,13 @@ impl Validator<'_> {
     /// instance's types are known, and checked, in code generation.
     fn same(&self, expected: Ty, actual: Ty) -> bool {
         expected == actual
-            || flux_solve::fn_regions::same_shape(expected, actual)
+            || flux_solve::fn_regions::same_mir_shape(self.items, expected, actual)
             || has_error(expected)
             || has_error(actual)
             || ((expected.has_aliases() || actual.has_aliases()) && same_shape(expected, actual))
+            || flux_solve::fn_regions::same_type_with_empty_callable_recipes(
+                self.items, expected, actual,
+            )
     }
 
     fn check(&mut self, expected: Ty, actual: Ty, what: impl FnOnce() -> String) {

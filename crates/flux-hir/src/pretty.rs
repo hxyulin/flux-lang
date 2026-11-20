@@ -8,7 +8,7 @@ use flux_syntax::ast::{ArithOp, BinaryOp, CmpOp, LogicOp, UnaryOp};
 
 use crate::{
     Body, Diagnostic, Discriminant, Expr, ExprId, Function, Hir, Literal, LoopSource, Pat, PatId,
-    Res, Stmt, StructKind, TypeRef,
+    RecordTarget, Res, Stmt, StructKind, TypeRef,
 };
 
 pub(crate) fn file(hir: &Hir) -> String {
@@ -264,8 +264,8 @@ impl Printer<'_> {
         if let Some(ty) = ty {
             write!(self.out, "[Self<{ty}>]").unwrap();
         }
-        if let Some(alias) = generics.alias {
-            write!(self.out, "[{}]", type_ref(&self.body.types[alias])).unwrap();
+        if let Some(written) = generics.qualified_constructor.or(generics.alias) {
+            write!(self.out, "[{}]", type_ref(&self.body.types[written])).unwrap();
         }
     }
 
@@ -737,7 +737,11 @@ impl Printer<'_> {
             Expr::Repeat { value, count } => {
                 self.out.push('[');
                 self.expr(*value);
-                write!(self.out, "; {count}]").unwrap();
+                if let Some(count) = count {
+                    write!(self.out, "; {count}]").unwrap();
+                } else {
+                    self.out.push_str("; _]");
+                }
             }
             Expr::Index { base, index } => {
                 self.expr(*base);
@@ -773,14 +777,19 @@ impl Printer<'_> {
                 write!(self.out, ".{name}").unwrap();
             }
             Expr::Record {
-                strukt,
-                variant,
+                target,
                 fields,
                 spread,
             } => {
-                let path = self.variant_path(*strukt, *variant);
-                self.out.push_str(&path);
-                self.generic_args(id);
+                match *target {
+                    RecordTarget::Nominal(strukt, variant) => {
+                        self.out.push_str(&self.variant_path(strukt, variant));
+                        self.generic_args(id);
+                    }
+                    RecordTarget::Associated(ty) => {
+                        self.out.push_str(&type_ref(&self.body.types[ty]))
+                    }
+                }
                 self.out.push_str(" { ");
                 for (i, (name, value)) in self.body.lists[*fields].iter().enumerate() {
                     if i > 0 {

@@ -209,6 +209,22 @@ impl<K, V, S: Default> Default for HashMap<K, V, S> {
 }
 
 impl<K: Eq + Hash, V, S: BuildHasher> HashMap<K, V, S> {
+    /// Shrinks the table as far as its current entries allow.
+    pub fn shrink_to_fit(&mut self) {
+        if self.len == 0 {
+            self.buckets = Vec::new();
+            self.deleted = 0;
+            return;
+        }
+        let mut size = 8;
+        while size / 4 * 3 < self.len {
+            size *= 2;
+        }
+        if size < self.buckets.len() {
+            self.rehash(size);
+        }
+    }
+
     fn find<Q: ?Sized + Eq>(&self, hash: u64, key: &Q) -> Option<usize>
     where
         K: Borrow<Q>,
@@ -407,6 +423,16 @@ impl<'a, K, V> Entry<'a, K, V> {
             Self::Vacant(entry) => entry.insert(default()),
         }
     }
+    /// Inserts a value computed from the key if the entry is vacant.
+    pub fn or_insert_with_key<F: FnOnce(&K) -> V>(self, default: F) -> &'a mut V {
+        match self {
+            Self::Occupied(entry) => entry.into_mut(),
+            Self::Vacant(entry) => {
+                let value = default(entry.key());
+                entry.insert(value)
+            }
+        }
+    }
     pub fn or_default(self) -> &'a mut V
     where
         V: Default,
@@ -582,6 +608,11 @@ impl<K, V> Clone for Keys<'_, K, V> {
         Self {
             inner: self.inner.clone(),
         }
+    }
+}
+impl<K: core::fmt::Debug, V> core::fmt::Debug for Keys<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.clone()).finish()
     }
 }
 impl<'a, K, V> Iterator for Keys<'a, K, V> {

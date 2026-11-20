@@ -68,7 +68,7 @@ pub fn check(
             .enumerate()
             // A raw pointer does not loan its pointee's allocation. Retain
             // its region constraints, but no alias exclusion on that place.
-            .filter(|(_, (loan, _))| !through_raw_pointer(body, sigs, &loan.place))
+            .filter(|(_, (loan, _))| raw_deref_index(body, sigs, &loan.place).is_none())
             .map(|(id, (loan, _))| (loan.place.local.index() as u32, id as u32)),
     );
     let made_into = regions::Adjacency::new(
@@ -543,9 +543,9 @@ struct Live {
     except: Option<usize>,
 }
 
-fn through_raw_pointer(body: &Body, sigs: &Signatures, place: &Place) -> bool {
-    place.projection.iter().enumerate().any(|(i, &elem)| {
-        elem == ProjectionElem::Deref
+fn raw_deref_index(body: &Body, sigs: &Signatures, place: &Place) -> Option<usize> {
+    place.projection.iter().enumerate().find_map(|(i, &elem)| {
+        (elem == ProjectionElem::Deref
             && matches!(
                 body.place_ty(
                     &Place {
@@ -556,7 +556,8 @@ fn through_raw_pointer(body: &Body, sigs: &Signatures, place: &Place) -> bool {
                 )
                 .kind(),
                 TyKind::RawPtr(..)
-            )
+            ))
+        .then_some(i)
     })
 }
 
@@ -1267,8 +1268,20 @@ impl Checker<'_> {
 
     /// Checks an access to `place` against the `live` loans.
     fn access(&mut self, place: &Place, access: Access, live: &Live, range: TextRange) {
-        let borrowed = self.borrowed;
-        for &id in &borrowed[place.local.index()] {
+        let borrowed = &self.borrowed[place.local.index()];
+        if borrowed.is_empty() {
+            return;
+        }
+        // Access through a raw pointer reads the pointer's storage. Borrow
+        // conflicts within its pointee are the unsafe caller's responsibility.
+        let pointer = raw_deref_index(self.body, self.sigs, place).map(|i| Place {
+            local: place.local,
+            projection: place.projection.prefix(i),
+        });
+        let (place, access) = pointer
+            .as_ref()
+            .map_or((place, access), |pointer| (pointer, Access::Read));
+        for &id in borrowed {
             let id = id as usize;
             let loan = &self.loans[id].0;
             if !self.is_live(id, live) || !overlaps(self.body, self.sigs, place, &loan.place) {

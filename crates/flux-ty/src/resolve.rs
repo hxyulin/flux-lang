@@ -624,7 +624,9 @@ pub(super) fn check_type_defaults(
         };
         let mut invalid = false;
         let mut check_path = |path: &Path| {
-            if path.anchor != flux_hir::PathAnchor::Plain {
+            // For `<T as Trait>::Item`, the first segment names an associated
+            // item. The visitor checks the receiver and arguments separately.
+            if path.qself.is_some() || path.anchor != flux_hir::PathAnchor::Plain {
                 return;
             }
             let Some(&name) = path.segments.first() else {
@@ -825,10 +827,12 @@ pub fn resolve_type(
                     }
                 }
                 Ok(Resolved::Def(Def::Trait(_)))
-                    if matches!(
-                        path.edition.unwrap_or_else(|| items.edition(module)),
-                        flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
-                    ) =>
+                    if path.bare_trait_object.unwrap_or_else(|| {
+                        matches!(
+                            path.edition.unwrap_or_else(|| items.edition(module)),
+                            flux_syntax::Edition::E2015 | flux_syntax::Edition::E2018
+                        )
+                    }) =>
                 {
                     let object = flux_hir::DynRef {
                         bounds: Box::new([flux_hir::Bound {
@@ -1431,7 +1435,7 @@ fn assoc_type_base(
         };
         if !has_type(trait_ref.trait_)
             && path.qself.as_ref().is_some_and(|q| q.associated_bound)
-            && let Some(owner) = traits::supertrait_with_type(items, trait_ref, self_ty, name)
+            && let Ok(Some(owner)) = traits::supertrait_with_type(items, trait_ref, self_ty, name)
         {
             trait_ref = owner;
         }
@@ -1582,12 +1586,36 @@ fn assoc_type_base(
     }
     // `T::Out`: from the one trait among its bounds' with a type `Out`.
     let mut found: Vec<TraitRef> = Vec::new();
-    for p in scope.bounds {
-        if p.self_ty == self_ty
-            && has_type(p.trait_ref.trait_)
-            && !found.iter().any(|t| t.trait_ == p.trait_ref.trait_)
+    let alias_scope = scope.signature_of == Some("type aliases");
+    for p in scope.bounds.iter().filter(|p| p.self_ty == self_ty) {
+        if has_type(p.trait_ref.trait_)
+            && !found
+                .iter()
+                .any(|t| *t == p.trait_ref || (!alias_scope && t.trait_ == p.trait_ref.trait_))
         {
             found.push(p.trait_ref);
+        }
+        // Alias expansion can run before resolved trait signatures exist.
+        // Use the declared supertrait paths for its unelaborated bounds.
+        if alias_scope {
+            match traits::supertrait_with_type(items, p.trait_ref, self_ty, name) {
+                Ok(Some(parent)) if !found.contains(&parent) => found.push(parent),
+                Ok(_) => {}
+                Err(error) => {
+                    let message = match error {
+                        traits::SupertraitLookupError::Ambiguous => {
+                            format!("ambiguous associated type `{name}` in bounds of `{self_ty}`")
+                        }
+                        traits::SupertraitLookupError::Unsupported => {
+                            format!(
+                                "cannot resolve inherited associated type `{name}` for `{self_ty}`"
+                            )
+                        }
+                    };
+                    errors.push((range, message));
+                    return Ty::ERROR;
+                }
+            }
         }
     }
     match found.as_slice() {
@@ -1950,7 +1978,6 @@ pub fn alias_type(
     }
     ty
 }
-
 /// The type alias `alias` stands for, in terms of its parameters, with
 /// the errors in it; an error if it is part of a cycle of aliases.
 pub(crate) fn expand_alias(
@@ -1979,6 +2006,14 @@ pub(crate) fn expand_alias(
         lens,
         defaults,
         ..TypeScope::default()
+    };
+    // Rust uses these bounds for name resolution in the alias definition.
+    // Expanding an alias does not impose the written bounds on its users.
+    let bounds =
+        traits::resolve_predicates(items, def.loc.module, &def.generics, scope, &mut Vec::new());
+    let scope = TypeScope {
+        bounds: &bounds.predicates,
+        ..scope
     };
     let ty = resolve_type(items, def.loc.module, &def.ty, scope, def.ty_range, errors);
     EXPANDING.with(|stack| stack.borrow_mut().pop());
@@ -2139,11 +2174,8 @@ pub fn impl_target(items: &ItemTree, ty: Ty) -> Option<ImplTarget> {
     }
 }
 
-/// The payload of the trusted alloc `Arc` or `Rc`, whose library
-/// representations (a header address, then the data's) are shared with
-/// array-owner and trait-object unsizing. User types with the same name do
-/// not acquire this coercion, including in item trees without embedded
-/// libraries.
+/// The payload of a trusted alloc `Arc` or `Rc`. Its payload pointer carries
+/// any array or trait-object metadata used by unsizing.
 pub fn shared_pointee(items: &ItemTree, ty: Ty) -> Option<Ty> {
     let TyKind::Adt(adt, args) = ty.kind() else {
         return None;
@@ -2230,20 +2262,4 @@ pub(super) fn resolve_or_report(
             .map(|(at, message)| Diagnostic::new(at, message)),
     );
     ty
-}
-
-/// Whether `ty` contains a reference. References are allowed only as
-/// parameters and in local variables so far, where flux can check them
-/// without lifetimes.
-pub(crate) fn contains_ref(ty: Ty) -> bool {
-    match ty.kind() {
-        TyKind::Ref(..) => true,
-        TyKind::RawPtr(_, pointee) | TyKind::Array(pointee, _) | TyKind::Slice(pointee) => {
-            contains_ref(pointee)
-        }
-        TyKind::Tuple(elements) | TyKind::Adt(_, elements) => {
-            elements.iter().any(|&e| contains_ref(e))
-        }
-        _ => false,
-    }
 }

@@ -6,6 +6,21 @@ fn function_address_casts_match_rustc() {
     for (name, body, valid) in [
         ("item", "fn f(){}fn main(){let _=f as usize;}", true),
         (
+            "inferred_thin_pointer",
+            "fn f(){}fn take(_: *const ()){}fn main(){take(f as _);}",
+            true,
+        ),
+        (
+            "inferred_integer",
+            "fn f<T>(){}fn take(_:usize){}fn main(){take(f::<u8> as _);}",
+            true,
+        ),
+        (
+            "inferred_wide_pointer_is_invalid",
+            "fn f(){}fn take(_: *const [u8]){}fn main(){take(f as _);}",
+            false,
+        ),
+        (
             "static_input",
             "fn f(_: &'static u32){}fn main(){let _=f as usize;}",
             true,

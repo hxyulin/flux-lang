@@ -18,6 +18,16 @@ fn associated_output_bounds_match_rustc() {
             include_str!("../../../tests/run/logos_source_lifetimes.rs"),
         ),
         (
+            "opaque_iterator_projection",
+            true,
+            include_str!("../../../tests/run/opaque_iterator_projection.rs"),
+        ),
+        (
+            "opaque_projection_cannot_escape",
+            false,
+            "trait Source{type Output;fn output(&self)->Self::Output;}struct Ref<'a>(&'a u32);impl<'a> Source for Ref<'a>{type Output=&'a u32;fn output(&self)->Self::Output{self.0}}fn opaque(value:&u32)->impl Source+'_ {Ref(value)}fn require_static<T:'static>(_:T){}fn check(value:&u32){require_static(opaque(value).output());}fn main(){}",
+        ),
+        (
             "trait_owner_wrong_lifetime",
             false,
             "trait Token<'a>{}enum E<'a,T:Token<'a>>{Value(T),Borrowed(&'a())}trait Callback<'a,'b,T:Token<'a>>{fn get()->E<'b,T>;}fn main(){}",

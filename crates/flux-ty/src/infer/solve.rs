@@ -339,11 +339,20 @@ impl Ctx<'_> {
         loop {
             let mut progress = self.select_projections();
             std::mem::swap(&mut pending, &mut self.obligations);
-            for ob in pending.drain(..) {
+            for mut ob in pending.drain(..) {
                 // Flags reject nested inference variables without traversing
                 // their potentially shared type DAG to resolve them first.
                 let self_ty =
                     self.coroutine_auto_trait_type(ob.pred.self_ty, ob.pred.trait_ref.trait_);
+                let self_ty = if self_ty != ob.pred.self_ty && self_ty.has_aliases() {
+                    // A newly inferred receiver can reveal projections that
+                    // were absent when the obligation was registered.
+                    let normalized = self.normalize(self_ty, ob.range);
+                    ob.pred.self_ty = normalized;
+                    normalized
+                } else {
+                    self_ty
+                };
                 let pred = Predicate {
                     self_ty,
                     trait_ref: TraitRef {
@@ -372,19 +381,14 @@ impl Ctx<'_> {
                         continue;
                     }
                 }
-                let key = (
-                    pred,
-                    ob.root,
-                    ob.range,
-                    ob.kind,
-                    ob.depth,
-                    ob.const_output,
-                    ob.auto_parent,
-                );
+                let key = (pred, ob.root, ob.range, ob.kind, ob.depth, ob.const_output);
                 let stable = stable_goal_type(pred.self_ty)
                     && pred.trait_ref.args.iter().all(|&a| stable_goal_type(a))
                     && ob.const_output.is_none_or(stable_goal_type)
                     && self.stable_solver_env();
+                // For a closed auto-trait goal, any child cut off by the
+                // recursion check already has an expansion on the first
+                // path. Other paths do not need their own copy of the goal.
                 if stable && expanded.contains(&key) {
                     continue;
                 }
@@ -468,7 +472,7 @@ impl Ctx<'_> {
 
     /// Replaces the variables of pending associated types whose `Self` is
     /// now known; whether any was.
-    fn select_projections(&mut self) -> bool {
+    pub(super) fn select_projections(&mut self) -> bool {
         let mut pending = std::mem::take(&mut self.projection_scratch);
         std::mem::swap(&mut pending, &mut self.projections);
         let mut progress = false;
@@ -482,10 +486,16 @@ impl Ctx<'_> {
             });
             // Known, without an `impl` block or a bound that says what
             // it is: an associated type of a generic parameter, rigid.
-            let found = self.try_normalize(alias).or_else(|| {
-                (!self.has_unknown(Ty::alias(alias)))
-                    .then(|| self.normalize(Ty::alias(alias), p.range))
-            });
+            let found = self
+                .try_normalize(alias)
+                .or_else(|| {
+                    self.keeps_family_projection(alias)
+                        .then_some(Ty::alias(alias))
+                })
+                .or_else(|| {
+                    (!self.has_unknown(Ty::alias(alias)))
+                        .then(|| self.normalize(Ty::alias(alias), p.range))
+                });
             match found {
                 Some(ty) => {
                     progress = true;
@@ -528,6 +538,21 @@ impl Ctx<'_> {
             self.projection_scratch = pending;
         }
         progress
+    }
+
+    /// An abstract family with known owner inputs keeps its projection key.
+    /// Relating occurrences of that family can infer its remaining arguments.
+    fn keeps_family_projection(&mut self, alias: AliasTy) -> bool {
+        !alias.family_args.is_empty()
+            && alias.args.iter().all(|&arg| !self.has_unknown(arg))
+            && (matches!(
+                alias.args[0].kind(),
+                TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
+            ) || flux_solve::traits::in_env(
+                self.sigs,
+                &self.param_env,
+                flux_solve::traits::alias_predicate(alias),
+            ))
     }
 
     /// `ty` with each associated type in it replaced by what it is, where
@@ -590,13 +615,7 @@ impl Ctx<'_> {
                     // can then infer T before a closure body needs its type.
                     // An unknown owner still needs a delayed projection: its
                     // eventual impl may erase or transform the family input.
-                    if !alias.family_args.is_empty()
-                        && alias.args.iter().all(|&arg| !self.has_unknown(arg))
-                        && matches!(
-                            alias.args[0].kind(),
-                            TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)
-                        )
-                    {
+                    if self.keeps_family_projection(alias) {
                         return Ty::alias(alias);
                     }
                     let var = self.new_var(false, origin);
@@ -1403,7 +1422,7 @@ impl Ctx<'_> {
         }
         let mut bounds: Vec<Predicate> = env
             .into_iter()
-            .filter(|&p| self.probe(|cx| cx.unify_predicates(p, pred)))
+            .filter(|&p| self.probe(|cx| cx.unify_caller_predicate(p, pred)))
             .collect();
         if bounds.len() > 1 {
             let caller = self.caller_projections.clone();
@@ -1437,7 +1456,7 @@ impl Ctx<'_> {
                 if !compatible {
                     return Selection::Ambiguous;
                 }
-                self.unify_predicates(*bound, pred);
+                self.unify_caller_predicate(*bound, pred);
                 return Selection::Met(Vec::new());
             }
             [] => {}
@@ -1484,7 +1503,7 @@ impl Ctx<'_> {
                         let p = cx.normalize_predicate(p.subst(&args), TextRange::default());
                         let args: Vec<Ty> = p.trait_ref.args.to_vec();
                         cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(&args), 1)
-                    })
+                    }) && cx.impl_projection_bounds_possible(imp, &args)
                 })
             })
             .collect()
@@ -1517,9 +1536,37 @@ impl Ctx<'_> {
         ok
     }
 
+    /// Use a caller bound on a projected receiver, while retaining the
+    /// original predicate and its occurrence for the lifetime proof.
+    fn caller_receiver(&self, written: Ty, wanted: Ty) -> Ty {
+        if written != wanted && written.has_aliases() {
+            let output = flux_solve::traits::normalize(
+                self.items,
+                self.sigs,
+                &self.env_projections,
+                written,
+            );
+            if !output.has_error() {
+                return output;
+            }
+        }
+        written
+    }
+
+    fn unify_caller_predicate(&mut self, mut bound: Predicate, goal: Predicate) -> bool {
+        if bound.self_ty.has_aliases() {
+            // Match a declaration bound against the same projection even
+            // when the raw goal still names variables solved by inference.
+            let written = self.known(bound.self_ty);
+            let wanted = self.known(goal.self_ty);
+            bound.self_ty = self.caller_receiver(written, wanted);
+        }
+        self.unify_predicates(bound, goal)
+    }
+
     /// Bind structural inputs in order before normalizing dependent outputs,
     /// such as the second argument of `Flat<F, F::Output>`.
-    fn unify_impl_type(&mut self, pattern: Ty, actual: Ty, depth: u32) -> bool {
+    pub(super) fn unify_impl_type(&mut self, pattern: Ty, actual: Ty, depth: u32) -> bool {
         if depth > 64 {
             return false;
         }
@@ -1559,6 +1606,20 @@ impl Ctx<'_> {
         }
     }
 
+    /// Match shapes before normalizing their projections, just as for Self.
+    /// A wholly unknown argument keeps the projection obligations of its pattern.
+    fn unify_impl_arguments(&mut self, header: &[Ty], actual: &[Ty]) -> bool {
+        header.len() == actual.len()
+            && header.iter().zip(actual).all(|(&pattern, &actual)| {
+                if matches!(self.shallow(actual).kind(), TyKind::Infer(_)) {
+                    let pattern = self.normalize(pattern, TextRange::default());
+                    self.unify(pattern, actual)
+                } else {
+                    self.unify_impl_type(pattern, actual, 0)
+                }
+            })
+    }
+
     /// Unifies `impl` block `imp`'s header, with new variables for its
     /// parameters, with `pred`: those variables, if it unifies.
     fn unify_impl(&mut self, imp: ImplId, pred: Predicate) -> Option<Vec<Ty>> {
@@ -1577,13 +1638,8 @@ impl Ctx<'_> {
         if !self.unify_impl_type(header.self_ty, pred.self_ty, 0) {
             return None;
         }
-        for (&argument, &expected) in header.trait_ref.args.iter().zip(pred.trait_ref.args) {
-            // Self may have fixed the input of an associated type in this
-            // argument. Normalize after that unification, not before it.
-            let argument = self.normalize(argument, TextRange::default());
-            if !self.unify(argument, expected) {
-                return None;
-            }
+        if !self.unify_impl_arguments(header.trait_ref.args, pred.trait_ref.args) {
+            return None;
         }
         let resolved = self.known(header.self_ty);
         let actual = self.known(pred.self_ty);
@@ -1629,6 +1685,46 @@ impl Ctx<'_> {
                 cx.may_hold(p.self_ty, p.trait_ref.trait_, Some(p.trait_ref.args), 0)
             })
         })
+    }
+
+    /// A closed associated-type mismatch rules out the candidate. Keep it
+    /// possible if either side still needs inference or proof.
+    fn impl_projection_bounds_possible(&mut self, imp: ImplId, args: &[Ty]) -> bool {
+        let projections = self.sigs.impl_projections.get(imp).map_or(&[][..], |p| p);
+        if projections.is_empty() {
+            return true;
+        }
+        let args = crate::ty::map_list(args, |ty| self.known(ty));
+        let proof = flux_solve::traits::RigidSolver::new(
+            self.items,
+            self.sigs,
+            &self.param_env,
+            &self.env_projections,
+            &self.unsized_params,
+        );
+        let mismatches: Vec<_> = projections
+            .iter()
+            .filter_map(|projection| {
+                let projection = projection.subst(args);
+                if !projection
+                    .alias
+                    .args
+                    .iter()
+                    .chain(projection.alias.family_args)
+                    .copied()
+                    .all(stable_goal_type)
+                {
+                    return None;
+                }
+                let left = proof.normalize_ty(Ty::alias(projection.alias), None);
+                let right = proof.normalize_rhs(projection);
+                (stable_goal_type(left) && stable_goal_type(right) && left != right)
+                    .then_some((left, right))
+            })
+            .collect();
+        mismatches
+            .into_iter()
+            .all(|(left, right)| self.probe(|cx| cx.unify(left, right)))
     }
 
     /// Whether `ty` may implement `t`: through a bound in scope, or an
@@ -1816,7 +1912,10 @@ impl Ctx<'_> {
             .param_env
             .iter()
             .chain(&alias_bounds)
-            .filter(|p| (p.self_ty == ty || p.self_ty == known) && p.trait_ref.trait_ == t)
+            .filter(|p| {
+                p.trait_ref.trait_ == t
+                    && (p.self_ty == ty || self.caller_receiver(p.self_ty, known) == known)
+            })
             .copied()
             .collect();
         // A bound whose arguments unify with those wanted (`C: Index<usize>`
@@ -1825,7 +1924,8 @@ impl Ctx<'_> {
             args.is_none_or(|a| {
                 a.len() == p.trait_ref.args.len()
                     && self.probe(|cx| {
-                        cx.unify_predicates(
+                        cx.unify_caller_predicate(
+                            *p,
                             Predicate {
                                 self_ty: ty,
                                 trait_ref: TraitRef {
@@ -1833,7 +1933,6 @@ impl Ctx<'_> {
                                     ..p.trait_ref
                                 },
                             },
-                            *p,
                         )
                     })
             })
@@ -1854,11 +1953,12 @@ impl Ctx<'_> {
             return !check_bounds
                 || nested.into_iter().all(|p| {
                     let p = self.normalize_predicate(p, TextRange::default());
-                    self.may_hold(
+                    self.may_hold_cached(
                         p.self_ty,
                         p.trait_ref.trait_,
                         Some(p.trait_ref.args),
                         depth + 1,
+                        proven,
                     )
                 });
         }
@@ -1878,18 +1978,10 @@ impl Ctx<'_> {
                 {
                     return false;
                 }
-                if let Some(args) = args {
-                    let header = trait_ref.subst(&vars).with_self(ty);
-                    let expected = Predicate {
-                        self_ty: ty,
-                        trait_ref: TraitRef {
-                            args: Ty::list(args),
-                            ..trait_ref
-                        },
-                    };
-                    if !cx.unify_predicates(header, expected) {
-                        return false;
-                    }
+                if let Some(args) = args
+                    && !cx.unify_impl_arguments(trait_ref.subst(&vars).args, args)
+                {
+                    return false;
                 }
                 if !check_bounds {
                     return true;
@@ -1905,7 +1997,7 @@ impl Ctx<'_> {
                         depth + 1,
                         proven,
                     )
-                })
+                }) && cx.impl_projection_bounds_possible(imp, &vars)
             })
         })
     }
@@ -2066,13 +2158,12 @@ impl Ctx<'_> {
     pub(super) fn resolve_assoc(
         &mut self,
         callee: ExprId,
-        ty: Option<flux_hir::TypeRefId>,
+        self_ty: Option<Ty>,
         trait_: Option<TraitId>,
         name: Symbol,
     ) -> Option<(AssocItem, Option<Ty>, Option<Vec<Ty>>)> {
         let segment = self.source_map.segments.get(callee).copied();
         let segment = segment.unwrap_or_else(|| self.range(callee));
-        let self_ty = ty.map(|t| self.resolve_path_type(t, true));
         if self_ty == Some(Ty::ERROR) {
             return None;
         }
@@ -2152,7 +2243,11 @@ impl Ctx<'_> {
                 })
                 .collect();
             if !candidates.is_empty() {
-                match self.select(candidates.into_iter(), Some(self_ty)) {
+                let mut found = self.select(candidates.iter().copied(), Some(self_ty));
+                if matches!(found, Err(2..)) && self.infer_projected_owner(self_ty) {
+                    found = self.select(candidates.into_iter(), Some(self_ty));
+                }
+                match found {
                     Ok(function) => {
                         return Some((AssocItem::Function(function), Some(self_ty), None));
                     }
@@ -2179,7 +2274,7 @@ impl Ctx<'_> {
                 let applies = self.items.consts[c]
                     .owner
                     .and_then(flux_hir::Owner::as_impl)
-                    .is_some_and(|owner| self.impl_applies(self.sigs.impls[owner], self_ty));
+                    .is_some_and(|owner| self.impl_applies(owner, self_ty));
                 if !applies {
                     continue;
                 }
@@ -2238,6 +2333,43 @@ impl Ctx<'_> {
                 None
             }
         }
+    }
+
+    /// A receiver such as `Matrix<D, Heap::Buffer<D, T>>` can name a
+    /// constructor before its dimensions are explicit. A unique caller
+    /// bound on the projection's owner fixes the input to that projection.
+    fn infer_projected_owner(&mut self, receiver: Ty) -> bool {
+        let TyKind::Adt(_, args) = receiver.kind() else {
+            return false;
+        };
+        let mut changed = false;
+        for &ty in args {
+            let TyKind::Alias(alias) = ty.kind() else {
+                continue;
+            };
+            let alias = alias.map_args(|arg| self.known(arg));
+            if self.has_unknown(alias.args[0])
+                || !alias.args[1..].iter().any(|&arg| self.has_unknown(arg))
+            {
+                continue;
+            }
+            let goal = flux_solve::traits::alias_predicate(alias);
+            let mut candidates = Vec::new();
+            for index in 0..self.param_env.len() {
+                let bound = self.param_env[index];
+                if bound.self_ty == goal.self_ty
+                    && bound.trait_ref.trait_ == goal.trait_ref.trait_
+                    && !candidates.contains(&bound)
+                    && self.probe(|cx| cx.unify_caller_predicate(bound, goal))
+                {
+                    candidates.push(bound);
+                }
+            }
+            if let [bound] = candidates.as_slice() {
+                changed |= self.unify_caller_predicate(*bound, goal);
+            }
+        }
+        changed
     }
 
     /// Registers the bounds a path to constant `konst` with generic
@@ -2321,9 +2453,15 @@ impl Ctx<'_> {
     /// arguments such as a hasher chosen by `FxHashMap`.
     /// The lifetimes of the type before an associated item (`argument`)
     /// are left to the call's regions, or reported after inference.
-    pub(super) fn resolve_path_type(&mut self, ty: flux_hir::TypeRefId, argument: bool) -> Ty {
+    pub(super) fn resolve_path_type(
+        &mut self,
+        ty: flux_hir::TypeRefId,
+        argument: bool,
+        infer_missing: bool,
+    ) -> Ty {
         let items = self.items;
-        if let flux_hir::TypeRef::Path(path) = &self.body.types[ty]
+        if infer_missing
+            && let flux_hir::TypeRef::Path(path) = &self.body.types[ty]
             && path.qself.is_none()
             && path.args(path.segments.len().saturating_sub(1)).is_none()
             && let Ok(flux_hir::def_map::Resolved::Def(flux_hir::def_map::Def::Struct(s))) =
@@ -2335,7 +2473,8 @@ impl Ctx<'_> {
             let args: Vec<Ty> = (0..count).map(|_| self.new_var(false, origin)).collect();
             return Ty::adt(s, items.structs[s].name, &args);
         }
-        if let flux_hir::TypeRef::Path(path) = &self.body.types[ty]
+        if infer_missing
+            && let flux_hir::TypeRef::Path(path) = &self.body.types[ty]
             && path.qself.is_none()
             && path.args(path.segments.len().saturating_sub(1)).is_none()
             && let Ok(flux_hir::def_map::Resolved::Def(flux_hir::def_map::Def::TypeAlias(alias))) =
@@ -2367,6 +2506,16 @@ impl Ctx<'_> {
                     flux_hir::TypeRef::Ref { .. } | flux_hir::TypeRef::Path(_)
                 ),
         )
+    }
+
+    pub(super) fn resolve_assoc_self(&mut self, expr: ExprId, ty: flux_hir::TypeRefId) -> Ty {
+        // A receiver written between angle brackets follows type syntax.
+        let qualified = self
+            .body
+            .generic_args
+            .get(expr)
+            .is_some_and(|g| g.qualified);
+        self.resolve_path_type(ty, true, !qualified)
     }
 
     /// Whether a block for another instance of `ty`'s struct has a method
@@ -2769,6 +2918,49 @@ pub(super) mod tests {
         let count = WORK.with(|work| work.replace(None).unwrap());
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         println!("diamond: {count} goal evaluations");
+    }
+
+    #[test]
+    fn closed_auto_trait_diamond_shares_expansions() {
+        use std::fmt::Write;
+
+        for (leaf, accepts) in [("()", true), ("*const u8", false)] {
+            let mut source = format!("struct Node0({leaf});");
+            for index in 1..=15 {
+                let previous = index - 1;
+                write!(
+                    source,
+                    "struct Left{index}(Node{previous});
+                     struct Right{index}(Node{previous});
+                     struct Node{index}(Left{index}, Right{index});"
+                )
+                .unwrap();
+            }
+            source
+                .push_str("fn require_send<T: Send>() {} fn main() { require_send::<Node15>(); }");
+            let (_, _, hir) = flux_hir::lower_text("auto_diamond.rs", &source);
+            assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+            let (sigs, errors) = crate::signatures(&hir.items);
+            assert!(errors.is_empty(), "{errors:?}");
+            let (function, (body, source_map)) = hir
+                .bodies
+                .iter()
+                .find(|(id, _)| hir.items.functions[*id].name.as_str() == "main")
+                .unwrap();
+            WORK.with(|work| work.set(Some(0)));
+            let result = crate::infer_body(&hir.items, &sigs, function, body, source_map);
+            let count = WORK.with(|work| work.replace(None).unwrap());
+            assert_eq!(
+                result.diagnostics.is_empty(),
+                accepts,
+                "{:?}",
+                result.diagnostics
+            );
+            assert!(
+                count <= 128,
+                "closed auto-trait diamond took {count} goal evaluations"
+            );
+        }
     }
     #[test]
     fn failed_predicate_probe_rolls_back_deferred_projection() {

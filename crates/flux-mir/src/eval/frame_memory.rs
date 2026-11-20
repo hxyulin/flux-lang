@@ -141,7 +141,8 @@ impl Evaluator<'_> {
                     .and_then(Option::as_ref)
                     .is_some_and(|v| !Self::is_frame_pointer(v))
             {
-                let value = self.operand(locals, generics, &Operand::Copy(place.clone()), range)?;
+                let value =
+                    self.operand(body, locals, generics, &Operand::Copy(place.clone()), range)?;
                 if matches!(&value,Value::Aggregate(fields) if fields.is_empty()) {
                     return Ok(Value::Ref(Arc::new(value)));
                 }
@@ -469,6 +470,10 @@ impl Evaluator<'_> {
         Ok(())
     }
     pub(super) fn expand_storage(&mut self, ty: Ty, range: TextRange) -> Result<Value, EvalError> {
+        let ty = flux_solve::traits::normalize(self.items, self.sigs, &[], ty);
+        if matches!(ty.kind(), TyKind::Adt(adt, _) if self.sigs.unions.contains(&adt.strukt)) {
+            return Err(error(range, "use of an uninitialized union".into()));
+        }
         if self.view_layout(ty, range)?.uninhabited {
             return Err(error(range, "invalid uninhabited constant value".into()));
         }

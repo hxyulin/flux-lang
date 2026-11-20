@@ -7,7 +7,7 @@ use super::{Decode, Decoder, Encode, Encoder, Error, IdKind, IdMap};
 use crate::{FileId, ItemTree, SourceDb};
 use flux_arena::LayeredArena;
 
-const MAGIC: &str = "FLUX-BUILTIN-HIR-2";
+const MAGIC: &str = "FLUX-BUILTIN-HIR-4";
 const KINDS: [IdKind; 11] = [
     IdKind::Crate,
     IdKind::Module,
@@ -190,6 +190,8 @@ fn write_records(items: &ItemTree, e: &mut Encoder) -> Result<(), Error> {
     items.def_map.std_prelude.encode(e)?;
     items.def_map.prelude_2018.encode(e)?;
     items.def_map.std_prelude_2018.encode(e)?;
+    items.def_map.prelude_2021.encode(e)?;
+    items.def_map.std_prelude_2021.encode(e)?;
     if !items.def_map.failed_imports.is_empty() {
         return Err(Error("builtin suite has failed imports"));
     }
@@ -311,5 +313,7 @@ fn read_records(
     items.def_map.std_prelude = Decode::decode(d)?;
     items.def_map.prelude_2018 = Decode::decode(d)?;
     items.def_map.std_prelude_2018 = Decode::decode(d)?;
+    items.def_map.prelude_2021 = Decode::decode(d)?;
+    items.def_map.std_prelude_2021 = Decode::decode(d)?;
     Ok(items)
 }

@@ -2,6 +2,40 @@
 use super::*;
 
 impl Evaluator<'_> {
+    pub(super) fn read_unaligned(
+        &mut self,
+        pointer: Value,
+        target: Ty,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        let pointer_ty = Ty::raw_ptr(flux_ty::Mutability::Not, target);
+        let (source, source_ty, offset) = self.pointer_origin(pointer, pointer_ty, range)?;
+        if let Value::RawAddr(address) = source {
+            if address != 0 && self.view_layout(target, range)?.size == 0 {
+                return self.read_marker(Value::Uninit(target), range);
+            }
+            return Err(error(
+                range,
+                "constant unaligned read requires a valid pointer".into(),
+            ));
+        }
+        let stored_ty = self.allocation_type(&source, source_ty, range)?;
+        let stored = self.copy_source_storage(&source, source_ty, range)?;
+        self.memory_value(&stored, stored_ty, offset, target, range, 0)
+    }
+
+    fn copy_source_storage(
+        &mut self,
+        source: &Value,
+        source_ty: Ty,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
+        if let Value::FramePointer { origin, .. } = source {
+            return Ok(self.frame_allocation(*origin, range)?.value.clone());
+        }
+        self.pointer_value(source, source_ty, source_ty, range)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn copy_storage(
         &mut self,
@@ -106,12 +140,7 @@ impl Evaluator<'_> {
         }
         let stored_ty = self.allocation_type(&source, source_ty, range)?;
         // Snapshot before the first write: copy permits overlap in either direction.
-        let stored = match &source {
-            Value::FramePointer { origin, .. } => {
-                self.frame_allocation(*origin, range)?.value.clone()
-            }
-            _ => self.pointer_value(&source, source_ty, source_ty, range)?,
-        };
+        let stored = self.copy_source_storage(&source, source_ty, range)?;
         self.charge_view(count, range)?;
         let mut values = Vec::with_capacity(count as usize);
         for i in 0..count {
