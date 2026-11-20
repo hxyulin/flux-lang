@@ -68,6 +68,7 @@ macro_rules! terminated {
 }
 
 fn main() {
+    core::pin::pin!([3u8; 1 + 2]);
     assert_eq!(terminated!("hi"), b"hi\0");
     static WIDTH: usize = sized!();
     assert_eq!(WIDTH, 16);

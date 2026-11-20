@@ -597,17 +597,17 @@ impl<T> AtomicPtr<T> {
 
     /// Applies a bitwise AND to the address and returns the previous pointer.
     pub fn fetch_and(&self, mask: usize, order: Ordering) -> *mut T {
-        self.fetch_map(order, |pointer| pointer.with_addr(pointer.addr() & mask))
+        self.fetch_map(order, |pointer| pointer.map_addr(|addr| addr & mask))
     }
 
     /// Applies a bitwise OR to the address and returns the previous pointer.
     pub fn fetch_or(&self, mask: usize, order: Ordering) -> *mut T {
-        self.fetch_map(order, |pointer| pointer.with_addr(pointer.addr() | mask))
+        self.fetch_map(order, |pointer| pointer.map_addr(|addr| addr | mask))
     }
 
     /// Applies a bitwise XOR to the address and returns the previous pointer.
     pub fn fetch_xor(&self, mask: usize, order: Ordering) -> *mut T {
-        self.fetch_map(order, |pointer| pointer.with_addr(pointer.addr() ^ mask))
+        self.fetch_map(order, |pointer| pointer.map_addr(|addr| addr ^ mask))
     }
 
     fn fetch_map<F>(&self, order: Ordering, mut map: F) -> *mut T

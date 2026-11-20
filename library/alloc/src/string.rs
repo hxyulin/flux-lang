@@ -141,8 +141,19 @@ impl String {
         String { vec: bytes }
     }
 
-    pub fn as_str(&self) -> &str {
-        self
+    /// Takes ownership of the allocation containing this string.
+    ///
+    /// # Safety
+    /// The arguments must meet `Vec::<u8>::from_raw_parts`'s requirements.
+    /// The first `len` bytes must contain valid UTF-8.
+    pub unsafe fn from_raw_parts(ptr: *mut u8, len: usize, capacity: usize) -> String {
+        // SAFETY: the caller guarantees the allocation and UTF-8 invariants.
+        unsafe { Self::from_utf8_unchecked(Vec::from_raw_parts(ptr, len, capacity)) }
+    }
+
+    pub const fn as_str(&self) -> &str {
+        // SAFETY: String keeps its initialized bytes valid UTF-8.
+        unsafe { core::str::from_utf8_unchecked(self.vec.as_slice()) }
     }
 
     pub fn as_mut_str(&mut self) -> &mut str {
@@ -349,7 +360,7 @@ impl Deref for String {
     type Target = str;
 
     fn deref(&self) -> &str {
-        unsafe { core::str::from_utf8_unchecked(&self.vec) }
+        self.as_str()
     }
 }
 

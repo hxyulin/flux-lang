@@ -143,7 +143,7 @@ fn main() {
             inout(reg) retries,
             options(nomem, nostack, preserves_flags),
         );
-        asm!("b 2f", "add {0}, {0}, #9", "2: add {0}, {0}, #1", inout(reg) count);
+        asm!("b 2f", "add {0}, {0}, #9", "2 /* next */ : add {0}, {0}, #1", inout(reg) count);
     }
     assert_eq!(retries, 0);
     assert_eq!(count, 12);

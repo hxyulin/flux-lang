@@ -65,6 +65,15 @@ pub enum MacroKind {
     ProcMacro(Arc<crate::ProcMacro>),
 }
 
+impl MacroKind {
+    pub(crate) fn builtin(&self) -> Option<Builtin> {
+        match self {
+            Self::Builtin(builtin) => Some(*builtin),
+            _ => None,
+        }
+    }
+}
+
 /// One `macro_rules!` definition in textual scope, after the ones in
 /// `parent`: macros are in scope from their definition to the end of
 /// the module or block they are in (or of its parent, for a module with
@@ -993,16 +1002,11 @@ fn expand_at_depth(
                     }
                 };
             }
-            let expanded = if builtin == Builtin::Asm {
-                inline_asm::expand(&cx).map(|(out, layout)| {
-                    asm = Some(Arc::new(layout));
+            match builtin::expand(builtin, &cx) {
+                Ok((out, layout)) => {
+                    asm = layout.map(Arc::new);
                     out
-                })
-            } else {
-                builtin::expand(builtin, &cx)
-            };
-            match expanded {
-                Ok(out) => out,
+                }
                 Err((range, message)) => {
                     diagnostics.push(Diagnostic::new(range, message));
                     return None;

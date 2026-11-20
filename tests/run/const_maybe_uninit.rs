@@ -16,6 +16,16 @@ fn main() {
     let mut values = EMPTY;
     for (i, value) in values.iter_mut().enumerate() { value.write(i as u32 + READY); }
     let sum: u32 = values.into_iter().map(|value| unsafe { value.assume_init() }).sum();
+    let mut pair = MaybeUninit::<[&u32; 2]>::uninit();
+    let slots: &mut [MaybeUninit<&u32>] = pair.as_mut();
+    slots[0].write(&READY);
+    let slots: &mut [MaybeUninit<&u32>; 2] = pair.as_mut();
+    slots[1].write(&READY);
+    let slots: &[MaybeUninit<&u32>; 2] = pair.as_ref();
+    assert_eq!(unsafe { *slots[0].assume_init_ref() }, &READY);
+    let slots: &[MaybeUninit<&u32>] = pair.as_ref();
+    assert_eq!(slots.len(), 2);
+    assert_eq!(unsafe { pair.assume_init() }, [&READY; 2]);
     let mut reference = BORROW;
     reference.write(&READY);
     println!("{} {} {} {}", sum, unsafe { *reference.assume_init() }, OPTIONAL.is_some(), core::mem::size_of_val(&VOID));

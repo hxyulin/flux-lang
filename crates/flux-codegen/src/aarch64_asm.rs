@@ -36,17 +36,18 @@ impl NumericLabels {
             let start = at;
             at += 1;
             match bytes[start] {
-                b'\n' | b';' => statement_start = true,
+                b'\n' | b'\r' => statement_start = true,
                 b if b.is_ascii_whitespace() => {}
-                b'/' if bytes.get(at) == Some(&b'/') => {
-                    at = text[at..].find('\n').map_or(bytes.len(), |end| at + end);
+                b if b == b';' || (b == b'/' && bytes.get(at) == Some(&b'/')) => {
+                    at = text[at..]
+                        .find(['\n', '\r'])
+                        .map_or(bytes.len(), |end| at + end);
                 }
                 b'/' if bytes.get(at) == Some(&b'*') => {
                     at += 1;
                     at = text[at..]
                         .find("*/")
                         .map_or(bytes.len(), |end| at + end + 2);
-                    statement_start |= text[start..at].contains('\n');
                 }
                 quote @ (b'"' | b'\'') => {
                     while let Some(&byte) = bytes.get(at) {
@@ -80,13 +81,16 @@ impl NumericLabels {
                                 | ".ifle"
                         );
                     }
-                    let before_colon = text[end..].trim_start_matches([' ', '\t']);
-                    let definition = statement_start && before_colon.starts_with(':');
-                    statement_start = definition;
-                    if definition {
-                        at = bytes.len() - before_colon.len() + 1;
+                    let colon = if statement_start {
+                        label_colon(&text[end..])
+                    } else {
+                        None
+                    };
+                    statement_start = colon.is_some();
+                    if let Some(colon) = colon {
+                        at = end + colon + 1;
                     }
-                    let (digits, direction) = if definition {
+                    let (digits, direction) = if colon.is_some() {
                         (token, None)
                     } else if let Some(digits) = token.strip_suffix('f') {
                         (digits, Some(true))
@@ -129,6 +133,19 @@ impl NumericLabels {
             }
             None => Cow::Borrowed(text),
         }
+    }
+}
+
+/// The assembler treats block comments as whitespace within a statement.
+fn label_colon(mut tail: &str) -> Option<usize> {
+    let len = tail.len();
+    loop {
+        tail = tail.trim_start_matches([' ', '\t']);
+        if tail.starts_with(':') {
+            return Some(len - tail.len());
+        }
+        let comment = tail.strip_prefix("/*")?;
+        tail = comment.split_once("*/")?.1;
     }
 }
 
@@ -227,10 +244,11 @@ mod tests {
     fn numeric_labels_use_the_nearest_definition_across_fragments() {
         let mut labels = NumericLabels::default();
         assert_eq!(labels.rewrite("b 2f\n"), "b L__flux_asm_numeric_2_1\n");
-        let source = "02: nop\ncbnz x5, 2b\n2: b 02b // 2f\n.ascii \"2b\"\nb 7b\n";
+        let source =
+            "02 /* label */ : nop ; 2: ignored\ncbnz x5, 2b\n2: b 02b // 2f\n.ascii \"2b\"\nb 7b\n";
         assert_eq!(
             labels.rewrite(source),
-            "L__flux_asm_numeric_2_1: nop\ncbnz x5, L__flux_asm_numeric_2_1\nL__flux_asm_numeric_2_2: b L__flux_asm_numeric_2_2 // 2f\n.ascii \"2b\"\nb 7b\n"
+            "L__flux_asm_numeric_2_1 /* label */ : nop ; 2: ignored\ncbnz x5, L__flux_asm_numeric_2_1\nL__flux_asm_numeric_2_2: b L__flux_asm_numeric_2_2 // 2f\n.ascii \"2b\"\nb 7b\n"
         );
     }
 

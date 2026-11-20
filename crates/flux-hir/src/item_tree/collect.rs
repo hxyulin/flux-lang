@@ -2763,8 +2763,8 @@ impl Collector<'_> {
         Some(id)
     }
 
-    /// The items declared in the blocks of a body, at `node` in
-    /// `ctx.file`, of `function` if it is one's: each block with items
+    /// The items declared in the blocks of `owner`'s body at `node` in
+    /// `ctx.file`. Each block with items
     /// becomes a module inside `ctx.module`.
     fn collect_body_items(&mut self, ctx: Ctx, node: NodeId, owner: BodyOwner) {
         let shared = self.db.shared(ctx.file);
@@ -2904,7 +2904,10 @@ impl Collector<'_> {
             let def = self.items.macros[id].clone();
             let fragment = if node.kind() == SyntaxKind::MACRO_TYPE {
                 flux_syntax::parser::Fragment::Type
-            } else if !matches!(def.kind, macros::MacroKind::Builtin(crate::Builtin::Asm))
+            } else if !def
+                .kind
+                .builtin()
+                .is_some_and(crate::Builtin::lowers_as_expr)
                 && node.parent().is_some_and(|p| {
                     matches!(p.kind(), SyntaxKind::EXPR_STMT)
                         || (matches!(p.kind(), SyntaxKind::BLOCK_EXPR | SyntaxKind::MACRO_STMTS)

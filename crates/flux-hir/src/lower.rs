@@ -1981,6 +1981,7 @@ struct Place<'a> {
 struct ExpandedBody<'a> {
     parse: Cow<'a, Parse>,
     file: Option<FileId>,
+    builtin: Option<crate::Builtin>,
     asm: Option<Arc<macros::inline_asm::AsmLayout>>,
 }
 
@@ -2350,6 +2351,7 @@ impl<'a> Ctx<'a> {
                 return None;
             }
         };
+        let builtin = def.kind.builtin();
         if self.expansion_depth as usize >= self.items.macro_recursion_limit(self.module) {
             self.error(
                 node.text_range(),
@@ -2394,6 +2396,7 @@ impl<'a> Ctx<'a> {
             return Some(ExpandedBody {
                 parse: Cow::Borrowed(parse),
                 file: Some(cached.file),
+                builtin,
                 asm: cached.asm.clone(),
             });
         }
@@ -2414,6 +2417,7 @@ impl<'a> Ctx<'a> {
         Some(ExpandedBody {
             parse: Cow::Owned(expansion.parse),
             file: None,
+            builtin,
             asm: expansion.asm,
         })
     }
@@ -2470,10 +2474,8 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    fn is_builtin_macro(&self, call: ast::MacroExpr<'_>, builtin: crate::Builtin) -> bool {
-        let Some(path) = call.syntax().children().find_map(ast::Path::cast) else {
-            return false;
-        };
+    fn builtin_macro(&self, call: ast::MacroExpr<'_>) -> Option<crate::Builtin> {
+        let path = call.syntax().children().find_map(ast::Path::cast)?;
         match macros::resolve(
             self.items,
             path,
@@ -2481,15 +2483,9 @@ impl<'a> Ctx<'a> {
             self.macro_scope,
             self.module,
         ) {
-            Ok(macros::Resolved::Def(id)) => matches!(
-                self.items.macros[id].kind,
-                crate::MacroKind::Builtin(found) if found == builtin
-            ),
-            Ok(macros::Resolved::Local(local)) => matches!(
-                local.def.kind,
-                crate::MacroKind::Builtin(found) if found == builtin
-            ),
-            Err(_) => false,
+            Ok(macros::Resolved::Def(id)) => self.items.macros[id].kind.builtin(),
+            Ok(macros::Resolved::Local(local)) => local.def.kind.builtin(),
+            Err(_) => None,
         }
     }
 
@@ -2512,19 +2508,22 @@ impl<'a> Ctx<'a> {
             );
             return Some(self.alloc_expr(Expr::Missing, range));
         }
-        let pin = self.is_builtin_macro(m, crate::Builtin::Pin);
-        let offset_of = self.is_builtin_macro(m, crate::Builtin::OffsetOf);
-        let Some(ExpandedBody { parse, file, asm }) = self.expand(m.syntax(), Fragment::Expr)
+        let Some(ExpandedBody {
+            parse,
+            file,
+            builtin,
+            asm,
+        }) = self.expand(m.syntax(), Fragment::Expr)
         else {
             return Some(self.alloc_expr(Expr::Missing, range));
         };
         let root = parse.tree().root();
         let expr = root.children().find_map(ast::Expr::cast);
         let expansion = self.enter_expansion(m.syntax(), file);
-        let id = if pin {
+        let id = if builtin == Some(crate::Builtin::Pin) {
             let value = self.lower_opt(expr, root);
             self.alloc_expr(Expr::Pin(value), range)
-        } else if offset_of {
+        } else if builtin == Some(crate::Builtin::OffsetOf) {
             if let Some(ast::Expr::TupleExpr(tuple)) = expr {
                 let mut parts = tuple.fields();
                 let closure = parts
@@ -2635,9 +2634,9 @@ impl<'a> Ctx<'a> {
             return StmtExpansion::Unit;
         }
         let range = m.syntax().text_range();
-        if self.is_builtin_macro(m, crate::Builtin::Asm)
-            || self.is_builtin_macro(m, crate::Builtin::OffsetOf)
-            || self.is_builtin_macro(m, crate::Builtin::Pin)
+        if self
+            .builtin_macro(m)
+            .is_some_and(crate::Builtin::lowers_as_expr)
         {
             let id = self.lower_macro_expr(m, range);
             if !semicolon {

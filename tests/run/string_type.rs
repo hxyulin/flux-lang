@@ -9,6 +9,10 @@ fn shout(s: &str) -> usize {
     s.len()
 }
 
+const fn string_view(s: &String) -> &str {
+    s.as_str()
+}
+
 fn main() {
     let mut s = String::new();
     println!("{} {}", s.len(), s.capacity());
@@ -37,6 +41,12 @@ fn main() {
     w.clear();
     println!("[{w}] {} {}", w.is_empty(), w.capacity());
     let owned: String = "own".to_owned();
+    assert_eq!(string_view(&owned), "own");
+    let (ptr, len, capacity) = owned.into_bytes().into_raw_parts();
+    // SAFETY: the raw parts come from this string's unchanged UTF-8 buffer.
+    let owned = unsafe { String::from_raw_parts(ptr, len, capacity) };
+    assert_eq!(owned.as_ptr(), ptr);
+    assert_eq!(owned.capacity(), capacity);
     println!("{owned:?} {}", owned == "own");
     println!("{} {} {}", u.starts_with("hel"), u.contains("lo, w"), u.find('w').unwrap());
     let words: Vec<&str> = u.split(", ").fold(Vec::new(), |mut acc, w| {

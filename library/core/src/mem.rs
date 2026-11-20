@@ -1,5 +1,7 @@
 //! Functions on values in general.
 
+use crate::convert::{AsMut, AsRef};
+
 /// Disposes of a value: moves it into a call that does nothing with it.
 pub fn drop<T>(_x: T) {}
 
@@ -260,6 +262,32 @@ impl<T> MaybeUninit<T> {
     /// Drops the value, which must have been written.
     pub unsafe fn assume_init_drop(&mut self) {
         unsafe { crate::ptr::drop_in_place(self.as_mut_ptr()) }
+    }
+}
+
+impl<T, const N: usize> AsRef<[MaybeUninit<T>; N]> for MaybeUninit<[T; N]> {
+    fn as_ref(&self) -> &[MaybeUninit<T>; N] {
+        // SAFETY: each slot has T's layout and permits uninitialized bytes.
+        unsafe { &*self.as_ptr().cast::<[MaybeUninit<T>; N]>() }
+    }
+}
+
+impl<T, const N: usize> AsRef<[MaybeUninit<T>]> for MaybeUninit<[T; N]> {
+    fn as_ref(&self) -> &[MaybeUninit<T>] {
+        <Self as AsRef<[MaybeUninit<T>; N]>>::as_ref(self)
+    }
+}
+
+impl<T, const N: usize> AsMut<[MaybeUninit<T>; N]> for MaybeUninit<[T; N]> {
+    fn as_mut(&mut self) -> &mut [MaybeUninit<T>; N] {
+        // SAFETY: each slot has T's layout and permits uninitialized bytes.
+        unsafe { &mut *self.as_mut_ptr().cast::<[MaybeUninit<T>; N]>() }
+    }
+}
+
+impl<T, const N: usize> AsMut<[MaybeUninit<T>]> for MaybeUninit<[T; N]> {
+    fn as_mut(&mut self) -> &mut [MaybeUninit<T>] {
+        <Self as AsMut<[MaybeUninit<T>; N]>>::as_mut(self)
     }
 }
 

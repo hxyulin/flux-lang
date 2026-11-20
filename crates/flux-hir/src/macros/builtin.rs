@@ -45,6 +45,11 @@ pub enum Builtin {
 }
 
 impl Builtin {
+    /// These builtins need their expression expansion even in statement position.
+    pub(crate) fn lowers_as_expr(self) -> bool {
+        matches!(self, Self::Asm | Self::OffsetOf | Self::Pin)
+    }
+
     pub(crate) fn from_name(name: &str) -> Builtin {
         match name {
             "derive" => Builtin::Derive,
@@ -236,10 +241,15 @@ fn split_exprs<'a>(cx: &BuiltinCx<'_>, toks: &'a [Tok], named: bool) -> Result<A
 }
 
 /// Expands built-in macro `builtin`.
-pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, Error> {
+pub(super) fn expand(
+    builtin: Builtin,
+    cx: &BuiltinCx<'_>,
+) -> Result<(Vec<Tok>, Option<super::inline_asm::AsmLayout>), Error> {
     let mut out = Vec::new();
     match builtin {
-        Builtin::Asm => unreachable!("assembly expansion also produces its operand layout"),
+        Builtin::Asm => {
+            return super::inline_asm::expand(cx).map(|(tokens, layout)| (tokens, Some(layout)));
+        }
         Builtin::Pin => {
             let args = split_exprs(cx, cx.toks, false)?;
             if args.args.len() != 1 {
@@ -410,7 +420,7 @@ pub(crate) fn expand(builtin: Builtin, cx: &BuiltinCx<'_>) -> Result<Vec<Tok>, E
             return Err((cx.call, format!("`{}!` is not supported yet", cx.name)));
         }
     }
-    Ok(out)
+    Ok((out, None))
 }
 
 /// A filename after eager expansion of its nested macro calls.
