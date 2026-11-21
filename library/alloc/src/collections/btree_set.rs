@@ -2,6 +2,8 @@
 use super::btree_map;
 use super::BTreeMap;
 use core::borrow::Borrow;
+use core::hash::{Hash, Hasher};
+use core::iter::Peekable;
 
 pub struct BTreeSet<T> {
     map: BTreeMap<T, ()>,
@@ -19,6 +21,12 @@ impl<T> BTreeSet<T> {
     }
 }
 impl<T: Ord> BTreeSet<T> {
+    /// Moves all elements from `other` into this set, leaving `other` empty.
+    /// Equal elements already in this set keep their identity.
+    pub fn append(&mut self, other: &mut Self) {
+        self.map.append(&mut other.map);
+    }
+
     /// Borrows the smallest element without removing it.
     pub fn first(&self) -> Option<&T> { self.map.first_key_value().map(|(key, _)| key) }
     /// Borrows the largest element without removing it.
@@ -27,6 +35,10 @@ impl<T: Ord> BTreeSet<T> {
     pub fn is_disjoint(&self, other: &Self) -> bool {
         let (small, large) = if self.len() <= other.len() { (self, other) } else { (other, self) };
         small.iter().all(|value| !large.contains(value))
+    }
+    /// Visits the elements of this set that are absent from `other` in order.
+    pub fn difference<'a>(&'a self, other: &'a Self) -> Difference<'a, T> {
+        Difference { left: self.iter(), right: other.iter().peekable() }
     }
     pub fn remove<Q: ?Sized>(&mut self, value: &Q) -> bool
     where T: Borrow<Q>, Q: Ord { self.map.remove(value).is_some() }
@@ -44,6 +56,14 @@ impl<T: PartialEq> PartialEq for BTreeSet<T> {
     fn eq(&self, other: &Self) -> bool { self.map == other.map }
 }
 impl<T: Eq> Eq for BTreeSet<T> {}
+impl<T: Hash> Hash for BTreeSet<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_usize(self.len());
+        for value in self {
+            value.hash(state);
+        }
+    }
+}
 impl<T: core::fmt::Debug> core::fmt::Debug for BTreeSet<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_set().entries(self.iter()).finish()
@@ -76,6 +96,36 @@ impl<'a, T> core::iter::DoubleEndedIterator for Iter<'a, T> {
 impl<T> Clone for Iter<'_, T> { fn clone(&self) -> Self { Self { inner: self.inner.clone() } } }
 impl<T> core::iter::ExactSizeIterator for Iter<'_, T> {}
 impl<T> core::iter::FusedIterator for Iter<'_, T> {}
+
+/// A sorted iterator over elements present only in the first set.
+pub struct Difference<'a, T: Ord + 'a> {
+    left: Iter<'a, T>,
+    right: Peekable<Iter<'a, T>>,
+}
+
+impl<'a, T: Ord> Iterator for Difference<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        for value in &mut self.left {
+            while self.right.peek().is_some_and(|other| *other < value) {
+                self.right.next();
+            }
+            if self.right.peek().is_none_or(|other| *other != value) {
+                return Some(value);
+            }
+            self.right.next();
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.left.len()))
+    }
+}
+
+impl<T: Ord> core::iter::FusedIterator for Difference<'_, T> {}
+
 impl<'a, T> IntoIterator for &'a BTreeSet<T> {
     type Item = &'a T;
     type IntoIter = Iter<'a, T>;

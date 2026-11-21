@@ -32,7 +32,28 @@ fn parse_twice(text: &str) -> Result<i32, std::num::ParseIntError> {
     Ok(r#try!(text.parse::<i32>(),) + value)
 }
 
+fn reserve_bytes() -> io::Result<()> {
+    let mut bytes = Vec::<u8>::new();
+    bytes.try_reserve_exact(usize::MAX)?;
+    Ok(())
+}
+
+fn c_string(bytes: &[u8]) -> io::Result<std::ffi::CString> {
+    Ok(std::ffi::CString::new(bytes)?)
+}
+
 fn main() {
+    assert_eq!(c_string(b"valid").unwrap().as_bytes(), b"valid");
+    let nul_error = c_string(b"a\0b").unwrap_err();
+    assert_eq!(nul_error.kind(), io::ErrorKind::InvalidInput);
+    assert_eq!(nul_error.to_string(), "data provided contains a nul byte");
+    assert_eq!(nul_error.raw_os_error(), None);
+    assert!(nul_error.get_ref().is_none());
+    assert!(nul_error.source().is_none());
+    let reserve_error = reserve_bytes().unwrap_err();
+    assert_eq!(reserve_error.kind(), io::ErrorKind::OutOfMemory);
+    assert!(reserve_error.get_ref().is_none());
+    assert!(reserve_error.source().is_none());
     let outer = Outer(Inner);
     println!("{} {:?} {}", outer.description(), outer.cause().map(|e| e.to_string()), outer.source().is_none());
     println!("{:?} {}", Inner.cause().is_none(), Inner.description());

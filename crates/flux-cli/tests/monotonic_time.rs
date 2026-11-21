@@ -2,7 +2,7 @@
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod support;
 extern crate alloc as alloc_crate;
-pub use core::{error, fmt, ops, str};
+pub use core::{error, fmt, iter, ops, str};
 
 #[path = "../../../library/core/src/time.rs"]
 #[allow(

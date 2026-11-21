@@ -380,11 +380,15 @@ fn normalize_known(
                     for p in projections {
                         let known: Vec<Ty> = binds.iter().map(|b| b.unwrap_or(Ty::ERROR)).collect();
                         let projected = Ty::alias(p.alias).subst(&known);
-                        if projected.has_params() || projected.has_infer() {
+                        // Unbound impl parameters became errors during
+                        // substitution. Caller parameters are valid inputs
+                        // to a projection, including in a closure's parent
+                        // arguments when its return determines a field type.
+                        if projected.has_error() || projected.has_infer() {
                             continue;
                         }
                         let ty = go(projected);
-                        if matches!(ty.kind(), TyKind::Alias(_) | TyKind::Error) {
+                        if ty.has_error() || matches!(ty.kind(), TyKind::Alias(_)) {
                             continue;
                         }
                         let mut found = binds.clone();

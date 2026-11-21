@@ -1031,6 +1031,12 @@ impl<'a, T> crate::clone::Clone for Iter<'a, T> {
     }
 }
 
+impl<T> crate::default::Default for Iter<'_, T> {
+    fn default() -> Self {
+        (&[]).iter()
+    }
+}
+
 impl<'a, T> Iterator for Iter<'a, T> {
     type Item = &'a T;
     const __TRUSTED_LEN: bool = true;

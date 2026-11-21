@@ -55,26 +55,39 @@ pub(crate) fn check_body(
     };
     let pat_range = |pat: PatId| source_map.pats.get(pat).copied().unwrap_or_default();
     for (pat, data) in body.pats.iter() {
-        if let Pat::Range {
-            start: Some(start),
+        let Pat::Range {
+            start,
             end: Some(end),
             inclusive,
         } = *data
-            && let Some(domain) = pat_types.get(pat).and_then(|&t| IntDomain::of(t))
-            && let (Some(lo), Some(hi)) = (cx.literal(start), cx.literal(end))
-        {
-            let (lo, hi) = (domain.encode(lo), domain.encode(hi));
-            if inclusive && lo > hi {
-                cx.error(
-                    pat_range(pat),
-                    "lower bound for range pattern must be less than or equal to upper bound",
-                );
-            } else if !inclusive && lo >= hi {
-                cx.error(
-                    pat_range(pat),
-                    "lower bound for range pattern must be less than upper bound",
-                );
+        else {
+            continue;
+        };
+        let Some(&ty) = pat_types.get(pat) else {
+            continue;
+        };
+        let Some(hi) = cx.range_endpoint(end, ty) else {
+            continue;
+        };
+        if let Some(start) = start {
+            if let Some(lo) = cx.range_endpoint(start, ty) {
+                if inclusive && lo > hi {
+                    cx.error(
+                        pat_range(pat),
+                        "lower bound for range pattern must be less than or equal to upper bound",
+                    );
+                } else if !inclusive && lo >= hi {
+                    cx.error(
+                        pat_range(pat),
+                        "lower bound for range pattern must be less than upper bound",
+                    );
+                }
             }
+        } else if !inclusive && ty.as_float().is_some() && hi == 0 {
+            cx.error(
+                pat_range(pat),
+                "exclusive upper bound for a range bound cannot be the minimum",
+            );
         }
     }
     // Function parameters, then `let`s and `match`es, in order.
@@ -204,11 +217,9 @@ enum Ctor {
     Single,
     Variant(u32),
     Bool(bool),
-    /// One numeric float value; the two signed zeros share a constructor.
-    Float(u64),
-    /// Every float not named by this column, including all NaN values.
+    /// Uncovered floats, including NaNs.
     FloatRemainder,
-    /// The integers in an inclusive range, encoded by [`IntDomain`].
+    /// An inclusive interval in a scalar matching domain.
     Range(u128, u128),
     /// A slice of a length, or of at least one (as rustc's).
     Slice(SliceKind),
@@ -317,6 +328,28 @@ struct IntDomain {
 
 /// The surrogates, which are not `char`s: `0xD800..=0xDFFF`.
 const SURROGATES: (u128, u128) = (0xD800, 0xDFFF);
+
+/// Numeric order, contiguous between the infinities. Both zero encodings
+/// map to the same position and NaNs have no position.
+fn float_rank(float: FloatTy, bits: u64) -> Option<u128> {
+    let sign = 1 << (float.bits() - 1);
+    let magnitude = u128::from(bits & !sign);
+    let infinity = float_infinity(float);
+    (magnitude <= infinity).then(|| {
+        if bits & sign == 0 {
+            infinity + magnitude
+        } else {
+            infinity - magnitude
+        }
+    })
+}
+
+fn float_infinity(float: FloatTy) -> u128 {
+    match float {
+        FloatTy::F32 => u128::from(f32::INFINITY.to_bits()),
+        FloatTy::F64 => u128::from(f64::INFINITY.to_bits()),
+    }
+}
 
 impl IntDomain {
     /// The domain of an integer type or `char`.
@@ -437,32 +470,28 @@ impl Cx<'_> {
         }
     }
 
-    /// `pat` as constructors and fields.
-    /// Float patterns use numeric equality, not bit equality. NaNs never
-    /// match a literal, while both zero encodings match either zero pattern.
     fn float_literal(&self, expr: ExprId, float: FloatTy) -> Option<u64> {
-        let bits = match &self.body.exprs[expr] {
+        if let Some(crate::PatternConst::Float(bits)) = self.consts.get(expr) {
+            return Some(*bits);
+        }
+        match &self.body.exprs[expr] {
             Expr::Literal(Literal::Float { text, .. }) => match float {
-                FloatTy::F32 => u64::from(text.as_str().parse::<f32>().ok()?.to_bits()),
-                FloatTy::F64 => text.as_str().parse::<f64>().ok()?.to_bits(),
+                FloatTy::F32 => Some(u64::from(text.as_str().parse::<f32>().ok()?.to_bits())),
+                FloatTy::F64 => Some(text.as_str().parse::<f64>().ok()?.to_bits()),
             },
             Expr::Unary {
                 op: UnaryOp::Neg,
                 operand,
-            } => self.float_literal(*operand, float)? ^ (1u64 << (float.bits() - 1)),
-            _ => return None,
-        };
-        let sign = 1u64 << (float.bits() - 1);
-        let magnitude = bits & !sign;
-        let infinity = match float {
-            FloatTy::F32 => 0x7f800000,
-            FloatTy::F64 => 0x7ff0000000000000,
-        };
-        if magnitude > infinity {
-            None
-        } else {
-            Some(if magnitude == 0 { 0 } else { bits })
+            } => Some(self.float_literal(*operand, float)? ^ (1u64 << (float.bits() - 1))),
+            _ => None,
         }
+    }
+
+    fn range_endpoint(&self, expr: ExprId, ty: Ty) -> Option<u128> {
+        if let Some(float) = ty.as_float() {
+            return float_rank(float, self.float_literal(expr, float)?);
+        }
+        Some(IntDomain::of(ty)?.encode(self.literal(expr)?))
     }
 
     fn lower(&self, pat: PatId) -> DPat {
@@ -534,8 +563,8 @@ impl Cx<'_> {
                     Some(value) => DPat::Ctor(Ctor::Bool(value != 0), Vec::new()),
                     None => DPat::Wild,
                 },
-                (_, TyKind::Float(float)) => match self.float_literal(*expr, float) {
-                    Some(bits) => DPat::Ctor(Ctor::Float(bits), Vec::new()),
+                (_, TyKind::Float(_)) => match self.range_endpoint(*expr, ty) {
+                    Some(rank) => DPat::Ctor(Ctor::Range(rank, rank), Vec::new()),
                     None => DPat::Or(Vec::new()),
                 },
                 (_, TyKind::Int(_) | TyKind::Char) => match self.literal(*expr) {
@@ -551,23 +580,29 @@ impl Cx<'_> {
                 start,
                 end,
                 inclusive,
-            } => match IntDomain::of(ty) {
-                Some(domain) => {
-                    let value = |e: &Option<ExprId>| e.and_then(|e| self.literal(e));
-                    let lo = value(start).map_or(domain.min(), |v| domain.encode(v));
-                    let hi = match value(end) {
-                        Some(v) if *inclusive => Some(domain.encode(v)),
-                        Some(v) => domain.encode(v).checked_sub(1),
-                        None => Some(domain.max()),
-                    };
-                    match hi {
-                        Some(hi) if lo <= hi => DPat::Ctor(Ctor::Range(lo, hi), Vec::new()),
-                        // Empty, and reported: matches nothing.
-                        _ => DPat::Or(Vec::new()),
-                    }
+            } => {
+                let max = if let Some(float) = ty.as_float() {
+                    2 * float_infinity(float)
+                } else if let Some(domain) = IntDomain::of(ty) {
+                    domain.max()
+                } else {
+                    return DPat::Wild;
+                };
+                let lo = match start {
+                    Some(expr) => self.range_endpoint(*expr, ty),
+                    None => Some(0),
+                };
+                let hi = match end {
+                    Some(expr) => self
+                        .range_endpoint(*expr, ty)
+                        .and_then(|rank| rank.checked_sub(u128::from(!inclusive))),
+                    None => Some(max),
+                };
+                match (lo, hi) {
+                    (Some(lo), Some(hi)) if lo <= hi => DPat::Ctor(Ctor::Range(lo, hi), Vec::new()),
+                    _ => DPat::Or(Vec::new()),
                 }
-                _ => DPat::Wild,
-            },
+            }
             Pat::Or(alternatives) => DPat::or(
                 self.body.lists[*alternatives]
                     .iter()
@@ -629,6 +664,12 @@ impl Cx<'_> {
                         .collect(),
                 )],
             ),
+            crate::PatternConst::Float(bits) => {
+                match ty.as_float().and_then(|float| float_rank(float, *bits)) {
+                    Some(rank) => DPat::Ctor(Ctor::Range(rank, rank), Vec::new()),
+                    None => DPat::Or(Vec::new()),
+                }
+            }
             crate::PatternConst::Scalar(value) => match ty.kind() {
                 TyKind::Bool => DPat::Ctor(Ctor::Bool(*value != 0), Vec::new()),
                 TyKind::Int(_) | TyKind::Char => {
@@ -742,9 +783,7 @@ impl Cx<'_> {
             (Ctor::Variant(v), _) => {
                 flux_solve::variant_fields(self.sigs, ty, v).map_or(Vec::new(), |f| f.to_vec())
             }
-            (Ctor::Bool(_) | Ctor::Float(_) | Ctor::FloatRemainder | Ctor::Range(..), _) => {
-                Vec::new()
-            }
+            (Ctor::Bool(_) | Ctor::FloatRemainder | Ctor::Range(..), _) => Vec::new(),
         }
     }
 
@@ -765,14 +804,15 @@ impl Cx<'_> {
                 .map(Ctor::Bool)
                 .partition(|&c| used(c)),
             TyKind::Float(_) => {
-                let mut present = Vec::new();
-                for head in heads {
-                    if let DPat::Ctor(ctor @ Ctor::Float(_), _) = head
-                        && !present.contains(ctor)
-                    {
-                        present.push(*ctor);
-                    }
-                }
+                let present = heads
+                    .iter()
+                    .filter_map(|head| match head {
+                        DPat::Ctor(ctor @ Ctor::Range(..), _) => Some(*ctor),
+                        _ => None,
+                    })
+                    .collect();
+                // Only a wildcard covers NaNs, even when ranges cover every
+                // numerical value. All missing floats have the same witness.
                 (present, vec![Ctor::FloatRemainder])
             }
             TyKind::Int(_) | TyKind::Char => {

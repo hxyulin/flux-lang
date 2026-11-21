@@ -775,6 +775,9 @@ pub trait ExactSizeIterator: Iterator {
 pub trait FusedIterator: Iterator {}
 
 impl<I: FusedIterator + ?Sized> FusedIterator for &mut I {}
+impl<A: Step> FusedIterator for Range<A> {}
+impl<A: Step> FusedIterator for RangeFrom<A> {}
+impl<A: Step> FusedIterator for RangeInclusive<A> {}
 
 /// A mutable reference to an iterator is one.
 impl<I: Iterator + ?Sized> Iterator for &mut I {

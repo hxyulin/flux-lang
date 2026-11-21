@@ -551,6 +551,25 @@ impl Pat {
 }
 
 impl Body {
+    /// An unannotated function path, possibly returned from empty blocks.
+    pub fn inferred_function_path(&self, mut expr: ExprId) -> Option<FunctionId> {
+        loop {
+            match self.exprs[expr] {
+                Expr::Block {
+                    stmts,
+                    tail: Some(tail),
+                    ..
+                } if self.lists[stmts].is_empty() && self.const_blocks.get(expr).is_none() => {
+                    expr = tail;
+                }
+                Expr::Path(Res::Function(function)) if self.generic_args.get(expr).is_none() => {
+                    return Some(function);
+                }
+                _ => return None,
+            }
+        }
+    }
+
     /// A named or inline constant supplies a fresh value for each array element.
     pub fn repeat_const_operand(&self, value: ExprId) -> bool {
         matches!(

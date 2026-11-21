@@ -626,6 +626,26 @@ pub trait Debug {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
 
+/// A value formatted by a closure for both `Display` and `Debug`.
+pub struct FromFn<F>(F);
+
+/// Wraps a formatting closure without calling it.
+pub const fn from_fn<F: Fn(&mut Formatter<'_>) -> Result>(f: F) -> FromFn<F> {
+    FromFn(f)
+}
+
+impl<F: Fn(&mut Formatter<'_>) -> Result> Debug for FromFn<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        (self.0)(f)
+    }
+}
+
+impl<F: Fn(&mut Formatter<'_>) -> Result> Display for FromFn<F> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        (self.0)(f)
+    }
+}
+
 /// `{:x}`
 pub trait LowerHex {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;

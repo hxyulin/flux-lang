@@ -22,33 +22,31 @@ fn main() -> () {
     let mut _20: [i32; 3]; // b
     let _21: ();
     let _22: IterMut<i32>;
-    let _23: &mut [i32];
-    let _24: &mut [i32; 3];
-    let _25: &mut [i32; 3];
-    let mut _26: IterMut<i32>; // iter
-    let _27: ();
-    let _28: ();
-    let _29: Option<&mut i32>;
-    let _30: &mut IterMut<i32>;
-    let _31: &mut IterMut<i32>;
-    let _32: isize;
-    let _33: !;
-    let _34: &mut i32; // x
-    let _35: isize;
-    let _36: ();
-    let _37: i32;
-    let _38: usize;
-    let _39: bool;
-    let _40: i32;
-    let mut _41: [i32; 2]; // c
-    let mut _42: IterMut<i32>; // iter
-    let _43: &mut [i32; 2];
-    let _44: &mut [i32];
-    let _45: ();
-    let _46: usize;
-    let _47: bool;
-    let _48: Option<&mut i32>;
-    let _49: &mut IterMut<i32>;
+    let _23: &mut [i32; 3];
+    let mut _24: IterMut<i32>; // iter
+    let _25: ();
+    let _26: ();
+    let _27: Option<&mut i32>;
+    let _28: &mut IterMut<i32>;
+    let _29: &mut IterMut<i32>;
+    let _30: isize;
+    let _31: !;
+    let _32: &mut i32; // x
+    let _33: isize;
+    let _34: ();
+    let _35: i32;
+    let _36: usize;
+    let _37: bool;
+    let _38: i32;
+    let mut _39: [i32; 2]; // c
+    let mut _40: IterMut<i32>; // iter
+    let _41: &mut [i32; 2];
+    let _42: &mut [i32];
+    let _43: ();
+    let _44: usize;
+    let _45: bool;
+    let _46: Option<&mut i32>;
+    let _47: &mut IterMut<i32>;
 
     bb0: {
         _2 = S(const 1_i32);
@@ -138,23 +136,21 @@ fn main() -> () {
     bb16: {
         _17 = copy _1[_18].0;
         _20 = [const 1_i32, const 2_i32, const 3_i32];
-        _25 = &mut _20;
-        _24 = &mut (*_25);
-        _23 = move _24 as &mut [i32] (unsize);
-        _22 = into_iter::<&mut [i32]>(move _23) -> bb17;
+        _23 = &mut _20;
+        _22 = into_iter::<&mut [i32; 3]>(move _23) -> bb17;
     }
 
     bb17: {
-        _26 = move _22;
+        _24 = move _22;
         goto -> bb20;
     }
 
     bb18: {
         StorageDead(_22);
-        _41 = [const 1_i32, const 2_i32];
-        _43 = &mut _41;
-        _44 = move _43 as &mut [i32] (unsize);
-        _42 = iter_mut::<i32>(move _44) -> bb32;
+        _39 = [const 1_i32, const 2_i32];
+        _41 = &mut _39;
+        _42 = move _41 as &mut [i32] (unsize);
+        _40 = iter_mut::<i32>(move _42) -> bb32;
     }
 
     bb19: {
@@ -166,30 +162,30 @@ fn main() -> () {
     }
 
     bb21: {
-        _31 = &mut _26;
-        _30 = &mut (*_31);
-        _29 = next::<IterMut<i32>>(move _30) -> bb23;
+        _29 = &mut _24;
+        _28 = &mut (*_29);
+        _27 = next::<IterMut<i32>>(move _28) -> bb23;
     }
 
     bb22: {
-        StorageDead(_26);
+        StorageDead(_24);
         goto -> bb18;
     }
 
     bb23: {
-        _32 = discriminant(_29);
-        switchInt(copy _32) -> [0: bb26, otherwise: bb25];
+        _30 = discriminant(_27);
+        switchInt(copy _30) -> [0: bb26, otherwise: bb25];
     }
 
     bb24: {
-        StorageDead(_29);
-        _27 = const ();
+        StorageDead(_27);
+        _25 = const ();
         goto -> bb21;
     }
 
     bb25: {
-        _35 = discriminant(_29);
-        switchInt(copy _35) -> [1: bb29, otherwise: bb28];
+        _33 = discriminant(_27);
+        switchInt(copy _33) -> [1: bb29, otherwise: bb28];
     }
 
     bb26: {
@@ -198,7 +194,7 @@ fn main() -> () {
 
     bb27: {
         _21 = const ();
-        StorageDead(_29);
+        StorageDead(_27);
         goto -> bb22;
     }
 
@@ -207,44 +203,44 @@ fn main() -> () {
     }
 
     bb29: {
-        _34 = move (_29 as #1).0;
+        _32 = move (_27 as #1).0;
         goto -> bb30;
     }
 
     bb30: {
-        _38 = const 0_usize;
-        _39 = Lt(copy _38, const 3_usize);
-        assert(copy _39, "index out of bounds") -> bb31;
+        _36 = const 0_usize;
+        _37 = Lt(copy _36, const 3_usize);
+        assert(copy _37, "index out of bounds") -> bb31;
     }
 
     bb31: {
-        _37 = copy _20[_38];
-        _40 = copy (*_34);
-        (*_34) = Add(copy _40, copy _37);
-        _36 = const ();
-        _28 = const ();
-        StorageDead(_34);
+        _35 = copy _20[_36];
+        _38 = copy (*_32);
+        (*_32) = Add(copy _38, copy _35);
+        _34 = const ();
+        _26 = const ();
+        StorageDead(_32);
         goto -> bb24;
     }
 
     bb32: {
-        _46 = const 1_usize;
-        _47 = Lt(copy _46, const 2_usize);
-        assert(copy _47, "index out of bounds") -> bb33;
+        _44 = const 1_usize;
+        _45 = Lt(copy _44, const 2_usize);
+        assert(copy _45, "index out of bounds") -> bb33;
     }
 
     bb33: {
-        _41[_46] = const 5_i32;
-        _45 = const ();
-        _49 = &two_phase _42;
-        _48 = next::<IterMut<i32>>(move _49) -> bb34;
+        _39[_44] = const 5_i32;
+        _43 = const ();
+        _47 = &two_phase _40;
+        _46 = next::<IterMut<i32>>(move _47) -> bb34;
     }
 
     bb34: {
-        StorageDead(_48);
+        StorageDead(_46);
         _0 = const ();
-        StorageDead(_42);
-        StorageDead(_41);
+        StorageDead(_40);
+        StorageDead(_39);
         StorageDead(_20);
         StorageDead(_17);
         StorageDead(_1);

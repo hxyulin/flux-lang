@@ -48,6 +48,18 @@ fn mid(v: &[i64], lo: usize, hi: usize) -> i64 {
 }
 
 fn main() {
+    fn fused(mut range: impl std::iter::FusedIterator<Item = usize>) {
+        assert_eq!(range.next(), Some(0));
+        assert_eq!(range.next(), None);
+        assert_eq!(range.next(), None);
+    }
+    fused(0..1);
+    fused(0..=0);
+    fn first(mut range: impl std::iter::FusedIterator<Item = usize>) -> Option<usize> {
+        range.next()
+    }
+    assert_eq!(first(0..), Some(0));
+
     let mut a = [1i64, 2, 3, 4, 5, 6, 7, 8];
     let m = mid(&a, 2, 5);
     fill(&mut a[1..3], 9);

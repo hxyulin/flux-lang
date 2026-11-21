@@ -56,6 +56,27 @@ pub fn __crc_detected() -> bool {
     }
 }
 
+/// Runtime query for the AArch64 AES and polynomial-multiply feature.
+#[doc(hidden)]
+pub fn __aarch64_aes_detected() -> bool {
+    if cfg!(target_feature = "aes") {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        query(b"hw.optional.arm.FEAT_AES\0") && query(b"hw.optional.arm.FEAT_PMULL\0")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // ASIMD, AES, and PMULL are separate HWCAP bits.
+        aarch64_hwcap((1 << 1) | (1 << 3) | (1 << 4))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
 /// Runtime query for the data-independent timing extension.
 #[doc(hidden)]
 pub fn __aarch64_dit_detected() -> bool {

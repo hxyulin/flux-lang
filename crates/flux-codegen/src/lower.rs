@@ -1630,7 +1630,6 @@ impl Ctx<'_> {
     fn function(&mut self, instance: Instance, body: &Body, pointer_wrapper: bool) -> Function {
         let sig = &self.normalized_signature(instance);
         let takes_location = !pointer_wrapper && self.takes_location(instance);
-        let c_abi = self.hir.items.functions[instance.function].abi.is_c();
         let signature = self.instance_signature(instance, sig, pointer_wrapper);
         let mut function = Function::new(
             if pointer_wrapper {
@@ -1698,13 +1697,7 @@ impl Ctx<'_> {
         let typed = self.typed;
         let owner = body.owner.unwrap_or(instance.function);
         let file = self.hir.items.functions[owner].loc.file;
-        let convention = if c_abi {
-            Convention::C
-        } else if self.compilation.is_some() || self.reified.contains(&instance) {
-            Convention::RustReified
-        } else {
-            Convention::RustFast
-        };
+        let convention = self.convention(instance);
         let builder_context = std::mem::take(&mut self.builder_context);
         let lower = Lower {
             ctx: self,
@@ -1733,22 +1726,32 @@ impl Ctx<'_> {
         function
     }
 
+    fn convention(&self, instance: Instance) -> Convention {
+        let function = &self.hir.items.functions[instance.function];
+        if function.abi.is_c() {
+            Convention::C
+        } else if function.is_extern
+            || function.link_name.is_some()
+            || self.compilation.is_some()
+            || self.reified.contains(&instance)
+        {
+            // Imported and exported Rust symbols use the same convention as
+            // Rust function pointers and separately compiled Rust functions.
+            Convention::RustReified
+        } else {
+            Convention::RustFast
+        }
+    }
+
     fn instance_signature(
         &self,
         instance: Instance,
         sig: &FnSig,
         pointer_wrapper: bool,
     ) -> Signature {
-        let mut signature = if self.hir.items.functions[instance.function].abi.is_c() {
-            c_signature(&self.typed.sigs, &self.layouts, sig, false)
-        } else {
-            ctx_signature(
-                &self.typed.sigs,
-                &self.layouts,
-                sig,
-                self.compilation.is_some() || self.reified.contains(&instance),
-            )
-        };
+        let mut signature =
+            self.convention(instance)
+                .signature(&self.typed.sigs, &self.layouts, sig, false);
         if !pointer_wrapper && self.takes_location(instance) {
             signature.params.push(AbiParam::new(Type::Ptr));
         }
@@ -3495,6 +3498,29 @@ impl Lower<'_, '_, '_> {
         self.b.switch_to_block(exit);
     }
 
+    fn constant_item_value(
+        &mut self,
+        id: flux_hir::ConstId,
+        args: flux_ty::GenericArgs,
+    ) -> Option<flux_mir::eval::Value> {
+        let instance = flux_solve::traits::resolve_const(
+            &self.ctx.hir.items,
+            self.sigs,
+            flux_ty::ConstInstance { konst: id, args },
+        );
+        if let Some(value) = self
+            .ctx
+            .const_values
+            .get(instance.konst, instance.args)
+            .or_else(|| self.ctx.instance_values.get(&instance))
+        {
+            return Some(value.clone());
+        }
+        let value = self.ctx.evaluator.eval_instance(instance).ok()?;
+        self.ctx.instance_values.insert(instance, value.clone());
+        Some(value)
+    }
+
     /// An operand's leaves.
     fn operand(&mut self, operand: &Operand) -> Values {
         match operand {
@@ -3502,22 +3528,9 @@ impl Lower<'_, '_, '_> {
             Operand::Const(
                 Constant::Item { id, args, ty } | Constant::ItemRef { id, args, ty },
             ) => {
-                let c = flux_solve::traits::resolve_const(
-                    &self.ctx.hir.items,
-                    self.sigs,
-                    flux_ty::ConstInstance { konst: *id, args },
-                );
-                let known = self.ctx.const_values.get(c.konst, c.args);
-                let value = match known.or_else(|| self.ctx.instance_values.get(&c)) {
-                    Some(value) => value.clone(),
-                    None => match self.ctx.evaluator.eval_instance(c) {
-                        Ok(value) => {
-                            self.ctx.instance_values.insert(c, value.clone());
-                            value
-                        }
-                        // Reported once code generation is done.
-                        Err(_) => return self.zeroes(*ty),
-                    },
+                let Some(value) = self.constant_item_value(*id, args) else {
+                    // Reported once code generation is done.
+                    return self.zeroes(*ty);
                 };
                 let value = if matches!(operand, Operand::Const(Constant::ItemRef { .. })) {
                     flux_mir::eval::Value::Ref(Arc::new(value))
@@ -4173,11 +4186,35 @@ impl Lower<'_, '_, '_> {
                 AsmTemplatePiece::Operand { index, modifier } => {
                     use std::fmt::Write;
                     if registers[*index as usize] == AsmRegister::Const {
-                        let Operand::Const(Constant::Int { bits, .. }) = inputs[*index as usize]
-                        else {
-                            unreachable!("assembly constant is an integer literal");
+                        use flux_mir::eval::{Value, sign_extend};
+                        let value = match inputs[*index as usize] {
+                            Operand::Const(Constant::Int { bits, ty }) => Value::Int { bits, ty },
+                            Operand::Const(Constant::Item { id, args, .. }) => {
+                                let Some(value) = self.constant_item_value(id, args) else {
+                                    // An evaluation diagnostic will discard this function.
+                                    text.push('0');
+                                    continue;
+                                };
+                                value
+                            }
+                            Operand::Const(Constant::Inline { index, .. }) => self
+                                .ctx
+                                .evaluator
+                                .eval_inline_constant(
+                                    &self.body.inline_constants[index as usize],
+                                    Default::default(),
+                                )
+                                .expect("inline constant passed instance collection"),
+                            _ => unreachable!("assembly constant is a concrete integer"),
                         };
-                        write!(text, "{bits}").unwrap();
+                        let Value::Int { bits, ty } = value else {
+                            unreachable!("assembly constant was checked as an integer");
+                        };
+                        if ty.is_signed() {
+                            write!(text, "{}", sign_extend(bits, ty)).unwrap();
+                        } else {
+                            write!(text, "{bits}").unwrap();
+                        }
                         continue;
                     }
 
@@ -5017,6 +5054,19 @@ impl Lower<'_, '_, '_> {
                     }
                     return;
                 }
+                if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::PtrIsNull) {
+                    let data = self.operand(&args[0])[0];
+                    let address = self.b.ins().convert(ConvertOp::PtrToInt, Type::I64, data);
+                    let zero = self.b.ins().iconst(Type::I64, 0);
+                    let null = self.b.ins().icmp(IntCC::Eq, address, zero);
+                    self.write(dest, &[null]);
+                    if let Some(target) = target {
+                        self.b.ins().jump(self.blocks[target.index()], &[]);
+                    } else {
+                        self.b.ins().trap();
+                    }
+                    return;
+                }
                 if items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::PtrMetadataWord) {
                     let parts = self.operand(&args[0]);
                     let metadata = match self.sigs.metadata(generic_args[0]) {
@@ -5076,13 +5126,7 @@ impl Lower<'_, '_, '_> {
                 );
                 // The callee's own convention, as `callee` declared it:
                 // the two Rust ones return different shapes.
-                let convention = if items.functions[resolved.function].abi.is_c() {
-                    Convention::C
-                } else if self.ctx.compilation.is_some() || self.ctx.reified.contains(&resolved) {
-                    Convention::RustReified
-                } else {
-                    Convention::RustFast
-                };
+                let convention = self.ctx.convention(resolved);
                 let make = if convention.is_c() && items.functions[resolved.function].is_extern {
                     let source = self.ctx.normalized_signature(resolved);
                     let signature = c_signature(
@@ -5505,12 +5549,12 @@ impl Lower<'_, '_, '_> {
         }
         let sig = self.ctx.normalized_signature(instance);
         let function = &self.ctx.hir.items.functions[instance.function];
-        let mut sig = if function.abi.is_c() {
-            c_signature(self.sigs, &self.ctx.layouts, &sig, function.is_variadic)
-        } else {
-            let reified = self.ctx.compilation.is_some() || self.ctx.reified.contains(&instance);
-            ctx_signature(self.sigs, &self.ctx.layouts, &sig, reified)
-        };
+        let mut sig = self.ctx.convention(instance).signature(
+            self.sigs,
+            &self.ctx.layouts,
+            &sig,
+            function.is_variadic,
+        );
         if self.ctx.takes_location(instance) {
             sig.params.push(AbiParam::new(Type::Ptr));
         }

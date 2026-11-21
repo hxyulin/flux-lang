@@ -268,7 +268,8 @@ lane!(vgetq_lane_u16, uint16x8_t, u16);
 lane!(vgetq_lane_u8, uint8x16_t, u8);
 load!(vld1q_s16, i16, int16x8_t);
 load!(vld1q_s8, i8, int8x16_t);
-broadcast!(vmovq_n_s16, i16, int16x8_t, 8);
+broadcast!(vdupq_n_s16, i16, int16x8_t, 8);
+pub use self::vdupq_n_s16 as vmovq_n_s16;
 broadcast!(vmovq_n_s8, i8, int8x16_t, 16);
 broadcast!(vmovq_n_u16, u16, uint16x8_t, 8);
 broadcast!(vmovq_n_u32, u32, uint32x4_t, 4);
@@ -309,3 +310,85 @@ reinterpret128!(vreinterpretq_u32_f64, float64x2_t, uint32x4_t);
 reinterpret128!(vreinterpretq_u32_s32, int32x4_t, uint32x4_t);
 reinterpret128!(vreinterpretq_u64_f64, float64x2_t, uint64x2_t);
 reinterpret128!(vreinterpretq_u8_s8, int8x16_t, uint8x16_t);
+
+reinterpret128!(vreinterpretq_s64_s32, int32x4_t, int64x2_t);
+permute_pair!(
+    vtrnq_s32,
+    int32x4_t,
+    int32x4x2_t,
+    "trn1 {0:v}.4s, {2:v}.4s, {3:v}.4s",
+    "trn2 {1:v}.4s, {2:v}.4s, {3:v}.4s"
+);
+
+#[inline]
+#[target_feature(enable = "neon")]
+pub fn vcreate_s16(bits: u64) -> int16x4_t {
+    int16x4_t([bits as i16, (bits >> 16) as i16, (bits >> 32) as i16, (bits >> 48) as i16])
+}
+
+macro_rules! load_pair {
+    ($name:ident, $element:ty, $pair:ident, $load:ident, $lanes:literal) => {
+        /// Loads two consecutive vectors.
+        ///
+        /// # Safety
+        /// The pointer must address two vectors' worth of initialized elements.
+        #[inline]
+        #[target_feature(enable = "neon")]
+        pub unsafe fn $name(pointer: *const $element) -> $pair {
+            // SAFETY: both loads are within the caller's readable range.
+            unsafe { $pair($load(pointer), $load(pointer.add($lanes))) }
+        }
+    };
+}
+
+load_pair!(vld1q_s16_x2, i16, int16x8x2_t, vld1q_s16, 8);
+load_pair!(vld1q_s32_x2, i32, int32x4x2_t, vld1q_s32, 4);
+
+/// Stores eight consecutive halfwords.
+///
+/// # Safety
+/// The pointer must address eight writable halfwords.
+#[inline]
+#[target_feature(enable = "neon")]
+pub unsafe fn vst1q_s16(pointer: *mut i16, value: int16x8_t) {
+    // SAFETY: the caller supplies space for the complete lane array.
+    unsafe { crate::ptr::write_unaligned(pointer.cast::<[i16; 8]>(), value.0) }
+}
+
+/// Stores two consecutive halfword vectors.
+///
+/// # Safety
+/// The pointer must address sixteen writable halfwords.
+#[inline]
+#[target_feature(enable = "neon")]
+pub unsafe fn vst1q_s16_x2(pointer: *mut i16, value: int16x8x2_t) {
+    // SAFETY: both stores are within the caller's writable range.
+    unsafe {
+        vst1q_s16(pointer, value.0);
+        vst1q_s16(pointer.add(8), value.1);
+    }
+}
+
+macro_rules! store_interleaved {
+    ($name:ident, $input:ty, $instruction:literal $(, $register:literal, $channel:tt)+) => {
+        /// Stores lanes with the supplied channels interleaved in memory.
+        ///
+        /// # Safety
+        /// The pointer must address sixteen writable bytes per channel.
+        #[inline]
+        #[target_feature(enable = "neon")]
+        pub unsafe fn $name(pointer: *mut u8, value: $input) {
+            // SAFETY: the caller provides the writable range, and the
+            // instruction reads its channels from the given consecutive registers.
+            unsafe {
+                asm!($instruction, in(reg) pointer, $(in($register) value.$channel,)+
+                     options(nostack, preserves_flags));
+            }
+        }
+    };
+}
+
+store_interleaved!(vst3q_u8, uint8x16x3_t,
+    "st3 {{v0.16b, v1.16b, v2.16b}}, [{0}]", "v0", 0, "v1", 1, "v2", 2);
+store_interleaved!(vst4q_u8, uint8x16x4_t,
+    "st4 {{v0.16b, v1.16b, v2.16b, v3.16b}}, [{0}]", "v0", 0, "v1", 1, "v2", 2, "v3", 3);

@@ -2129,18 +2129,32 @@ pub(crate) fn cfg_position(p: SyntaxNode<'_>) -> bool {
                 | SyntaxKind::LIFETIME_PARAM
         )
         || ast::Expr::can_cast(p.kind())
-            && p.parent().is_some_and(|parent| {
-                matches!(
-                    parent.kind(),
-                    SyntaxKind::ARG_LIST
-                        | SyntaxKind::TUPLE_EXPR
-                        | SyntaxKind::BLOCK_EXPR
-                        | SyntaxKind::EXPR_STMT
-                        | SyntaxKind::FN
-                        | SyntaxKind::MACRO_STMTS
-                ) || ast::ArrayExpr::cast(parent)
-                    .is_some_and(|array| array.semicolon_token().is_none())
-            })
+            && std::iter::successors(p.parent(), |node| node.parent())
+                .find(|parent| invisible_expr(*parent).is_none())
+                .is_some_and(|parent| {
+                    matches!(
+                        parent.kind(),
+                        SyntaxKind::ARG_LIST
+                            | SyntaxKind::TUPLE_EXPR
+                            | SyntaxKind::BLOCK_EXPR
+                            | SyntaxKind::EXPR_STMT
+                            | SyntaxKind::FN
+                            | SyntaxKind::MACRO_STMTS
+                    ) || ast::ArrayExpr::cast(parent)
+                        .is_some_and(|array| array.semicolon_token().is_none())
+                })
+}
+
+/// The expression inside an invisible macro fragment delimiter.
+pub(crate) fn invisible_expr(node: SyntaxNode<'_>) -> Option<ast::Expr<'_>> {
+    let paren = ast::ParenExpr::cast(node)?;
+    let open = paren.l_paren_token()?;
+    let origin = node.tree().token_origin(open.index())?;
+    if origin.range.is_empty() && !origin.is_type_fragment() {
+        paren.expr()
+    } else {
+        None
+    }
 }
 
 /// A path to a trait, as [`lower_generic_path`], where the last segment

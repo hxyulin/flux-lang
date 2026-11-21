@@ -53,8 +53,46 @@ fn zip_bytes() {
     println!("{low:?} {high:?}");
 }
 
+fn byte_reduction_and_shift() {
+    // SAFETY: NEON is baseline on AArch64. Lane and shift immediates
+    // are within the respective instruction ranges.
+    unsafe {
+        let bytes = vsetq_lane_u8::<15>(255, vdupq_n_u8(254));
+        assert_eq!(vaddlvq_u8(bytes), 15 * 254 + 255);
+        let words = vdupq_n_u64(u64::MAX);
+        let shifted: [u64; 2] = core::mem::transmute(vshrq_n_u64::<1>(words));
+        assert_eq!(shifted, [u64::MAX >> 1; 2]);
+        let zero: [u64; 2] = core::mem::transmute(vshrq_n_u64::<64>(words));
+        assert_eq!(zero, [0; 2]);
+    }
+}
+
+fn interleaved_words() {
+    let mut bytes = [0u8; 49];
+    let words = [0u32, 1, 2, 3, 4, 5, u32::MAX, 7, 8, 9, 10, 11];
+    // SAFETY: the copy initializes the 48 bytes at offset 1. NEON is
+    // baseline on AArch64 and the load allows unaligned input.
+    unsafe {
+        let pointer = bytes.as_mut_ptr().add(1);
+        core::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>(), pointer, 48);
+        let channels = vld3q_u32(pointer.cast::<u32>());
+        let lanes = |vector| core::mem::transmute::<uint32x4_t, [u32; 4]>(vector);
+        assert_eq!(lanes(channels.0), [0, 3, u32::MAX, 9]);
+        assert_eq!(lanes(channels.1), [1, 4, 7, 10]);
+        assert_eq!(lanes(channels.2), [2, 5, 8, 11]);
+        assert_eq!(lanes(vuzp1q_u32(channels.0, channels.1)), [0, u32::MAX, 1, 7]);
+        assert_eq!(lanes(vuzp2q_u32(channels.0, channels.1)), [3, 9, 4, 10]);
+        let threshold = vdupq_n_u32(3);
+        assert_eq!(lanes(vcgeq_u32(channels.0, threshold)), [0, u32::MAX, u32::MAX, u32::MAX]);
+        assert_eq!(lanes(vcleq_u32(channels.0, threshold)), [u32::MAX, u32::MAX, 0, 0]);
+        assert_eq!(lanes(vcltq_u32(channels.0, threshold)), [u32::MAX, 0, 0, 0]);
+    }
+}
+
 fn main() {
+    byte_reduction_and_shift();
     zip_bytes();
+    interleaved_words();
     probe!(u16,8,vld1q_u16,vdupq_n_u16,vcgtq_u16,vceqq_u16,vandq_u16,vaddq_u16,vsubq_u16,vaddvq_u16);
     probe!(u32,4,vld1q_u32,vdupq_n_u32,vcgtq_u32,vceqq_u32,vandq_u32,vaddq_u32,vsubq_u32,vaddvq_u32);
     probe!(u64,2,vld1q_u64,vdupq_n_u64,vcgtq_u64,vceqq_u64,vandq_u64,vaddq_u64,vsubq_u64,vaddvq_u64);

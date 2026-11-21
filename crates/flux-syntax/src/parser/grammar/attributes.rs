@@ -47,7 +47,8 @@ pub(super) fn meta(p: &mut Parser<'_>) {
     }
     paths::use_path(p);
     match p.current() {
-        T![=] => {
+        // A bare meta fragment can be followed by a macro arm separator.
+        T![=] if !p.at(T![=>]) => {
             p.bump(T![=]);
             expressions::expr(p);
         }

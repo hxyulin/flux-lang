@@ -1,0 +1,4 @@
+fn main() -> ()
+    slice@0: &[u8]
+error 63..68: mismatched types: expected `&[u8; 1]`, found `&[u8; 2]`
+error 70..75: mismatched types: expected `&[u8; 1]`, found `&[u8]`

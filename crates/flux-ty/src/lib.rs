@@ -1198,6 +1198,7 @@ pub enum PatternConst {
     /// Exact elements of a shared byte-slice constant pattern.
     Bytes(Vec<u8>),
     Scalar(i128),
+    Float(u64),
     Aggregate(Vec<PatternConst>),
     Variant {
         index: u32,
@@ -1216,7 +1217,7 @@ pub fn structural_pattern_type(items: &ItemTree, sigs: &Signatures, ty: Ty) -> b
             return false;
         }
         match ty.kind() {
-            TyKind::Int(_) | TyKind::Bool | TyKind::Char | TyKind::Error => true,
+            TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool | TyKind::Char | TyKind::Error => true,
             TyKind::RawPtr(_, pointee) => !sigs.is_unsized(pointee),
             TyKind::Tuple(fields) => fields.iter().all(|&t| check(items, sigs, t, depth + 1)),
             TyKind::Array(elem, len) => {

@@ -49,6 +49,16 @@ macro_rules! configured_item {
 }
 configured_item!();
 
+macro_rules! configured_value {
+    ($condition:meta => $value:expr) => {
+        #[cfg($condition)]
+        fn arrow_value() -> i32 { $value }
+        #[cfg(not($condition))]
+        fn arrow_value() -> i32 { 0 }
+    };
+}
+configured_value!(unix => 29);
+
 #[cfg(all())]
 #[cfg(not(any(test, feature = "disabled", unknown_flux_option)))]
 fn value() -> i32 { chosen!() }
@@ -112,6 +122,8 @@ fn target() -> bool {
 }
 
 fn main() {
+    assert_eq!(arrow_value(), if cfg!(unix) { 29 } else { 0 });
+
     #[cfg(test)]
     fn local() -> missing_type!() { missing_value() }
     #[cfg(all())]

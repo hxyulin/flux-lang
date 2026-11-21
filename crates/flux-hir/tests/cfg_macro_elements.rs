@@ -15,6 +15,14 @@ fn required_macro_expression_cannot_disappear() {
             "macro_rules! gone{()=>{#[cfg(any())]{missing}}}macro_rules! outer{()=>{#[cfg(all())]{1+gone!()}}}fn main(){let x=[outer!()];}",
         ),
         (
+            "forwarded_required_operand",
+            "macro_rules! add{($x:expr)=>{1+$x}}fn main(){let _=[add!(#[cfg(any())] missing)];}",
+        ),
+        (
+            "written_parentheses",
+            "macro_rules! array{($x:expr)=>{[$x]}}fn main(){let _=array!((#[cfg(any())] missing));}",
+        ),
+        (
             "malformed",
             "macro_rules! bad{()=>{#[cfg(not())]{1}}}fn main(){let x=[bad!()];}",
         ),

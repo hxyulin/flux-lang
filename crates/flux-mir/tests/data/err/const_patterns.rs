@@ -68,3 +68,20 @@ fn not_borrow_checked(x: u8) -> i32 {
 }
 
 fn main() {}
+
+fn nan_pattern(value: f32) -> bool {
+    matches!(value, f32::NAN)
+}
+
+fn nonexhaustive_float_range(value: f64) {
+    match value {
+        f64::NEG_INFINITY..=f64::INFINITY => {}
+    }
+}
+
+fn below_negative_infinity(value: f64) {
+    match value {
+        ..f64::NEG_INFINITY => {}
+        _ => {}
+    }
+}

@@ -44,6 +44,8 @@ fn modes(&Option<i32>) -> ()
     x@1: &i32
     y@2: &i32
 fn main() -> ()
+fn empty_float_ranges(f32) -> ()
+    x@0: f32
 error 348..349: non-exhaustive patterns: `E::B(_, _)`, `E::C { .. }` and `E::D` not covered
 error 427..428: non-exhaustive patterns: `Some(Some(_))` not covered
 error 552..553: non-exhaustive patterns: `i32::MIN..=-1_i32` and `1_i32..=i32::MAX` not covered
@@ -69,3 +71,5 @@ error 1677..1682: lower bound for range pattern must be less than or equal to up
 error 1697..1701: lower bound for range pattern must be less than upper bound
 error 1788..1791: cannot explicitly borrow within an implicitly-borrowing pattern
 error 1814..1817: cannot mutably bind by value within an implicitly-borrowing pattern
+error 1923..1932: lower bound for range pattern must be less than or equal to upper bound
+error 1947..1956: lower bound for range pattern must be less than upper bound

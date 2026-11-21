@@ -13,6 +13,12 @@ fn main() {
     assert!(cell.try_borrow_mut().is_err());
     drop(right);
     assert_eq!(*cell.borrow(), [7, 2, 3, 4]);
+    let mut tail = RefMut::map(cell.borrow_mut(), |values| &mut values[2..]);
+    tail[0] = 8;
+    assert!(cell.try_borrow().is_err());
+    assert!(cell.try_borrow_mut().is_err());
+    drop(tail);
+    assert_eq!(*cell.borrow(), [7, 2, 8, 4]);
     let mut values = [1, 2];
     let cells: &Cell<[i32]> = Cell::from_mut(&mut values[..]);
     assert_eq!(

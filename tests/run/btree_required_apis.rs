@@ -50,6 +50,32 @@ impl Drop for Value<'_> {
     }
 }
 fn main() {
+    let mut set_hash = Trace(Vec::new());
+    BTreeSet::from([9u16, 2, 9, 5]).hash(&mut set_hash);
+    let mut expected_hash = Trace(Vec::new());
+    expected_hash.write_usize(3);
+    for value in [2u16, 5, 9] {
+        value.hash(&mut expected_hash);
+    }
+    assert_eq!(set_hash.0, expected_hash.0);
+
+    let mut debug_entries = BTreeMap::from([(1, "one")]);
+    let occupied = debug_entries.entry(1);
+    assert_eq!(
+        format!("{occupied:?}"),
+        "Entry(OccupiedEntry { key: 1, value: \"one\" })",
+    );
+    match debug_entries.entry(2) {
+        Entry::Vacant(entry) => assert_eq!(format!("{entry:?}"), "VacantEntry(2)"),
+        Entry::Occupied(_) => panic!("expected a vacant entry"),
+    }
+    // Debug for a vacant entry only needs the key to implement Debug.
+    struct NoDebug;
+    let mut map_with_opaque_values = BTreeMap::<u8, NoDebug>::new();
+    if let Entry::Vacant(entry) = map_with_opaque_values.entry(7) {
+        assert_eq!(format!("{entry:?}"), "VacantEntry(7)");
+    }
+
     let mut map = BTreeMap::new();
     for n in 0..257u32 {
         map.insert((n * 73) % 257, n);
@@ -193,6 +219,23 @@ fn main() {
     drop(value);
     drop(left);
     assert_eq!((kd.get(), vd.get()), (6, 4));
+    let set_drops = Cell::new(0);
+    let mut destination = BTreeSet::from([Key {
+        rank: 1,
+        tag: 10,
+        drops: &set_drops,
+    }]);
+    let mut source = BTreeSet::from([
+        Key { rank: 1, tag: 20, drops: &set_drops },
+        Key { rank: 2, tag: 30, drops: &set_drops },
+    ]);
+    destination.append(&mut source);
+    assert!(source.is_empty());
+    assert_eq!(destination.first().unwrap().tag, 10);
+    assert_eq!(destination.last().unwrap().tag, 30);
+    assert_eq!(set_drops.get(), 1);
+    drop(destination);
+    assert_eq!(set_drops.get(), 3);
     let a = BTreeSet::from([3u32, 1, 2]);
     let b = BTreeSet::from([2u32, 3, 1]);
     assert_eq!(a, b);

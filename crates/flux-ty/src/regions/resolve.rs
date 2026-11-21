@@ -2702,15 +2702,21 @@ pub fn trait_bound_schemes(
         predicates: written.into(),
         ..Generics::default()
     };
-    let rows = bound_regions(
+    let owner_count = names.len() as u32;
+    let mut walker = Walker::new(items, data.loc.module, names);
+    walker.scope = scope;
+    // An equality such as `Iterator<Item = Self::Component>` uses the
+    // declaring trait's lifetime arguments for an implicit Self projection.
+    walker.self_projection_owner = Some((id, (0..owner_count).map(Region::Param).collect()));
+    walker.add_projection_bounds(&schema);
+    let rows = bound_regions_with_walker(
         items,
-        data.loc.module,
         &schema,
-        &names,
-        &generics,
         &predicates,
         projections,
         &mut errors,
+        &mut walker,
+        None,
     );
     if !errors.is_empty()
         || rows.0.len() != predicates.len()
@@ -3635,11 +3641,45 @@ fn bounds_outlives(
         ..scope
     };
     walker.scope = scope;
+    if !generics.type_outlives.is_empty() {
+        walker.add_projection_bounds(generics);
+    }
     for p in generics.type_outlives.iter() {
         let r = walker.named(p.lifetime);
         let mut scratch = Vec::new();
         let ty = crate::resolve_type(items, module, &p.ty, scope, p.ty_range, &mut scratch);
         if has_projection_outlives_inputs(items, ty) {
+            // An explicit bound may repeat a guarantee already made by the
+            // associated type. Check the written occurrence before dropping
+            // the redundant bound; an erased projection cannot stand in for
+            // a different choice of owner lifetime.
+            if scratch.is_empty()
+                && r != Region::Erased
+                && let TyKind::Alias(alias) = ty.kind()
+                && let Some((_, family)) =
+                    sigs.regions.traits.get(alias.trait_).and_then(|owner| {
+                        owner.families.iter().find(|(name, _)| *name == alias.name)
+                    })
+                && alias.family_lifetimes == 0
+                && alias.family_args.is_empty()
+                && !family.output_outlives.is_empty()
+            {
+                let before = walker.errors.len();
+                let row = walker.regions(&p.ty, ty);
+                if walker.errors.len() == before
+                    && row.len() == slots(items, ty)
+                    && !row.contains(&Region::Erased)
+                    && family.output_outlives.iter().any(|bound| match bound {
+                        Region::Static => true,
+                        Region::Param(index) if *index < alias.owner_lifetimes => {
+                            row.get(*index as usize) == Some(&r)
+                        }
+                        _ => false,
+                    })
+                {
+                    continue;
+                }
+            }
             errors.push((
                 p.ty_range,
                 "type-outlives bounds on lifetime-bearing projections are not supported yet".into(),

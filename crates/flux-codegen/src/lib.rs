@@ -254,9 +254,19 @@ fn compile_object_inner(
         allocator: &keel_codegen::regalloc::AllocationTier::Full,
     };
     let mut assembler = match target {
-        Target::Aarch64AppleDarwin => {
-            Some(keel_asm::ObjectAssembler::for_target(target).map_err(Error::assemble)?)
-        }
+        Target::Aarch64AppleDarwin => Some(
+            keel_asm::ObjectAssembler::with_features(
+                target,
+                // Permit explicit assembly in functions whose callers
+                // establish the CPU feature preconditions.
+                keel_asm::TargetFeatures::default()
+                    .with_fp16()
+                    .with_pmull()
+                    .with_crc32(),
+                Default::default(),
+            )
+            .map_err(Error::assemble)?,
+        ),
         Target::X86_64LinuxGnu => {
             let features = keel_codegen::x86_features::module_features(module, Default::default())
                 .map_err(Error::codegen)?;

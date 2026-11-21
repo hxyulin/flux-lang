@@ -394,22 +394,6 @@ impl Builder<'_> {
                 row
             }
             (TypeRef::Dyn(d), TyKind::Dynamic(dynamic)) => {
-                for bound in &d.bounds {
-                    let (trait_, _) = self.items.resolve_trait(self.module, bound);
-                    if trait_.is_some_and(|id| !self.items.traits[id].generics.lifetimes.is_empty())
-                        || bound
-                            .path
-                            .args
-                            .iter()
-                            .flatten()
-                            .any(|a| !a.lifetimes.is_empty())
-                    {
-                        self.errors.push((
-                            bound.range,
-                            "lifetime arguments on trait objects are not supported yet".into(),
-                        ));
-                    }
-                }
                 let region = match d.lifetime {
                     Some(l) => Some(self.lifetime(Some(l), l.range)),
                     None if self.elision_only => None,
@@ -437,6 +421,13 @@ impl Builder<'_> {
                     self.items.resolve_trait(self.module, bound).0 == Some(dynamic.trait_)
                 }) {
                     let args = bound.path.args(bound.path.segments.len().saturating_sub(1));
+                    if dynamic.quantified.is_none() {
+                        let count = self.items.traits[dynamic.trait_].generics.lifetimes.len();
+                        for index in 0..count {
+                            let written = args.and_then(|args| args.lifetimes.get(index)).copied();
+                            row.push(self.lifetime(written, bound.range));
+                        }
+                    }
                     for (index, &ty) in dynamic.args.iter().enumerate() {
                         let written = args.and_then(|args| args.types.get(index));
                         row.extend(self.object_argument(written, ty));

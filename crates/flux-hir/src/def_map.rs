@@ -299,7 +299,7 @@ impl ItemTree {
                 let mut module = self.named_module(from);
                 for k in 0..n {
                     match self.modules[module].parent {
-                        Some(parent) => module = parent,
+                        Some(parent) => module = self.named_module(parent),
                         None => {
                             let message = format!(
                                 "too many leading `super` keywords within `{}`",

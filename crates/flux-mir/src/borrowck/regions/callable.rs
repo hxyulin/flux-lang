@@ -3,8 +3,8 @@ use super::{Category, Cx, FunctionUse, STATIC, UniversalRelationMode, Var};
 use crate::Place;
 use flux_hir::Diagnostic;
 use flux_syntax::TextRange;
-use flux_ty::regions::Variance;
-use flux_ty::{Ty, TyKind};
+use flux_ty::regions::{CallbackBinder, FnRegions, Region, Variance};
+use flux_ty::{FnPtrRegions, FnRegion, Ty, TyKind};
 use rustc_hash::FxHashSet;
 
 /// Deferred universal proof for an indirect callback invocation.
@@ -45,6 +45,59 @@ fn record_pointer_check(
             input_wf,
             range,
         });
+    }
+}
+
+fn supported_item_pointer_binder(source: &FnRegions, target: &FnPtrRegions) -> bool {
+    match source.callback_binder {
+        CallbackBinder::Independent => true,
+        CallbackBinder::Unclassified => false,
+        CallbackBinder::SignatureBound => {
+            if source.owner != 0
+                || source.has_bounds
+                || target.free == 0
+                || !target.types.is_empty()
+                || !target.projections.is_empty()
+                || source.selected_inputs.iter().any(|row| !row.is_empty())
+                || source.params.len() + 1 != target.inputs_output.len()
+            {
+                return false;
+            }
+            // A predicate can fix a named lifetime without fixing the
+            // pointer's elided inputs. All named source lifetimes must be
+            // represented and stay outside the pointer binder.
+            let mut mapped = vec![false; source.names.len()];
+            for (source_row, target_row) in source
+                .params
+                .iter()
+                .map(AsRef::as_ref)
+                .chain(std::iter::once(source.ret.as_ref()))
+                .zip(target.inputs_output)
+            {
+                if source_row.len() != target_row.len() {
+                    return false;
+                }
+                for (&source_region, &target_region) in source_row.iter().zip(*target_row) {
+                    if let Region::Param(index) = source_region {
+                        let Some(name) = source.names.get(index as usize) else {
+                            return false;
+                        };
+                        if name.name.is_none() {
+                            continue;
+                        }
+                        if !matches!(target_region, FnRegion::Free(_) | FnRegion::Static) {
+                            return false;
+                        }
+                        mapped[index as usize] = true;
+                    }
+                }
+            }
+            source
+                .names
+                .iter()
+                .zip(mapped)
+                .all(|(name, mapped)| name.name.is_none() || mapped)
+        }
     }
 }
 
@@ -179,27 +232,30 @@ impl Cx<'_> {
             {
                 upper.retain(|&region| region != STATIC);
             }
-            // Covering any admitted fixed upper is sufficient: the input
-            // placeholder is below all of them. Follow only older nodes and
-            // never use a current quantified placeholder to establish coverage.
-            let mut covered = vec![false; before as usize];
+            // Covering one admitted fixed upper suffices. A deferred proof
+            // can see ordinary inference slots created by a later call, but
+            // cannot use that call's placeholders to establish coverage.
+            let ordinary = |region: Var| {
+                !bound.contains(&region)
+                    && !self.holes.contains(&region)
+                    && !self.retired_pointer_placeholders.contains(&region)
+                    && (region < before || !self.universal_of.contains_key(&region))
+            };
+            let mut covered = vec![false; edges.len()];
             let mut pending: Vec<_> = upper
                 .iter()
                 .copied()
-                .filter(|region| !bound.contains(region))
+                .filter(|&region| ordinary(region))
                 .collect();
             while let Some(region) = pending.pop() {
-                if region >= before
-                    || bound.contains(&region)
-                    || std::mem::replace(&mut covered[region as usize], true)
-                {
+                if std::mem::replace(&mut covered[region as usize], true) {
                     continue;
                 }
                 pending.extend(
                     reverse[region as usize]
                         .iter()
                         .copied()
-                        .filter(|parent| *parent < before && !bound.contains(parent)),
+                        .filter(|&parent| ordinary(parent)),
                 );
             }
             for old in 1..before {
@@ -229,8 +285,9 @@ impl Cx<'_> {
         self.universal.truncate(universal);
         self.known_pairs.truncate(known);
         self.close_known();
-        for var in bound {
-            self.holes.remove(var);
+        for &var in bound {
+            self.holes.remove(&var);
+            self.retired_pointer_placeholders.insert(var);
         }
     }
 
@@ -442,8 +499,7 @@ impl Cx<'_> {
                     || !args
                         .iter()
                         .any(|&t| flux_ty::regions::slots(self.items, t) != 0))
-                    && !(r.bound != 0
-                        && regions.callback_binder != flux_ty::regions::CallbackBinder::Independent)
+                    && (r.bound == 0 || supported_item_pointer_binder(regions, r))
                 {
                     let signature = self.sigs.fns[function].subst(args);
                     let data = &self.items.functions[function];
@@ -810,18 +866,24 @@ mod tests {
             });
             let mut cx = Cx::new(&body, &hir.items, &typed.sigs, &requirements);
             cx.closure_ext = vec![
-                Ext::Static,
-                Ext::SelfRef,
-                Ext::Arg(0),
-                Ext::Arg(1),
-                Ext::Parent(parent, 0),
+                Some(Ext::Static),
+                Some(Ext::SelfRef),
+                Some(Ext::Arg(0)),
+                Some(Ext::Arg(1)),
+                Some(Ext::Parent(parent, 0)),
+                None,
+                Some(Ext::Ret(0)),
             ];
-            assert!(!cx.closure_relation_exportable(1, 0));
-            assert_eq!(cx.closure_relation_exportable(2, 0), !annotated_refs);
-            assert!(cx.closure_relation_exportable(3, 0));
-            assert!(cx.closure_relation_exportable(4, 3));
-            assert!(!cx.closure_relation_exportable(5, 0));
-            assert!(!cx.closure_relation_exportable(4, 5));
+            assert!(cx.closure_relation(1, 0).is_none());
+            assert_eq!(cx.closure_relation(2, 0).is_some(), !annotated_refs);
+            assert!(cx.closure_relation(3, 0).is_some());
+            assert!(cx.closure_relation(4, 3).is_some());
+            assert!(cx.closure_relation(5, 0).is_none());
+            assert!(cx.closure_relation(4, 5).is_none());
+            assert_eq!(
+                cx.closure_relation(4, 6),
+                Some((Ext::Parent(parent, 0), Ext::Ret(0))),
+            );
         }
     }
 }

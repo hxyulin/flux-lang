@@ -344,6 +344,11 @@ impl String {
         self.vec.shrink_to_fit();
     }
 
+    /// Shrinks capacity to at least `min_capacity` and the string's length.
+    pub fn shrink_to(&mut self, min_capacity: usize) {
+        self.vec.shrink_to(min_capacity);
+    }
+
     /// Splits off the bytes from `at` on into a new string.
     #[track_caller]
     pub fn split_off(&mut self, at: usize) -> String {

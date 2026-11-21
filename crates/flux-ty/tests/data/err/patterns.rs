@@ -129,3 +129,11 @@ fn modes(o: &Option<i32>) {
 }
 
 fn main() {}
+
+fn empty_float_ranges(x: f32) {
+    match x {
+        2.0..=1.0 => {}
+        -0.0..0.0 => {}
+        _ => {}
+    }
+}

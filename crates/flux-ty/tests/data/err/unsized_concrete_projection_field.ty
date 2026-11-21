@@ -1,0 +1,4 @@
+struct Record {}
+struct Storage { 0: MaybeUninit<[u8]> }
+fn main() -> ()
+error 143..177: the size for values of type `[u8]` cannot be known at compilation time

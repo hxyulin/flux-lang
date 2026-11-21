@@ -14,6 +14,22 @@ mod modules {
     pub mod geometry;
     pub mod util;
 
+    const RULE: u32 = 41;
+
+    pub(crate) fn local_module_rule() -> u32 {
+        const RULE: u32 = 99;
+        mod rules {
+            pub mod hidden {
+                use super::super::RULE;
+
+                pub fn rule() -> u32 {
+                    RULE
+                }
+            }
+        }
+        RULE + rules::hidden::rule()
+    }
+
     /// An inline module beside the file modules.
     pub mod report {
         use super::geometry::{self, Matrix, Rect, Round as Circle, apply};
@@ -99,6 +115,7 @@ fn describe() -> i64 {
 }
 
 fn main() {
+    assert_eq!(modules::local_module_rule(), 140);
     title(c"names".as_ptr());
     line(c"describe()".as_ptr(), describe());
     line(c"geo::describe()".as_ptr(), geo::describe());

@@ -8,6 +8,36 @@ fn function_pointer_regions_match_rustc() {
     std::fs::create_dir_all(&root).unwrap();
     for (name, source, accepted) in [
         (
+            "bounded_filter_predicate",
+            include_str!("../../../tests/run/bounded_filter_predicate.rs"),
+            true,
+        ),
+        (
+            "bounded_filter_predicate_cannot_capture_outer_loan",
+            "struct Field<'a>(&'a u32);fn bad<'a,'b,F>(fields:&'b [Field<'a>],p:F)->usize where F:Fn(&'b &'b Field<'a>)->bool{fields.iter().filter(p).count()}fn main(){}",
+            false,
+        ),
+        (
+            "inferred_closure_pointer_inside_iterator_capture",
+            include_str!("../../../tests/run/inferred_closure_pointer_join.rs"),
+            true,
+        ),
+        (
+            "inferred_closure_pointer_cannot_hide_static_requirement",
+            "fn static_value(value:&'static u32)->u32{*value}fn local_value(value:&u32,increment:u32)->u32{*value+increment}fn convert(value:&u32,choose:bool)->u32{let conv=match choose{true=>|value,_|static_value(value),false=>|value,increment|local_value(value,increment)};conv(value,1)}fn main(){}",
+            false,
+        ),
+        (
+            "fixed_principal_in_pointer_binder",
+            include_str!("../../../tests/run/fn_pointer_principal_lifetime.rs"),
+            true,
+        ),
+        (
+            "fixed_principal_cannot_be_generalized",
+            "trait Mark<'a>{}trait Visitor<'a>{fn visit(&self,x:&'a u32);}fn adapt<'a,T:Mark<'a>>(_: &dyn Visitor<'a>){}fn bad<'a,T:Mark<'a>>() -> for<'b> fn(&dyn Visitor<'b>){adapt::<T>}fn main(){}",
+            false,
+        ),
+        (
             "unsafe_owner_outlives_impl",
             "unsafe trait Tr<'a>:'a{unsafe fn callback();}struct S<'b>(&'b u32);unsafe impl<'a,'b>Tr<'a> for S<'b>{unsafe fn callback(){}}fn main(){}",
             false,
@@ -420,6 +450,20 @@ fn function_pointer_regions_match_rustc() {
         (
             "generic_input_not_static",
             "fn need<T:'static>(){}fn check<T>(){need::<fn(T)>();}fn main(){}",
+            false,
+        ),
+        (
+            "inferred_item_join_requires_static",
+            "fn first<T:'static>(_:T){}fn second<T:'static>(_:T){}\
+             fn call(flag:bool){let selected=if flag{first}else{second};let local=String::new();selected(&local);}\
+             fn main(){call(true);}",
+            false,
+        ),
+        (
+            "inferred_item_join_result_cannot_escape",
+            "fn first<T>(x:T)->T{x}fn second<T>(x:T)->T{x}\
+             fn call(flag:bool)->&'static i32{let selected=if flag{first}else{second};let local=7;selected(&local)}\
+             fn main(){let _=call(true);}",
             false,
         ),
         (

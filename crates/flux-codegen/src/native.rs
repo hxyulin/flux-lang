@@ -49,12 +49,12 @@ impl NativeLinkInputs {
         self.string(&dylib.install_name);
         self.context
             .extend_from_slice(&(dylib.exports.len() as u64).to_le_bytes());
-        for symbol in &dylib.exports {
+        for symbol in dylib.exports.iter() {
             self.string(symbol);
         }
         self.context
             .extend_from_slice(&(dylib.weak_exports.len() as u64).to_le_bytes());
-        for symbol in &dylib.weak_exports {
+        for symbol in dylib.weak_exports.iter() {
             self.string(symbol);
         }
     }

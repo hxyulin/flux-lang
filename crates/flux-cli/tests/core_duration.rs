@@ -1,7 +1,7 @@
 //! Canonical core/std duration identity and allocation-free debug formatting.
 #![cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod support;
-pub use core::{error, fmt, ops, str};
+pub use core::{error, fmt, iter, ops, str};
 #[path = "../../../library/core/src/time.rs"]
 #[allow(
     dead_code,

@@ -94,6 +94,7 @@ intrinsics! {
     PtrWithAddr => "ptr_with_addr",
     PtrWithMetadata => "ptr_with_metadata",
     PtrMetadataWord => "ptr_metadata_word",
+    PtrIsNull => "ptr_is_null",
     AtomicU16CasRelaxed => "__atomic_u16_cas_relaxed",
     AtomicU16CasAcquire => "__atomic_u16_cas_acquire",
     AtomicU16CasRelease => "__atomic_u16_cas_release",

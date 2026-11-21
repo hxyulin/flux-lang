@@ -46,6 +46,11 @@ impl<T: Eq + Hash, S: BuildHasher> HashSet<T, S> {
     }
     pub fn is_subset(&self, other: &Self) -> bool { self.iter().all(|value| other.contains(value)) }
     pub fn is_disjoint(&self, other: &Self) -> bool { self.iter().all(|value| !other.contains(value)) }
+
+    /// Iterates over the values in this set that are absent from `other`.
+    pub fn difference<'a>(&'a self, other: &'a Self) -> Difference<'a, T, S> {
+        Difference { iter: self.iter(), other }
+    }
 }
 impl<T: Eq + Hash, S: BuildHasher> PartialEq for HashSet<T, S> {
     fn eq(&self, other: &Self) -> bool { self.len() == other.len() && self.is_subset(other) }
@@ -71,6 +76,44 @@ impl<'a, T> Iterator for Iter<'a, T> {
 }
 impl<T> ExactSizeIterator for Iter<'_, T> {}
 impl<T> FusedIterator for Iter<'_, T> {}
+
+/// Elements of one set that do not occur in the other.
+pub struct Difference<'a, T, S> {
+    iter: Iter<'a, T>,
+    other: &'a HashSet<T, S>,
+}
+
+impl<T, S> Clone for Difference<'_, T, S> {
+    fn clone(&self) -> Self {
+        Self { iter: self.iter.clone(), other: self.other }
+    }
+}
+
+impl<'a, T: Eq + Hash, S: BuildHasher> Iterator for Difference<'a, T, S> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(value) = self.iter.next() {
+            if !self.other.contains(value) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.iter.len()))
+    }
+}
+
+impl<T: Eq + Hash, S: BuildHasher> FusedIterator for Difference<'_, T, S> {}
+
+impl<T: Eq + Hash + core::fmt::Debug, S: BuildHasher> core::fmt::Debug for Difference<'_, T, S> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.clone()).finish()
+    }
+}
+
 pub struct Drain<'a, T> { inner: hash_map::Drain<'a, T, ()> }
 impl<T> Iterator for Drain<'_, T> {
     type Item = T;
@@ -116,7 +159,7 @@ impl<T:Eq+Hash+Clone,S:BuildHasher+Default> core::ops::BitAnd<&HashSet<T,S>> for
 
 impl<T:Eq+Hash+Clone,S:BuildHasher+Default> core::ops::Sub<&HashSet<T,S>> for &HashSet<T,S>{
  type Output=HashSet<T,S>;
- fn sub(self,other:&HashSet<T,S>)->Self::Output{let mut result=HashSet::default();for value in self{if !other.contains(value){result.insert(value.clone());}}result}
+ fn sub(self,other:&HashSet<T,S>)->Self::Output{self.difference(other).cloned().collect()}
 }
 
 impl<T:Eq+Hash+Clone,S:BuildHasher+Default> core::ops::BitXor<&HashSet<T,S>> for &HashSet<T,S>{

@@ -292,6 +292,23 @@ impl From<ErrorKind> for Error {
     }
 }
 
+impl From<crate::ffi::NulError> for Error {
+    fn from(_: crate::ffi::NulError) -> Error {
+        Error {
+            code: 0,
+            message: Some("data provided contains a nul byte"),
+            custom_kind: Some(ErrorKind::InvalidInput),
+            custom_error: None,
+        }
+    }
+}
+
+impl From<crate::alloc_crate::collections::TryReserveError> for Error {
+    fn from(_: crate::alloc_crate::collections::TryReserveError) -> Error {
+        ErrorKind::OutOfMemory.into()
+    }
+}
+
 impl ErrorKind {
     fn description(self) -> &'static str {
         match self {

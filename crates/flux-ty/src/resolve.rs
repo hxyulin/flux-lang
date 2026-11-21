@@ -50,6 +50,10 @@ pub struct TypeScope<'a> {
     pub unsized_params: &'a [bool],
     /// Resolved fields for structural DST tails, when signatures are available.
     pub struct_fields: Option<&'a LayeredArenaMap<Struct, &'static [Ty]>>,
+    /// While collecting fields, impl associated types are not available yet.
+    pub defer_projection_sizes: bool,
+    /// Completed impl signatures for sizing projection tails.
+    pub size_sigs: Option<&'a Signatures>,
 }
 
 /// The values of the constants that array lengths name (`[u8; N]`), as
@@ -124,13 +128,23 @@ impl TypeScope<'_> {
     /// Whether values of `ty` may have no size known at compile time
     /// here ([`flux_solve::maybe_unsized`]).
     pub fn is_unsized(&self, items: &ItemTree, ty: Ty) -> bool {
+        if self.defer_projection_sizes && ty.has_aliases() {
+            let tail = flux_ty_ir::metadata::tail(self.struct_fields, ty, |id| {
+                items.structs[id].is_enum()
+            });
+            if matches!(tail.kind(), TyKind::Alias(_)) && !tail.has_params() {
+                return false;
+            }
+        }
         flux_solve::maybe_unsized_with(
             items,
             self.struct_fields,
             ty,
             self.unsized_params,
             self.bounds,
-        )
+        ) && self.size_sigs.is_none_or(|sigs| {
+            flux_solve::maybe_unsized(items, sigs, ty, self.unsized_params, self.bounds)
+        })
     }
 
     /// The generic parameter called `name`, if one is in scope.
@@ -1880,12 +1894,26 @@ pub fn struct_type(
 pub(super) fn unsized_argument(items: &ItemTree, scope: TypeScope<'_>, ty: Ty) -> Option<Ty> {
     let mut stack = vec![ty];
     while let Some(ty) = stack.pop() {
-        if let TyKind::Adt(adt, args) = ty.kind() {
-            for (param, &arg) in items.structs[adt.strukt].generics.params.iter().zip(args) {
-                if !param.maybe_unsized && scope.is_unsized(items, arg) {
-                    return Some(arg);
-                }
+        let invalid = match ty.kind() {
+            TyKind::Adt(adt, args) => items.structs[adt.strukt]
+                .generics
+                .params
+                .iter()
+                .zip(args)
+                .find_map(|(param, &arg)| {
+                    (!param.maybe_unsized && scope.is_unsized(items, arg)).then_some(arg)
+                }),
+            TyKind::Tuple([leading @ .., _]) => leading
+                .iter()
+                .copied()
+                .find(|&ty| scope.is_unsized(items, ty)),
+            TyKind::Array(elem, _) | TyKind::Slice(elem) => {
+                scope.is_unsized(items, elem).then_some(elem)
             }
+            _ => None,
+        };
+        if invalid.is_some() {
+            return invalid;
         }
         stack.extend(ty.children());
     }

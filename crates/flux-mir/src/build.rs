@@ -691,6 +691,16 @@ fn check_patterns(
                 }
                 Value::Int { bits, .. } => PatternConst::Scalar(bits as i128),
                 Value::Bool(value) => PatternConst::Scalar(value as i128),
+                Value::Float { bits, ty } => {
+                    let nan = match ty {
+                        flux_ty::FloatTy::F32 => f32::from_bits(bits as u32).is_nan(),
+                        flux_ty::FloatTy::F64 => f64::from_bits(bits).is_nan(),
+                    };
+                    if nan {
+                        return None;
+                    }
+                    PatternConst::Float(bits)
+                }
                 Value::RawAddr(address) if matches!(ty.kind(), TyKind::RawPtr(_, pointee) if !sigs.is_unsized(pointee)) => {
                     PatternConst::Scalar(i128::from(address))
                 }
@@ -1762,7 +1772,12 @@ fn build_body_inner(
         b.extend_at = Some((usize::MAX, 0));
     }
     b.scoped(ScopeKind::Temps, range, |b| {
-        b.lower_into(root, &Body::RETURN.into());
+        if inline_root.is_some() {
+            // The surrounding expression applies the root's adjustments.
+            b.lower_value(root, &Body::RETURN.into());
+        } else {
+            b.lower_into(root, &Body::RETURN.into());
+        }
     });
     b.leave_scopes(0, false, range);
     b.terminate(TerminatorKind::Return, range);
@@ -2297,26 +2312,38 @@ impl Builder<'_> {
             if self.current.is_none() {
                 return;
             }
-            if self.needs_drop(self.locals[local].ty) {
-                self.drop_place(local.into(), at);
-            }
-            let user = matches!(self.locals[local].kind, LocalKind::User { .. });
-            if kill && block && user {
-                let block = self.block();
-                self.blocks[block.index()].0.push(Statement {
-                    kind: StatementKind::StorageDead(local),
-                    range,
-                });
-            } else if kill && self.storage_temps.contains(&local) {
-                // A temporary's, where it was made, as rustc reports
-                // one dropped while borrowed.
-                let block = self.block();
-                self.blocks[block.index()].0.push(Statement {
-                    kind: StatementKind::StorageDead(local),
-                    range: at,
-                });
-            }
+            self.end_local(local, at, kill, block, range);
         }
+    }
+
+    fn end_local(
+        &mut self,
+        local: Local,
+        at: TextRange,
+        kill: bool,
+        block: bool,
+        range: TextRange,
+    ) {
+        if self.needs_drop(self.locals[local].ty) {
+            self.drop_place(local.into(), at);
+        }
+        if !kill {
+            return;
+        }
+        let user = matches!(self.locals[local].kind, LocalKind::User { .. });
+        let dead_at = if block && user {
+            range
+        } else if self.storage_temps.contains(&local) {
+            // Report a temporary dropped while borrowed where it was made.
+            at
+        } else {
+            return;
+        };
+        let block = self.block();
+        self.blocks[block.index()].0.push(Statement {
+            kind: StatementKind::StorageDead(local),
+            range: dead_at,
+        });
     }
 
     fn terminate(&mut self, kind: TerminatorKind, range: TextRange) {
@@ -3513,9 +3540,14 @@ impl Builder<'_> {
             self.body.exprs[expr],
             Expr::Path(Res::Function(_) | Res::Assoc { .. })
         );
-        let stored = source
-            .filter(|_| !path && flux_ty::regions::item_owner_lifetimes(self.items, def) != 0);
+        let inferred = matches!(ty.kind(), TyKind::FnPtr(sig) if
+            sig.regions.is_some_and(|regions| regions.free != 0))
+            && self.body.inferred_function_path(expr) == Some(def.function);
+        let stored = source.filter(|_| {
+            !path && !inferred && flux_ty::regions::item_owner_lifetimes(self.items, def) != 0
+        });
         if stored.is_none()
+            && !inferred
             && (!path
                 || (written.is_none()
                     && !def
@@ -4052,6 +4084,40 @@ impl Builder<'_> {
         }
     }
 
+    /// Registers a closed inline constant for evaluation in each instance.
+    fn closed_inline_constant(&mut self, expr: ExprId) -> Option<Operand> {
+        if self.body.const_blocks.get(expr).is_none() || self.inline_root == Some(expr) {
+            return None;
+        }
+        self.register_inline_constant(expr)
+    }
+
+    fn register_inline_constant(&mut self, expr: ExprId) -> Option<Operand> {
+        let ty = self.own_ty(expr);
+        let sig = flux_ty::FnSig {
+            params: Box::default(),
+            ret: ty,
+        };
+        let constant = build_body_inner(
+            self.hir,
+            self.typed,
+            self.body,
+            self.source_map,
+            self.types,
+            &sig,
+            self.item,
+            Some(expr),
+        );
+        if !crate::inline_consts::closed(&constant)
+            || !crate::inline_consts::borrowed_storage_supported(self.items, &self.typed.sigs, ty)
+        {
+            return None;
+        }
+        let index = self.inline_constants.len() as u32;
+        self.inline_constants.push(constant);
+        Some(Operand::Const(Constant::Inline { index, ty }))
+    }
+
     /// Evaluates `expr` and stores its value in `dest`.
     fn lower_value(&mut self, expr: ExprId, dest: &Place) {
         match self.types.expr_regions.get(expr) {
@@ -4146,7 +4212,29 @@ impl Builder<'_> {
                     .enumerate()
                 {
                     if register.input_only() {
-                        inputs.push(self.lower_operand(operand));
+                        let input = if *register == flux_hir::AsmRegister::Const {
+                            self.closed_inline_constant(operand)
+                                .unwrap_or_else(|| self.lower_operand(operand))
+                        } else {
+                            self.lower_operand(operand)
+                        };
+                        if *register == flux_hir::AsmRegister::Const
+                            && !matches!(
+                                input,
+                                Operand::Const(
+                                    Constant::Int { .. }
+                                        | Constant::Item { .. }
+                                        | Constant::Inline { .. }
+                                        | Constant::TyConst { .. }
+                                )
+                            )
+                        {
+                            self.errors.push(flux_hir::Diagnostic::new(
+                                self.range(operand),
+                                "expected an integer constant for assembly operand",
+                            ));
+                        }
+                        inputs.push(input);
                         continue;
                     }
                     let output = asm
@@ -4337,6 +4425,21 @@ impl Builder<'_> {
                     self.assign(dest, Rvalue::Use(Operand::Const(constant)), range);
                     return;
                 }
+                // A named constant can contain a const call that eager
+                // qualification cannot evaluate. An array of such constants
+                // still promotes if none of its elements can drop or mutate.
+                if !*mutable
+                    && !self.const_initializer
+                    && let Expr::Array(fields) = body.exprs[*inner]
+                    && body.lists[fields].iter().all(|&element| {
+                        matches!(body.exprs[element], Expr::Path(res) if self.const_of(element, res).is_some())
+                    })
+                    && self.const_temporary(*inner)
+                    && let Some(constant) = self.register_inline_constant(expr)
+                {
+                    self.assign(dest, Rvalue::Use(constant), range);
+                    return;
+                }
                 let promoted_place = if !*mutable {
                     self.promoted_const_place(*inner)
                 } else {
@@ -4472,38 +4575,9 @@ impl Builder<'_> {
                 }
             }
             Expr::Block { stmts, tail, .. } => {
-                if self.body.const_blocks.get(expr).is_some() && self.inline_root != Some(expr) {
-                    let ty = self.expr_ty(expr);
-                    let sig = flux_ty::FnSig {
-                        params: Box::default(),
-                        ret: ty,
-                    };
-                    let constant = build_body_inner(
-                        self.hir,
-                        self.typed,
-                        self.body,
-                        self.source_map,
-                        self.types,
-                        &sig,
-                        self.item,
-                        Some(expr),
-                    );
-                    if crate::inline_consts::closed(&constant)
-                        && crate::inline_consts::borrowed_storage_supported(
-                            self.items,
-                            &self.typed.sigs,
-                            ty,
-                        )
-                    {
-                        let index = self.inline_constants.len() as u32;
-                        self.inline_constants.push(constant);
-                        self.assign(
-                            dest,
-                            Rvalue::Use(Operand::Const(Constant::Inline { index, ty })),
-                            range,
-                        );
-                        return;
-                    }
+                if let Some(constant) = self.closed_inline_constant(expr) {
+                    self.assign(dest, Rvalue::Use(constant), range);
+                    return;
                 }
                 // An inline constant's value cannot borrow its evaluation frame.
                 let output = if self.body.const_blocks.get(expr).is_some() {
@@ -5453,15 +5527,10 @@ impl Builder<'_> {
         match *stmt {
             Stmt::Let {
                 pat,
-                init: Some(init),
-                else_branch: Some(else_branch),
+                init,
+                else_branch,
                 ..
             } => {
-                self.declare_bindings(pat);
-                self.annotate_let_bindings(pat);
-                self.lower_let_else(pat, init, else_branch);
-            }
-            Stmt::Let { pat, init, .. } => {
                 let scope = self
                     .scopes
                     .iter()
@@ -5479,7 +5548,11 @@ impl Builder<'_> {
                     std::mem::replace(&mut self.extended_refs, extended),
                     self.extend_at.replace((scope, at)),
                 );
-                self.lower_let(pat, init);
+                if let Some(else_branch) = else_branch {
+                    self.lower_let_else(pat, init, else_branch, scope, at);
+                } else {
+                    self.lower_let(pat, init);
+                }
                 (self.extended_refs, self.extend_at) = saved;
             }
             Stmt::Expr { expr, .. } => {
@@ -5738,25 +5811,39 @@ impl Builder<'_> {
                 });
             }
             _ => {
-                // A ref binding borrows the whole initializer's place. Its
-                // temporary lives with the bindings, as for a written borrow.
-                let extend = self.extending_pattern(pat);
-                let saved = std::mem::replace(&mut self.extending, extend);
-                let place = self.pat_place(init);
-                self.extending = saved;
-                self.annotate_pat_source(pat, &place);
+                let place = self.let_pattern_place(pat, init);
 
                 self.match_irrefutable(pat, place, self.range(init));
             }
         }
     }
 
+    fn let_pattern_place(&mut self, pat: PatId, init: ExprId) -> PatPlace {
+        // A written ref binding extends the initializer's place just like an
+        // explicit borrow in the initializer extends its operand.
+        let extend = self.extending_pattern(pat);
+        let saved = std::mem::replace(&mut self.extending, extend);
+        let place = self.pat_place(init);
+        self.extending = saved;
+        self.annotate_pat_source(pat, &place);
+        place
+    }
+
     /// `let pat = init else { .. };`: the bindings if `init` matches,
     /// else the block, which diverges.
-    fn lower_let_else(&mut self, pat: PatId, init: ExprId, else_branch: ExprId) {
+    fn lower_let_else(
+        &mut self,
+        pat: PatId,
+        init: ExprId,
+        else_branch: ExprId,
+        scope: usize,
+        at: usize,
+    ) {
         let range = self.range(init);
-        let place = self.pat_place(init);
-        self.annotate_pat_source(pat, &place);
+        let place = self.let_pattern_place(pat, init);
+        let (_, after) = self
+            .extend_at
+            .expect("let initializer has an extension scope");
         let otherwise = self.new_block();
         let matched = self.new_block();
         for exit in self.test(pat, place, otherwise, range) {
@@ -5764,11 +5851,15 @@ impl Builder<'_> {
             self.bind_all(&exit.binds, range);
             self.goto(matched, range);
         }
-        // The initializer's temporaries are dropped before the `else`
-        // block runs, as in rustc.
+        // On failure, the short-lived initializer temporaries drop first,
+        // then those whose lifetime would have been extended on success.
         self.current = Some(otherwise);
         let temps = self.scopes.len() - 1;
         self.leave_scopes(temps, false, range);
+        let extended: Vec<_> = self.scopes[scope].locals[at..after].to_vec();
+        for (local, origin) in extended.into_iter().rev() {
+            self.end_local(local, origin, true, false, range);
+        }
         self.lower_operand(else_branch);
         if self.current.is_some() {
             self.terminate(TerminatorKind::Unreachable, range);

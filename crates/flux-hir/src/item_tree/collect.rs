@@ -61,6 +61,7 @@ impl ItemTree {
             derives: Vec::new(),
             ctors: Vec::new(),
             block_counts: rustc_hash::FxHashMap::default(),
+            module_dir_kinds: rustc_hash::FxHashMap::default(),
             fn_ids: rustc_hash::FxHashMap::default(),
             impl_ids: rustc_hash::FxHashMap::default(),
             adt_ids: rustc_hash::FxHashMap::default(),
@@ -201,6 +202,7 @@ struct Collector<'a> {
     /// How many blocks with items each function has had, for their
     /// modules' names.
     block_counts: rustc_hash::FxHashMap<Option<FunctionId>, u32>,
+    module_dir_kinds: rustc_hash::FxHashMap<ModuleId, ModuleDirKind>,
     /// The functions and `impl` blocks collected, by their nodes: what
     /// their anonymous constants are in.
     fn_ids: rustc_hash::FxHashMap<(FileId, NodeId), FunctionId>,
@@ -246,6 +248,22 @@ enum AnonUse {
 struct Ctx {
     module: ModuleId,
     file: FileId,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModuleDirKind {
+    /// A default-loaded `foo.rs` has an implicit `foo/` for default children.
+    FlatFile,
+    /// File modules here need an explicit path until a module claims a directory.
+    Block,
+}
+
+fn path_attribute_dir(dir: &FsPath, kind: Option<ModuleDirKind>) -> &FsPath {
+    if kind == Some(ModuleDirKind::FlatFile) {
+        dir.parent().unwrap_or_else(|| FsPath::new(""))
+    } else {
+        dir
+    }
 }
 
 impl Collector<'_> {
@@ -1445,25 +1463,11 @@ impl Collector<'_> {
                 }
             } else if attr_name(attr) == Some("path") {
                 let range = attr.syntax().text_range();
-                let message = if path.is_some() {
-                    Some("duplicate path attributes are not supported yet")
-                } else if m.item_list().is_some() {
-                    Some("path attributes on inline modules are not supported yet")
-                } else if self.items.modules[ctx.module].block.is_some()
-                    || self.items.modules[ctx.module].parent.is_some_and(|parent| {
-                        self.real_file(self.items.modules[parent].file)
-                            == self.real_file(self.items.modules[ctx.module].file)
-                    })
-                    || m.syntax().parent().is_none_or(|p| {
-                        !matches!(p.kind(), SyntaxKind::SOURCE_FILE | SyntaxKind::MACRO_ITEMS)
-                    })
-                {
-                    Some("path attributes inside inline modules or blocks are not supported yet")
-                } else {
-                    None
-                };
-                if let Some(message) = message {
-                    self.items.diagnostics.push(Diagnostic::new(range, message));
+                if path.is_some() {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        range,
+                        "duplicate path attributes are not supported yet",
+                    ));
                     invalid_path = true;
                     continue;
                 }
@@ -1512,6 +1516,21 @@ impl Collector<'_> {
         }
     }
 
+    fn module_dir(&self, ctx: Ctx) -> (&FsPath, Option<ModuleDirKind>) {
+        let parent = &self.items.modules[ctx.module];
+        let source = self.db.file(self.real_file(ctx.file));
+        let kind = self.module_dir_kinds.get(&ctx.module).copied();
+        if source.range_base != 0 && self.real_file(parent.file) != self.real_file(ctx.file) {
+            // An include starts a new directory at the included source file.
+            (
+                source.path.parent().unwrap_or_else(|| FsPath::new("")),
+                kind.filter(|k| *k == ModuleDirKind::Block),
+            )
+        } else {
+            (&parent.dir, kind)
+        }
+    }
+
     fn collect_module_inner(
         &mut self,
         ctx: Ctx,
@@ -1524,8 +1543,10 @@ impl Collector<'_> {
             return;
         };
         let name_text = name.text();
-        let parent = &self.items.modules[ctx.module];
-        if parent.block.is_some() && m.item_list().is_none() {
+        let inline = m.item_list().is_some();
+        let (parent_dir, parent_dir_kind) = self.module_dir(ctx);
+        let unowned = parent_dir_kind == Some(ModuleDirKind::Block);
+        if unowned && !inline && path.is_none() {
             let range = TextRange::new(def_start(m.syntax()), m.syntax().text_range().end());
             self.items.diagnostics.push(Diagnostic::new(
                 range,
@@ -1534,25 +1555,11 @@ impl Collector<'_> {
             return;
         }
         let def_range = TextRange::new(def_start(m.syntax()), name.syntax().text_range().end());
-        let source = self.db.file(ctx.file);
-        let parent_dir = if source.range_base != 0 && parent.file != ctx.file {
-            source.path.parent().unwrap_or_else(|| FsPath::new(""))
-        } else {
-            &parent.dir
-        };
         let mut child_dir = parent_dir.join(name_text);
-        let krate = parent.krate;
-        // A literal path is relative to the containing source file, including
-        // in a normal foo.rs module (whose default child directory is foo/).
-        let path = path.map(|path| {
-            self.db
-                .file(self.db.real_file(ctx.file))
-                .path
-                .parent()
-                .unwrap_or_else(|| FsPath::new(""))
-                .join(path)
-        });
-        let file = if m.item_list().is_none() {
+        let mut child_dir_kind = None;
+        let krate = self.items.modules[ctx.module].krate;
+        let path = path.map(|path| path_attribute_dir(parent_dir, parent_dir_kind).join(path));
+        let file = if !inline {
             let path = if let Some(path) = path {
                 // Explicitly named files own their containing directory, even
                 // when the target is not named mod.rs or the module is renamed.
@@ -1565,7 +1572,10 @@ impl Collector<'_> {
                 let flat = parent_dir.join(format!("{name_text}.rs"));
                 let nested = child_dir.join("mod.rs");
                 match (self.db.exists(&flat), self.db.exists(&nested)) {
-                    (true, false) => flat,
+                    (true, false) => {
+                        child_dir_kind = Some(ModuleDirKind::FlatFile);
+                        flat
+                    }
                     (false, true) => nested,
                     (true, true) => {
                         let message = format!(
@@ -1630,6 +1640,11 @@ impl Collector<'_> {
             }
             Some(file)
         } else {
+            if let Some(path) = path {
+                child_dir = path;
+            } else if unowned {
+                child_dir_kind = Some(ModuleDirKind::Block);
+            }
             None
         };
         let module = self.items.modules.alloc(Module {
@@ -1642,6 +1657,9 @@ impl Collector<'_> {
             def_range,
             block: None,
         });
+        if let Some(kind) = child_dir_kind {
+            self.module_dir_kinds.insert(module, kind);
+        }
         self.items
             .module_declarations
             .insert(module, (ctx.file, m.syntax().id()));
@@ -2523,6 +2541,8 @@ impl Collector<'_> {
                 if let Some(dots) = param.dot3_token() {
                     let message = if !in_extern_block {
                         Some("`...` is not supported for non-extern functions")
+                    } else if extern_block == Some(Abi::Rust) {
+                        Some("variadic functions require a C-compatible ABI")
                     } else if i + 1 != count {
                         Some("`...` must be the last argument of a C-variadic function")
                     } else {
@@ -2797,6 +2817,8 @@ impl Collector<'_> {
         let tree = shared.parse.tree();
         let block = tree.node(node);
         let ctx = if Self::block_has_items(block) {
+            let (dir, dir_kind) = self.module_dir(ctx);
+            let dir = path_attribute_dir(dir, dir_kind).to_path_buf();
             let function = owner.and_then(BodyOwner::function);
             let parent = &self.items.modules[ctx.module];
             let outer = function.map_or(kw::Empty, |f| self.items.functions[f].name);
@@ -2808,11 +2830,12 @@ impl Collector<'_> {
                 parent: Some(ctx.module),
                 krate: parent.krate,
                 file: ctx.file,
-                dir: parent.dir.clone(),
+                dir,
                 vis: Visibility::Module(ctx.module),
                 def_range: TextRange::empty(0),
                 block: Some(Block { function, node }),
             });
+            self.module_dir_kinds.insert(module, ModuleDirKind::Block);
             self.items.block_modules.insert((ctx.file, node), module);
             Ctx {
                 module,
@@ -5097,20 +5120,7 @@ impl Collector<'_> {
             }
         }
         let abi = block.abi();
-        let mut block_abi = function_abi(abi, diagnostics);
-        if block_abi == Abi::Rust {
-            // Reported above unless the block really says "Rust".
-            if let Some(abi) = abi
-                && abi.string_token().is_some_and(|s| s.text() == "\"Rust\"")
-            {
-                unsupported(
-                    diagnostics,
-                    abi.syntax().text_range(),
-                    "`extern \"Rust\"` blocks",
-                );
-            }
-            block_abi = Abi::C;
-        }
+        let block_abi = abi.map_or(Abi::C, |abi| function_abi(Some(abi), diagnostics));
         if edition == flux_syntax::Edition::E2024 && block.unsafe_token().is_none() {
             let range = abi.map_or(block.syntax().text_range(), |a| a.syntax().text_range());
             diagnostics.push(Diagnostic::new(

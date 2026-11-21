@@ -9,6 +9,14 @@ unsafe extern "C" {
 
 struct Noisy(i32);
 
+struct Matrix([f32; 16]);
+
+impl AsRef<[f32; 16]> for Matrix {
+    fn as_ref(&self) -> &[f32; 16] {
+        &self.0
+    }
+}
+
 impl Drop for Noisy {
     fn drop(&mut self) {
         unsafe { printf(c"drop %d\n".as_ptr(), self.0) };
@@ -60,6 +68,13 @@ fn noisy(base: i32) {
 }
 
 fn main() {
+    let matrix = Matrix([1.5; 16]);
+    let mut sum = 0.0;
+    for value in matrix.as_ref() {
+        sum += *value;
+    }
+    assert_eq!(sum, 24.0);
+
     let a = [1, 2, 3, 4];
     let mut b = [10, 20, 30, 40];
     let doubled: i32 = a.into_iter().map(|x| x * 2).sum();

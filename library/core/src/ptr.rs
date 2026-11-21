@@ -213,8 +213,8 @@ impl<T: ?Sized> *const T {
     pub fn map_addr<F:FnOnce(usize)->usize>(self,map:F)->Self {self.with_addr(map(self.addr()))}
 
     /// Whether the pointer is null.
-    pub fn is_null(self) -> bool {
-        self as *const u8 as usize == 0
+    pub const fn is_null(self) -> bool {
+        crate::intrinsics::ptr_is_null(self)
     }
 
     /// The pointer as one to a `U`.
@@ -393,8 +393,8 @@ impl<T: ?Sized> *mut T {
     pub fn map_addr<F:FnOnce(usize)->usize>(self,map:F)->Self {self.with_addr(map(self.addr()))}
 
     /// Whether the pointer is null.
-    pub fn is_null(self) -> bool {
-        self as *const u8 as usize == 0
+    pub const fn is_null(self) -> bool {
+        (self as *const T).is_null()
     }
 
     /// The pointer as one to a `U`.
@@ -692,7 +692,7 @@ impl<T: ?Sized> NonNull<T> {
     }
 
     /// `ptr`, if it is not null.
-    pub fn new(ptr: *mut T) -> Option<NonNull<T>> {
+    pub const fn new(ptr: *mut T) -> Option<NonNull<T>> {
         if ptr.is_null() {
             None
         } else {

@@ -211,7 +211,7 @@ pub(crate) fn check_signature_projection_requirements(
             });
             match goal {
                 Some(goal) => {
-                    complete &= cx.impl_super_goals(goal, &mut env, 0);
+                    complete &= cx.impl_super_goals_with_inputs(goal, &mut env, 0, Some(&original));
                 }
                 None => complete = false,
             }

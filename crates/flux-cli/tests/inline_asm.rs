@@ -180,6 +180,10 @@ fn inline_asm_contracts_match_rustc() {
             "const_fn",
             r#"const fn f()->u32{let mut x=3u32;unsafe{core::arch::asm!("/*{}*/",inout(reg)x)}x}fn main(){}"#,
         ),
+        (
+            "runtime_const_operand",
+            r#"fn main(){let x=3u32;unsafe{core::arch::asm!("/*{}*/",const x)}}"#,
+        ),
     ] {
         let path = root.join(format!("{name}.rs"));
         std::fs::write(&path, source).unwrap();

@@ -8,6 +8,7 @@ use core::fmt;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut, Index, IndexMut};
 use core::ptr;
+use core::slice::SliceIndex;
 
 use crate::raw_vec::RawVec;
 
@@ -648,54 +649,21 @@ impl<T> DerefMut for Vec<T> {
     }
 }
 
-/// `v[i]`, through `Vec`'s own `Index` as in rustc (which panics where
-/// the brackets are), then the slice's.
-impl<T> Index<usize> for Vec<T> {
-    type Output = T;
+impl<T, I: SliceIndex<[T]>> Index<I> for Vec<T> {
+    type Output = I::Output;
 
     #[track_caller]
-    fn index(&self, index: usize) -> &T {
-        &self.as_slice()[index]
+    fn index(&self, index: I) -> &I::Output {
+        SliceIndex::index(index, self.as_slice())
     }
 }
 
-impl<T> IndexMut<usize> for Vec<T> {
+impl<T, I: SliceIndex<[T]>> IndexMut<I> for Vec<T> {
     #[track_caller]
-    fn index_mut(&mut self, index: usize) -> &mut T {
-        &mut self.as_mut_slice()[index]
+    fn index_mut(&mut self, index: I) -> &mut I::Output {
+        SliceIndex::index_mut(index, self.as_mut_slice())
     }
 }
-
-macro_rules! range_index {
-    ($($range:ty),*) => {
-        $(
-            impl<T> Index<$range> for Vec<T> {
-                type Output = [T];
-
-                #[track_caller]
-                fn index(&self, index: $range) -> &[T] {
-                    Index::index(self.as_slice(), index)
-                }
-            }
-
-            impl<T> IndexMut<$range> for Vec<T> {
-                #[track_caller]
-                fn index_mut(&mut self, index: $range) -> &mut [T] {
-                    IndexMut::index_mut(self.as_mut_slice(), index)
-                }
-            }
-        )*
-    };
-}
-
-range_index!(
-    core::ops::Range<usize>,
-    core::ops::RangeTo<usize>,
-    core::ops::RangeFrom<usize>,
-    core::ops::RangeFull,
-    core::ops::RangeInclusive<usize>,
-    core::ops::RangeToInclusive<usize>
-);
 
 impl<T: Clone> Clone for Vec<T> {
     fn clone(&self) -> Vec<T> {
@@ -1034,6 +1002,14 @@ impl<T: core::hash::Hash> core::hash::Hash for Vec<T> {
     fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
         core::hash::Hash::hash(self.as_slice(), state);
     }
+}
+
+impl<T> AsRef<Vec<T>> for Vec<T> {
+    fn as_ref(&self) -> &Vec<T> { self }
+}
+
+impl<T> AsMut<Vec<T>> for Vec<T> {
+    fn as_mut(&mut self) -> &mut Vec<T> { self }
 }
 
 impl<T> AsRef<[T]> for Vec<T> {

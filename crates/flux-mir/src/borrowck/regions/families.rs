@@ -638,7 +638,7 @@ impl Cx<'_> {
             .chain(inputs.family_inputs.iter().flatten())
             .copied()
             .collect::<Vec<_>>();
-        self.proven_family_output(inputs.alias, &row, env, 0)
+        self.proven_family_inputs(inputs.alias, &row, env, 0)
             .is_some()
     }
 
@@ -924,10 +924,14 @@ impl Cx<'_> {
                 ),
                 Outlives::Type(ty, b) => {
                     let b = header_map(b)?;
-                    for v in self.bound_slots(ty, &header_args, &types)? {
-                        self.outlives(v, b, Category::CallArgument, self.call_range);
-                    }
-                    self.type_outlives(self.normalize(ty.subst(&header_args)), b, self.call_range);
+                    let vars = self.bound_slots(ty, &header_args, &types)?;
+                    self.stored_type_outlives(
+                        self.normalize(ty.subst(&header_args)),
+                        &vars,
+                        b,
+                        Category::CallArgument,
+                        self.call_range,
+                    );
                 }
             }
         }
@@ -1463,7 +1467,53 @@ impl Cx<'_> {
             .output_projections
             .iter()
             .filter(|p| p.projection.alias.map_args(|ty| ty.subst(&args)) == alias);
-        let output = candidates.next()?;
+        let Some(output) = candidates.next() else {
+            // A declared output bound can itself inherit an equality, as
+            // when `Parts<'a>: Components<'a>` exposes `Iterator::Item`.
+            // The owning lifetime comes from this family occurrence.
+            if !outer_owner.is_empty()
+                || alias.owner_lifetimes != 0
+                || alias.args.len() != 1
+                || arg_vars.len() != 1
+                || self.caller_goals_in_progress.is_some()
+            {
+                return None;
+            }
+            let self_param = Ty::param(0, flux_intern::kw::SelfUpper);
+            let header_alias = AliasTy {
+                args: Ty::list(&[self_param]),
+                ..alias
+            };
+            if !contract.output_traits.iter().any(|(bound, _)| {
+                self.sigs
+                    .traits
+                    .get(bound.trait_)
+                    .is_some_and(|declaration| {
+                        declaration
+                            .header_projections
+                            .iter()
+                            .any(|p| p.alias == header_alias)
+                    })
+            }) {
+                return None;
+            }
+            let expected = self.normalize(Ty::alias(alias));
+            if expected == Ty::alias(alias) || expected.has_error() {
+                return None;
+            }
+            self.family_depth += 1;
+            let result = (|| {
+                let env = if self.body.owner.is_some() {
+                    self.caller_region_goals()
+                } else {
+                    self.family_goals.clone()
+                };
+                let (_, goals) = self.proven_family_output(owner_alias, row, &env, 0)?;
+                self.inherited_projection_from_goals(alias, expected, &goals)
+            })();
+            self.family_depth -= 1;
+            return result;
+        };
         if candidates.next().is_some() {
             return None;
         }

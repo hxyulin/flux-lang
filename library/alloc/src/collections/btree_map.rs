@@ -821,6 +821,28 @@ impl<'a, K: Ord, V> OccupiedEntry<'a, K, V> {
     }
 }
 
+impl<K: Ord + core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for Entry<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Entry::Occupied(entry) => f.debug_tuple("Entry").field(entry).finish(),
+            Entry::Vacant(entry) => f.debug_tuple("Entry").field(entry).finish(),
+        }
+    }
+}
+impl<K: Ord + core::fmt::Debug, V> core::fmt::Debug for VacantEntry<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("VacantEntry").field(self.key()).finish()
+    }
+}
+impl<K: Ord + core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for OccupiedEntry<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("OccupiedEntry")
+            .field("key", self.key())
+            .field("value", self.get())
+            .finish()
+    }
+}
+
 impl<K, V> IntoIter<K, V> {
     fn remaining(&self) -> Iter<'_, K, V> {
         Iter { map: &self.map, stack: self.stack.clone(), back_stack: self.back_stack.clone(), remaining: self.map.len }

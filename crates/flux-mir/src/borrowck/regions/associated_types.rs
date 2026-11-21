@@ -236,8 +236,50 @@ impl Cx<'_> {
         // Callable header binders can extend the universal region set.
         self.close_known();
         for (p, table) in self.env.clone().iter().zip(block.projections.iter()) {
-            if let Some(vars) = self.instantiate_sig(p.ty, table, &mut { map }, &[], &[]) {
+            let late = table.iter().any(|region| matches!(region, Region::Late(_)));
+            let mut inputs = &[][..];
+            if late {
+                if !self.is_fn_output(p.alias) {
+                    continue;
+                }
+                // Keep the header's quantified input row. The output proof
+                // substitutes the current occurrence's inputs for it.
+                let mut occurrences = env
+                    .iter()
+                    .filter(|goal| {
+                        goal.predicate.trait_ref.trait_ == p.alias.trait_
+                            && goal.predicate.self_ty == p.alias.args[0]
+                            && goal.predicate.trait_ref.args == &p.alias.args[1..]
+                    })
+                    .filter_map(|goal| {
+                        let row = goal.vars.get(1)?;
+                        table
+                            .iter()
+                            .all(|region| match *region {
+                                Region::Late(index) => row
+                                    .get(index as usize)
+                                    .is_some_and(|var| goal.bound.contains(var)),
+                                _ => true,
+                            })
+                            .then_some(row.as_slice())
+                    });
+                let Some(row) = occurrences.next() else {
+                    continue;
+                };
+                if occurrences.any(|other| other != row) {
+                    continue;
+                }
+                inputs = row;
+            }
+            let mut output_region = |region| match region {
+                Region::Late(index) => inputs.get(index as usize).copied(),
+                _ => map(region),
+            };
+            if let Some(vars) = self.instantiate_sig(p.ty, table, &mut output_region, &[], &[]) {
                 self.env_regions.push((p.alias, vars));
+                if late {
+                    self.env_late.push((p.alias, table.clone()));
+                }
             }
         }
         self.family_goals = env.clone();

@@ -645,12 +645,13 @@ impl Decode for flux_syntax::TextRange {
 }
 impl Encode for flux_syntax::NodeId {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
-        self.index().encode(e)
+        // A syntax index is a u32 and does not size a metadata allocation.
+        (self.index() as u32).encode(e)
     }
 }
 impl Decode for flux_syntax::NodeId {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
-        Ok(Self::from_raw(usize::decode(d)? as u32))
+        Ok(Self::from_raw(u32::decode(d)?))
     }
 }
 impl Encode for std::path::PathBuf {

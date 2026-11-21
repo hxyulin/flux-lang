@@ -106,6 +106,9 @@ reported as "not supported yet":
   C-variadic ones (`fn printf(format: *const i8, ...) -> i32;`), and foreign
   statics. Foreign static accesses require unsafe code; taking a raw address
   does not read the static. Literal `link_name` preserves the imported symbol.
+  `unsafe extern "Rust"` blocks use Flux's Rust calling convention for
+  externally linked functions supplied by Flux, including calls through Rust
+  function pointers.
   Literal extern-block `link` attributes support the `dylib` (default),
   `static` and `framework` kinds; the link searches build scripts'
   `rustc-link-search` directories, then the macOS SDK. Other link kinds,
@@ -115,12 +118,16 @@ reported as "not supported yet":
   `pub(in path)`, and flux checks privacy as rustc does. An enum's
   variants are named through it (`E::A`, `Self::A`) or imported
   (`use E::*;`, `use E::{A, B};`).
-  Out-of-line modules declared in source files or item macro expansions accept literal
-  `#[path = "file.rs"]`, including selected `cfg_attr` paths. Paths resolve
-  relative to the declaring source file, and the loaded file owns its
-  containing directory for child module lookup. Macro paths use the calling
-  file's directory. Inline/block overrides, duplicate path attributes and nonmodule
-  placement remain explicitly unsupported. Recursive loading is bounded.
+  Modules accept outer literal `#[path = "..."]` attributes, including
+  selected `cfg_attr` paths. On a file module the path names the source file,
+  whose directory becomes the base for its children. On an inline module
+  it names the directory for its children. Paths use the declaring source
+  file's directory at file scope and the active module directory inside
+  inline modules. Item macro expansions use the call site's directory
+  context. File modules in blocks require an explicit path unless an
+  enclosing module establishes a directory there. Inner path attributes,
+  duplicate path attributes and nonmodule placement are unsupported.
+  Recursive loading is bounded.
 - **Types:** paths (`i32`, `f32`, `f64`, `bool`, `char`, `Self`, `m::S`, `crate::m::S`,
   `Pair<i32>`, a type parameter `T`), function pointers (`fn(i32) ->
   i32`, `unsafe fn()`, `extern "C" fn(i32) -> i32`), associated types (`T::Out`,
@@ -198,9 +205,9 @@ reported as "not supported yet":
   an array's elements may be moved out of it one by one, what is left
   of it dropped in rustc's order; moving out of a slice is E0508.
   Structural constants composed of derived-PartialEq structs, enums, tuples and arrays
-  are supported. Floating literal patterns are refutable, with signed zeros
-  equal and unnamed values including NaNs requiring wildcard coverage. Float
-  constant/range patterns and reference constants remain unsupported,
+  are supported. Floating-point literal, constant and range patterns use
+  numeric comparison. Signed zeros compare equal and NaNs require wildcard
+  coverage. Reference constants remain unsupported,
 except named shared `&str` patterns. Thin raw-pointer constants with integer
 addresses support equality patterns, including inside structural aggregates.
 Symbolic allocation/function addresses and wide-pointer patterns remain unsupported.
@@ -228,6 +235,7 @@ callable in constants.
   explicit semicolons and remaining item statements still prevent a tail value.
   Inner file/module `cfg` and conditional
   statements, list elements and match arms are pruned before lowering.
+  Macro expression fragments forwarded into lists retain this behavior.
   Record/tuple fields, enum variants, receivers, and function, closure and
   function-pointer parameters are also pruned before semantic processing.
   Removed fields and variants do not consume tuple indices or implicit
@@ -712,8 +720,13 @@ mapping and retain an explicit unsupported diagnostic in this declaration path.
 
 Trait objects reject callable GATs. A family unavailable because of a `Self: Sized`
 bound, including one implied by a supertrait, is excluded from object requirements.
+An ordinary associated projection can appear in an object argument when its
+selection inputs have region rows. Outlives checks use those rows to prove the
+associated output's bound.
 Associated-family region inputs in function-pointer signatures remain explicitly
-unsupported, as do family-projection subjects in generic outlives clauses.
+unsupported. A generic outlives clause can repeat the declared output bound on
+the same associated projection occurrence. Additional lifetime-bearing
+projection bounds remain unsupported.
 An open correctness case remains when a family projection normalizes without a
 satisfying higher-ranked callable impl: a static-only callback bound can be
 admitted where Rust requires a universally callable input. The isolated evidence
@@ -910,6 +923,10 @@ a function pointer of its signature where one is wanted (an annotation,
 an argument, a field, a return value, an `as` cast), and `if` or
 `match` arms or array elements naming different functions (or
 closures that capture nothing) coerce to one, as in rustc.
+When a join infers the type arguments of free function items, Flux can
+retain their fixed regions alongside the signature's per-call regions.
+The items must have matching region layouts, and their bounds are checked
+when the pointer is formed. Closure captures retain the pointer's regions.
 An `unsafe fn` coerces only to an `unsafe fn` pointer. Functions and
 function pointers may use the `Rust`, `C`, `C-unwind`, `system` and
 `system-unwind` ABIs, and `efiapi` on aarch64. Each ABI is a distinct
@@ -1804,7 +1821,7 @@ wrappers support unsafe function pointers; closures calling them inside an
 unsafe block can satisfy Fn bounds. Safe pointer conversions and direct
 Fn-bound use of the target-feature items are rejected. On AArch64, explicit
 unsafe functions with bodies, including const functions and methods, may carry
-`#[target_feature(enable = "neon")]`, `crc`, `sha2`, `sha3`, `dit` or `sb`.
+`#[target_feature(enable = "neon")]`, `crc`, `aes`, `sha2`, `sha3`, `dit` or `sb`.
 Safe annotated functions, other features,
 foreign declarations, required trait methods and `inline(always)` combinations
 remain rejected. The attribute does not relax ordinary unsafe call rules.
@@ -2237,7 +2254,8 @@ These definitions are retained even when only native code references their
 symbol.
 
 Inline assembly also accepts tied `inlateout` operands, `lateout` places and
-integer-literal `const` operands. Late outputs use conservatively tied registers
+integer `const` operands written as literals, constant paths, const parameters,
+or closed inline const blocks. Late outputs use conservatively tied registers
 seeded without reading the output place. Function-pointer late outputs, separate
 input/output expressions and general const expressions remain unsupported.
 AArch64 DIT register access, immediate enable/disable and the SB instruction are
@@ -2256,6 +2274,10 @@ including reified function pointers. Scalar implementations preserve lane
 results and do not establish hardware acceleration. The AArch64 floating-point
 NEON operations used by Glam include native vector arithmetic, comparisons,
 rounding, reductions, shuffles, and fused multiply-add.
+The CRC and Adler-32 routines used by crc32fast and zlib-rs can use AArch64
+polynomial multiplication, CRC instructions, and NEON widening and lane
+operations. On Darwin and Linux, the `aes` runtime feature probe requires both
+AES and PMULL support.
 
 Modern futures-util 0.3.34 builds from unchanged registry sources with its
 default features and with `io`, `sink` and `channel` enabled. The maintained

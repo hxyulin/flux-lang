@@ -25,6 +25,9 @@ fn main(){
  let mut union:Vec<_>=(&a|&b).into_iter().collect();union.sort();assert_eq!(union,vec![1,2,3,4]);
  assert_eq!((&a & &b).into_iter().collect::<Vec<_>>(),vec![2]);
  assert_eq!((&a - &b).len(),2);assert_eq!((&a ^ &b).len(),3);
+ let mut difference = a.difference(&b).cloned().collect::<Vec<_>>();
+ difference.sort();
+ assert_eq!(difference, vec![1, 3]);
  assert!(RefCell::new(vec![1,2])<RefCell::new(vec![1,3]));
  assert_eq!(unsafe{20u8.unchecked_add(22)},42);assert_eq!(unsafe{20i32.unchecked_sub(22)},-2);
  assert_eq!(unsafe{2u32.unchecked_shl(4)},32);assert_eq!(unsafe{(-8i64).unchecked_shr(2)},-2);

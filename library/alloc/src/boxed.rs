@@ -310,6 +310,19 @@ impl<T, const N: usize> From<[T; N]> for Box<[T]> {
     fn from(values: [T; N]) -> Box<[T]> { crate::vec::Vec::from(values).into_boxed_slice() }
 }
 
+impl<T, const N: usize> TryFrom<Box<[T]>> for Box<[T; N]> {
+    type Error = Box<[T]>;
+
+    fn try_from(values: Box<[T]>) -> Result<Self, Self::Error> {
+        if values.len() != N {
+            return Err(values);
+        }
+        // SAFETY: with N elements, the slice and array have the same layout.
+        // The cast drops the slice metadata and transfers the same allocation.
+        Ok(unsafe { Box::from_raw(Box::into_raw(values) as *mut [T; N]) })
+    }
+}
+
 impl<T> From<T> for Box<T> {
     fn from(t: T) -> Box<T> {
         Box::new(t)

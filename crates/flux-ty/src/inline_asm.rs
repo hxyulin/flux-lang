@@ -34,6 +34,12 @@ pub fn is_vector(items: &ItemTree, ty: Ty) -> bool {
                         | "int64x2_t"
                         | "uint64x1_t"
                         | "uint64x2_t"
+                        | "poly8x8_t"
+                        | "poly8x16_t"
+                        | "poly16x4_t"
+                        | "poly16x8_t"
+                        | "poly64x1_t"
+                        | "poly64x2_t"
                 )))
 }
 

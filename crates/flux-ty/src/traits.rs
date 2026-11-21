@@ -1290,22 +1290,7 @@ fn check_method(
         .impl_projections
         .get(imp)
         .map_or(Vec::new(), |p| p.to_vec());
-    for &(name, ty) in sigs.impl_types.get(imp).map_or(&[][..], |t| t) {
-        if items.impls[imp]
-            .types
-            .iter()
-            .find(|definition| definition.name == name)
-            .is_some_and(|definition| {
-                !definition.generics.params.is_empty() || !definition.generics.lifetimes.is_empty()
-            })
-        {
-            continue;
-        }
-        projections.push(Projection {
-            alias: alias_of(items, *trait_ref, self_ty, name),
-            ty,
-        });
-    }
+    extend_impl_associated_equalities(items, sigs, imp, &mut projections);
     let projections = &projections[..];
     // Only the impl's bounds and the trait method's declared bounds are
     // assumptions here. An impl method cannot justify its signature with
@@ -1480,6 +1465,35 @@ fn check_method(
                 "impl has stricter requirements than trait".to_owned(),
             );
         }
+    }
+}
+
+/// The non-family associated types defined by this impl, in its own scope.
+fn extend_impl_associated_equalities(
+    items: &ItemTree,
+    sigs: &Signatures,
+    imp: ImplId,
+    projections: &mut Vec<Projection>,
+) {
+    let Some(&trait_ref) = sigs.impl_traits.get(imp) else {
+        return;
+    };
+    let self_ty = sigs.impls[imp];
+    for &(name, ty) in sigs.impl_types.get(imp).into_iter().flatten() {
+        if items.impls[imp]
+            .types
+            .iter()
+            .find(|definition| definition.name == name)
+            .is_some_and(|definition| {
+                !definition.generics.params.is_empty() || !definition.generics.lifetimes.is_empty()
+            })
+        {
+            continue;
+        }
+        projections.push(Projection {
+            alias: alias_of(items, trait_ref, self_ty, name),
+            ty,
+        });
     }
 }
 
@@ -2014,6 +2028,16 @@ pub fn check_trivial_bounds(
                 continue;
             }
             let result = flux_solve::traits::evaluate(items, sigs, &[], p);
+            let result = if result == Evaluation::Unproven {
+                let normalized = normalize_predicate(items, sigs, p);
+                if normalized == p {
+                    result
+                } else {
+                    flux_solve::traits::evaluate(items, sigs, &[], normalized)
+                }
+            } else {
+                result
+            };
             if result != Evaluation::Proven {
                 diagnostics.push(Diagnostic {
                     file,
@@ -2466,7 +2490,10 @@ pub fn check_well_formed(
             continue;
         }
         let env = elaborate(sigs, &predicates_of(items, sigs, id));
-        let projections = projections_of(items, sigs, id);
+        let mut projections = projections_of(items, sigs, id);
+        if let Some(Owner::Impl(imp)) = f.owner {
+            extend_impl_associated_equalities(items, sigs, imp, &mut projections);
+        }
         let wf = WfScope {
             unsized_params: flux_solve::unsized_params(items, f.owner, &f.generics),
             env: &env,

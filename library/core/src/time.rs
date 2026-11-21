@@ -252,6 +252,19 @@ impl Add for Duration {
             .expect("overflow when adding durations")
     }
 }
+impl crate::iter::Sum for Duration {
+    fn sum<I: Iterator<Item = Self>>(iter: I) -> Self {
+        iter.fold(Self::ZERO, |sum, duration| {
+            sum.checked_add(duration)
+                .expect("overflow in iter::sum over durations")
+        })
+    }
+}
+impl<'a> crate::iter::Sum<&'a Duration> for Duration {
+    fn sum<I: Iterator<Item = &'a Self>>(iter: I) -> Self {
+        iter.copied().sum()
+    }
+}
 impl Sub for Duration {
     type Output = Self;
     fn sub(self, rhs: Self) -> Self {

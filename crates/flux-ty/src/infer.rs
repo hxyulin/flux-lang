@@ -509,9 +509,9 @@ impl<'a> Ctx<'a> {
             closure_locals: Vec::new(),
             unit_matches: FxHashSet::default(),
             coerced_tuples: FxHashSet::default(),
-            for_heads: FxHashSet::default(),
             reified_closures: Vec::new(),
             inferred_closure_pointers: FxHashSet::default(),
+            inferred_item_pointers: FxHashMap::default(),
             own_opaques: Vec::new(),
             own_opaque_args: &[],
             diagnostics: Vec::new(),
@@ -773,13 +773,13 @@ struct Ctx<'a> {
     /// Tuple expressions whose elements were coerced to the elements of
     /// the tuple type their context wants, which they have.
     coerced_tuples: FxHashSet<ExprId>,
-    /// The calls of `IntoIterator::into_iter` of `for` loops' heads.
-    for_heads: FxHashSet<ExprId>,
     /// Closures coerced to function pointers, with their types and the
     /// pointers', which must capture nothing.
     reified_closures: Vec<(ExprId, Ty, Ty)>,
     /// Pointers inferred while joining closure branches with unknown types.
     inferred_closure_pointers: FxHashSet<Ty>,
+    /// Generic items whose join needs a signature after type inference.
+    inferred_item_pointers: FxHashMap<Ty, Vec<crate::FnDefTy>>,
     /// In a function with opaque types, the variables their hidden types
     /// are, by index, and the generic arguments for which they are its
     /// own (its parameters): where the body names them, as it returns
@@ -931,6 +931,40 @@ impl Ctx<'_> {
         let ty = self.shallow(ty);
         if !ty.has_infer() {
             return ty;
+        }
+        if let TyKind::FnPtr(sig) = ty.kind()
+            && self.inferred_closure_pointers.contains(&ty)
+        {
+            let sig = sig.map(|ty| self.known(ty));
+            if sig.inputs_output.iter().any(|ty| ty.has_infer()) {
+                // Keep the inference identity until the binder recipe is ready.
+                return ty;
+            }
+            return self.closure_pointer_type(sig);
+        }
+        if let TyKind::FnPtr(sig) = ty.kind()
+            && let Some(defs) = self.inferred_item_pointers.get(&ty).cloned()
+        {
+            let sig = sig.map(|ty| self.known(ty));
+            let args: Vec<_> = defs
+                .iter()
+                .map(|def| {
+                    def.args
+                        .iter()
+                        .map(|&ty| self.known(ty))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            if sig
+                .inputs_output
+                .iter()
+                .chain(args.iter().flatten())
+                .any(|ty| ty.has_infer())
+            {
+                // Keep the original identity until its region rows can be built.
+                return ty;
+            }
+            return self.finish_inferred_item_pointer(sig, &defs, &args);
         }
         ty.map_children(|t| self.known(t))
     }
@@ -1508,6 +1542,8 @@ impl Ctx<'_> {
             consts: &self.const_params,
             signature_of: None,
             in_fn_pointer: false,
+            defer_projection_sizes: false,
+            size_sigs: Some(self.sigs),
             in_trait_bound: false,
             bounds: &self.param_env,
             self_trait: self.self_trait,
@@ -2548,6 +2584,8 @@ impl Ctx<'_> {
             consts: &self.const_params,
             signature_of: None,
             in_fn_pointer: false,
+            defer_projection_sizes: false,
+            size_sigs: Some(self.sigs),
             in_trait_bound: false,
             bounds: &self.param_env,
             self_trait: self.self_trait,
@@ -3943,7 +3981,11 @@ impl Ctx<'_> {
                         if let Some(ptr) = self.fn_lub(&types) {
                             return Ty::array(ptr, elements.len() as u64);
                         }
-                        let elem = self.new_var(false, self.range(id));
+                        // A slice reference can be the common type even
+                        // when an array reference appeared first.
+                        let elem = self
+                            .array_slice_target(&types)
+                            .unwrap_or_else(|| self.new_var(false, self.range(id)));
                         for (element, ty) in types {
                             self.coerce(ty, elem, element);
                         }
@@ -4285,17 +4327,9 @@ impl Ctx<'_> {
                 {
                     self.unify(from, to);
                 }
-                // An array Arc's explicit `as Arc<[T]>` is also a coercion
-                // cast. Mark the operand so MIR moves the owner through its
-                // unsizing rather than treating it as a scalar enum cast.
-                if crate::shared_pointees(self.items, self.shallow(from), self.shallow(to))
-                    .or_else(|| {
-                        flux_solve::box_pointee(self.shallow(from))
-                            .zip(flux_solve::box_pointee(self.shallow(to)))
-                    })
-                    .is_some()
-                    && self.can_coerce(from, to, *expr)
-                {
+                // An explicit owner cast can unsize. Mark the operand so
+                // MIR moves the owner through its unsizing.
+                if self.owned_pointer_cast(from, to) && self.can_coerce(from, to, *expr) {
                     self.coerce(from, to, *expr);
                     return to;
                 }
@@ -4357,6 +4391,12 @@ impl Ctx<'_> {
                 to
             }
         }
+    }
+
+    fn owned_pointer_cast(&mut self, from: Ty, to: Ty) -> bool {
+        let (from, to) = (self.shallow(from), self.shallow(to));
+        crate::shared_pointees(self.items, from, to).is_some()
+            || (flux_solve::box_pointee(from).is_some() && flux_solve::box_pointee(to).is_some())
     }
 
     /// Reify a function item before exposing its address, preserving its
@@ -4599,11 +4639,6 @@ impl Ctx<'_> {
     /// `match scrutinee { arms }`: the arms' common type, where `!` arms
     /// take the others'.
     fn infer_match(&mut self, id: ExprId, scrutinee: ExprId, arms: &[flux_hir::MatchArm]) -> Ty {
-        if let [arm] = arms
-            && self.body.for_loop_match(arm.body).is_some()
-        {
-            self.for_heads.insert(scrutinee);
-        }
         let ty = self.infer_expr(scrutinee);
         let expected = self.expected.get(id).copied();
         // The arms are coercion sites for the type the context wants, if
@@ -4845,6 +4880,21 @@ impl Ctx<'_> {
             let ptr = Ty::new(TyKind::FnPtr(sig));
             if from_closures {
                 self.inferred_closure_pointers.insert(ptr);
+            } else if sig.inputs_output.iter().any(|ty| ty.has_infer())
+                && let Some(defs) = found
+                    .iter()
+                    .map(|&(expr, ty)| match ty.kind() {
+                        TyKind::FnDef(def)
+                            if self.body.inferred_function_path(expr) == Some(def.function)
+                                && self.items.functions[def.function].owner.is_none() =>
+                        {
+                            Some(def)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Option<Vec<_>>>()
+            {
+                self.inferred_item_pointers.insert(ptr, defs);
             }
             ptr
         };
@@ -4877,6 +4927,102 @@ impl Ctx<'_> {
             .collect();
         let regions = (bound != 0).then(|| crate::FnPtrRegions::intern(bound, 0, &rows, &[]));
         Ty::new(TyKind::FnPtr(crate::FnSigTy { regions, ..sig }))
+    }
+
+    /// A generic argument's regions are fixed when selecting the function
+    /// item. The declaration's independent signature loans still vary per call.
+    fn inferred_item_pointer_regions(
+        &self,
+        sig: crate::FnSigTy,
+        function: FunctionId,
+        args: &[Ty],
+    ) -> Option<&'static crate::FnPtrRegions> {
+        use crate::FnRegion;
+        use crate::regions::{CallbackBinder, Region, instantiate, slots};
+
+        let regions = self.sigs.regions.fns.get(function)?;
+        let source = self.sigs.fns.get(function)?;
+        if regions.callback_binder != CallbackBinder::Independent
+            || regions.owner != 0
+            || regions.selected_inputs.iter().any(|row| !row.is_empty())
+            || source.params.len() != sig.params().len()
+            || args
+                .iter()
+                .chain(sig.inputs_output)
+                .any(|ty| ty.has_params() || ty.has_aliases() || ty.has_opaques() || ty.has_error())
+        {
+            return None;
+        }
+
+        let mut free = 0;
+        let arg_rows: Vec<_> = args
+            .iter()
+            .map(|&ty| {
+                let start = free;
+                free += slots(self.items, ty) as u32;
+                (start..free)
+                    .map(|i| Some(FnRegion::Free(i)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let bound = regions.names.len() as u32;
+        let mut map = |region| match region {
+            Region::Static => Some(FnRegion::Static),
+            Region::Param(i) if i < bound => Some(FnRegion::Bound(i)),
+            _ => None,
+        };
+        let mut rows = Vec::new();
+        for ((&ty, own), &target) in source
+            .params
+            .iter()
+            .chain([&source.ret])
+            .zip(
+                regions
+                    .params
+                    .iter()
+                    .map(AsRef::as_ref)
+                    .chain([regions.ret.as_ref()]),
+            )
+            .zip(sig.inputs_output)
+        {
+            if ty.has_aliases() || ty.subst(args) != target || own.len() != slots(self.items, ty) {
+                return None;
+            }
+            let mut row = Vec::new();
+            instantiate(
+                self.items,
+                ty,
+                own,
+                &mut map,
+                &|i| arg_rows[i as usize].clone(),
+                &mut row,
+            );
+            let row = row.into_iter().collect::<Option<Vec<_>>>()?;
+            if row.len() != slots(self.items, target) {
+                return None;
+            }
+            rows.push(row);
+        }
+        (free != 0 && rows.len() == sig.inputs_output.len())
+            .then(|| crate::FnPtrRegions::intern(bound, free, &rows, &[]))
+    }
+
+    fn finish_inferred_item_pointer(
+        &self,
+        mut sig: crate::FnSigTy,
+        defs: &[crate::FnDefTy],
+        args: &[Vec<Ty>],
+    ) -> Ty {
+        let mut recipes = defs
+            .iter()
+            .zip(args)
+            .map(|(def, args)| self.inferred_item_pointer_regions(sig, def.function, args));
+        if let Some(Some(first)) = recipes.next()
+            && recipes.all(|recipe| recipe == Some(first))
+        {
+            sig.regions = Some(first);
+        }
+        Ty::new(TyKind::FnPtr(sig))
     }
 
     /// The type the context of `expr` wants, as the target of coercions
@@ -5105,19 +5251,7 @@ impl Ctx<'_> {
                 if let Some(&param) = sig.params.get(i) {
                     self.expect(arg, param);
                 }
-                let mut ty = self.infer_expr(arg);
-                // A `for` loop over a reference to an array is one over a
-                // slice of it, which `core` makes iterable, as rustc's
-                // `impl IntoIterator for &[T; N]` gives the slice's
-                // iterator; arrays themselves are by the compiler's.
-                if self.for_heads.contains(&id)
-                    && let TyKind::Ref(m, pointee) = self.shallow(ty).kind()
-                    && let TyKind::Array(elem, _) = self.shallow(pointee).kind()
-                {
-                    let slice = Ty::new(TyKind::Ref(m, Ty::slice(elem)));
-                    self.coerce(ty, slice, arg);
-                    ty = slice;
-                }
+                let ty = self.infer_expr(arg);
                 match sig.params.get(i) {
                     Some(&param) => self.coerce_call_argument(ty, param, arg, function, i),
                     None if data.is_variadic => {
@@ -5178,7 +5312,19 @@ impl Ctx<'_> {
             self.error(self.range(expr), "explicit use of destructor method");
         }
         let range = self.range(expr);
-        let args = self.instantiate_fn(expr, function, target, trait_args.as_deref(), range);
+        let args = if let Some((strukt, _)) = data.ctor {
+            // A tuple constructor can name the ADT's arguments on its owner
+            // segment, such as `Result::<T, E>::Ok`.
+            let TyKind::Adt(_, args) = self.instantiate_struct(strukt, Some(expr), range).kind()
+            else {
+                return Ty::ERROR;
+            };
+            let args = args.to_vec();
+            self.calls.insert(expr, (function, args.clone()));
+            args
+        } else {
+            self.instantiate_fn(expr, function, target, trait_args.as_deref(), range)
+        };
         let sig = self.instance_sig(function, &args).into_owned();
         let segment = self.source_map.segments.get(expr).copied();
         let site = CallSite {
@@ -5514,6 +5660,30 @@ impl Ctx<'_> {
             TyKind::Array(elem, _) | TyKind::Slice(elem) => Some(elem),
             _ => None,
         }
+    }
+
+    fn array_slice_target(&mut self, values: &[(ExprId, Ty)]) -> Option<Ty> {
+        let (_, first) = *values.first()?;
+        let TyKind::Ref(_, inner) = self.shallow(first).kind() else {
+            return None;
+        };
+        if !matches!(self.shallow(inner).kind(), TyKind::Array(..)) {
+            return None;
+        }
+        let (index, target) = values.iter().enumerate().find_map(|(index, &(_, ty))| {
+            let TyKind::Ref(_, pointee) = self.shallow(ty).kind() else {
+                return None;
+            };
+            matches!(self.shallow(pointee).kind(), TyKind::Slice(_)).then_some((index, ty))
+        })?;
+        // A later slice cannot repair a mismatch between earlier elements.
+        (values[..index]
+            .iter()
+            .all(|&(expr, ty)| self.can_coerce(ty, first, expr))
+            && values
+                .iter()
+                .all(|&(expr, ty)| self.can_coerce(ty, target, expr)))
+        .then_some(target)
     }
 
     /// `base[index]`: an element of an array or slice, which `base` may
@@ -7783,7 +7953,11 @@ impl Ctx<'_> {
                         self.coerce(from, to, operand);
                         continue;
                     }
-                    (_, TyKind::Ref(..)) if self.can_coerce(from, to, operand) => {
+                    (_, target)
+                        if (matches!(target, TyKind::Ref(..))
+                            || self.owned_pointer_cast(from, to))
+                            && self.can_coerce(from, to, operand) =>
+                    {
                         self.coerce(from, to, operand);
                         continue;
                     }
@@ -8776,6 +8950,21 @@ impl Ctx<'_> {
                 let sig = sig.map(|ty| self.resolve(ty, reported));
                 self.closure_pointer_type(sig)
             }
+            TyKind::FnPtr(sig)
+                if let Some(defs) = self.inferred_item_pointers.get(&ty).cloned() =>
+            {
+                let sig = sig.map(|ty| self.resolve(ty, reported));
+                let args: Vec<_> = defs
+                    .iter()
+                    .map(|def| {
+                        def.args
+                            .iter()
+                            .map(|&ty| self.resolve(ty, reported))
+                            .collect()
+                    })
+                    .collect();
+                self.finish_inferred_item_pointer(sig, &defs, &args)
+            }
             _ if ty.has_infer() => ty.map_children(|t| self.resolve(t, reported)),
             _ => ty,
         }
@@ -8983,7 +9172,10 @@ impl Ctx<'_> {
                 }
                 Deferred::RangePat { pat, ty } => {
                     let ty = self.resolve(ty, reported);
-                    if !matches!(ty.kind(), TyKind::Int(_) | TyKind::Char | TyKind::Error) {
+                    if !matches!(
+                        ty.kind(),
+                        TyKind::Int(_) | TyKind::Float(_) | TyKind::Char | TyKind::Error
+                    ) {
                         let range = self.source_map.pats.get(pat).copied().unwrap_or_default();
                         self.error(
                             range,

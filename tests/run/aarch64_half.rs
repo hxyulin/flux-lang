@@ -5,6 +5,26 @@ use core::arch::{
 use core::mem::transmute;
 
 #[target_feature(enable = "fp16")]
+unsafe fn add_half(lhs: u16, rhs: u16) -> u16 {
+    // SAFETY: these vectors have the same layout as the arrays.
+    let lhs: uint16x4_t = unsafe { transmute([lhs, 0u16, 0, 0]) };
+    let rhs: uint16x4_t = unsafe { transmute([rhs, 0u16, 0, 0]) };
+    let result: uint16x4_t;
+    // SAFETY: FP16 is enabled and the assembly only changes its output.
+    unsafe {
+        asm!(
+            "fadd {result:h}, {lhs:h}, {rhs:h}",
+            result = lateout(vreg) result,
+            lhs = in(vreg) lhs,
+            rhs = in(vreg) rhs,
+            options(pure, nomem, nostack, preserves_flags),
+        );
+        let lanes: [u16; 4] = transmute(result);
+        lanes[0]
+    }
+}
+
+#[target_feature(enable = "fp16")]
 unsafe fn round_trip(values: [u16; 4]) -> ([f64; 2], [u16; 4]) {
     // SAFETY: each pair of representations covers the same initialized lanes.
     let input: uint16x4_t = unsafe { transmute(values) };
@@ -39,6 +59,9 @@ fn main() {
         let (wide, narrow) = unsafe { round_trip([0x3c00, 0xc000, 0, 0]) };
         assert_eq!(wide, [1.0, -2.0]);
         assert_eq!(narrow, [0x3c00, 0xc000, 0x3c00, 0xc000]);
-        println!("{wide:?} {narrow:?}");
+        // SAFETY: this is inside the same FP16 runtime check.
+        let sum = unsafe { add_half(0x3c00, 0x4000) };
+        assert_eq!(sum, 0x4200);
+        println!("{wide:?} {narrow:?} {sum:04x}");
     }
 }

@@ -488,6 +488,19 @@ impl<'b, T: ?Sized> RefMut<'b, T> {
         &mut *self.value
     }
 
+    /// Projects an exclusive loan without releasing the RefCell borrow.
+    pub fn map<U: ?Sized, F>(orig: Self, f: F) -> RefMut<'b, U>
+    where F: FnOnce(&mut T) -> &mut U,
+    {
+        let borrow = orig.borrow;
+        // SAFETY: the original guard never uses its reference again. Its
+        // destructor still releases the borrow if the projection unwinds.
+        let value = unsafe { crate::ptr::read(&orig.value) };
+        let value = f(value);
+        mem::forget(orig);
+        RefMut { value, borrow }
+    }
+
     /// Splits one exclusive loan into two disjoint projected loans.
     pub fn map_split<U: ?Sized, V: ?Sized, F>(orig: Self, f: F) -> (RefMut<'b, U>, RefMut<'b, V>)
     where F: FnOnce(&mut T) -> (&mut U, &mut V),

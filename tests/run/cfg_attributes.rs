@@ -59,6 +59,17 @@ fn main() {
     let copy = v;
     println!("{} {} {} {}", v.value, copy.value, choose!(), nested::value());
     let a = [#[cfg(any())] missing_macro!(), 13, 17];
+    macro_rules! forwarded_list {
+        ($($value:expr),* $(,)?) => { vec![$($value),*] };
+    }
+    let forwarded = forwarded_list![
+        #[cfg(any())]
+        missing_macro!(),
+        #[cfg_attr(all(), cfg(all()))]
+        41,
+        (43),
+    ];
+    assert_eq!(forwarded.as_slice(), &[41, 43]);
     let t = (#[cfg(any())] missing_macro!(), 19, 23);
     println!("{} {} {}", a[0] + a[1], t.0 + t.1,
         sum(#[cfg(any())] missing_macro!(), 29, 31));

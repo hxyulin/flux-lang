@@ -13,6 +13,26 @@ fn associated_output_bounds_match_rustc() {
     std::fs::create_dir_all(&dir).unwrap();
     for (name, accepted, source) in [
         (
+            "enclosing_blanket_impl",
+            true,
+            include_str!("../../../tests/run/enclosing_blanket_impl.rs"),
+        ),
+        (
+            "enclosing_blanket_impl_cannot_change_its_owner_lifetime",
+            false,
+            "trait Marker<'a>{}trait Collect<'a>{fn known(value:&'a u32);fn bad<'b>(value:&'b u32);}impl<'a,T:Marker<'a>> Collect<'a> for T{fn known(_:&'a u32){}fn bad<'b>(value:&'b u32){<T as Collect<'b>>::known(value);}}fn main(){}",
+        ),
+        (
+            "inherited_iterator_projection",
+            true,
+            include_str!("../../../tests/run/inherited_iterator_projection.rs"),
+        ),
+        (
+            "inherited_iterator_projection_cannot_change_lifetimes",
+            false,
+            "trait Components<'a>:Iterator<Item=Self::Component>{type Component;}impl<'a> Components<'a> for std::iter::Once<&'a str>{type Component=&'static str;}fn main(){}",
+        ),
+        (
             "logos_source_lifetimes",
             true,
             include_str!("../../../tests/run/logos_source_lifetimes.rs"),
@@ -41,6 +61,76 @@ fn associated_output_bounds_match_rustc() {
             "associated_source_escape",
             false,
             "trait Source{type Slice<'a>where Self:'a;fn slice(&self)->Self::Slice<'_>;}trait Token<'s>{type Source:Source+?Sized+'s;}struct Lexer<'s,T:Token<'s>>{source:&'s T::Source}impl<'s,T:Token<'s>> Lexer<'s,T>{fn escape(&self)-><T::Source as Source>::Slice<'static>{self.source.slice()}}fn main(){}",
+        ),
+        (
+            "generic_vector_index_cannot_escape",
+            false,
+            "use std::ops::Index;use std::slice::SliceIndex;struct Entry<'a>(&'a str);fn escape<'a,I:SliceIndex<[Entry<'a>]>>(values:Vec<Entry<'a>>,index:I)->&'a I::Output{values.index(index)}fn main(){}",
+        ),
+        (
+            "forward_output_object_argument",
+            true,
+            include_str!("../../../tests/run/associated_bound_forwarding.rs"),
+        ),
+        (
+            "projected_object_argument_outlives",
+            true,
+            include_str!("../../../tests/run/trait_object_associated_lifetime.rs"),
+        ),
+        (
+            "projected_object_argument_requires_outlives",
+            false,
+            "type Items<'a,T>=Box<dyn Iterator<Item=T>+'a>;trait Source<'a>{type Item;fn items(&self)->Items<'a,Self::Item>;}fn collect<'a,S:Source<'a>>(source:&S)->Items<'a,Option<S::Item>>{Box::new(source.items().map(|item|Some(item)))}fn main(){}",
+        ),
+        (
+            "repeated_projected_bound_cannot_extend_owner",
+            false,
+            "trait Source<'a>{type Item:'a;}fn escape<'a,S:Source<'a>>(value:&'a u8)->&'static u8 where S::Item:'a{value}fn main(){}",
+        ),
+        (
+            "normalized_projection_argument",
+            true,
+            include_str!("../../../tests/run/normalized_projection_argument.rs"),
+        ),
+        (
+            "projected_callback_lifetimes",
+            true,
+            include_str!("../../../tests/run/projected_callback_lifetimes.rs"),
+        ),
+        (
+            "projected_callback_cannot_return_mutable_capture",
+            false,
+            "type Items<'a,T>=Box<dyn Iterator<Item=T>+'a>;trait Source<'a>{type Item:'a;}fn invalid<'a,S:Source<'a>,F:FnMut(&S::Item)->Items<'a,S::Item>+'a>(items:Items<'a,S::Item>,mut callback:F,mut owned:Vec<i32>)->Items<'a,&'a mut i32>{Box::new(items.map(move|item|{let _=callback(&item);&mut owned[0]}))}fn main(){}",
+        ),
+        (
+            "generic_flatten_projection",
+            true,
+            include_str!("../../../tests/run/generic_flatten_projection.rs"),
+        ),
+        (
+            "generic_flatten_cannot_outlive_its_input",
+            false,
+            "fn flatten<T>(_:T, values:&[Option<Vec<String>>])->Box<dyn Iterator<Item=usize>+'static>{let rows=values.iter().filter_map(|value|match value{Some(value)=>Some(value.as_slice()),None=>None});Box::new(rows.flatten().map(|value|value.len()))}fn main(){}",
+        ),
+        (
+            "projected_iterator_outlives",
+            true,
+            include_str!("../../../tests/run/projected_iterator_outlives.rs"),
+        ),
+        (
+            "projected_iterator_requires_declared_outlives",
+            false,
+            "type Items<'a,T>=Box<dyn Iterator<Item=T>+'a>;trait Source<'a>{type Item;}struct Expand<'a,T:'a>{inner:Items<'a,T>}impl<'a,T:'a>Iterator for Expand<'a,T>{type Item=T;fn next(&mut self)->Option<T>{self.inner.next()}}fn flatten<'a,S:Source<'a>>(items:Items<'a,(S::Item,Items<'a,S::Item>)>)->Items<'a,S::Item>{Box::new(items.flat_map(|(_,inner)|Expand{inner}))}fn main(){}",
+        ),
+        (
+            "projection_argument_requires_well_formed_owner",
+            false,
+            "trait Mark<'a>{}impl Mark<'static> for (){}struct Guard<'a,T:Mark<'a>>(T,core::marker::PhantomData<&'a()>);trait Read{type Out;}impl<'a,T:Mark<'a>>Read for Guard<'a,T>{type Out=u8;}fn check<T>(){}fn probe<'a>(_:&'a()){check::<<Guard<'a,()> as Read>::Out>();}fn main(){}",
+        ),
+        (
+            "forward_output_more_general_argument",
+            false,
+            "trait Source{type Out:Into<&'static u8>;}trait Target{type Out:for<'a> Into<&'a u8>;}impl<T:Source>Target for Box<T>{type Out=T::Out;}fn main(){}",
         ),
         (
             "forward_output",

@@ -537,6 +537,10 @@ pub(crate) fn ptr_with_metadata<T: ?Sized>(data: *mut u8, metadata: *const T) ->
 #[rustc_intrinsic]
 pub(crate) fn ptr_metadata_word<T: ?Sized>(pointer: *const T) -> usize { loop {} }
 
+/// Tests only the data address, including on wide pointers.
+#[rustc_intrinsic]
+pub(crate) const fn ptr_is_null<T: ?Sized>(pointer: *const T) -> bool { loop {} }
+
 /// Byte displacement changes the data pointer and preserves all DST metadata.
 #[rustc_intrinsic]
 pub(crate) const unsafe fn ptr_byte_add<T: ?Sized>(pointer: *const T, count: usize) -> *const T { loop {} }

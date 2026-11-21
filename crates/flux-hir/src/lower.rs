@@ -3978,6 +3978,10 @@ impl<'a> Ctx<'a> {
             return None;
         }
         let syntax = expr.syntax();
+        if let Some(inner) = crate::item_tree::invisible_expr(syntax) {
+            self.check_attrs(syntax);
+            return self.lower_elidable_expr(inner);
+        }
         let previous = self
             .elidable_expansion_root
             .replace((syntax.tree() as *const SyntaxTree, syntax.id()));
@@ -4845,28 +4849,20 @@ impl<'a> Ctx<'a> {
         let in_async = std::mem::replace(&mut self.in_async, false);
         let params_start = self.pat_scratch.len();
         let types_start = self.param_type_scratch.len();
-        let mut names: Vec<Symbol> = Vec::new();
         for param in closure.param_list().into_iter().flat_map(|l| l.params()) {
             if !crate::item_tree::item_enabled(param.syntax(), &mut self.diagnostics) {
                 continue;
             }
             check_attrs(param.attrs(), &mut self.diagnostics);
+            let checkpoint = self.scopes.len();
             let pat = self.lower_top_pat(param.pat(), param.syntax(), PatSite::Param);
-            // Each name may be bound by one parameter only.
-            let mut bound = Vec::new();
-            self.pat_bindings(pat, &mut bound);
-            for binding in bound {
-                let name = self.bindings[binding].name;
-                if names.contains(&name) {
-                    let at = self.source_map.pats.get(pat).copied().unwrap_or(range);
-                    self.error(
-                        at,
-                        format!(
-                            "identifier `{name}` is bound more than once in this parameter list"
-                        ),
-                    );
-                }
-                names.push(name);
+            let duplicates: Vec<_> = self.scopes.names_shadowing(scope, checkpoint).collect();
+            for name in duplicates {
+                let at = self.source_map.pats.get(pat).copied().unwrap_or(range);
+                self.error(
+                    at,
+                    format!("identifier `{name}` is bound more than once in this parameter list"),
+                );
             }
             let ty = param.ty().map(|ty| {
                 let at = ty.syntax().text_range();
@@ -4910,23 +4906,6 @@ impl<'a> Ctx<'a> {
             },
             range,
         )
-    }
-
-    /// The bindings `pat` binds, in order, once each.
-    fn pat_bindings(&self, pat: PatId, out: &mut Vec<BindingId>) {
-        match &self.pats[pat] {
-            Pat::Bind { binding, .. } if !out.contains(binding) => out.push(*binding),
-            Pat::Or(alternatives) => {
-                if let Some(&first) = self.lists[*alternatives].first() {
-                    self.pat_bindings(first, out);
-                }
-                return;
-            }
-            _ => {}
-        }
-        for child in self.pats[pat].children(&self.lists) {
-            self.pat_bindings(child, out);
-        }
     }
 
     /// A path expression, called if `call` is the call's range.

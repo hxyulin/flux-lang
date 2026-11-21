@@ -456,6 +456,22 @@ fn record_limits_are_symmetric_for_encoding_and_decoding() {
 }
 
 #[test]
+fn syntax_node_indices_round_trip_above_the_record_count_limit() {
+    use flux_hir::flib::{Decode, Encode, MAX_RECORD_LENGTH};
+    use flux_syntax::NodeId;
+
+    let raw = MAX_RECORD_LENGTH as u32 + 1;
+    let node = NodeId::from_raw(raw);
+    let mut encoder = Encoder::new();
+    node.encode(&mut encoder).unwrap();
+    let bytes = encoder.into_bytes();
+    assert_eq!(bytes, raw.to_le_bytes());
+    let mut decoder = Decoder::new(&bytes);
+    assert_eq!(NodeId::decode(&mut decoder).unwrap(), node);
+    decoder.finish().unwrap();
+}
+
+#[test]
 fn hash_maps_encode_mapped_keys_and_keep_the_encoder_map() {
     use flux_hir::flib::{Decode, Encode, IdKind};
     use std::collections::HashMap;

@@ -81,6 +81,49 @@ pub fn call() -> i32 {{ renamed::value() + normal::value() + absolute::value() }
 }
 
 #[test]
+fn inline_path_overrides_use_the_active_directory() {
+    let case = Case::new();
+    case.write("lib.rs", "mod flat; mod nested;");
+    for name in ["flat.rs", "nested/mod.rs"] {
+        case.write(
+            name,
+            r#"
+mod inline {
+    #[path = "../shared.rs"]
+    mod chosen;
+    #[cfg_attr(all(), path = "redirected")]
+    mod renamed {
+        mod default;
+        #[path = "custom.rs"]
+        mod explicit;
+        pub fn value() -> i32 { default::value() + explicit::value() }
+    }
+    pub fn value() -> i32 { chosen::value() + renamed::value() }
+}
+#[path = "override"]
+mod renamed { pub mod child; }
+pub fn value() -> i32 { inline::value() + renamed::child::value() }
+"#,
+        );
+    }
+    for name in [
+        "flat/shared.rs",
+        "nested/shared.rs",
+        "flat/inline/redirected/default.rs",
+        "flat/inline/redirected/custom.rs",
+        "nested/inline/redirected/default.rs",
+        "nested/inline/redirected/custom.rs",
+        "override/child.rs",
+        "nested/override/child.rs",
+    ] {
+        case.write(name, "pub fn value() -> i32 { 1 }");
+    }
+    case.rustc(true);
+    let (_, hir) = case.lower();
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+}
+
+#[test]
 fn conditional_paths_run_before_visible_name_allocation() {
     let case = Case::new();
     case.write(
@@ -133,19 +176,9 @@ fn unsupported_and_malformed_forms_have_explicit_diagnostics() {
             "the `path` attribute is not supported yet",
         ),
         (
-            "#[path=\"dir\"] mod m {}",
-            true,
-            "path attributes on inline modules are not supported yet",
-        ),
-        (
-            "mod outer { #[path=\"ok.rs\"] mod m; }",
-            true,
-            "path attributes inside inline modules or blocks are not supported yet",
-        ),
-        (
-            "fn f() { #[path=\"ok.rs\"] mod m; }",
-            true,
-            "path attributes inside inline modules or blocks are not supported yet",
+            "fn f() { mod outer { mod m; } }",
+            false,
+            "cannot declare a file module inside a block unless it has a path attribute",
         ),
         (
             "#[path] mod m;",
@@ -172,7 +205,7 @@ fn unsupported_and_malformed_forms_have_explicit_diagnostics() {
         let case = Case::new();
         case.write("lib.rs", source);
         case.write("ok.rs", "");
-        case.write("outer/ok.rs", "");
+        case.write("outer/m.rs", "");
         case.rustc(valid);
         let (_, hir) = case.lower();
         assert!(
@@ -223,27 +256,18 @@ pub fn value() -> i32 { outer::value() + normal::value() }
 }
 
 #[test]
-fn macro_paths_retain_inline_and_recursion_boundaries() {
-    for (source, expected) in [
-        (
-            r#"macro_rules! m { () => { #[path="lib.rs"] mod again; }; } m!();"#,
-            "recursive module loading",
-        ),
-        (
-            r#"macro_rules! m { () => { #[path="ok.rs"] mod child; }; } mod inline { m!(); }"#,
-            "path attributes inside inline modules or blocks are not supported yet",
-        ),
-        (
-            r#"macro_rules! m { () => { #[path="ok.rs"] mod child; }; } macro_rules! outer { () => { mod inline { m!(); } }; } outer!();"#,
-            "path attributes inside inline modules or blocks are not supported yet",
-        ),
+fn macro_paths_inside_inline_modules_use_the_inline_directory() {
+    for source in [
+        r#"macro_rules! m { () => { #[path="ok.rs"] mod child; }; } mod inline { m!(); }"#,
+        r#"macro_rules! m { () => { #[path="ok.rs"] mod child; }; } macro_rules! outer { () => { mod inline { m!(); } }; } outer!();"#,
     ] {
         let case = Case::new();
         case.write("lib.rs", source);
         case.write("inline/ok.rs", "");
+        case.rustc(true);
         let (_, hir) = case.lower();
         assert!(
-            hir.diagnostics.iter().any(|d| d.message.contains(expected)),
+            hir.diagnostics.is_empty(),
             "{source}: {:?}",
             hir.diagnostics
         );
@@ -251,10 +275,49 @@ fn macro_paths_retain_inline_and_recursion_boundaries() {
 }
 
 #[test]
+fn paths_in_blocks_drop_the_implicit_flat_file_directory() {
+    let case = Case::new();
+    case.write("lib.rs", "mod flat;");
+    case.write(
+        "flat.rs",
+        r#"
+pub fn value() -> i32 {
+    #[path = "file.rs"]
+    mod direct;
+    mod inline {
+        #[path = "file.rs"]
+        pub mod chosen;
+    }
+    #[path = "redirected"]
+    mod redirected { pub mod child; }
+    direct::value() + inline::chosen::value() + redirected::child::value()
+}
+"#,
+    );
+    for name in ["file.rs", "inline/file.rs", "redirected/child.rs"] {
+        case.write(name, "pub fn value() -> i32 { 1 }");
+    }
+    case.rustc(true);
+    let (_, hir) = case.lower();
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+}
+
+#[test]
 fn recursive_paths_and_symlink_aliases_are_bounded() {
     let case = Case::new();
     case.write("lib.rs", "#[path=\"./lib.rs\"] mod again;");
     case.rustc(false);
+    let (_, hir) = case.lower();
+    assert_eq!(hir.diagnostics.len(), 1);
+    assert!(
+        hir.diagnostics[0]
+            .message
+            .contains("recursive module loading")
+    );
+    case.write(
+        "lib.rs",
+        r#"macro_rules! m { () => { #[path="lib.rs"] mod again; }; } m!();"#,
+    );
     let (_, hir) = case.lower();
     assert_eq!(hir.diagnostics.len(), 1);
     assert!(

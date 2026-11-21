@@ -319,7 +319,7 @@ pub(super) fn target_feature_attr(
                         "aarch64" => {
                             matches!(
                                 feature,
-                                "neon" | "fp16" | "crc" | "sha2" | "sha3" | "dit" | "sb"
+                                "neon" | "fp16" | "crc" | "aes" | "sha2" | "sha3" | "dit" | "sb"
                             )
                         }
                         "x86_64" => matches!(

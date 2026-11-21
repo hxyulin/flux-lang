@@ -478,7 +478,7 @@ fn resolve_predecessor_inner(
                 crate::PathAnchor::Super(n) => {
                     lookup_module = items.named_module(module);
                     for _ in 0..n {
-                        lookup_module = items.modules[lookup_module].parent?;
+                        lookup_module = items.named_module(items.modules[lookup_module].parent?);
                     }
                     lowered.anchor = crate::PathAnchor::Plain;
                 }

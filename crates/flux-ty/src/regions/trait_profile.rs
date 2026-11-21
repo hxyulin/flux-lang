@@ -450,9 +450,7 @@ fn method_profile(
         }
         let mut expected_projections = Vec::new();
         let declaration = &sigs.traits[trait_];
-        if declaration.header_projections.iter().any(|projection| {
-            !matches!(projection.alias.args[0].kind(), TyKind::Param(parameter) if parameter.index == 0)
-        }) || super::trait_bound_regions(items, sigs, trait_).is_none() {
+        if super::trait_bound_regions(items, sigs, trait_).is_none() {
             return Err(fail(None, TraitProfileReason::SupertraitRegions));
         }
         expected_projections.extend_from_slice(&declaration.header_projections);
@@ -491,7 +489,16 @@ fn method_profile(
             }
             expected_projections.extend(projections);
         }
-        if expected_projections.as_slice() != sigs.traits[trait_].implied.as_ref()
+        // Non-Self header equalities belong to the complete declaration, but
+        // are not supertrait equalities implied by an erased membership.
+        let (header, associated) =
+            expected_projections.split_at(declaration.header_projections.len());
+        let self_ty = Ty::param(0, flux_intern::kw::SelfUpper);
+        let implied = header
+            .iter()
+            .filter(|projection| projection.alias.self_ty() == self_ty)
+            .chain(associated);
+        if implied.ne(declaration.implied.iter())
             || sigs
                 .trait_projections
                 .get(trait_)
@@ -615,6 +622,9 @@ fn method_profile(
                     && (copy || (projected && (sized || method_sized || !function.has_body)))
             }
             Some(TyKind::Ref(_, pointee)) => pointee == self_ty,
+            Some(TyKind::Adt(..)) if projected => {
+                flux_solve::receiver_shape(items, signature.params[0], self_ty).is_some()
+            }
             _ => false,
         };
         if !(receiver || (projected && !function.has_self))
@@ -766,6 +776,9 @@ fn method_slots(
                 Some(n + method_slots(items, sigs, t, params, projected)?)
             })
         }
+        TyKind::Dynamic(object) if projected => object_slots(items, object, |ty| {
+            method_slots(items, sigs, ty, params, true)
+        }),
         TyKind::FnPtr(signature) if projected => {
             let closed = !signature.inputs_output.is_empty()
                 && signature.regions.is_none_or(|regions| {
@@ -876,53 +889,12 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
                 Some(n + type_slots(items, sigs, t, params)?)
             })
         }
-        TyKind::Dynamic(object) => {
-            let principal = items.traits.get(object.trait_)?;
-            if object.args.len() != principal.generics.params.len()
-                || flux_solve::objects::supertraits_of(items, object.trait_)
-                    .iter()
-                    .any(|&trait_| {
-                        (trait_ != object.trait_
-                            && !items.traits[trait_].generics.lifetimes.is_empty())
-                            || crate::fn_trait_kind(items, trait_).is_some()
-                    })
-                || object.auto_traits.iter().any(|marker| {
-                    items
-                        .traits
-                        .get(marker.trait_)
-                        .is_none_or(|data| marker.name != data.name)
-                        || !flux_solve::traits::is_auto_trait(items, marker.trait_)
-                        || marker.trait_ == object.trait_
-                        || !marker.args.is_empty()
-                })
-                || object
-                    .auto_traits
-                    .windows(2)
-                    .any(|pair| pair[0].trait_ >= pair[1].trait_)
-            {
+        TyKind::Dynamic(object) => object_slots(items, object, |ty| {
+            if ty.has_aliases() {
                 return None;
             }
-            let associated = flux_solve::objects::dyn_assoc(items, object.trait_);
-            if object.assoc_names.len() != associated.len()
-                || object.assoc_tys.len() != associated.len()
-                || object
-                    .assoc_names
-                    .iter()
-                    .zip(&associated)
-                    .any(|(&actual, &(_, expected))| actual != expected)
-            {
-                return None;
-            }
-            object.args.iter().chain(object.assoc_tys).try_fold(
-                super::object_own_slots(items, object),
-                |count, &arg| {
-                    if arg.has_aliases() || arg.has_opaques() || arg.has_infer() || arg.is_dyn() {
-                        return None;
-                    }
-                    Some(count + type_slots(items, sigs, arg, params)?)
-                },
-            )
-        }
+            type_slots(items, sigs, ty, params)
+        }),
         TyKind::Param(p) if (p.index as usize) < params => Some(0),
         TyKind::Int(_)
         | TyKind::Float(_)
@@ -934,6 +906,57 @@ fn type_slots(items: &ItemTree, sigs: &Signatures, t: Ty, params: usize) -> Opti
         | TyKind::Value(_) => Some(0),
         _ => None,
     }
+}
+
+fn object_slots(
+    items: &ItemTree,
+    object: flux_ty_ir::DynTy,
+    argument_slots: impl Fn(Ty) -> Option<usize>,
+) -> Option<usize> {
+    let principal = items.traits.get(object.trait_)?;
+    if object.args.len() != principal.generics.params.len()
+        || flux_solve::objects::supertraits_of(items, object.trait_)
+            .iter()
+            .any(|&trait_| {
+                (trait_ != object.trait_ && !items.traits[trait_].generics.lifetimes.is_empty())
+                    || crate::fn_trait_kind(items, trait_).is_some()
+            })
+        || object.auto_traits.iter().any(|marker| {
+            items
+                .traits
+                .get(marker.trait_)
+                .is_none_or(|data| marker.name != data.name)
+                || !flux_solve::traits::is_auto_trait(items, marker.trait_)
+                || marker.trait_ == object.trait_
+                || !marker.args.is_empty()
+        })
+        || object
+            .auto_traits
+            .windows(2)
+            .any(|pair| pair[0].trait_ >= pair[1].trait_)
+    {
+        return None;
+    }
+    let associated = flux_solve::objects::dyn_assoc(items, object.trait_);
+    if object.assoc_names.len() != associated.len()
+        || object.assoc_tys.len() != associated.len()
+        || object
+            .assoc_names
+            .iter()
+            .zip(&associated)
+            .any(|(&actual, &(_, expected))| actual != expected)
+    {
+        return None;
+    }
+    object.args.iter().chain(object.assoc_tys).try_fold(
+        super::object_own_slots(items, object),
+        |count, &arg| {
+            if arg.has_opaques() || arg.has_infer() || arg.is_dyn() {
+                return None;
+            }
+            Some(count + argument_slots(arg)?)
+        },
+    )
 }
 
 fn region_free_edges(

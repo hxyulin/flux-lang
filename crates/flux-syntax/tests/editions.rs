@@ -50,6 +50,25 @@ fn rust_2018_tokens_and_legacy_expression_fragments() {
 }
 
 #[test]
+fn metadata_fragments_stop_before_a_joint_fat_arrow() {
+    use flux_syntax::parser::{Fragment, Input, fragment_len};
+
+    for (source, length) in [
+        ("unix => {}", 1),
+        ("feature = \"x\" => {}", 3),
+        ("not(test) => {}", 4),
+    ] {
+        let lexed = flux_syntax::LexedStr::new(source);
+        let input = Input::from_lexed(&lexed);
+        assert_eq!(
+            fragment_len(&input, 0, Fragment::Meta),
+            Some(length),
+            "{source}"
+        );
+    }
+}
+
+#[test]
 fn rust_2015_keywords_and_contextual_dyn_preserve_lexical_identity() {
     use flux_syntax::ast::{self, AstNode};
     for word in ["async", "await", "dyn", "try", "gen"] {

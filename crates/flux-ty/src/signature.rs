@@ -402,6 +402,7 @@ pub(super) fn extend_signatures(
             consts: &consts,
             unsized_params: &unsized_params,
             signature_of: Some("structs"),
+            defer_projection_sizes: true,
             defaults: Some(&sigs.trait_defaults),
             struct_fields: Some(&sigs.structs),
             lens,
@@ -441,70 +442,6 @@ pub(super) fn extend_signatures(
         }
         if !own.projections.is_empty() {
             sigs.struct_projections.insert(id, own.projections.into());
-        }
-    }
-    for (id, data) in items.structs.iter().skip(from.structs as usize) {
-        let parameters = unsized_params(items, None, &data.generics);
-        let bounds = flux_solve::traits::elaborate(
-            &sigs,
-            sigs.struct_predicates
-                .get(id)
-                .map_or(&[][..], |bounds| bounds),
-        );
-        if data.repr_transparent {
-            let fields = sigs.structs[id];
-            let nontrivial = fields
-                .iter()
-                .filter(|&&ty| {
-                    transparent_field_shape(items, &sigs, ty, &mut Vec::new()) != (true, true)
-                })
-                .count();
-            if nontrivial > 1 {
-                let mut error = Diagnostic::new(
-                    data.name_range,
-                    "transparent structs may have only one field with nonzero size or alignment greater than one",
-                );
-                error.file = data.loc.file;
-                reported.push(error);
-            }
-        }
-        for variant in 0..data.variant_count() as u32 {
-            let fields = flux_solve::variant_fields(
-                &sigs,
-                Ty::adt(id, data.name, &params_of(&data.generics, 0)),
-                variant,
-            )
-            .unwrap_or_default();
-            for (index, &ty) in fields.iter().enumerate() {
-                let scope = TypeScope {
-                    struct_fields: Some(&sigs.structs),
-                    unsized_params: &parameters,
-                    bounds: &bounds,
-                    ..TypeScope::default()
-                };
-                if let Some(arg) = unsized_argument(items, scope, ty) {
-                    let mut error = Diagnostic::new(
-                        data.variant(variant).fields[index].range,
-                        unsized_error(arg),
-                    );
-                    error.file = data.loc.file;
-                    reported.push(error);
-                }
-                if maybe_unsized(items, &sigs, ty, &parameters, &bounds) {
-                    let valid_tail = !data.is_enum() && !data.is_union && index + 1 == fields.len();
-                    let message = if !valid_tail {
-                        Some("only the last field of a struct may be unsized")
-                    } else {
-                        None
-                    };
-                    if let Some(message) = message {
-                        let mut error =
-                            Diagnostic::new(data.variant(variant).fields[index].range, message);
-                        error.file = data.loc.file;
-                        reported.push(error);
-                    }
-                }
-            }
         }
     }
     for (id, imp) in items.impls.iter().skip(from.impls as usize) {
@@ -635,6 +572,85 @@ pub(super) fn extend_signatures(
             sigs.impl_projections.insert(id, projections.into());
         }
     }
+    for (id, data) in items.structs.iter().skip(from.structs as usize) {
+        let parameters = unsized_params(items, None, &data.generics);
+        let bounds = flux_solve::traits::elaborate(
+            &sigs,
+            sigs.struct_predicates
+                .get(id)
+                .map_or(&[][..], |bounds| bounds),
+        );
+        let mut projections = sigs
+            .struct_projections
+            .get(id)
+            .map_or_else(Vec::new, |p| p.to_vec());
+        projections.extend(flux_solve::traits::implied_projections(&sigs, &bounds));
+        let normalize = |ty: Ty| {
+            if ty.has_aliases() {
+                flux_solve::traits::normalize(items, &sigs, &projections, ty)
+            } else {
+                ty
+            }
+        };
+        if data.repr_transparent {
+            let fields = sigs.structs[id];
+            let nontrivial = fields
+                .iter()
+                .filter(|&&ty| {
+                    transparent_field_shape(items, &sigs, normalize(ty), &mut Vec::new())
+                        != (true, true)
+                })
+                .count();
+            if nontrivial > 1 {
+                let mut error = Diagnostic::new(
+                    data.name_range,
+                    "transparent structs may have only one field with nonzero size or alignment greater than one",
+                );
+                error.file = data.loc.file;
+                reported.push(error);
+            }
+        }
+        for variant in 0..data.variant_count() as u32 {
+            let fields = flux_solve::variant_fields(
+                &sigs,
+                Ty::adt(id, data.name, &params_of(&data.generics, 0)),
+                variant,
+            )
+            .unwrap_or_default();
+            for (index, &ty) in fields.iter().enumerate() {
+                let ty = normalize(ty);
+                let scope = TypeScope {
+                    struct_fields: Some(&sigs.structs),
+                    unsized_params: &parameters,
+                    bounds: &bounds,
+                    size_sigs: Some(&sigs),
+                    ..TypeScope::default()
+                };
+                if let Some(arg) = unsized_argument(items, scope, ty) {
+                    let mut error = Diagnostic::new(
+                        data.variant(variant).fields[index].range,
+                        unsized_error(arg),
+                    );
+                    error.file = data.loc.file;
+                    reported.push(error);
+                }
+                if maybe_unsized(items, &sigs, ty, &parameters, &bounds) {
+                    let valid_tail = !data.is_enum() && !data.is_union && index + 1 == fields.len();
+                    let message = if !valid_tail {
+                        Some("only the last field of a struct may be unsized")
+                    } else {
+                        None
+                    };
+                    if let Some(message) = message {
+                        let mut error =
+                            Diagnostic::new(data.variant(variant).fields[index].range, message);
+                        error.file = data.loc.file;
+                        reported.push(error);
+                    }
+                }
+            }
+        }
+    }
     for (id, konst) in items.consts.iter().skip(from.consts as usize) {
         // A discriminant has the enum's `repr` type.
         if let Some((strukt, _)) = konst.discriminant {
@@ -679,6 +695,8 @@ pub(super) fn extend_signatures(
             }),
             bounds: &bounds,
             in_fn_pointer: false,
+            defer_projection_sizes: false,
+            size_sigs: Some(&sigs),
             in_trait_bound: false,
             self_trait: konst
                 .owner
@@ -801,6 +819,7 @@ pub(super) fn extend_signatures(
             consts: &consts,
             unsized_params: &unsized_params,
             signature_of: Some("functions"),
+            size_sigs: Some(&sigs),
             self_trait,
             self_types: &self_types,
             defaults: Some(&sigs.trait_defaults),
@@ -934,7 +953,6 @@ pub(super) fn extend_signatures(
             &mut reported,
         );
         let ret = sized(ret, function.ret_range, &mut reported);
-        sigs.fns.insert(id, FnSig { params, ret });
         if !function.opaques.is_empty() {
             let mut errors = Vec::new();
             let opaques = opaque_sigs(
@@ -949,6 +967,7 @@ pub(super) fn extend_signatures(
             in_file(errors, function.loc.file, &mut reported);
             sigs.opaques.insert(id, opaques);
         }
+        sigs.fns.insert(id, FnSig { params, ret });
         if !own.predicates.is_empty() {
             sigs.fn_predicates.insert(id, own.predicates.into());
         }

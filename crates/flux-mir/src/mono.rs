@@ -68,10 +68,12 @@ fn neon_immediate_error(items: &ItemTree, instance: Instance) -> Option<&'static
     }
     let module = &items.modules[function.loc.module];
     if module.name.as_str() != "aarch64"
-        && !(matches!(module.name.as_str(), "neon_f32" | "neon_f64" | "neon_lanes")
-            && module
-                .parent
-                .is_some_and(|parent| items.modules[parent].name.as_str() == "aarch64"))
+        && !(matches!(
+            module.name.as_str(),
+            "neon_f32" | "neon_f64" | "neon_integer" | "neon_lanes"
+        ) && module
+            .parent
+            .is_some_and(|parent| items.modules[parent].name.as_str() == "aarch64"))
     {
         return None;
     }
@@ -86,12 +88,15 @@ fn neon_immediate_error(items: &ItemTree, instance: Instance) -> Option<&'static
         "vgetq_lane_u32" | "vgetq_lane_f32" | "vdupq_laneq_f32" | "vmuls_laneq_f32"
         | "vsetq_lane_f32" | "vsetq_lane_u32" | "vextq_f32" | "vfmaq_laneq_f32"
         | "vld1q_lane_f32" | "vst1q_lane_f32" => (0, 4, "lane index out of range"),
-        "vget_lane_f32" | "vdupq_lane_f32" | "vmul_lane_f32" | "vfmaq_lane_f32"
-        | "vmlaq_lane_f32" => (0, 2, "lane index out of range"),
+        "vget_lane_u32" | "vget_lane_f32" | "vdupq_lane_f32" | "vmul_lane_f32"
+        | "vfmaq_lane_f32" | "vmlaq_lane_f32" => (0, 2, "lane index out of range"),
         "vshlq_n_u32" => (0, 32, "shift amount out of range: expected 0..=31"),
-        "vshrq_n_u8" => (1, 9, "shift amount out of range: expected 1..=8"),
+        "vshrq_n_u8" | "vsriq_n_u8" => (1, 9, "shift amount out of range: expected 1..=8"),
+        "vshrq_n_u64" => (1, 65, "shift amount out of range: expected 1..=64"),
         "vshrn_n_u64" => (1, 33, "shift amount out of range: expected 1..=32"),
-        "vextq_u8" | "vgetq_lane_s8" | "vgetq_lane_u8" => (0, 16, "lane index out of range"),
+        "vextq_u8" | "vgetq_lane_s8" | "vgetq_lane_u8" | "vsetq_lane_u8" => {
+            (0, 16, "lane index out of range")
+        }
         "vextq_u16" | "vgetq_lane_u16" => (0, 8, "lane index out of range"),
         "vextq_u32" => (0, 4, "lane index out of range"),
         _ => return None,
@@ -1654,6 +1659,7 @@ pub fn expand_intrinsics(
                 | "caller_location"
                 | "ptr_metadata_word"
                 | "ptr_with_metadata"
+                | "ptr_is_null"
                 | "read_unaligned"
                 | "read_volatile"
                 | "write_volatile"

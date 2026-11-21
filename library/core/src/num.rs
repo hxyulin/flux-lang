@@ -68,6 +68,13 @@ macro_rules! nonzero_impl {
             fn bitor(self, rhs: Self) -> Self { Self(self.0 | rhs.0) }
         }
         impl From<$name> for $t { fn from(value: $name) -> $t { value.get() } }
+        impl crate::str::FromStr for $name {
+            type Err = ParseIntError;
+            fn from_str(s: &str) -> Result<Self, ParseIntError> {
+                let value = <$t>::from_str_radix(s, 10)?;
+                Self::new(value).ok_or(ParseIntError { kind: IntErrorKind::Zero })
+            }
+        }
         impl crate::convert::TryFrom<$t> for $name {
             type Error = TryFromIntError;
             fn try_from(value: $t) -> Result<Self, TryFromIntError> {

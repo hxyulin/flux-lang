@@ -195,12 +195,6 @@ pub(crate) fn expand(cx: &BuiltinCx<'_>) -> Result<(Vec<Tok>, AsmLayout), Error>
             let n = parser::fragment_len(&input, at, parser::Fragment::Expr)
                 .filter(|&n| n > 0)
                 .ok_or((range, "expected an assembly operand expression".into()))?;
-            if kind == "const" && (n != 1 || tokens[at].kind != SyntaxKind::INT_NUMBER) {
-                return Err((
-                    range,
-                    "only integer literals are supported as assembly constants".into(),
-                ));
-            }
             expressions.push(tokens[at..at + n].to_vec());
             if register.fixed().is_some() && name.is_some() {
                 return Err((range, "explicit register operands cannot have names".into()));

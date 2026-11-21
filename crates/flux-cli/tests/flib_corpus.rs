@@ -164,6 +164,10 @@ fixture!(generic_structs, "generic_structs.rs");
 fixture!(closures, "closures.rs");
 fixture!(closure_captures, "closure_captures.rs");
 fixture!(constants, "consts.rs");
+fixture!(
+    promoted_named_constant_array,
+    "cranelift_library_prerequisites.rs"
+);
 fixture!(generic_constant_references, "generic_constant_reference.rs");
 fixture!(associated_array_index, "associated_array_index.rs");
 fixture!(boxed_fn_once, "boxed_fn_once.rs");

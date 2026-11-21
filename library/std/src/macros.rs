@@ -24,6 +24,12 @@ macro_rules! __is_aarch64_feature_detected {
             compile_error!("aarch64 feature detection requires an aarch64 target")
         }
     }};
+    ("aes" $(,)?) => {{
+        #[cfg(target_arch = "aarch64")]
+        { $crate::arch::__aarch64_aes_detected() }
+        #[cfg(not(target_arch = "aarch64"))]
+        { compile_error!("aarch64 feature detection requires an aarch64 target") }
+    }};
     ("dit" $(,)?) => {{
         #[cfg(target_arch = "aarch64")]
         { $crate::arch::__aarch64_dit_detected() }

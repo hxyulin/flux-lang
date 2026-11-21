@@ -6,7 +6,26 @@ fn index(count: &mut usize) -> usize {
     i
 }
 
+fn assembly_constants<const STEP: u64>(mut value: u64) -> u64 {
+    const DELTA: u64 = 3 * 4;
+    // SAFETY: the instructions only update the declared register.
+    unsafe {
+        asm!(
+            "add {value}, {value}, #{delta}",
+            "add {value}, {value}, #{step}",
+            "add {value}, {value}, #{inline}",
+            value = inout(reg) value,
+            delta = const DELTA,
+            step = const STEP,
+            inline = const const { 2 + 3 },
+            options(nomem, nostack, preserves_flags),
+        );
+    }
+    value
+}
+
 fn main() {
+    assert_eq!(assembly_constants::<7>(10), 34);
     let source=19u64;
     let split: u64;
     // SAFETY: only the declared general-purpose register is changed.

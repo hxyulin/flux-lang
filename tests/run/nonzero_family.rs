@@ -3,6 +3,10 @@ macro_rules! check {
     ($name:ident,$int:ty,$value:expr) => {{
         const VALUE: $name = $name::new($value).unwrap();
         assert_eq!(VALUE.get(), $value);
+        assert_eq!(VALUE.to_string().parse::<$name>(), Ok(VALUE));
+        assert_eq!("0".parse::<$name>().unwrap_err().kind(), &IntErrorKind::Zero);
+        assert_eq!("".parse::<$name>().unwrap_err().kind(), &IntErrorKind::Empty);
+        assert_eq!(" 1".parse::<$name>().unwrap_err().kind(), &IntErrorKind::InvalidDigit);
         assert!($name::new(0).is_none());
         assert!($name::try_from(0).is_err());
         assert_eq!(<$int>::from(VALUE), $value);
@@ -17,6 +21,11 @@ macro_rules! check {
     }};
 }
 fn main() {
+    assert_eq!("+001".parse::<NonZeroU8>().unwrap().get(), 1);
+    assert_eq!("-0".parse::<NonZeroI8>().unwrap_err().kind(), &IntErrorKind::Zero);
+    assert_eq!("-1".parse::<NonZeroU8>().unwrap_err().kind(), &IntErrorKind::InvalidDigit);
+    assert_eq!("256".parse::<NonZeroU8>().unwrap_err().kind(), &IntErrorKind::PosOverflow);
+    assert_eq!("-129".parse::<NonZeroI8>().unwrap_err().kind(), &IntErrorKind::NegOverflow);
     check!(NonZeroI8,i8,i8::MIN);
     check!(NonZeroI16,i16,i16::MIN);
     check!(NonZeroI32,i32,i32::MIN);

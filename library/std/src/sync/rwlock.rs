@@ -118,6 +118,18 @@ impl<T: ?Sized> DerefMut for RwLockWriteGuard<'_, T> {
     }
 }
 
+impl<'a, T: ?Sized> RwLockWriteGuard<'a, T> {
+    /// Atomically changes exclusive access to shared access.
+    pub fn downgrade(guard: Self) -> RwLockReadGuard<'a, T> {
+        let lock = guard.lock;
+        core::mem::forget(guard);
+        // The writer owns the whole state. Publish its writes and leave
+        // one reader installed without making the lock available to writers.
+        lock.state.store(1, Release);
+        RwLockReadGuard { lock, marker: PhantomData }
+    }
+}
+
 impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
     fn drop(&mut self) { self.lock.state.fetch_sub(1, Release); }
 }

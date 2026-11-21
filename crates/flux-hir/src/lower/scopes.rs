@@ -56,6 +56,20 @@ impl Scopes {
         self.stack.len()
     }
 
+    /// Names introduced after `checkpoint` that shadow bindings in this scope.
+    pub(super) fn names_shadowing(
+        &self,
+        start: usize,
+        checkpoint: usize,
+    ) -> impl Iterator<Item = Symbol> + '_ {
+        self.stack[checkpoint..]
+            .iter()
+            .filter_map(move |(name, _, shadowed)| {
+                let previous = shadowed.map(|index| index as usize)?;
+                (start..checkpoint).contains(&previous).then_some(name.name)
+            })
+    }
+
     /// Ends the scope of every binding after the first `len`.
     pub(super) fn truncate(&mut self, len: usize) {
         while self.stack.len() > len {

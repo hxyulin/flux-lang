@@ -2764,6 +2764,20 @@ impl<'a> Evaluator<'a> {
                     {
                         return Err(error(range, "entering unreachable code".into()));
                     }
+                    if self.items.functions[*func].intrinsic == Some(flux_hir::Intrinsic::PtrIsNull)
+                    {
+                        let pointer = self.operand(body, locals, generics, &args[0], range)?;
+                        let null = pointer_is_null(&pointer).ok_or_else(|| {
+                            error(
+                                range,
+                                "pointer nullness is unknown during const eval".into(),
+                            )
+                        })?;
+                        write(locals, dest, Value::Bool(null), range)?;
+                        block = target
+                            .ok_or_else(|| error(range, "entering unreachable code".into()))?;
+                        continue;
+                    }
                     if matches!(
                         self.items.functions[*func].intrinsic,
                         Some(
@@ -4394,6 +4408,27 @@ fn pointer_pointee(ty: Ty) -> Option<Ty> {
     match ty.kind() {
         TyKind::Ref(_, pointee) | TyKind::RawPtr(_, pointee) => Some(pointee),
         _ => None,
+    }
+}
+
+fn pointer_is_null(mut value: &Value) -> Option<bool> {
+    loop {
+        match value {
+            Value::RawAddr(address) => return Some(*address == 0),
+            Value::Ref(_)
+            | Value::InteriorRef(_)
+            | Value::Static(_)
+            | Value::StaticPart { .. }
+            | Value::FramePointer { .. }
+            | Value::LocalRef { .. } => return Some(false),
+            Value::PointerView { pointer, .. } | Value::DynPointer { pointer, .. } => {
+                value = pointer;
+            }
+            // An offset view either points within or one past its allocation,
+            // or describes a raw slice with zero displacement.
+            Value::PointerOffset { pointer, .. } => value = pointer,
+            _ => return None,
+        }
     }
 }
 

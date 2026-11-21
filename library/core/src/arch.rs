@@ -92,6 +92,70 @@ pub mod aarch64 {
     #[derive(Clone, Copy)]
     pub struct poly64x2_t(pub(crate) [u64; 2]);
 
+    macro_rules! neon_tuple {
+        ($name:ident, $($vector:ty),+) => {
+            /// Consecutive NEON vectors in lane order.
+            #[allow(non_camel_case_types)]
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            pub struct $name($(pub $vector),+);
+        };
+    }
+
+    neon_tuple!(float32x2x2_t, float32x2_t, float32x2_t);
+    neon_tuple!(float32x2x3_t, float32x2_t, float32x2_t, float32x2_t);
+    neon_tuple!(float32x2x4_t, float32x2_t, float32x2_t, float32x2_t, float32x2_t);
+    neon_tuple!(float32x4x2_t, float32x4_t, float32x4_t);
+    neon_tuple!(float32x4x3_t, float32x4_t, float32x4_t, float32x4_t);
+    neon_tuple!(float32x4x4_t, float32x4_t, float32x4_t, float32x4_t, float32x4_t);
+    neon_tuple!(float64x1x2_t, float64x1_t, float64x1_t);
+    neon_tuple!(float64x1x3_t, float64x1_t, float64x1_t, float64x1_t);
+    neon_tuple!(float64x1x4_t, float64x1_t, float64x1_t, float64x1_t, float64x1_t);
+    neon_tuple!(float64x2x2_t, float64x2_t, float64x2_t);
+    neon_tuple!(float64x2x3_t, float64x2_t, float64x2_t, float64x2_t);
+    neon_tuple!(float64x2x4_t, float64x2_t, float64x2_t, float64x2_t, float64x2_t);
+    neon_tuple!(int16x4x2_t, int16x4_t, int16x4_t);
+    neon_tuple!(int16x4x3_t, int16x4_t, int16x4_t, int16x4_t);
+    neon_tuple!(int16x4x4_t, int16x4_t, int16x4_t, int16x4_t, int16x4_t);
+    neon_tuple!(int16x8x3_t, int16x8_t, int16x8_t, int16x8_t);
+    neon_tuple!(int16x8x4_t, int16x8_t, int16x8_t, int16x8_t, int16x8_t);
+    neon_tuple!(int32x2x2_t, int32x2_t, int32x2_t);
+    neon_tuple!(int32x2x3_t, int32x2_t, int32x2_t, int32x2_t);
+    neon_tuple!(int32x2x4_t, int32x2_t, int32x2_t, int32x2_t, int32x2_t);
+    neon_tuple!(int32x4x3_t, int32x4_t, int32x4_t, int32x4_t);
+    neon_tuple!(int32x4x4_t, int32x4_t, int32x4_t, int32x4_t, int32x4_t);
+    neon_tuple!(int64x1x2_t, int64x1_t, int64x1_t);
+    neon_tuple!(int64x1x3_t, int64x1_t, int64x1_t, int64x1_t);
+    neon_tuple!(int64x1x4_t, int64x1_t, int64x1_t, int64x1_t, int64x1_t);
+    neon_tuple!(int64x2x2_t, int64x2_t, int64x2_t);
+    neon_tuple!(int64x2x3_t, int64x2_t, int64x2_t, int64x2_t);
+    neon_tuple!(int64x2x4_t, int64x2_t, int64x2_t, int64x2_t, int64x2_t);
+    neon_tuple!(poly16x4x2_t, poly16x4_t, poly16x4_t);
+    neon_tuple!(poly16x4x3_t, poly16x4_t, poly16x4_t, poly16x4_t);
+    neon_tuple!(poly16x4x4_t, poly16x4_t, poly16x4_t, poly16x4_t, poly16x4_t);
+    neon_tuple!(poly16x8x2_t, poly16x8_t, poly16x8_t);
+    neon_tuple!(poly16x8x3_t, poly16x8_t, poly16x8_t, poly16x8_t);
+    neon_tuple!(poly16x8x4_t, poly16x8_t, poly16x8_t, poly16x8_t, poly16x8_t);
+    neon_tuple!(poly64x1x2_t, poly64x1_t, poly64x1_t);
+    neon_tuple!(poly64x1x3_t, poly64x1_t, poly64x1_t, poly64x1_t);
+    neon_tuple!(poly64x1x4_t, poly64x1_t, poly64x1_t, poly64x1_t, poly64x1_t);
+    neon_tuple!(poly64x2x2_t, poly64x2_t, poly64x2_t);
+    neon_tuple!(poly64x2x3_t, poly64x2_t, poly64x2_t, poly64x2_t);
+    neon_tuple!(poly64x2x4_t, poly64x2_t, poly64x2_t, poly64x2_t, poly64x2_t);
+    neon_tuple!(uint16x8x3_t, uint16x8_t, uint16x8_t, uint16x8_t);
+    neon_tuple!(uint16x8x4_t, uint16x8_t, uint16x8_t, uint16x8_t, uint16x8_t);
+    neon_tuple!(uint32x2x2_t, uint32x2_t, uint32x2_t);
+    neon_tuple!(uint32x2x3_t, uint32x2_t, uint32x2_t, uint32x2_t);
+    neon_tuple!(uint32x2x4_t, uint32x2_t, uint32x2_t, uint32x2_t, uint32x2_t);
+    neon_tuple!(uint32x4x3_t, uint32x4_t, uint32x4_t, uint32x4_t);
+    neon_tuple!(uint32x4x4_t, uint32x4_t, uint32x4_t, uint32x4_t, uint32x4_t);
+    neon_tuple!(uint64x1x2_t, uint64x1_t, uint64x1_t);
+    neon_tuple!(uint64x1x3_t, uint64x1_t, uint64x1_t, uint64x1_t);
+    neon_tuple!(uint64x1x4_t, uint64x1_t, uint64x1_t, uint64x1_t, uint64x1_t);
+    neon_tuple!(uint64x2x2_t, uint64x2_t, uint64x2_t);
+    neon_tuple!(uint64x2x3_t, uint64x2_t, uint64x2_t, uint64x2_t);
+    neon_tuple!(uint64x2x4_t, uint64x2_t, uint64x2_t, uint64x2_t, uint64x2_t);
+
     /// 2 NEON int8x8 vectors in lane order.
     #[allow(non_camel_case_types)]
     #[repr(C)]
@@ -480,6 +544,15 @@ pub mod aarch64 {
         uint64x2_t(result)
     }
 
+    /// Replaces byte lane N.
+    #[rustc_legacy_const_generics(2)]
+    #[target_feature(enable = "neon")]
+    pub fn vsetq_lane_u8<const N: i32>(value: u8, a: uint8x16_t) -> uint8x16_t {
+        let mut lanes = a.0;
+        lanes[N as usize] = value;
+        uint8x16_t(lanes)
+    }
+
     /// Widens halfwords and shifts left; N must be in 0..=16.
     #[rustc_legacy_const_generics(1)]
     #[target_feature(enable = "neon")]
@@ -537,6 +610,20 @@ pub mod aarch64 {
         crc
     }
 
+    /// Accumulates a halfword, starting with its least significant byte.
+    #[target_feature(enable = "crc")]
+    pub fn __crc32h(crc: u32, value: u16) -> u32 {
+        let crc = __crc32b(crc, value as u8);
+        __crc32b(crc, (value >> 8) as u8)
+    }
+
+    /// Accumulates a word, starting with its least significant byte.
+    #[target_feature(enable = "crc")]
+    pub fn __crc32w(crc: u32, value: u32) -> u32 {
+        let crc = __crc32h(crc, value as u16);
+        __crc32h(crc, (value >> 16) as u16)
+    }
+
     /// Accumulates a doubleword, starting with its least significant byte.
     ///
     /// # Safety
@@ -579,6 +666,44 @@ pub mod aarch64 {
     #[derive(Clone, Copy)]
     pub struct uint32x4_t(pub(crate) [u32; 4]);
 
+    /// Reinterprets unsigned doubleword lanes as polynomial lanes.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_p64_u64(value: uint64x2_t) -> poly64x2_t {
+        poly64x2_t(value.0)
+    }
+
+    /// Reinterprets a polynomial product as two unsigned doubleword lanes.
+    #[target_feature(enable = "neon")]
+    pub fn vreinterpretq_u64_p128(value: u128) -> uint64x2_t {
+        uint64x2_t([value as u64, (value >> 64) as u64])
+    }
+
+    /// Carry-less multiplication of two 64-bit polynomials.
+    #[target_feature(enable = "aes")]
+    pub fn vmull_p64(a: u64, b: u64) -> u128 {
+        let result: uint64x2_t;
+        // SAFETY: the AES target feature enables 64-bit PMULL.
+        unsafe {
+            crate::arch::asm!("pmull {out}.1q, {left}.1d, {right}.1d",
+                out = lateout(vreg) result, left = in(vreg) uint64x2_t([a, 0]),
+                right = in(vreg) uint64x2_t([b, 0]), options(nomem, nostack, preserves_flags));
+        }
+        (result.0[0] as u128) | ((result.0[1] as u128) << 64)
+    }
+
+    /// Carry-less multiplication of the upper 64-bit polynomial lanes.
+    #[target_feature(enable = "aes")]
+    pub fn vmull_high_p64(a: poly64x2_t, b: poly64x2_t) -> u128 {
+        let result: uint64x2_t;
+        // SAFETY: the AES target feature enables 64-bit PMULL.
+        unsafe {
+            crate::arch::asm!("pmull2 {out}.1q, {left}.2d, {right}.2d",
+                out = lateout(vreg) result, left = in(vreg) a,
+                right = in(vreg) b, options(nomem, nostack, preserves_flags));
+        }
+        (result.0[0] as u128) | ((result.0[1] as u128) << 64)
+    }
+
     /// Adds corresponding lanes modulo 2^32.
     #[target_feature(enable = "neon")]
     pub fn vaddq_u32(a: uint32x4_t, b: uint32x4_t) -> uint32x4_t {
@@ -594,6 +719,37 @@ pub mod aarch64 {
     #[target_feature(enable = "neon")]
     pub fn vaddq_u64(a: uint64x2_t, b: uint64x2_t) -> uint64x2_t {
         uint64x2_t([a.0[0].wrapping_add(b.0[0]), a.0[1].wrapping_add(b.0[1])])
+    }
+
+    /// Subtracts corresponding signed lanes modulo 2^32.
+    #[target_feature(enable = "neon")]
+    pub fn vsubq_s32(a: int32x4_t, b: int32x4_t) -> int32x4_t {
+        int32x4_t([
+            a.0[0].wrapping_sub(b.0[0]),
+            a.0[1].wrapping_sub(b.0[1]),
+            a.0[2].wrapping_sub(b.0[2]),
+            a.0[3].wrapping_sub(b.0[3]),
+        ])
+    }
+
+    /// Reads four signed words without requiring pointer alignment.
+    ///
+    /// # Safety
+    /// The pointer must address sixteen readable initialized bytes and NEON must be available.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn vld1q_s32(ptr: *const i32) -> int32x4_t {
+        // SAFETY: the caller provides the complete initialized byte range.
+        int32x4_t(unsafe { crate::ptr::read_unaligned(ptr.cast::<[i32; 4]>()) })
+    }
+
+    /// Writes four signed words without requiring pointer alignment.
+    ///
+    /// # Safety
+    /// The pointer must address sixteen writable bytes and NEON must be available.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn vst1q_s32(ptr: *mut i32, value: int32x4_t) {
+        // SAFETY: the caller provides the complete writable byte range.
+        unsafe { crate::ptr::write_unaligned(ptr.cast::<[i32; 4]>(), value.0) }
     }
 
     /// Reads four words, without requiring pointer alignment.
@@ -750,6 +906,27 @@ pub mod aarch64 {
         let mut i = 0;
         if N != 32 { while i < 4 { lanes[i] = a.0[i] >> N; i += 1; } }
         uint32x4_t(lanes)
+    }
+
+    /// Shifts both doubleword lanes right by an immediate in 1..=64.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vshrq_n_u64<const N: i32>(a: uint64x2_t) -> uint64x2_t {
+        if N == 64 {
+            uint64x2_t([0, 0])
+        } else {
+            uint64x2_t([a.0[0] >> N, a.0[1] >> N])
+        }
+    }
+
+    /// Sums all sixteen bytes after widening them to halfwords.
+    #[target_feature(enable = "neon")]
+    pub fn vaddlvq_u8(a: uint8x16_t) -> u16 {
+        let mut total = 0u16;
+        for lane in a.0 {
+            total += lane as u16;
+        }
+        total
     }
 
     /// Shifts byte lanes right; N must be in 1..=8.
@@ -1365,6 +1542,83 @@ pub mod aarch64 {
     unsigned_lanes!(uint32x4_t, u32, 4, vdupq_n_u32, vcgtq_u32, vceqq_u32, vandq_u32, vsubq_u32, vaddvq_u32);
     unsigned_lanes!(uint64x2_t, u64, 2, vdupq_n_u64, vcgtq_u64, vceqq_u64, vandq_u64, vsubq_u64, vaddvq_u64);
 
+    /// Reads four halfwords without requiring pointer alignment.
+    ///
+    /// # Safety
+    /// The pointer must provide eight readable initialized bytes.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn vld1_u16(pointer: *const u16) -> uint16x4_t {
+        // SAFETY: the caller provides four initialized halfwords.
+        uint16x4_t(unsafe { crate::ptr::read_unaligned(pointer.cast::<[u16; 4]>()) })
+    }
+
+    /// Extracts one word lane. N selects lane 0 or 1.
+    #[rustc_legacy_const_generics(1)]
+    #[target_feature(enable = "neon")]
+    pub fn vget_lane_u32<const N: i32>(value: uint32x2_t) -> u32 {
+        value.0[N as usize]
+    }
+
+    /// Reads 64 consecutive bytes in four vectors.
+    ///
+    /// # Safety
+    /// The pointer must provide 64 readable initialized bytes.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn vld1q_u8_x4(pointer: *const u8) -> uint8x16x4_t {
+        // SAFETY: all four consecutive loads are within the supplied range.
+        unsafe {
+            uint8x16x4_t(
+                vld1q_u8(pointer),
+                vld1q_u8(pointer.add(16)),
+                vld1q_u8(pointer.add(32)),
+                vld1q_u8(pointer.add(48)),
+            )
+        }
+    }
+
+    /// Reads 16 groups of four interleaved bytes and separates the channels.
+    ///
+    /// # Safety
+    /// The pointer must provide 64 readable initialized bytes.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn vld4q_u8(pointer: *const u8) -> uint8x16x4_t {
+        // SAFETY: the caller provides all 64 bytes.
+        let bytes = unsafe { crate::ptr::read_unaligned(pointer.cast::<[[u8; 4]; 16]>()) };
+        let mut lanes = [[0; 16]; 4];
+        for i in 0..16 {
+            for channel in 0..4 {
+                lanes[channel][i] = bytes[i][channel];
+            }
+        }
+        uint8x16x4_t(
+            uint8x16_t(lanes[0]),
+            uint8x16_t(lanes[1]),
+            uint8x16_t(lanes[2]),
+            uint8x16_t(lanes[3]),
+        )
+    }
+
+    /// Reads four groups of three interleaved words and separates the channels.
+    ///
+    /// # Safety
+    /// The pointer must provide 48 readable initialized bytes.
+    #[target_feature(enable = "neon")]
+    pub unsafe fn vld3q_u32(pointer: *const u32) -> uint32x4x3_t {
+        // SAFETY: the caller provides all 48 bytes, with no alignment requirement.
+        let words = unsafe { crate::ptr::read_unaligned(pointer.cast::<[[u32; 3]; 4]>()) };
+        let mut lanes = [[0; 4]; 3];
+        for lane in 0..4 {
+            for channel in 0..3 {
+                lanes[channel][lane] = words[lane][channel];
+            }
+        }
+        uint32x4x3_t(
+            uint32x4_t(lanes[0]),
+            uint32x4_t(lanes[1]),
+            uint32x4_t(lanes[2]),
+        )
+    }
+
     /// Reads eight halfwords without requiring pointer alignment.
     ///
     /// # Safety
@@ -1412,6 +1666,17 @@ pub mod aarch64 {
             }
         };
     }
+
+    neon_binary!(vcgeq_u32, uint32x4_t, uint32x4_t, uint32x4_t,
+                 "cmhs {0:v}.4s, {1:v}.4s, {2:v}.4s");
+    neon_binary!(vcleq_u32, uint32x4_t, uint32x4_t, uint32x4_t,
+                 "cmhs {0:v}.4s, {2:v}.4s, {1:v}.4s");
+    neon_binary!(vcltq_u32, uint32x4_t, uint32x4_t, uint32x4_t,
+                 "cmhi {0:v}.4s, {2:v}.4s, {1:v}.4s");
+    neon_binary!(vuzp1q_u32, uint32x4_t, uint32x4_t, uint32x4_t,
+                 "uzp1 {0:v}.4s, {1:v}.4s, {2:v}.4s");
+    neon_binary!(vuzp2q_u32, uint32x4_t, uint32x4_t, uint32x4_t,
+                 "uzp2 {0:v}.4s, {1:v}.4s, {2:v}.4s");
 
     macro_rules! vector_pair {
         ($pair:ident, $vector:ty) => {
