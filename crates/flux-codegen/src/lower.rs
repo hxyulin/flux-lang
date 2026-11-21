@@ -3552,6 +3552,7 @@ impl Lower<'_, '_, '_> {
                     .evaluator
                     .eval_inline_constant(
                         &self.body.inline_constants[*index as usize],
+                        &[],
                         Default::default(),
                     )
                     .expect("inline constant passed instance collection");
@@ -4202,6 +4203,7 @@ impl Lower<'_, '_, '_> {
                                 .evaluator
                                 .eval_inline_constant(
                                     &self.body.inline_constants[index as usize],
+                                    &[],
                                     Default::default(),
                                 )
                                 .expect("inline constant passed instance collection"),

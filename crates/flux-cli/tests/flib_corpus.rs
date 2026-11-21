@@ -168,6 +168,7 @@ fixture!(
     promoted_named_constant_array,
     "cranelift_library_prerequisites.rs"
 );
+fixture!(generic_vtable_promotion, "generic_vtable_promotion.rs");
 fixture!(generic_constant_references, "generic_constant_reference.rs");
 fixture!(associated_array_index, "associated_array_index.rs");
 fixture!(boxed_fn_once, "boxed_fn_once.rs");

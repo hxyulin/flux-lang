@@ -4089,10 +4089,10 @@ impl Builder<'_> {
         if self.body.const_blocks.get(expr).is_none() || self.inline_root == Some(expr) {
             return None;
         }
-        self.register_inline_constant(expr)
+        self.register_inline_constant(expr, 0)
     }
 
-    fn register_inline_constant(&mut self, expr: ExprId) -> Option<Operand> {
+    fn register_inline_constant(&mut self, expr: ExprId, parameters: usize) -> Option<Operand> {
         let ty = self.own_ty(expr);
         let sig = flux_ty::FnSig {
             params: Box::default(),
@@ -4108,7 +4108,7 @@ impl Builder<'_> {
             self.item,
             Some(expr),
         );
-        if !crate::inline_consts::closed(&constant)
+        if !crate::inline_consts::closed(&constant, parameters)
             || !crate::inline_consts::borrowed_storage_supported(self.items, &self.typed.sigs, ty)
         {
             return None;
@@ -4435,7 +4435,36 @@ impl Builder<'_> {
                         matches!(body.exprs[element], Expr::Path(res) if self.const_of(element, res).is_some())
                     })
                     && self.const_temporary(*inner)
-                    && let Some(constant) = self.register_inline_constant(expr)
+                    && let Some(constant) = self.register_inline_constant(expr, 0)
+                {
+                    self.assign(dest, Rvalue::Use(constant), range);
+                    return;
+                }
+                // A record of already promotable values can still require
+                // per-instance evaluation for function and constant addresses.
+                if !*mutable
+                    && !self.const_initializer
+                    && let Item::Function(function, _) = self.item
+                    && let Expr::Record { fields, spread: None, .. } = body.exprs[*inner]
+                    && let parameters = crate::inline_consts::parameters(
+                        self.items,
+                        ClosureOwner::Function(function),
+                    )
+                    && parameters != 0
+                    && !self.needs_drop(self.own_ty(*inner))
+                    && body.lists[fields].iter().all(|&(_, field)| {
+                        self.promotable(field).is_some()
+                            || match body.exprs[field] {
+                                Expr::Ref { mutable: false, expr } => {
+                                    matches!(body.exprs[expr], Expr::Path(res) if self.const_of(expr, res).is_some())
+                                        && self.const_temporary(expr)
+                                }
+                                Expr::Path(_) => self.types.reified.get(field).is_some()
+                                    && matches!(self.own_ty(field).kind(), TyKind::FnDef(_)),
+                                _ => false,
+                            }
+                    })
+                    && let Some(constant) = self.register_inline_constant(expr, parameters)
                 {
                     self.assign(dest, Rvalue::Use(constant), range);
                     return;

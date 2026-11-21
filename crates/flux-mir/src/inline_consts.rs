@@ -1,12 +1,40 @@
 //! Independent evaluation frames for closed inline constants.
 use crate::{Body, Operand, Rvalue, StatementKind, TerminatorKind};
-use flux_ty::Ty;
+use flux_hir::ItemTree;
+use flux_ty::{ClosureOwner, Ty, TyKind};
 
-/// Generic expressions retain the existing lowering until their instances can
-/// supply the required substitutions. Closures retain their own capture path.
-pub(crate) fn closed(body: &Body) -> bool {
+pub(crate) fn parameters(items: &ItemTree, owner: ClosureOwner) -> usize {
+    match owner {
+        ClosureOwner::Function(f) => {
+            let function = &items.functions[f];
+            flux_solve::traits::owner_param_count(items, function.owner) + function.generics.len()
+        }
+        ClosureOwner::Const(c) => {
+            flux_solve::traits::owner_param_count(items, items.consts[c].owner)
+        }
+    }
+}
+
+/// An independent evaluation frame may use its owner's parameters in item
+/// references. Its storage types and region constraints are otherwise closed.
+pub(crate) fn closed(body: &Body, parameters: usize) -> bool {
     let open = |ty: Ty| ty.has_params() || ty.has_aliases() || ty.has_opaques() || ty.has_infer();
-    if body.locals.values().any(|local| open(local.ty)) {
+    fn valid_argument(ty: Ty, parameters: usize) -> bool {
+        if ty.has_aliases() || ty.has_opaques() || ty.has_infer() {
+            return false;
+        }
+        match ty.kind() {
+            TyKind::Param(param) => (param.index as usize) < parameters,
+            _ => !ty.has_params() || ty.children().all(|child| valid_argument(child, parameters)),
+        }
+    }
+    let valid_item =
+        |ty: Ty| matches!(ty.kind(), TyKind::FnDef(_)) && valid_argument(ty, parameters);
+    if body
+        .locals
+        .values()
+        .any(|local| open(local.ty) && !valid_item(local.ty))
+    {
         return false;
     }
     let captured = |row: &[flux_ty::regions::Region]| {
@@ -38,7 +66,8 @@ pub(crate) fn closed(body: &Body) -> bool {
             crate::Constant::Item { args, .. }
             | crate::Constant::ItemRef { args, .. }
             | crate::Constant::Fn { args, .. },
-        ) => args.iter().any(|&arg| open(arg)),
+        ) => args.iter().any(|&arg| !valid_argument(arg, parameters)),
+        Operand::Const(crate::Constant::FnItem(ty)) => open(*ty) && !valid_item(*ty),
         _ => false,
     };
     for data in body.blocks.values() {
@@ -65,7 +94,9 @@ pub(crate) fn closed(body: &Body) -> bool {
         }
     }
     // A nested expression may depend on generics without its parent's output.
-    body.inline_constants.iter().all(closed)
+    body.inline_constants
+        .iter()
+        .all(|body| closed(body, parameters))
 }
 
 /// The existing promotion path retains value-sensitive qualification for

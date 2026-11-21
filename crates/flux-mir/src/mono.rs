@@ -310,7 +310,7 @@ fn collect_roots(
         }
         for constant in &body.inline_constants {
             evaluator
-                .eval_inline_constant(constant, data.def_range)
+                .eval_inline_constant(constant, &[], data.def_range)
                 .map_err(|error| Diagnostic {
                     file: data.loc.file,
                     range: error.range,
@@ -477,6 +477,7 @@ fn collect_roots(
                         let value = evaluator
                             .eval_inline_constant(
                                 &body.inline_constants[*index as usize],
+                                caller_args,
                                 data.terminator.range,
                             )
                             .map_err(|error| Diagnostic {
@@ -2662,7 +2663,7 @@ fn truncated(ty: Ty, depth: u32) -> String {
 /// `body`, of a generic function, with generic arguments `args`
 /// substituted for its parameters.
 pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Body {
-    map_body_types(body, args, |ty| {
+    map_body_types(body, args, &|ty| {
         flux_solve::traits::instance_ty(&hir.items, sigs, ty, args)
     })
 }
@@ -2671,12 +2672,15 @@ pub fn subst_body(hir: &Hir, sigs: &Signatures, body: &Body, args: &[Ty]) -> Bod
 /// Symbolic reachability has no concrete instance with which to select impls.
 /// Concrete monomorphization must continue to use [`subst_body`].
 pub fn subst_template(body: &Body, args: &[Ty]) -> Body {
-    map_body_types(body, args, |ty| ty.subst(args))
+    map_body_types(body, args, &|ty| ty.subst(args))
 }
 
-fn map_body_types(body: &Body, args: &[Ty], subst: impl Fn(Ty) -> Ty) -> Body {
+fn map_body_types(body: &Body, args: &[Ty], subst: &impl Fn(Ty) -> Ty) -> Body {
     let mut body = body.clone();
     if !args.is_empty() {
+        for constant in &mut body.inline_constants {
+            *constant = map_body_types(constant, args, subst);
+        }
         for value in &mut body.promoted {
             *value = value.map_functions(&|instance| Instance {
                 function: instance.function,

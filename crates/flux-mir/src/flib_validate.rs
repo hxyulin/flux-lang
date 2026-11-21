@@ -546,7 +546,7 @@ pub(super) fn body_for_owner(
             || inner.param_count != 0
             || inner.upvars.is_some()
             || inner.locals.get(Body::RETURN).is_none()
-            || !crate::inline_consts::closed(inner)
+            || !crate::inline_consts::closed(inner, crate::inline_consts::parameters(items, owner))
         {
             return Err(invalid());
         }

@@ -412,6 +412,7 @@ impl<'a> Evaluator<'a> {
     pub fn eval_inline_constant(
         &self,
         constant: &Body,
+        generics: GenericArgs,
         range: TextRange,
     ) -> Result<Value, EvalError> {
         let mut evaluator = Evaluator::new(
@@ -429,10 +430,15 @@ impl<'a> Evaluator<'a> {
         {
             evaluator = evaluator.with_imported(values, discriminants);
         }
-        evaluator.inline_value(constant, range)
+        evaluator.inline_value(constant, generics, range)
     }
 
-    fn inline_value(&mut self, body: &'a Body, range: TextRange) -> Result<Value, EvalError> {
+    fn inline_value(
+        &mut self,
+        body: &'a Body,
+        generics: GenericArgs,
+        range: TextRange,
+    ) -> Result<Value, EvalError> {
         if self.inline_depth >= DEPTH_LIMIT {
             return Err(error(
                 range,
@@ -442,7 +448,7 @@ impl<'a> Evaluator<'a> {
         self.inline_depth += 1;
         let result = self
             .switched(body)
-            .and_then(|()| self.run(body, Vec::new(), &[], self.inline_depth, true))
+            .and_then(|()| self.run(body, Vec::new(), generics, self.inline_depth, true))
             .and_then(|value| {
                 self.check_escaping_borrows(&value, body.locals[Body::RETURN].ty, range)?;
                 Ok(value)
@@ -3405,7 +3411,7 @@ impl<'a> Evaluator<'a> {
                         .last()
                         .and_then(|entries| entries.get(index as usize))
                         .ok_or_else(|| error(range, "inline constant is missing".into()))?;
-                    self.inline_value(constant, range)
+                    self.inline_value(constant, generics, range)
                 }
                 Constant::Promoted { index, .. } => {
                     let value = self
