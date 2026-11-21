@@ -112,12 +112,7 @@ pub fn lower_const<'a>(tree: &'a SyntaxTree, items: &'a ItemTree, konst: ConstId
             .expect("constants point at CONST nodes")
             .body(),
     };
-    let root = with_macro_types(|| {
-        if let Some(body) = body {
-            ctx.expand_types_in(body.syntax());
-        }
-        ctx.lower_opt(body, node)
-    });
+    let root = ctx.lower_opt(body, node);
     ctx.finish(Vec::new(), root)
 }
 
@@ -225,9 +220,8 @@ pub fn lower_body<'a>(
             }
         }
     }
-    let root = with_macro_types(|| match f.body() {
+    let root = match f.body() {
         Some(block) => {
-            ctx.expand_types_in(block.syntax());
             if data.is_async {
                 ctx.lower_async_function(block, &mut params)
             } else {
@@ -235,7 +229,7 @@ pub fn lower_body<'a>(
             }
         }
         None => ctx.alloc_expr(Expr::Missing, f.syntax().text_range()),
-    });
+    };
     ctx.finish(params, root)
 }
 
@@ -2388,11 +2382,6 @@ impl<'a> Ctx<'a> {
                 self.ctxt_parents.insert(new, (old, local));
             }
             let parse = &self.items.files[&cached.file].parse;
-            if fragment != Fragment::Type {
-                let outer = self.expansion_file.replace(cached.file);
-                self.expand_types_in(parse.tree().root());
-                self.expansion_file = outer;
-            }
             return Some(ExpandedBody {
                 parse: Cow::Borrowed(parse),
                 file: Some(cached.file),
@@ -2410,9 +2399,6 @@ impl<'a> Ctx<'a> {
         }
         for (new, old) in expansion.ctxts {
             self.ctxt_parents.insert(new, (old, local));
-        }
-        if fragment != Fragment::Type {
-            self.expand_types_in(expansion.parse.tree().root());
         }
         Some(ExpandedBody {
             parse: Cow::Owned(expansion.parse),
@@ -2953,9 +2939,10 @@ impl<'a> Ctx<'a> {
                     );
                 }
                 if bin.op_kind() == Some(BinaryOp::Assign(None))
-                    && let Some(ast::Expr::TupleExpr(tuple)) = bin.lhs()
+                    && let Some(lhs @ (ast::Expr::TupleExpr(_) | ast::Expr::ArrayExpr(_))) =
+                        bin.lhs().map(crate::item_tree::const_expr_root)
                 {
-                    return self.lower_tuple_assignment(tuple, bin.rhs(), range);
+                    return self.lower_destructuring_assignment(lhs, bin.rhs(), range);
                 }
                 let lhs = self.lower_opt(bin.lhs(), syntax);
                 let rhs = self.lower_opt(bin.rhs(), syntax);
@@ -3070,7 +3057,10 @@ impl<'a> Ctx<'a> {
             ast::Expr::MatchExpr(m) => self.lower_match(m),
             ast::Expr::MethodCallExpr(call) => {
                 let generics = call.generic_arg_list().map(|list| {
-                    let args = lower_generic_args(list, &mut self.diagnostics);
+                    let args = with_macro_types(|| {
+                        self.expand_types_in(list.syntax());
+                        lower_generic_args(list, &mut self.diagnostics)
+                    });
                     args.reject_bindings(&mut self.diagnostics);
                     args
                 });
@@ -3152,10 +3142,10 @@ impl<'a> Ctx<'a> {
     }
 
     /// Evaluate and destructure the complete RHS before evaluating assignees.
-    /// The tuple annotation prevents pattern ergonomics from accepting `&tuple`.
-    fn lower_tuple_assignment(
+    /// The annotation forces a tuple or array value before pattern binding.
+    fn lower_destructuring_assignment(
         &mut self,
-        tuple: ast::TupleExpr<'_>,
+        lhs: ast::Expr<'_>,
         rhs: Option<ast::Expr<'_>>,
         range: TextRange,
     ) -> ExprId {
@@ -3165,7 +3155,7 @@ impl<'a> Ctx<'a> {
             assignments: &mut Vec<Stmt>,
         ) -> (PatId, TypeRef) {
             let range = expr.syntax().text_range();
-            match expr {
+            let (pat, ty) = match expr {
                 ast::Expr::TupleExpr(tuple) => {
                     let (pats, types): (Vec<_>, Vec<_>) = tuple
                         .fields()
@@ -3177,9 +3167,60 @@ impl<'a> Ctx<'a> {
                         TypeRef::Tuple(types.into()),
                     )
                 }
+                ast::Expr::ArrayExpr(array) if array.semicolon_token().is_none() => {
+                    let mut fields = Vec::new();
+                    let mut rest = None;
+                    for element in array.exprs() {
+                        if let ast::Expr::RangeExpr(dots) = element
+                            && dots.op_kind() == Some(ast::RangeOp::Exclusive)
+                            && dots.start().is_none()
+                            && dots.end().is_none()
+                        {
+                            let at = element.syntax().text_range();
+                            if rest.is_some() {
+                                ctx.error(at, "`..` can only be used once per array assignment");
+                            } else {
+                                rest = Some((fields.len(), ctx.alloc_pat(Pat::Wild, at)));
+                            }
+                        } else {
+                            fields.push(pattern(ctx, element, assignments).0);
+                        }
+                    }
+                    let ty = match rest {
+                        Some(_) => TypeRef::Infer,
+                        None => TypeRef::Array {
+                            elem: Box::new(TypeRef::Infer),
+                            len: crate::ArrayLen {
+                                kind: crate::ArrayLenKind::Lit {
+                                    value: fields.len() as u128,
+                                    suffix: None,
+                                },
+                                range,
+                            },
+                        },
+                    };
+                    let split = rest.map_or(fields.len(), |(split, _)| split);
+                    let suffix = ctx.lists.alloc(fields.drain(split..));
+                    let prefix = ctx.lists.alloc(fields);
+                    (
+                        ctx.alloc_pat(
+                            Pat::Slice {
+                                prefix,
+                                slice: rest.map(|(_, pat)| pat),
+                                suffix,
+                            },
+                            range,
+                        ),
+                        ty,
+                    )
+                }
+                ast::Expr::ArrayExpr(_) => {
+                    ctx.error(range, "invalid left-hand side of assignment");
+                    (ctx.alloc_pat(Pat::Missing, range), TypeRef::Infer)
+                }
                 ast::Expr::UnderscoreExpr(_) => (ctx.alloc_pat(Pat::Wild, range), TypeRef::Infer),
                 ast::Expr::RangeExpr(_) => {
-                    ctx.unsupported(range, "rest patterns in tuple assignments");
+                    ctx.unsupported(range, "rest patterns in destructuring assignments");
                     (ctx.alloc_pat(Pat::Missing, range), TypeRef::Infer)
                 }
                 ast::Expr::ParenExpr(paren) => match paren.expr() {
@@ -3211,11 +3252,13 @@ impl<'a> Ctx<'a> {
                         TypeRef::Infer,
                     )
                 }
-            }
+            };
+            ctx.source_map.assignment_patterns.insert(pat, ());
+            (pat, ty)
         }
-        let rhs = self.lower_opt(rhs, tuple.syntax());
+        let rhs = self.lower_opt(rhs, lhs.syntax());
         let mut statements = Vec::new();
-        let (pat, ty) = pattern(self, ast::Expr::TupleExpr(tuple), &mut statements);
+        let (pat, ty) = pattern(self, lhs, &mut statements);
         let ty = self.alloc_type(ty);
         statements.insert(
             0,
@@ -3240,9 +3283,23 @@ impl<'a> Ctx<'a> {
     /// A type written in the body, whose array lengths may not name
     /// locals (E0435), as a repeat expression's count may not.
     fn lower_body_type(&mut self, ty: Option<ast::Type<'_>>) -> TypeRef {
-        let mut ty = lower_type(ty, &mut self.diagnostics);
+        let mut ty = with_macro_types(|| {
+            if let Some(ty) = ty {
+                self.expand_types_in(ty.syntax());
+            }
+            lower_type(ty, &mut self.diagnostics)
+        });
         self.check_type_lens(&mut ty);
         ty
+    }
+
+    // Type arguments see the same block imports and textual macros as the
+    // expression or pattern containing the path.
+    fn lower_body_path(&mut self, path: ast::Path<'_>) -> Option<Path> {
+        with_macro_types(|| {
+            self.expand_types_in(path.syntax());
+            lower_generic_path(path, &mut self.diagnostics)
+        })
     }
 
     fn check_type_lens(&mut self, ty: &mut TypeRef) {
@@ -3514,9 +3571,7 @@ impl<'a> Ctx<'a> {
     /// `S { a: 1, b, ..base }`
     fn lower_record(&mut self, record: ast::RecordExpr<'_>) -> ExprId {
         let range = record.syntax().text_range();
-        let path = record
-            .path()
-            .and_then(|p| lower_generic_path(p, &mut self.diagnostics));
+        let path = record.path().and_then(|p| self.lower_body_path(p));
         if let Some(path) = &path {
             path.reject_bindings(&mut self.diagnostics);
         }
@@ -3743,7 +3798,7 @@ impl<'a> Ctx<'a> {
         record: bool,
     ) -> Option<(StructId, u32, Path)> {
         let range = path.map_or(range, |p| p.syntax().text_range());
-        let path = path.and_then(|p| lower_generic_path(p, &mut self.diagnostics))?;
+        let path = path.and_then(|p| self.lower_body_path(p))?;
         path.reject_bindings(&mut self.diagnostics);
         let (strukt, variant) = self.resolve_struct_path(&path, range, record)?;
         Some((strukt, variant, path))
@@ -4943,7 +4998,7 @@ impl<'a> Ctx<'a> {
         call: Option<TextRange>,
     ) -> (Res, Option<PathGenerics>) {
         self.path_ctxt = path.map_or(0, |p| p.syntax().ctxt());
-        let Some(path) = path.and_then(|p| lower_generic_path(p, &mut self.diagnostics)) else {
+        let Some(path) = path.and_then(|p| self.lower_body_path(p)) else {
             return (Res::Err, None);
         };
         path.reject_bindings(&mut self.diagnostics);

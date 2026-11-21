@@ -42,6 +42,14 @@ fn by_ref(a: &[String3; 3]) -> u8 {
 
 struct String3([u8; 3]);
 
+struct Pair(u16, u16);
+
+impl From<Pair> for [u16; 2] {
+    fn from(pair: Pair) -> Self {
+        [pair.0, pair.1]
+    }
+}
+
 fn count_pairs(s: &[(u8, u8)]) -> u32 {
     let mut n = 0;
     let mut rest = s;
@@ -105,4 +113,6 @@ fn main() {
     let arr = [[1, 2], [3, 4]];
     let [[p, _], [_, q]] = arr;
     show(19, (p * 10 + q) as i64);
+    let [left, right] = Pair(20, 22).into();
+    show(20, (left + right) as i64);
 }

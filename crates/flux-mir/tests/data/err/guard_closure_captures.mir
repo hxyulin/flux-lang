@@ -438,17 +438,18 @@ fn mutate_copy_binding::{closure#6} as FnOnce(_1: {closure}, _2: ()) -> bool {
 fn move_ref_mut(_1: S) -> () {
     let mut _0: ();
     let _2: &mut S; // b
-    let _3: bool;
-    let _4: {closure};
+    let _3: &mut S; // b
+    let _4: bool;
     let _5: {closure};
-    let _6: ();
+    let _6: {closure};
+    let _7: ();
 
     bb0: {
-        _2 = &mut _1;
-        _4 = {closure}(copy _2);
-        _5 = move _4;
-        _6 = ();
-        _3 = call_once::<{closure}, ()>(move _5, move _6) -> bb6;
+        _3 = &mut _1;
+        _5 = {closure}(copy _3);
+        _6 = move _5;
+        _7 = ();
+        _4 = call_once::<{closure}, ()>(move _6, move _7) -> bb6;
     }
 
     bb1: {
@@ -466,17 +467,19 @@ fn move_ref_mut(_1: S) -> () {
     }
 
     bb4: {
+        StorageDead(_3);
+        _2 = &mut _1;
         goto -> bb3;
     }
 
     bb5: {
-        StorageDead(_2);
+        StorageDead(_3);
         goto -> bb2;
     }
 
     bb6: {
-        StorageDead(_4);
-        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+        StorageDead(_5);
+        switchInt(copy _4) -> [0: bb5, otherwise: bb4];
     }
 
     bb7: {
@@ -506,19 +509,20 @@ fn move_ref_mut::{closure#7} as FnOnce(_1: {closure}, _2: ()) -> bool {
 fn mutate_ref_mut(_1: S) -> () {
     let mut _0: ();
     let _2: &mut S; // b
-    let _3: bool;
-    let _4: {closure};
-    let _5: &mut u8;
-    let _6: &mut {closure};
-    let _7: ();
+    let _3: &mut S; // b
+    let _4: bool;
+    let _5: {closure};
+    let _6: &mut u8;
+    let _7: &mut {closure};
+    let _8: ();
 
     bb0: {
-        _2 = &mut _1;
-        _5 = &mut (*_2).0;
-        _4 = {closure}(move _5);
-        _6 = &two_phase _4;
-        _7 = ();
-        _3 = call_mut::<{closure}, ()>(move _6, move _7) -> bb6;
+        _3 = &mut _1;
+        _6 = &mut (*_3).0;
+        _5 = {closure}(move _6);
+        _7 = &two_phase _5;
+        _8 = ();
+        _4 = call_mut::<{closure}, ()>(move _7, move _8) -> bb6;
     }
 
     bb1: {
@@ -536,17 +540,19 @@ fn mutate_ref_mut(_1: S) -> () {
     }
 
     bb4: {
+        StorageDead(_3);
+        _2 = &mut _1;
         goto -> bb3;
     }
 
     bb5: {
-        StorageDead(_2);
+        StorageDead(_3);
         goto -> bb2;
     }
 
     bb6: {
-        StorageDead(_4);
-        switchInt(copy _3) -> [0: bb5, otherwise: bb4];
+        StorageDead(_5);
+        switchInt(copy _4) -> [0: bb5, otherwise: bb4];
     }
 
     bb7: {

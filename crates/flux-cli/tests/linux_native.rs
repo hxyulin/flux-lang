@@ -14,6 +14,7 @@ fn x86_64_programs_match_rustc() {
         "backend_system_time",
         "unix_file_io",
         "process_pipes",
+        "network_and_pipe",
         "scoped_threads",
         "thread_local",
     ] {

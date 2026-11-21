@@ -741,14 +741,20 @@ fn lower_inner(
         };
         let ty = typed.sigs.consts[id];
         let (bytes, align) = ctx.value_bytes(value, ty);
-        let exported = items.consts[id].export_symbol.is_some();
+        let item = &items.consts[id];
+        let exported = item.export_symbol.is_some();
+        let section = link_section(item.link_section).unwrap_or_else(|message| {
+            ctx.data_errors
+                .push(Diagnostic::new(item.def_range, message));
+            None
+        });
         let data = DataObject {
             name: symbol.clone(),
             thread_local: false,
             local: compilation.is_none() && !exported,
             weak_odr: false,
             weak: false,
-            section: None,
+            section,
             retain: exported,
             hidden: compilation.is_some() && !exported,
             init: Some(DataInit {
@@ -1080,6 +1086,22 @@ fn owns_instance(
         }
         OutputKind::BuiltinSuite => instance.function.index() < items.core.functions as usize,
     }
+}
+
+fn link_section(
+    section: Option<flux_intern::Symbol>,
+) -> Result<Option<keel_ir::section::SectionName>, &'static str> {
+    section
+        .map(|section| {
+            let name = section.as_str();
+            let name = if name == "__DATA,__mod_init_func,mod_init_funcs" {
+                "__DATA,__mod_init_func"
+            } else {
+                name
+            };
+            keel_ir::section::SectionName::new(name)
+        })
+        .transpose()
 }
 
 fn owns_static(
@@ -1658,6 +1680,11 @@ impl Ctx<'_> {
         }
         if !pointer_wrapper {
             let data = &self.hir.items.functions[instance.function];
+            function.attrs.section = link_section(data.link_section).unwrap_or_else(|message| {
+                self.data_errors
+                    .push(Diagnostic::new(data.def_range, message));
+                None
+            });
             match data.inline {
                 Some(flux_hir::InlineHint::Hint) => function.attrs.inlinehint = true,
                 Some(flux_hir::InlineHint::Always) => function.attrs.alwaysinline = true,

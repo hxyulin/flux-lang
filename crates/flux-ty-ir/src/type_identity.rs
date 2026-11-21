@@ -374,6 +374,11 @@ pub(crate) fn stable_key_with(
 ) -> Result<Vec<u8>, &'static str> {
     let mut refs = std::collections::BTreeSet::new();
     for ty in identity_postorder(canonical_ty)? {
+        if let Some(regions) = ty.fn_sig().and_then(|sig| sig.regions) {
+            for projection in regions.projections {
+                refs.insert((IdKind::Trait, projection.alias.trait_.into_raw()));
+            }
+        }
         match ty.kind() {
             TyKind::Adt(adt, _) => {
                 refs.insert((IdKind::Struct, adt.strukt.into_raw()));
@@ -456,6 +461,12 @@ pub(crate) fn stable_key_with(
 // so sharing a child at different depths cannot hide an over-limit type.
 fn identity_children(ty: Ty) -> Vec<Ty> {
     let mut children: Vec<_> = ty.children().collect();
+    if let Some(regions) = ty.fn_sig().and_then(|sig| sig.regions) {
+        for projection in regions.projections {
+            children.extend_from_slice(projection.alias.args);
+            children.extend_from_slice(projection.alias.family_args);
+        }
+    }
     match ty.kind() {
         TyKind::Value(value) => children.push(value.ty),
         TyKind::Dynamic(object) => {
@@ -770,7 +781,9 @@ mod tests {
 #[cfg(test)]
 mod process_tests {
     use super::*;
-    use crate::{FnPtrRegions, FnRegion, FnSigTy, Mutability};
+    use crate::{AliasTy, FnPtrRegions, FnRegion, FnSigTy, Mutability};
+    use flux_hir::{StructId, TraitId};
+    use flux_intern::Symbol;
 
     #[test]
     fn identity_matches_fresh_process() {
@@ -815,6 +828,49 @@ mod process_tests {
             stable_id(&items, &[], bound).unwrap(),
             stable_id(&items, &[], static_return).unwrap()
         );
+    }
+
+    #[test]
+    fn callable_projection_definitions_use_stable_keys() {
+        let key = |owner, receiver, family, owner_key| {
+            let alias = AliasTy {
+                trait_: TraitId::from_raw(owner),
+                trait_name: Symbol::intern("Family"),
+                name: Symbol::intern("Output"),
+                args: Ty::list(&[Ty::adt(
+                    StructId::from_raw(receiver),
+                    Symbol::intern("Receiver"),
+                    &[],
+                )]),
+                owner_lifetimes: 1,
+                family_lifetimes: 0,
+                family_args: Ty::list(&[Ty::adt(
+                    StructId::from_raw(family),
+                    Symbol::intern("Argument"),
+                    &[],
+                )]),
+            };
+            let sig = FnSigTy {
+                regions: Some(FnPtrRegions::intern_with_projections(
+                    1,
+                    0,
+                    &[vec![FnRegion::Projection(0)]],
+                    &[],
+                    &[(alias, vec![FnRegion::Bound(0)])],
+                )),
+                ..FnSigTy::new(&[], Ty::new(TyKind::Ref(Mutability::Not, Ty::BOOL)), false)
+            };
+            stable_key_with(Ty::new(TyKind::FnPtr(sig)), |kind, raw| match kind {
+                IdKind::Trait if raw == owner => Ok(vec![owner_key]),
+                IdKind::Struct if raw == receiver => Ok(vec![2]),
+                IdKind::Struct if raw == family => Ok(vec![3]),
+                _ => Err("unexpected definition"),
+            })
+            .unwrap()
+        };
+        let original = key(8, 3, 5, 1);
+        assert_eq!(original, key(2, 9, 4, 1));
+        assert_ne!(original, key(2, 9, 4, 4));
     }
 }
 

@@ -245,6 +245,11 @@ impl i8 {
         0 - self
     }
 
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
+    }
+
     #[rustc_inherit_overflow_checks]
     pub const fn pow(self, exp: u32) -> i8 {
         let mut base = self;
@@ -360,6 +365,11 @@ impl i16 {
 
     pub const fn wrapping_neg(self) -> i16 {
         0 - self
+    }
+
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
     }
 
     #[rustc_inherit_overflow_checks]
@@ -479,6 +489,11 @@ impl i32 {
         0 - self
     }
 
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
+    }
+
     #[rustc_inherit_overflow_checks]
     pub const fn pow(self, exp: u32) -> i32 {
         let mut base = self;
@@ -594,6 +609,11 @@ impl i64 {
 
     pub const fn wrapping_neg(self) -> i64 {
         0 - self
+    }
+
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
     }
 
     #[rustc_inherit_overflow_checks]
@@ -713,6 +733,11 @@ impl i128 {
         0 - self
     }
 
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
+    }
+
     #[rustc_inherit_overflow_checks]
     pub const fn pow(self, exp: u32) -> i128 {
         let mut base = self;
@@ -828,6 +853,11 @@ impl isize {
 
     pub const fn wrapping_neg(self) -> isize {
         0 - self
+    }
+
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
     }
 
     #[rustc_inherit_overflow_checks]
@@ -947,6 +977,11 @@ impl u8 {
         0 - self
     }
 
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
+    }
+
     #[rustc_inherit_overflow_checks]
     pub const fn pow(self, exp: u32) -> u8 {
         let mut base = self;
@@ -1026,6 +1061,11 @@ impl u16 {
 
     pub const fn wrapping_neg(self) -> u16 {
         0 - self
+    }
+
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
     }
 
     #[rustc_inherit_overflow_checks]
@@ -1109,6 +1149,11 @@ impl u32 {
         0 - self
     }
 
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
+    }
+
     #[rustc_inherit_overflow_checks]
     pub const fn pow(self, exp: u32) -> u32 {
         let mut base = self;
@@ -1188,6 +1233,11 @@ impl u64 {
 
     pub const fn wrapping_neg(self) -> u64 {
         0 - self
+    }
+
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
     }
 
     #[rustc_inherit_overflow_checks]
@@ -1271,6 +1321,11 @@ impl u128 {
         0 - self
     }
 
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
+    }
+
     #[rustc_inherit_overflow_checks]
     pub const fn pow(self, exp: u32) -> u128 {
         let mut base = self;
@@ -1350,6 +1405,11 @@ impl usize {
 
     pub const fn wrapping_neg(self) -> usize {
         0 - self
+    }
+
+    /// Keeps only the least significant set bit.
+    pub const fn isolate_lowest_one(self) -> Self {
+        self & self.wrapping_neg()
     }
 
     #[rustc_inherit_overflow_checks]

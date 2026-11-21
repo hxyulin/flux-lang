@@ -1455,7 +1455,7 @@ pub fn closure_shims_with_panic_strategy(
                 call_regions: ArenaMap::new(),
                 item_callees: Default::default(),
                 item_reifications: Default::default(),
-                reification_regions: ArenaMap::new(),
+                operand_type_args: ArenaMap::new(),
                 region_annotations: Vec::new(),
                 region_relations: Vec::new(),
                 blocks,
@@ -1568,7 +1568,7 @@ fn build_body_inner(
         call_regions: ArenaMap::new(),
         item_callees: Default::default(),
         item_reifications: Default::default(),
-        reification_regions: ArenaMap::new(),
+        operand_type_args: ArenaMap::new(),
         region_annotations: Vec::new(),
         region_relations: Vec::new(),
         blocks: Vec::new(),
@@ -1815,7 +1815,7 @@ fn build_body_inner(
         call_regions: b.call_regions,
         item_callees: b.item_callees,
         item_reifications: b.item_reifications,
-        reification_regions: b.reification_regions,
+        operand_type_args: b.operand_type_args,
         region_annotations: b.region_annotations,
         region_relations: b.region_relations,
         blocks: arena,
@@ -1993,7 +1993,7 @@ struct Builder<'a> {
     call_regions: ArenaMap<BasicBlockData, flux_ty::regions::TypeArgRegions>,
     item_callees: ArenaMap<BasicBlockData, Place>,
     item_reifications: ArenaMap<LocalDecl, Local>,
-    reification_regions: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
+    operand_type_args: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
     region_annotations: Vec<(Local, Box<[flux_ty::regions::Region]>, TextRange)>,
     region_relations: Vec<(Place, Place, flux_ty::regions::Variance, TextRange)>,
     /// Blocks under construction; a block is finished once it has a
@@ -2473,6 +2473,7 @@ impl Builder<'_> {
             }
             Expr::Path(res @ (Res::Const(_) | Res::Assoc { .. }))
                 if self.types.reborrows.get(expr).is_none()
+                    && self.types.const_arg_regions.get(expr).is_none()
                     && let Some(c) = self.const_of(expr, *res) =>
             {
                 Operand::Const(Constant::Item {
@@ -3117,6 +3118,9 @@ impl Builder<'_> {
     /// read-only storage. Retain the full allocation and its alignment;
     /// indexing still evaluates its ordinary bounds checks and trait call.
     fn promoted_const_place(&mut self, expr: ExprId) -> Option<Place> {
+        if self.types.const_arg_regions.get(expr).is_some() {
+            return None;
+        }
         match self.body.exprs[expr] {
             Expr::Path(res) => {
                 let constant = self.const_of(expr, res)?;
@@ -3543,8 +3547,8 @@ impl Builder<'_> {
         let inferred = matches!(ty.kind(), TyKind::FnPtr(sig) if
             sig.regions.is_some_and(|regions| regions.free != 0))
             && self.body.inferred_function_path(expr) == Some(def.function);
-        let stored = source.filter(|_| {
-            !path && !inferred && flux_ty::regions::item_owner_lifetimes(self.items, def) != 0
+        let stored = source.filter(|&local| {
+            !path && !inferred && flux_ty::regions::slots(self.items, self.locals[local].ty) != 0
         });
         if stored.is_none()
             && !inferred
@@ -3573,7 +3577,7 @@ impl Builder<'_> {
                 "named type argument lifetimes in constant closures are not supported yet",
             ));
         } else {
-            self.reification_regions.insert(local, tables);
+            self.operand_type_args.insert(local, tables);
         }
         self.assign(&local.into(), Rvalue::Use(pointer), self.range(expr));
         self.read(local.into())
@@ -3610,7 +3614,9 @@ impl Builder<'_> {
                     Expr::Call { args, .. } => {
                         pending.extend(self.body.lists[*args].iter().copied())
                     }
-                    Expr::Ref { expr, .. } | Expr::Field { expr, .. } => pending.push(*expr),
+                    Expr::Ref { expr, .. } | Expr::Field { expr, .. } | Expr::Cast { expr, .. } => {
+                        pending.push(*expr)
+                    }
                     Expr::Index { base, index } => pending.extend([*base, *index]),
                     Expr::Unary { operand, .. } => pending.push(*operand),
                     _ => {}
@@ -3631,13 +3637,15 @@ impl Builder<'_> {
     ) -> Option<crate::eval::Value> {
         use crate::eval::Value;
         // A written annotation relates the value's own regions.
-        if types.expr_regions.get(expr).is_some() {
+        if types.expr_regions.get(expr).is_some() || types.const_arg_regions.get(expr).is_some() {
             return None;
         }
         let ty = types.expr_types.get(expr).copied().unwrap_or(Ty::ERROR);
         if types.reified.get(expr).is_some() {
-            if matches!(body.exprs[expr], Expr::Path(_))
-                && let TyKind::FnDef(def) = ty.kind()
+            if matches!(
+                body.exprs[expr],
+                Expr::Path(Res::Function(_) | Res::Assoc { .. })
+            ) && let TyKind::FnDef(def) = ty.kind()
                 && self
                     .typed
                     .sigs
@@ -3678,6 +3686,15 @@ impl Builder<'_> {
             return None;
         }
         match &body.exprs[expr] {
+            // An explicit cast can reify an item to exactly the same pointer
+            // type as an implicit coercion. Keep the item's instance and
+            // check its signature in check_promoted_functions.
+            Expr::Cast { expr: inner, .. }
+                if matches!(ty.kind(), TyKind::FnPtr(_))
+                    && types.reified.get(*inner) == Some(&ty) =>
+            {
+                self.promotable_in(body, types, *inner, active)
+            }
             // A function item is a zero-sized value. Its type, not its
             // storage, names the function selected by a callable coercion.
             Expr::Path(Res::Function(_)) if matches!(ty.kind(), TyKind::FnDef(def) if def.args.is_empty()) => {
@@ -4169,6 +4186,35 @@ impl Builder<'_> {
 
     fn lower_value_as_is(&mut self, expr: ExprId, dest: &Place) {
         let range = self.range(expr);
+        if let Some(rows) = self.types.const_arg_regions.get(expr) {
+            if self.in_const_closure
+                && rows.iter().any(|(_, row)| {
+                    row.iter()
+                        .any(|region| matches!(region, flux_ty::regions::Region::Param(_)))
+                })
+            {
+                self.errors.push(flux_hir::Diagnostic::new(
+                    range,
+                    "named lifetime arguments in constant closures are not supported yet",
+                ));
+            }
+            let instance = self.types.consts[expr];
+            let ty = self.own_ty(expr);
+            let local = self.temp(ty);
+            self.operand_type_args.insert(local, rows.clone());
+            self.assign(
+                &local.into(),
+                Rvalue::Use(Operand::Const(Constant::Item {
+                    id: instance.konst,
+                    args: instance.args,
+                    ty,
+                })),
+                range,
+            );
+            let operand = self.read(local.into());
+            self.assign(dest, Rvalue::Use(operand), range);
+            return;
+        }
         let body = self.body;
         match &body.exprs[expr] {
             Expr::Pin(inner) => {
@@ -4889,27 +4935,26 @@ impl Builder<'_> {
                     }
                     match callable.kind() {
                         TyKind::FnDef(def) => {
-                            let place =
-                                if flux_ty::regions::item_owner_lifetimes(self.items, def) != 0 {
-                                    let place = adjusted.or_else(|| {
-                                        (derefs != 0)
-                                            .then(|| self.lower_place_deref(*callee, derefs, &[]))
-                                    });
-                                    let value = match place {
-                                        Some(place) => self.read(place),
-                                        None => self.lower_operand(*callee),
-                                    };
-                                    match value {
-                                        Operand::Copy(place) | Operand::Move(place) => Some(place),
-                                        Operand::Const(_) => {
-                                            self.bug("missing function item place", range);
-                                            return;
-                                        }
-                                    }
-                                } else {
-                                    self.lower_operand(*callee);
-                                    None
+                            let place = if flux_ty::regions::slots(self.items, callable) != 0 {
+                                let place = adjusted.or_else(|| {
+                                    (derefs != 0)
+                                        .then(|| self.lower_place_deref(*callee, derefs, &[]))
+                                });
+                                let value = match place {
+                                    Some(place) => self.read(place),
+                                    None => self.lower_operand(*callee),
                                 };
+                                match value {
+                                    Operand::Copy(place) | Operand::Move(place) => Some(place),
+                                    Operand::Const(_) => {
+                                        self.bug("missing function item place", range);
+                                        return;
+                                    }
+                                }
+                            } else {
+                                self.lower_operand(*callee);
+                                None
+                            };
                             let args = self.body.lists[*args]
                                 .iter()
                                 .map(|&arg| self.lower_operand(arg))
@@ -6668,6 +6713,20 @@ impl Builder<'_> {
                                 .partition(|(binding, _, by_ref)| {
                                     by_ref.is_none() && b.binds_value(*binding)
                                 });
+                        // The guard can read mutable pattern bindings but
+                        // cannot move or mutate through them. Keep those
+                        // temporary loans separate from the arm's bindings:
+                        // a loan returned by the arm starts only after the
+                        // guard succeeds.
+                        let mut guard_locals = Vec::new();
+                        for &(binding, _, by_ref) in &now {
+                            if by_ref == Some(Mutability::Mut) {
+                                let arm_local = b.binding_locals[binding];
+                                let guard_local = b.locals.alloc(b.locals[arm_local].clone());
+                                b.binding_locals.insert(binding, guard_local);
+                                guard_locals.push((binding, arm_local, guard_local));
+                            }
+                        }
                         b.bind_all(&now, at);
                         for (binding, place, _) in &later {
                             b.guard_places.insert(*binding, place.clone());
@@ -6729,14 +6788,29 @@ impl Builder<'_> {
                         }
                         b.goto(exit.resume, guard_range);
                         b.current = Some(pass);
+                        for (binding, arm_local, guard_local) in guard_locals {
+                            b.binding_locals.insert(binding, arm_local);
+                            let block = b.block();
+                            b.blocks[block.index()].0.push(Statement {
+                                kind: StatementKind::StorageDead(guard_local),
+                                range: guard_range,
+                            });
+                        }
                         b.bind_all(&later, at);
+                        for &(binding, ref place, by_ref) in &now {
+                            if by_ref == Some(Mutability::Mut) {
+                                b.bind(binding, place.clone(), by_ref, at);
+                            }
+                        }
                     } else {
                         b.bind_all(&exit.binds, at);
                     }
                     b.goto(body, range);
                 }
                 b.current = Some(body);
-                b.lower_into(arm.body, dest);
+                // Arm temporaries drop before its pattern bindings. In older
+                // editions this also bounds the tail of a block arm.
+                b.scoped(ScopeKind::Temps, range, |b| b.lower_into(arm.body, dest));
             });
             self.goto(join, range);
             self.current = Some(next);

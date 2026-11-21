@@ -55,6 +55,7 @@ impl ItemTree {
         dependencies: Vec<(Symbol, CrateId)>,
     ) {
         let from = self.counts();
+        let scope_start = self.macro_scopes.len();
         let mut collector = Collector {
             db,
             items: self,
@@ -67,10 +68,11 @@ impl ItemTree {
             adt_ids: rustc_hash::FxHashMap::default(),
             macro_scope: None,
             expansion_depth: 0,
-            expanding_types: false,
             macro_paths: Vec::new(),
             collected_imports: rustc_hash::FxHashSet::default(),
             pending_items: Vec::new(),
+            pending_macro_imports: Vec::new(),
+            has_deferred_macro_scopes: false,
             replaced_assoc_items: rustc_hash::FxHashSet::default(),
             pending_body_macros: Vec::new(),
             legacy_calls: Vec::new(),
@@ -79,6 +81,10 @@ impl ItemTree {
         collector.collect_crate(root, name, is_core, dependencies);
         collector.collect_pending_items(from);
         collector.collect_pending_body_macros(from);
+        while !collector.pending_items.is_empty() {
+            collector.collect_pending_items(from);
+            collector.collect_pending_body_macros(from);
+        }
         collector.expand_derives();
         collector.make_ctors();
         collector.make_test_harness(root);
@@ -86,6 +92,9 @@ impl ItemTree {
         crate::def_map::resolve(collector.items, from);
         collector.collect_body_expansion_consts();
         collector.collect_legacy_consts();
+        if collector.has_deferred_macro_scopes {
+            collector.items.finish_macro_scopes(scope_start, from);
+        }
         self.resolve_sized_dispatch(from);
         self.check_overflow_lint_overrides();
         // Early predecessor lookup must agree with completed scopes. A local
@@ -121,6 +130,7 @@ struct MacroPathCheck {
 enum PendingItemKind {
     Macro(Option<AssocOwner>),
     Procedural(Option<AssocOwner>),
+    DeclarationMacros,
 }
 
 /// Where a macro call among associated items puts the items it expands
@@ -135,6 +145,7 @@ struct PendingItem {
     ctx: Ctx,
     node: NodeId,
     scope: Option<MacroScopeId>,
+    following_scope: Option<MacroScopeId>,
     depth: u32,
     diagnostic: Option<Diagnostic>,
 }
@@ -187,6 +198,8 @@ struct Collector<'a> {
     legacy_calls: Vec<LegacyCall>,
     body_expansion_consts: Vec<BodyExpansionConsts>,
     pending_items: Vec<PendingItem>,
+    pending_macro_imports: Vec<(Use, MacroScopeId)>,
+    has_deferred_macro_scopes: bool,
     replaced_assoc_items: rustc_hash::FxHashSet<(FileId, NodeId)>,
     pending_body_macros: Vec<PendingBodyMacro>,
     collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
@@ -212,9 +225,6 @@ struct Collector<'a> {
     macro_scope: Option<MacroScopeId>,
     /// How many macro expansions the items being collected are in.
     expansion_depth: u32,
-    /// The macro calls in type position of the item being collected
-    /// have been expanded.
-    expanding_types: bool,
 }
 
 /// What the anonymous constants of an item see: the module, the `impl`
@@ -422,14 +432,37 @@ impl Collector<'_> {
     }
 
     fn collect_scoped_item(&mut self, ctx: Ctx, syntax: SyntaxNode<'_>) {
+        fn has_declaration_macro(node: SyntaxNode<'_>) -> bool {
+            match node.kind() {
+                SyntaxKind::MODULE | SyntaxKind::BLOCK_EXPR => false,
+                SyntaxKind::MACRO_TYPE => true,
+                SyntaxKind::ATTR => ast::Attr::cast(node).is_some_and(|attr| {
+                    matches!(attr_name(attr), Some("deprecated" | "export_name"))
+                        && node
+                            .descendants()
+                            .any(|child| child.kind() == SyntaxKind::MACRO_EXPR)
+                }),
+                _ => node.children().any(has_declaration_macro),
+            }
+        }
         let start = self.items.diagnostics.len();
         if item_enabled(syntax, &mut self.items.diagnostics) {
-            if self.proc_item_needs_scope(ctx, syntax) {
+            let kind = if self.items.has_pending_macro_scope(self.macro_scope)
+                && has_declaration_macro(syntax)
+            {
+                Some(PendingItemKind::DeclarationMacros)
+            } else if self.proc_item_needs_scope(ctx, syntax) {
+                Some(PendingItemKind::Procedural(None))
+            } else {
+                None
+            };
+            if let Some(kind) = kind {
                 self.pending_items.push(PendingItem {
-                    kind: PendingItemKind::Procedural(None),
+                    kind,
                     ctx,
                     node: syntax.id(),
                     scope: self.macro_scope,
+                    following_scope: None,
                     depth: self.expansion_depth,
                     diagnostic: None,
                 });
@@ -508,13 +541,9 @@ impl Collector<'_> {
         }
     }
 
-    /// [`Collector::collect_item`], with the macro calls in type position
-    /// in it expanded first, unless an item around it did that.
+    /// [`Collector::collect_item`], with the macro calls in its declaration
+    /// expanded first. Bodies and inline modules handle their own scopes.
     fn collect_item_expanding_types(&mut self, ctx: Ctx, node: NodeId) {
-        if self.expanding_types {
-            self.collect_item(ctx, node);
-            return;
-        }
         let shared = self.db.shared(ctx.file);
         let syntax = shared.parse.tree().node(node);
         if !syntax
@@ -543,9 +572,7 @@ impl Collector<'_> {
                 },
             );
             self.items.diagnostics.extend(diagnostics);
-            self.expanding_types = true;
             self.collect_item(ctx, node);
-            self.expanding_types = false;
         });
     }
 
@@ -750,11 +777,16 @@ impl Collector<'_> {
             Ok(macros::Resolved::Def(id)) => id,
             Ok(macros::Resolved::Local(_)) => unreachable!("no local macros here"),
             Err(d) => {
+                let scope = self.macro_scope;
+                let following_scope = self.items.defer_macro_scope(scope);
+                self.macro_scope = Some(following_scope);
+                self.has_deferred_macro_scopes = true;
                 self.pending_items.push(PendingItem {
                     kind: PendingItemKind::Macro(None),
                     ctx,
                     node: node.id(),
-                    scope: self.macro_scope,
+                    scope,
+                    following_scope: Some(following_scope),
                     depth: self.expansion_depth,
                     diagnostic: Some(d),
                 });
@@ -848,6 +880,7 @@ impl Collector<'_> {
         let saved_scope = self.macro_scope;
         let saved_depth = self.expansion_depth;
         while !self.pending_items.is_empty() {
+            self.collect_pending_macro_imports();
             self.items.def_map = base_map.clone();
             let diagnostics = std::mem::take(&mut self.items.diagnostics);
             let imports = self.items.macro_imports.clone();
@@ -865,6 +898,13 @@ impl Collector<'_> {
                 let _file = TypesFile::enter(call.ctx.file);
                 let start = self.items.diagnostics.len();
                 match call.kind {
+                    PendingItemKind::DeclarationMacros => {
+                        if self.items.has_pending_macro_scope(call.scope) {
+                            unresolved.push(call);
+                            continue;
+                        }
+                        self.collect_scoped_item(call.ctx, node);
+                    }
                     PendingItemKind::Procedural(owner) => {
                         if self.proc_item_needs_scope(call.ctx, node) {
                             unresolved.push(call);
@@ -892,12 +932,32 @@ impl Collector<'_> {
                         }
                     }
                 }
+                if let Some(id) = call.following_scope {
+                    let scope = &mut self.items.macro_scopes[id];
+                    scope.parent = self.macro_scope;
+                    scope.pending = false;
+                }
                 self.tag(start, call.ctx.file);
                 progress = true;
             }
             if progress {
                 self.pending_items.extend(unresolved);
             } else {
+                // An unresolved invocation adds no definitions. Close its
+                // position so later calls can resolve in the surviving scope.
+                if let Some(index) = unresolved.iter().position(|call| {
+                    call.following_scope.is_some()
+                        && !self.items.has_pending_macro_scope(call.scope)
+                }) {
+                    let call = unresolved.remove(index);
+                    let id = call.following_scope.expect("deferred item macro");
+                    self.items.macro_scopes[id].pending = false;
+                    let start = self.items.diagnostics.len();
+                    self.items.diagnostics.extend(call.diagnostic);
+                    self.tag(start, call.ctx.file);
+                    self.pending_items.extend(unresolved);
+                    continue;
+                }
                 for call in unresolved {
                     let start = self.items.diagnostics.len();
                     if let Some(diagnostic) = call.diagnostic {
@@ -917,6 +977,7 @@ impl Collector<'_> {
                 }
             }
         }
+        self.collect_pending_macro_imports();
         self.items.def_map = base_map;
         self.macro_scope = saved_scope;
         self.expansion_depth = saved_depth;
@@ -1842,30 +1903,50 @@ impl Collector<'_> {
         } else {
             UseKind::Named(name)
         };
-        // `use m;` of a `macro_rules!` macro in textual scope makes it
-        // nameable by path, as `crate::m!` and so on.
-        if let (UseKind::Named(name), PathAnchor::Plain, [only]) =
-            (kind, path.anchor, &path.segments[..])
-            && let Some(def) = self.items.textual_macro(self.macro_scope, *only)
-        {
-            self.items.macro_imports.push(MacroImport {
-                module: ctx.module,
-                name,
-                def,
-                vis,
-                file: ctx.file,
-                range,
-            });
-            return;
-        }
-        self.items.uses.push(Use {
+        let import = Use {
             module: ctx.module,
             file: ctx.file,
             vis,
             path,
             kind,
             range,
-        });
+        };
+        self.collect_scoped_import(import, self.macro_scope);
+    }
+
+    fn collect_scoped_import(&mut self, import: Use, scope: Option<MacroScopeId>) {
+        // `use m;` of a `macro_rules!` macro in textual scope makes it
+        // nameable by path, as `crate::m!` and so on.
+        if let (UseKind::Named(name), PathAnchor::Plain, [only]) =
+            (import.kind, import.path.anchor, &import.path.segments[..])
+        {
+            match self.items.textual_macro(scope, *only) {
+                macros::TextualMacro::Defined(def) => {
+                    self.items.macro_imports.push(MacroImport {
+                        module: import.module,
+                        name,
+                        def,
+                        vis: import.vis,
+                        file: import.file,
+                        range: import.range,
+                    });
+                    return;
+                }
+                macros::TextualMacro::Pending => {
+                    self.pending_macro_imports
+                        .push((import, scope.expect("pending macro import scope")));
+                    return;
+                }
+                macros::TextualMacro::Missing => {}
+            }
+        }
+        self.items.uses.push(import);
+    }
+
+    fn collect_pending_macro_imports(&mut self) {
+        for (import, scope) in std::mem::take(&mut self.pending_macro_imports) {
+            self.collect_scoped_import(import, Some(scope));
+        }
     }
 
     fn collect_impl(&mut self, ctx: Ctx, imp: ast::Impl<'_>) {
@@ -1987,6 +2068,7 @@ impl Collector<'_> {
                     ctx,
                     node,
                     scope: self.macro_scope,
+                    following_scope: None,
                     depth: self.expansion_depth,
                     diagnostic: None,
                 });
@@ -2104,6 +2186,7 @@ impl Collector<'_> {
                     ctx,
                     node: call.syntax().id(),
                     scope: self.macro_scope,
+                    following_scope: None,
                     depth: self.expansion_depth,
                     diagnostic: Some(error),
                 });
@@ -2271,6 +2354,7 @@ impl Collector<'_> {
         let mut do_not_const_check = false;
         let mut lang = None;
         let mut link_name = None;
+        let mut link_section = None;
         let attrs = crate::cfg::Attrs::new(f.attrs());
         let has_target_feature = attrs.iter().any(|a| attr_name(a) == Some("target_feature"));
         let mut enabled_features = Vec::new();
@@ -2308,6 +2392,13 @@ impl Collector<'_> {
                 } else {
                     link_name = f.name().map(|name| Symbol::intern(name.text()));
                 }
+                continue;
+            }
+
+            if attr_name(attr) == Some("link_section") && !in_extern_block {
+                link_section =
+                    super::attributes::link_section_attr(attr, &mut self.items.diagnostics)
+                        .or(link_section);
                 continue;
             }
 
@@ -2738,6 +2829,7 @@ impl Collector<'_> {
             target_features: has_target_feature.then(|| enabled_features.into_boxed_slice()),
             is_extern: in_extern_block,
             link_name,
+            link_section,
             abi,
             is_const: f.const_token().is_some(),
             is_async,
@@ -2792,7 +2884,10 @@ impl Collector<'_> {
         // Most bodies have no items: they are found without a walk.
         if !tree.node(node).descendants().any(|n| {
             is_item_kind(n.kind())
-                || matches!(n.kind(), SyntaxKind::MACRO_EXPR | SyntaxKind::CALL_EXPR)
+                || matches!(
+                    n.kind(),
+                    SyntaxKind::MACRO_EXPR | SyntaxKind::MACRO_TYPE | SyntaxKind::CALL_EXPR
+                )
         }) {
             return;
         }
@@ -2899,9 +2994,12 @@ impl Collector<'_> {
                     && self.items.diagnostics.len() == start
                     && let Some(scope) = self.macro_scope
                 {
-                    self.items
-                        .body_macro_definitions
-                        .insert((ctx.file, node.id()), self.items.macro_scopes[scope].def);
+                    self.items.body_macro_definitions.insert(
+                        (ctx.file, node.id()),
+                        self.items.macro_scopes[scope]
+                            .def
+                            .expect("body macro definition"),
+                    );
                 }
                 self.items.diagnostics.truncate(start);
                 return;
@@ -3361,6 +3459,7 @@ impl Collector<'_> {
         }
         if kind == SyntaxKind::MACRO_TYPE
             && let Some(expansion) = self.items.body_expansions.get(&(file, node.id()))
+            && expansion.anon_consts
         {
             let expanded = expansion.file;
             let shared = self.db.shared(expanded);
@@ -3532,6 +3631,8 @@ impl Collector<'_> {
             is_static: None,
             extern_symbol: None,
             export_symbol: None,
+            link_section: None,
+            used: false,
             specialization: false,
             anon: Some(AnonConst {
                 self_adt: scope.self_adt,
@@ -3620,6 +3721,8 @@ impl Collector<'_> {
             is_static: None,
             extern_symbol: None,
             export_symbol: None,
+            link_section: None,
+            used: false,
             specialization,
             macro_scope: self.macro_scope,
         });
@@ -3649,6 +3752,8 @@ impl Collector<'_> {
         let symbol = Symbol::intern(name.text());
         let mut extern_symbol = foreign.then_some(symbol);
         let mut export_symbol = None;
+        let mut link_section = None;
+        let mut used = false;
         let mut saw_link_name = false;
         for attr in attrs.iter() {
             match attr_name(attr) {
@@ -3680,6 +3785,24 @@ impl Collector<'_> {
                         ));
                     } else {
                         export_symbol = Some(symbol);
+                    }
+                }
+                Some("link_section") if !foreign => {
+                    link_section =
+                        super::attributes::link_section_attr(attr, diagnostics).or(link_section);
+                }
+                Some("used") if !foreign => {
+                    let meta = attr.meta().expect("named attribute");
+                    if meta.token_tree().is_some()
+                        || meta.eq_token().is_some()
+                        || meta.unsafe_token().is_some()
+                    {
+                        diagnostics.push(Diagnostic::new(
+                            attr.syntax().text_range(),
+                            "expected bare `used` attribute",
+                        ));
+                    } else {
+                        used = true;
                     }
                 }
                 Some("link_name") if foreign && !saw_link_name => {
@@ -3749,12 +3872,99 @@ impl Collector<'_> {
             is_static: Some(st.mut_token().is_some()),
             extern_symbol,
             export_symbol,
+            link_section,
+            used,
             specialization: false,
             macro_scope: self.macro_scope,
         });
         if let Some(body) = st.body() {
             self.collect_body_items(ctx, body.syntax().id(), BodyOwner::Const(id));
         }
+    }
+
+    fn collect_extern_macros(
+        &mut self,
+        ctx: Ctx,
+        attr: ast::Attr<'_>,
+        krate: CrateId,
+        target: CrateId,
+    ) {
+        let Some(meta) = attr.meta() else { return };
+        let range = attr.syntax().text_range();
+        let malformed = || Diagnostic::new(range, "malformed `macro_use` attribute input");
+        if meta.eq_token().is_some() || meta.unsafe_token().is_some() {
+            self.items.diagnostics.push(malformed());
+            return;
+        }
+        if ctx.module != self.items.crates[krate.0 as usize].root {
+            self.items.diagnostics.push(Diagnostic::new(
+                range,
+                "an extern crate loading macros must be at the crate root",
+            ));
+            return;
+        }
+        let mut exported: Vec<_> = self
+            .items
+            .exported_macros
+            .iter()
+            .filter_map(|(&(owner, name), &id)| (owner == target).then_some((name, id)))
+            .collect();
+        if let Some(scope) = self
+            .items
+            .def_map
+            .scopes
+            .get(self.items.module_of(target).index())
+        {
+            exported.extend(
+                scope
+                    .macros
+                    .iter()
+                    .filter_map(|(&name, binding)| match binding.def {
+                        crate::def_map::Def::Macro(id) if binding.vis == Visibility::Public => {
+                            Some((name, id))
+                        }
+                        _ => None,
+                    }),
+            );
+        }
+        if let Some(tree) = meta.token_tree() {
+            let mut tokens = Vec::new();
+            macros::tt::tokens_of(tree.syntax(), &mut tokens);
+            let [open, names @ .., close] = tokens.as_slice() else {
+                self.items.diagnostics.push(malformed());
+                return;
+            };
+            if open.kind != SyntaxKind::L_PAREN || close.kind != SyntaxKind::R_PAREN {
+                self.items.diagnostics.push(malformed());
+                return;
+            }
+            let mut selected = Vec::new();
+            for pair in names.chunks(2) {
+                let name = &pair[0];
+                if name.kind != SyntaxKind::IDENT
+                    || pair
+                        .get(1)
+                        .is_some_and(|comma| comma.kind != SyntaxKind::COMMA)
+                {
+                    self.items.diagnostics.push(malformed());
+                    return;
+                }
+                let spelling = name.text.as_str();
+                let symbol = Symbol::intern(spelling.strip_prefix("r#").unwrap_or(spelling));
+                if let Some(&entry) = exported.iter().rev().find(|(name, _)| *name == symbol) {
+                    selected.push(entry);
+                } else {
+                    self.items.diagnostics.push(Diagnostic::new(
+                        name.range(),
+                        format!("imported macro `{symbol}` not found"),
+                    ));
+                }
+            }
+            exported = selected;
+        }
+        self.items.crates[krate.0 as usize]
+            .macro_use
+            .extend(exported);
     }
 
     /// `extern crate alloc;`: `alloc` may be named by path, as rustc's
@@ -3820,51 +4030,7 @@ impl Collector<'_> {
         let attrs = crate::cfg::Attrs::new(e.attrs());
         for attr in attrs.iter() {
             if attr_name(attr) == Some("macro_use") {
-                if attr.meta().is_some_and(|m| {
-                    m.token_tree().is_none() && m.eq_token().is_none() && m.unsafe_token().is_none()
-                }) {
-                    if ctx.module != self.items.crates[krate.0 as usize].root {
-                        self.items.diagnostics.push(Diagnostic::new(
-                            range,
-                            "an extern crate loading macros must be at the crate root",
-                        ));
-                    } else {
-                        let mut exported: Vec<_> = self
-                            .items
-                            .exported_macros
-                            .iter()
-                            .filter_map(|(&(owner, name), &id)| {
-                                (owner == target).then_some((name, id))
-                            })
-                            .collect();
-                        if let Some(scope) = self
-                            .items
-                            .def_map
-                            .scopes
-                            .get(self.items.module_of(target).index())
-                        {
-                            exported.extend(scope.macros.iter().filter_map(|(&name, binding)| {
-                                match binding.def {
-                                    crate::def_map::Def::Macro(id)
-                                        if binding.vis == Visibility::Public =>
-                                    {
-                                        Some((name, id))
-                                    }
-                                    _ => None,
-                                }
-                            }));
-                        }
-                        self.items.crates[krate.0 as usize]
-                            .macro_use
-                            .extend(exported);
-                    }
-                } else {
-                    unsupported(
-                        &mut self.items.diagnostics,
-                        attr.syntax().text_range(),
-                        "selective extern macro imports",
-                    );
-                }
+                self.collect_extern_macros(ctx, attr, krate, target);
             } else {
                 check_attr(attr, &mut self.items.diagnostics);
             }
@@ -4521,6 +4687,8 @@ impl Collector<'_> {
                     is_static: None,
                     extern_symbol: None,
                     export_symbol: None,
+                    link_section: None,
+                    used: false,
                     specialization: false,
                     anon: None,
                     macro_scope: self.macro_scope,
@@ -4736,6 +4904,7 @@ impl Collector<'_> {
                     is_unsafe: false,
                     target_features: None,
                     link_name: None,
+                    link_section: None,
                     is_extern: false,
                     abi: Abi::Rust,
                     is_const: true,
@@ -5067,6 +5236,7 @@ impl Collector<'_> {
             is_unsafe: false,
             target_features: None,
             link_name: None,
+            link_section: None,
             is_extern: false,
             abi: Abi::Rust,
             is_const: false,

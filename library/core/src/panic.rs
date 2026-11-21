@@ -46,7 +46,7 @@ impl<F: crate::future::Future> crate::future::Future for AssertUnwindSafe<F> {
 
 /// A place in the source: a file, a line and a column, each counted
 /// from one, as `#[track_caller]` functions get their caller's.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 #[lang = "Location"]
 pub struct Location<'a> {
     file: &'a str,

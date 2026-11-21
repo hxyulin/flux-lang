@@ -10,7 +10,17 @@ fn bits32(x:f32)->u32{if x.is_nan(){u32::MAX}else if x==0.0{0}else{x.to_bits()}}
 fn bits64(x:f64)->u64{if x.is_nan(){u64::MAX}else if x==0.0{0}else{x.to_bits()}}
 fn powers(x:f64,n:i32)->f64{x.powi(n)}
 fn power32(x:f32,n:i32)->f32{x.powi(n)}
+const CLAMPED_LOW: f32 = (-2.0_f32).clamp(-1.0, 1.0);
+const CLAMPED_HIGH: f64 = 2.0_f64.clamp(-1.0, 1.0);
+const CLAMPED_ZERO: f32 = (-0.0_f32).clamp(0.0, 1.0);
+const CLAMPED_NAN: f64 = f64::NAN.clamp(-1.0, 1.0);
+
 fn main(){
+    assert_eq!(CLAMPED_LOW, -1.0);
+    assert_eq!(CLAMPED_HIGH, 1.0);
+    assert_eq!(CLAMPED_ZERO.to_bits(), (-0.0_f32).to_bits());
+    assert!(CLAMPED_NAN.is_nan());
+
     assert_eq!(MIN32,3.0);assert_eq!(MAX64,7.0);
     assert_eq!(CEIL.to_bits(),(-0.0f32).to_bits());assert_eq!(FLOOR,-1.0);
     assert_eq!(TRUNC,-1.0);assert_eq!(EVEN,2.0);

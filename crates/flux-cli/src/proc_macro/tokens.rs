@@ -7,6 +7,7 @@ pub(super) struct Codec<'a> {
     input: &'a ProcMacroInput,
     pub spans: Vec<u32>,
     origins: Vec<TokenOrigin>,
+    contexts: Vec<u32>,
     span_ids: std::collections::BTreeMap<[u32; 5], u32>,
     file: u32,
 }
@@ -22,6 +23,7 @@ impl<'a> Codec<'a> {
             input,
             spans: Vec::new(),
             origins: Vec::new(),
+            contexts: vec![0, input.mixed_context, 0],
             span_ids: std::collections::BTreeMap::new(),
             file: edition << 23,
         };
@@ -69,7 +71,16 @@ impl<'a> Codec<'a> {
             .end()
             .checked_sub(self.input.range_base)
             .ok_or("invalid proc-macro token source range")?;
-        let row = [self.file, anchor as u32, start, end, 0];
+        let ctxt = self
+            .contexts
+            .iter()
+            .position(|&ctxt| ctxt == origin.ctxt)
+            .unwrap_or_else(|| {
+                let id = self.contexts.len();
+                self.contexts.push(origin.ctxt);
+                id
+            });
+        let row = [self.file, anchor as u32, start, end, ctxt as u32];
         if let Some(&id) = self.span_ids.get(&row) {
             return Ok(id);
         }
@@ -228,10 +239,14 @@ impl<'a> Codec<'a> {
             .origins
             .get(row[1] as usize)
             .ok_or("unknown host span anchor")?;
+        // The host may change a span's source location independently of its
+        // hygiene (for example Span::call_site().located_at(input.span())).
         let ctxt = match row[4] {
-            0 => base.ctxt,
-            1 => self.input.mixed_context,
-            _ => return Err("proc-macro definition-site hygiene is not supported yet".into()),
+            2 => return Err("proc-macro definition-site hygiene is not supported yet".into()),
+            index => *self
+                .contexts
+                .get(index as usize)
+                .ok_or("unknown host span context")?,
         };
         // TokenStream::from_str uses synthetic offsets under the global anchor.
         // Those offsets describe generated text, not bytes in the invocation file.

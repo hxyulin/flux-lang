@@ -47,6 +47,13 @@ static COUNT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(
     TokenTree::Ident(proc_macro::Ident::new("outside",proc_macro::Span::mixed_site())).into()
 }
 #[proc_macro] pub fn call_capture(_:TokenStream)->TokenStream {"outside".parse().unwrap()}
+#[proc_macro] pub fn relocated_binding(input:TokenStream)->TokenStream {
+    let location = input.into_iter().next().unwrap().span();
+    let mut tokens: Vec<_> = "let result = 37; result".parse::<TokenStream>().unwrap().into_iter().collect();
+    tokens[1].set_span(proc_macro::Span::call_site().located_at(location));
+    TokenTree::Group(proc_macro::Group::new(proc_macro::Delimiter::Brace, tokens.into_iter().collect())).into()
+}
+
 #[proc_macro_attribute] pub fn remove(_:TokenStream,_:TokenStream)->TokenStream{TokenStream::new()}
 #[proc_macro_attribute] pub fn host(_:TokenStream,_:TokenStream)->TokenStream {
     "fn from_attribute() -> u32 { 37 }".parse().unwrap()
@@ -570,6 +577,11 @@ fn direct_expansion_contracts_match_rustc() {
         (
             "call_capture",
             "fn main(){let outside=7;assert_eq!(host::call_capture!(),7);}",
+            true,
+        ),
+        (
+            "relocated_binding",
+            "macro_rules! read { () => { host::relocated_binding!(here) } } fn main(){assert_eq!(read!(),37);}",
             true,
         ),
         (

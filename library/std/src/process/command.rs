@@ -45,10 +45,6 @@ mod native {
     #[repr(C)]
     pub struct Timespec { pub secs: i64, pub nanos: i64 }
     unsafe extern "C" {
-        #[cfg(target_os = "macos")]
-        pub fn pipe(descriptors: *mut i32) -> i32;
-        #[cfg(target_os = "linux")]
-        pub fn pipe2(descriptors: *mut i32, flags: i32) -> i32;
         pub fn fcntl(descriptor: i32, command: i32, ...) -> i32;
         pub fn fork() -> i32;
         pub fn dup2(source: i32, target: i32) -> i32;
@@ -620,18 +616,7 @@ fn normalize_file(file: File) -> io::Result<File> {
     }
 }
 fn pipe_pair() -> io::Result<(File, File)> {
-    let mut descriptors = [-1i32; 2];
-    // SAFETY: pipe writes two owned descriptors into the supplied storage.
-    #[cfg(target_os = "macos")]
-    let result = unsafe { native::pipe(descriptors.as_mut_ptr()) };
-    #[cfg(target_os = "linux")]
-    // SAFETY: exactly two writable slots; O_CLOEXEC avoids inheritance races.
-    let result = unsafe { native::pipe2(descriptors.as_mut_ptr(), 0x80000) };
-    if result != 0 { return Err(Error::last_os_error()); }
-    // SAFETY: pipe succeeded and returned two distinct owned descriptors.
-    let read = unsafe { File::from_raw_fd_unchecked(descriptors[0]) };
-    // SAFETY: the second descriptor is separately owned and has not been wrapped.
-    let write = unsafe { File::from_raw_fd_unchecked(descriptors[1]) };
+    let (read, write) = io::pipe_files()?;
     Ok((normalize_file(read)?, normalize_file(write)?))
 }
 fn prepare_stream(stream: Option<&Stdio>, capture: bool, output: bool) -> io::Result<(Option<File>, Option<File>)> {

@@ -82,6 +82,11 @@ fn ty_at(
         TyKind::FnDef(f) => {
             items.functions.get(f.function).ok_or_else(invalid)?;
             sigs.fns.get(f.function).ok_or_else(invalid)?;
+            if f.owner_lifetimes
+                != flux_ty::regions::function_item_owner_lifetimes(items, sigs, f.function)
+            {
+                return Err(invalid());
+            }
         }
         TyKind::Dynamic(d) => {
             let principal = items.traits.get(d.trait_).ok_or_else(invalid)?;
@@ -360,56 +365,83 @@ fn named_call_regions(
     Ok(())
 }
 
-fn reification_regions(
+fn operand_type_args(
     body: &Body,
     items: &ItemTree,
     sigs: &Signatures,
     names: usize,
 ) -> Result<(), Error> {
-    if body.reification_regions.iter().next().is_none() {
+    if body.operand_type_args.iter().next().is_none() {
         return Ok(());
     }
     let mut definitions = flux_arena::ArenaMap::new();
     for block in body.blocks.values() {
         for statement in &block.statements {
             if let StatementKind::Assign(dest, value) = &statement.kind
-                && body.reification_regions.get(dest.local).is_some()
+                && body.operand_type_args.get(dest.local).is_some()
             {
-                let Rvalue::Use(Operand::Const(Constant::Fn { function, args, .. })) = value else {
-                    return Err(Error::new("invalid MIR reification assignment"));
+                let Rvalue::Use(Operand::Const(
+                    operand @ (Constant::Fn { .. } | Constant::Item { .. }),
+                )) = value
+                else {
+                    return Err(Error::new("invalid MIR annotated operand assignment"));
                 };
-                if !dest.projection.is_empty()
-                    || definitions.insert(dest.local, (*function, *args)).is_some()
+                if !dest.projection.is_empty() || definitions.insert(dest.local, *operand).is_some()
                 {
-                    return Err(Error::new("duplicate MIR reification assignment"));
+                    return Err(Error::new("duplicate MIR annotated operand assignment"));
                 }
             }
         }
         if matches!(&block.terminator.kind,
             TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. }
-                if body.reification_regions.get(dest.local).is_some())
+                if body.operand_type_args.get(dest.local).is_some())
         {
-            return Err(Error::new("invalid MIR reification assignment"));
+            return Err(Error::new("invalid MIR annotated operand assignment"));
         }
     }
-    for (local, rows) in body.reification_regions.iter() {
+    for (local, rows) in body.operand_type_args.iter() {
         let data = body.locals.get(local).ok_or_else(invalid)?;
-        if data.kind != LocalKind::Temp || !matches!(data.ty.kind(), TyKind::FnPtr(_)) {
-            return Err(Error::new("invalid MIR reification temporary"));
+        let operand = definitions.get(local).ok_or_else(invalid)?;
+        if data.kind != LocalKind::Temp || data.ty != operand.ty() {
+            return Err(Error::new("invalid MIR annotated operand temporary"));
         }
-        let &(function, args) = definitions.get(local).ok_or_else(invalid)?;
+        let (args, owner) = match *operand {
+            Constant::Fn { function, args, .. } => {
+                if !matches!(data.ty.kind(), TyKind::FnPtr(_)) {
+                    return Err(Error::new("invalid MIR reification temporary"));
+                }
+                (
+                    args,
+                    items.functions.get(function).ok_or_else(invalid)?.owner,
+                )
+            }
+            Constant::Item { id, args, .. } => {
+                let owner = items.consts.get(id).ok_or_else(invalid)?.owner;
+                let Some(flux_hir::Owner::Trait(trait_)) = owner else {
+                    return Err(Error::new("invalid MIR associated constant owner"));
+                };
+                if args.len() != items.traits.get(trait_).ok_or_else(invalid)?.generics.len() + 1 {
+                    return Err(Error::new("invalid MIR associated constant arguments"));
+                }
+                (args, owner)
+            }
+            _ => unreachable!("checked annotated operand"),
+        };
         let mut seen = rustc_hash::FxHashSet::default();
         for (index, row) in rows {
             let count = match *index {
                 flux_ty::regions::TRAIT_LIFETIMES_ARG => {
-                    let owner = items.functions.get(function).and_then(|f| f.owner);
-                    let Some(flux_hir::Owner::Trait(_)) = owner else {
-                        return Err(Error::new("invalid MIR reification trait owner"));
+                    let Some(flux_hir::Owner::Trait(trait_)) = owner else {
+                        return Err(Error::new("invalid MIR annotated operand trait owner"));
                     };
-                    sigs.regions.fns.get(function).ok_or_else(invalid)?.owner as usize
+                    sigs.regions
+                        .traits
+                        .get(trait_)
+                        .ok_or_else(invalid)?
+                        .names
+                        .len()
                 }
                 flux_ty::regions::IMPL_SELF_ARG => {
-                    let owner = items.functions.get(function).and_then(|f| f.owner);
                     let Some(flux_hir::Owner::Impl(imp)) = owner else {
                         return Err(Error::new("invalid MIR reification impl owner"));
                     };
@@ -422,14 +454,14 @@ fn reification_regions(
                 }
             };
             if !seen.insert(*index) || row.len() != count {
-                return Err(Error::new("invalid MIR reification argument rows"));
+                return Err(Error::new("invalid MIR annotated operand argument rows"));
             }
             if row.iter().any(|r| match *r {
                 flux_ty::regions::Region::Param(i) => i as usize >= names,
                 flux_ty::regions::Region::Late(_) => true,
                 flux_ty::regions::Region::Static | flux_ty::regions::Region::Erased => false,
             }) {
-                return Err(Error::new("invalid MIR reification lifetime"));
+                return Err(Error::new("invalid MIR annotated operand lifetime"));
             }
         }
     }
@@ -716,7 +748,7 @@ pub(super) fn body_for_owner(
             .map_or(0, |r| r.names.len()),
     };
     named_call_regions(body, items, sigs, names)?;
-    reification_regions(body, items, sigs, names)?;
+    operand_type_args(body, items, sigs, names)?;
     if !check_types {
         return Ok(());
     }
@@ -919,7 +951,11 @@ fn value_for_storage(
     }
     value_at(v, items, sigs, depth, memo)?;
     match (v, expected.kind()) {
-        (Value::Uninit(ty), _) if *ty == expected && storage => {}
+        (Value::Uninit(ty), _)
+            if storage
+                && (*ty == expected
+                    || (expected.has_aliases()
+                        && *ty == flux_solve::traits::normalize(items, sigs, &[], expected))) => {}
         (Value::Int { bits, ty }, TyKind::Int(int))
             if *ty == int && (int.bits() == 128 || *bits >> int.bits() == 0) => {}
         (Value::Int { bits, .. }, TyKind::Char)
@@ -1089,6 +1125,39 @@ mod value_dag_tests {
         assert!(value_for(&value, expected, &hir.items, &typed.sigs, 0).is_ok());
         assert!(value_for(&value, Ty::BOOL, &hir.items, &typed.sigs, 0).is_err());
         assert!(super::value(&Value::Uninit(Ty::BOOL), &hir.items, &typed.sigs, 0).is_err());
+    }
+
+    #[test]
+    fn uninitialized_metadata_normalizes_projected_storage_fields() {
+        let (_, _, hir) = flux_hir::lower_text(
+            "projected_storage.rs",
+            "
+                use core::mem::MaybeUninit;
+                trait Property { type Stored; }
+                struct Key;
+                impl Property for Key { type Stored = u32; }
+                struct Cell<T: Property>(MaybeUninit<T::Stored>);
+                const CELL: Cell<Key> = Cell(MaybeUninit::uninit());
+                const RIGHT: MaybeUninit<u32> = MaybeUninit::uninit();
+                const WRONG: MaybeUninit<i32> = MaybeUninit::uninit();
+            ",
+        );
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let constant_type = |name| {
+            let (id, _) = hir
+                .items
+                .consts
+                .iter()
+                .find(|(_, c)| c.name == Some(flux_intern::Symbol::intern(name)))
+                .unwrap();
+            typed.sigs.consts[id]
+        };
+        let expected = constant_type("CELL");
+        assert!(fields(expected, None, &typed.sigs).unwrap()[0].has_aliases());
+        let cell = |name| Value::Aggregate(vec![Value::Uninit(constant_type(name))].into());
+        assert!(value_for(&cell("RIGHT"), expected, &hir.items, &typed.sigs, 0).is_ok());
+        assert!(value_for(&cell("WRONG"), expected, &hir.items, &typed.sigs, 0).is_err());
     }
 
     #[test]

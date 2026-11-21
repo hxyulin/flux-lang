@@ -169,7 +169,18 @@ fixture!(
     "cranelift_library_prerequisites.rs"
 );
 fixture!(generic_vtable_promotion, "generic_vtable_promotion.rs");
+fixture!(promoted_fn_item_cast, "promoted_fn_item_cast.rs");
+fixture!(cow_trait_outlives, "cow_trait_outlives.rs");
+fixture!(
+    supertrait_normalized_argument,
+    "supertrait_normalized_argument.rs"
+);
 fixture!(generic_constant_references, "generic_constant_reference.rs");
+fixture!(projected_impl_outlives, "projected_impl_outlives.rs");
+fixture!(
+    associated_constant_lifetimes,
+    "associated_constant_lifetimes.rs"
+);
 fixture!(associated_array_index, "associated_array_index.rs");
 fixture!(boxed_fn_once, "boxed_fn_once.rs");
 fixture!(projected_output_coercions, "projected_output_coercions.rs");
@@ -186,6 +197,7 @@ fixture!(
 fixture!(pattern_value_namespaces, "pattern_value_namespaces.rs");
 fixture!(macro_empty_tail, "macro_empty_tail.rs");
 fixture!(macro_type_fragments, "macro_type_fragments.rs");
+fixture!(deferred_item_macro_scope, "deferred_item_macro_scope.rs");
 fixture!(thread_local_no_semicolon, "thread_local_no_semicolon.rs");
 fixture!(boxed_factory, "boxed_factory.rs");
 fixture!(const_generics, "const_generics.rs");
@@ -193,6 +205,11 @@ fixture!(enums, "enums.rs");
 fixture!(trait_objects, "trait_objects.rs");
 fixture!(opaque_regions, "opaque_bound_regions.rs");
 fixture!(function_pointer_regions, "fn_pointer_regions.rs");
+fixture!(joined_fn_pointer_regions, "joined_fn_pointer_regions.rs");
+fixture!(
+    lifetime_trait_const_method,
+    "lifetime_trait_const_method.rs"
+);
 fixture!(runtime_type_identity, "any_type_id.rs");
 fixture!(constant_trait_objects, "const_trait_objects.rs");
 fixture!(constant_uninitialized_storage, "const_maybe_uninit.rs");

@@ -165,6 +165,42 @@ impl<T> LinkedList<T> {
         other.tail = ptr::null_mut();
         other.len = 0;
     }
+    /// Separates the elements starting at `at` into a new list.
+    ///
+    /// Panics if `at` exceeds the list's length.
+    pub fn split_off(&mut self, at: usize) -> Self {
+        assert!(at <= self.len, "split index out of bounds");
+        if at == 0 {
+            return core::mem::replace(self, Self::new());
+        }
+        let suffix_len = self.len - at;
+        if suffix_len == 0 {
+            return Self::new();
+        }
+        // SAFETY: at is interior, so walking from either endpoint reaches
+        // a live node with a predecessor. The two resulting lists own
+        // disjoint chains after those two links are cleared.
+        unsafe {
+            let mut head;
+            if at <= suffix_len {
+                head = self.head;
+                for _ in 0..at {
+                    head = (*head).next;
+                }
+            } else {
+                head = self.tail;
+                for _ in 1..suffix_len {
+                    head = (*head).prev;
+                }
+            }
+            let suffix = Self { head, tail: self.tail, len: suffix_len, marker: PhantomData };
+            self.tail = (*head).prev;
+            (*self.tail).next = ptr::null_mut();
+            (*head).prev = ptr::null_mut();
+            self.len = at;
+            suffix
+        }
+    }
     pub fn iter(&self) -> Iter<'_, T> {
         Iter {
             head: self.head,

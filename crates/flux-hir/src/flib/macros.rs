@@ -239,7 +239,7 @@ impl Encode for MacroScope {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         self.parent.encode(e)?;
         self.name.encode(e)?;
-        self.def.encode(e)?;
+        self.def.ok_or(Error("unfinished macro scope"))?.encode(e)?;
         self.depth.encode(e)?;
         self.jump.encode(e)
     }
@@ -249,7 +249,8 @@ impl Decode for MacroScope {
         Ok(Self {
             parent: Decode::decode(d)?,
             name: Decode::decode(d)?,
-            def: Decode::decode(d)?,
+            def: Some(Decode::decode(d)?),
+            pending: false,
             depth: Decode::decode(d)?,
             jump: Decode::decode(d)?,
         })

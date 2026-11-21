@@ -2175,10 +2175,14 @@ impl Ctx<'_> {
                 .generic_args
                 .get(callee)
                 .and_then(|g| g.ty.clone());
-            let trait_args = match written {
+            let params = &items.traits[t].generics.params;
+            let defaults = self
+                .sigs
+                .trait_defaults
+                .get(t)
+                .map_or(&[][..], |d| d.as_ref());
+            let mut args = match written {
                 Some(written) => {
-                    let params = &items.traits[t].generics.params;
-                    let want = params.len();
                     let args: Vec<Ty> = written
                         .types
                         .iter()
@@ -2190,36 +2194,39 @@ impl Ctx<'_> {
                             None => self.resolve_type_ref(ty),
                         })
                         .collect();
-                    if args.len() != want {
+                    if args.len() > params.len()
+                        || params[args.len()..].iter().any(|p| p.default.is_none())
+                    {
                         if !args.contains(&Ty::ERROR) {
-                            let message = crate::wrong_arg_count("trait", want, args.len());
+                            let message = crate::wrong_arg_count("trait", params.len(), args.len());
                             self.error(written.segment, message);
                         }
                         return None;
                     }
-                    Some(args)
+                    args
                 }
-                None if self_ty.is_some() => {
-                    let defaults = self
-                        .sigs
-                        .trait_defaults
-                        .get(t)
-                        .map_or(&[][..], |values| values.as_ref());
-                    if defaults.len() == items.traits[t].generics.len()
-                        && defaults.iter().all(Option::is_some)
-                    {
-                        let mut arguments = vec![self_ty.unwrap()];
-                        for default in defaults {
-                            arguments.push(default.unwrap().subst(&arguments));
-                        }
-                        Some(arguments[1..].to_vec())
-                    } else {
-                        None
-                    }
+                None if self_ty.is_some()
+                    && defaults.len() == params.len()
+                    && defaults.iter().all(Option::is_some) =>
+                {
+                    Vec::new()
                 }
-                None => None,
+                None => return Some((item, self_ty, None)),
             };
-            return Some((item, self_ty, trait_args));
+            let mut target = self_ty;
+            if args.len() < params.len() {
+                let receiver = *target.get_or_insert_with(|| self.new_var(false, segment));
+                let mut substitutions = Vec::with_capacity(1 + params.len());
+                substitutions.push(receiver);
+                substitutions.extend_from_slice(&args);
+                for index in args.len()..params.len() {
+                    let default = defaults.get(index).copied().flatten()?;
+                    let default = default.subst(&substitutions);
+                    args.push(default);
+                    substitutions.push(default);
+                }
+            }
+            return Some((item, target, Some(args)));
         }
         let self_ty = self.shallow(self_ty?);
         let mut private_candidates = Vec::new();

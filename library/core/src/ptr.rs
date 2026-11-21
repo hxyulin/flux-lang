@@ -162,7 +162,9 @@ pub unsafe fn write_bytes<T>(dst: *mut T, value: u8, count: usize) {
 }
 
 /// Swaps the values at `x` and `y`, which may be the same.
-pub unsafe fn swap<T>(x: *mut T, y: *mut T) {
+pub const unsafe fn swap<T>(x: *mut T, y: *mut T) {
+    // SAFETY: the caller guarantees both pointers can be read and written.
+    // copy permits overlap, and the old value of x is moved back once.
     unsafe {
         let a = read(x);
         copy(y, x, 1);

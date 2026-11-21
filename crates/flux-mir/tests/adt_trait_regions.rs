@@ -24,6 +24,11 @@ fn adt_trait_contracts_match_rustc() {
             true,
         ),
         (
+            "bounded_callback_output_mismatched_regions",
+            "trait Exact<'a>{}impl<'a>Exact<'a>for &'a u32{}struct Bounded<'a,T:Exact<'a>>(T,std::marker::PhantomData<&'a()>);fn reject<'a,'b>(_:Option<fn(&())->Bounded<'a,&'b u32>>){}fn main(){}",
+            false,
+        ),
+        (
             "unrelated_argument_static",
             "use std::sync::{LazyLock,Mutex};trait Alloc{}struct Global;impl Alloc for Global{}struct Holder<T,A:Alloc=Global>{value:T,allocator:A}static DATA:u32=17;static LOCK:LazyLock<Mutex<Holder<&'static u32>>>=LazyLock::new(||Mutex::new(Holder{value:&DATA,allocator:Global}));fn main(){assert_eq!(*LOCK.lock().unwrap().value,17);}",
             true,

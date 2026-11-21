@@ -611,8 +611,8 @@ macro_rules! float_bits_impl {
             ///
             /// # Panics
             /// Panics if `min > max`, or either is NaN.
-            pub fn clamp(mut self, min: Self, max: Self) -> Self {
-                if !(min <= max) { panic!("min > max, or either was NaN. min = {min:?}, max = {max:?}"); }
+            pub const fn clamp(mut self, min: Self, max: Self) -> Self {
+                if !(min <= max) { crate::panicking::panic_float_clamp(min, max); }
                 if self < min { self = min; }
                 if self > max { self = max; }
                 self

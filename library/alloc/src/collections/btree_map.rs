@@ -489,6 +489,46 @@ impl<K, V> BTreeMap<K, V> {
         entry
     }
 
+    pub fn pop_last(&mut self) -> Option<(K, V)> where K: Ord {
+        if self.root == NONE { return None; }
+        let (root, last) = self.detach_max(self.root);
+        self.root = root;
+        let entry = self.nodes[last].entry.take();
+        self.release(last);
+        entry
+    }
+
+    /// Moves the entries with keys at or above `key` to a new map.
+    pub fn split_off<Q: ?Sized>(&mut self, key: &Q) -> Self
+    where K: Borrow<Q> + Ord, Q: Ord {
+        use core::ops::Bound::{Excluded, Included, Unbounded};
+
+        // Retain the existing storage for the larger half. In particular,
+        // taking a few expired timers need not move all the future timers.
+        let move_lower = {
+            let mut lower = self.range((Unbounded, Excluded(key)));
+            let mut upper = self.range((Included(key), Unbounded));
+            loop {
+                if lower.next().is_none() { break true; }
+                if upper.next().is_none() { break false; }
+            }
+        };
+        let mut moved = Self::new();
+        if move_lower {
+            while self.first_key_value().is_some_and(|(first, _)| first.borrow() < key) {
+                let (k, v) = self.pop_first().unwrap();
+                moved.insert(k, v);
+            }
+            core::mem::replace(self, moved)
+        } else {
+            while self.last_key_value().is_some_and(|(last, _)| last.borrow() >= key) {
+                let (k, v) = self.pop_last().unwrap();
+                moved.insert(k, v);
+            }
+            moved
+        }
+    }
+
     /// Visits entries in ascending key order, retaining those accepted by `f`.
     pub fn retain<F: FnMut(&K, &mut V) -> bool>(&mut self, mut f: F) where K: Ord {
         let mut order = Vec::new();
@@ -592,6 +632,35 @@ impl<K, V> BTreeMap<K, V> {
         Range { map: self, front, back, finished }
     }
 
+    /// Iterates over the keys and mutable values in the given bounds.
+    ///
+    /// # Panics
+    /// Panics for reversed bounds or two equal excluded bounds.
+    pub fn range_mut<Q: ?Sized, R>(&mut self, range: R) -> RangeMut<'_, K, V>
+    where K: Borrow<Q> + Ord, Q: Ord, R: core::ops::RangeBounds<Q> {
+        let mut indices = Vec::new();
+        let mut positions = self.range(range);
+        while let Some(index) = positions.next_index() {
+            indices.push((index, indices.len()));
+        }
+        // The in-order walk visits distinct slots. Borrow them in physical
+        // order by successively taking disjoint parts of the node slice.
+        indices.sort_unstable_by_key(|&(index, _)| index);
+        let mut entries = Vec::new();
+        entries.resize_with(indices.len(), || None);
+        let mut nodes = self.nodes.as_mut_slice();
+        let mut start = 0;
+        for (index, position) in indices {
+            let (_, tail) = nodes.split_at_mut(index - start);
+            let (node, rest) = tail.split_first_mut().unwrap();
+            let (key, value) = node.entry.as_mut().unwrap();
+            entries[position] = Some((&*key, value));
+            nodes = rest;
+            start = index + 1;
+        }
+        RangeMut { entries: entries.into_iter(), keys: core::marker::PhantomData }
+    }
+
     pub fn remove<Q: ?Sized>(&mut self, key: &Q) -> Option<V>
     where K: Borrow<Q> + Ord, Q: Ord {
         self.remove_entry(key).map(|(_, value)| value)
@@ -648,6 +717,14 @@ impl<K, V> BTreeMap<K, V> {
         let (child, minimum) = self.detach_min(left);
         self.nodes[index].left = child;
         (self.balance(index), minimum)
+    }
+
+    fn detach_max(&mut self, index: usize) -> (usize, usize) {
+        let right = self.nodes[index].right;
+        if right == NONE { return (self.nodes[index].left, index); }
+        let (child, maximum) = self.detach_max(right);
+        self.nodes[index].right = child;
+        (self.balance(index), maximum)
     }
 
     fn release(&mut self, index: usize) {
@@ -1213,14 +1290,20 @@ impl<K, V> Clone for Range<'_, K, V> {
         Self { map: self.map, front: self.front.clone(), back: self.back.clone(), finished: self.finished }
     }
 }
-impl<'a, K, V> Iterator for Range<'a, K, V> {
-    type Item = (&'a K, &'a V);
-    fn next(&mut self) -> Option<Self::Item> {
+impl<K, V> Range<'_, K, V> {
+    fn next_index(&mut self) -> Option<usize> {
         if self.finished { return None; }
         let index = self.front.pop()?;
         if self.back.last() == Some(&index) { self.finished = true; }
         let mut at = self.map.nodes[index].right;
         while at != NONE { self.front.push(at); at = self.map.nodes[at].left; }
+        Some(index)
+    }
+}
+impl<'a, K, V> Iterator for Range<'a, K, V> {
+    type Item = (&'a K, &'a V);
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = self.next_index()?;
         self.map.nodes[index].entry.as_ref().map(|(key, value)| (key, value))
     }
 }
@@ -1235,6 +1318,31 @@ impl<'a, K, V> core::iter::DoubleEndedIterator for Range<'a, K, V> {
     }
 }
 impl<K, V> core::iter::FusedIterator for Range<'_, K, V> {}
+
+/// A mutable, double-ended view over an ordered key interval.
+pub struct RangeMut<'a, K, V> {
+    entries: crate::vec::IntoIter<Option<(&'a K, &'a mut V)>>,
+    keys: core::marker::PhantomData<&'a mut K>,
+}
+// SAFETY: the remaining entries hold disjoint exclusive borrows, just as
+// IterMut does. Keys are only exposed as shared references when yielded.
+unsafe impl<K: Send, V: Send> Send for RangeMut<'_, K, V> {}
+impl<'a, K, V> Iterator for RangeMut<'a, K, V> {
+    type Item = (&'a K, &'a mut V);
+    fn next(&mut self) -> Option<Self::Item> { self.entries.next().flatten() }
+}
+impl<'a, K, V> core::iter::DoubleEndedIterator for RangeMut<'a, K, V> {
+    fn next_back(&mut self) -> Option<Self::Item> { self.entries.next_back().flatten() }
+}
+impl<K, V> core::iter::FusedIterator for RangeMut<'_, K, V> {}
+impl<K: core::fmt::Debug, V: core::fmt::Debug> core::fmt::Debug for RangeMut<'_, K, V> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.entries.as_slice().iter().map(|entry| {
+            let (key, value) = entry.as_ref().unwrap();
+            (*key, &**value)
+        })).finish()
+    }
+}
 
 impl<'a, K: 'a + Copy + Ord, V: 'a + Copy> core::iter::Extend<(&'a K, &'a V)> for BTreeMap<K, V> {
     fn extend<I: IntoIterator<Item = (&'a K, &'a V)>>(&mut self, iter: I) {

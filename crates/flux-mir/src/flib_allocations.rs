@@ -1,7 +1,9 @@
 //! Constant allocation identities and bounded, shared value graphs.
 
 use crate::eval::Value;
-use flux_hir::flib::{Decode, Decoder, Encode, Encoder, Error, MAX_NESTING_DEPTH};
+use flux_hir::flib::{
+    Decode, Decoder, Encode, Encoder, Error, MAX_NESTING_DEPTH, MAX_RECORD_LENGTH,
+};
 use std::sync::Arc;
 
 const VALUE: u8 = 1;
@@ -102,9 +104,29 @@ pub(super) fn encode_fields(fields: &Arc<[Value]>, e: &mut Encoder) -> Result<()
     }
     let depth = fields_height(fields, e, 0)?;
     let wire = e.reserve_allocation(FIELDS, raw, fields.clone())?;
-    1u8.encode(e)?;
-    wire.encode(e)?;
-    fields.as_ref().encode(e)?;
+    if fields.len() > MAX_RECORD_LENGTH {
+        // Large generated data often comes from byte literals. Keep their
+        // element type and allocation identity without one record per byte.
+        e.charge_allocation_expansion(fields.len(), std::mem::size_of::<Value>())?;
+        let mut bytes = Vec::with_capacity(fields.len());
+        for field in fields.iter() {
+            let Value::Int {
+                bits,
+                ty: flux_ty::IntTy::U8,
+            } = *field
+            else {
+                return Err(Error::new("metadata allocation limit exceeded"));
+            };
+            bytes.push(u8::try_from(bits).map_err(|_| Error::new("invalid byte constant"))?);
+        }
+        2u8.encode(e)?;
+        wire.encode(e)?;
+        e.blob(&bytes)?;
+    } else {
+        1u8.encode(e)?;
+        wire.encode(e)?;
+        fields.as_ref().encode(e)?;
+    }
     e.complete_allocation(FIELDS, raw, depth)
 }
 
@@ -166,16 +188,33 @@ pub(super) fn decode_fields(d: &mut Decoder<'_>) -> Result<Arc<[Value]>, Error> 
             .allocation_reference::<Arc<[Value]>>(FIELDS, wire)
             .map(|(owner, _)| owner);
     }
-    if tag != 1 {
-        return Err(Error::new("invalid constant fields tag"));
-    }
     d.reserve_allocation(FIELDS, wire)?;
-    let fields: Arc<[Value]> = Vec::<Value>::decode(d)?.into();
-    let mut deepest = 0;
-    for value in fields.iter() {
-        deepest = deepest.max(decoded_height(value, d)?);
-    }
-    let depth = height(0, 1 + deepest)?;
+    let (fields, depth): (Arc<[Value]>, _) = match tag {
+        1 => {
+            let fields = Vec::<Value>::decode(d)?;
+            let mut deepest = 0;
+            for value in &fields {
+                deepest = deepest.max(decoded_height(value, d)?);
+            }
+            (fields.into(), height(0, 1 + deepest)?)
+        }
+        2 => {
+            let bytes = d.blob()?;
+            if bytes.len() <= MAX_RECORD_LENGTH {
+                return Err(Error::new("noncanonical compact byte allocation"));
+            }
+            d.charge_allocation_expansion(bytes.len(), std::mem::size_of::<Value>())?;
+            let fields = bytes
+                .iter()
+                .map(|&byte| Value::Int {
+                    bits: u128::from(byte),
+                    ty: flux_ty::IntTy::U8,
+                })
+                .collect();
+            (fields, 2)
+        }
+        _ => return Err(Error::new("invalid constant fields tag")),
+    };
     d.set_allocation_depth(FIELDS, fields_key(&fields), fields.clone(), depth)?;
     d.complete_allocation(FIELDS, wire, fields.clone(), depth)?;
     Ok(fields)
@@ -219,6 +258,53 @@ mod tests {
         };
         assert_eq!(inner.as_ref(), &Value::Bool(true));
     }
+    #[test]
+    fn oversized_byte_arrays_keep_shared_storage() {
+        let count = MAX_RECORD_LENGTH + 1;
+        let bytes: Arc<[Value]> = (0..count)
+            .map(|index| Value::Int {
+                bits: (index % 256) as u128,
+                ty: flux_ty::IntTy::U8,
+            })
+            .collect();
+        let value =
+            Value::Aggregate([Value::Aggregate(bytes.clone()), Value::Aggregate(bytes)].into());
+        let wire = encoded(&value);
+        assert!(wire.len() < count + 64);
+        let mut decoder = Decoder::new(&wire);
+        let decoded = Value::decode(&mut decoder).unwrap();
+        decoder.finish().unwrap();
+        let Value::Aggregate(fields) = decoded else {
+            panic!("expected aggregate")
+        };
+        let [Value::Aggregate(first), Value::Aggregate(second)] = fields.as_ref() else {
+            panic!("expected two byte arrays")
+        };
+        assert!(Arc::ptr_eq(first, second));
+        assert_eq!(first.len(), count);
+        assert_eq!(
+            first[count - 1],
+            Value::Int {
+                bits: ((count - 1) % 256) as u128,
+                ty: flux_ty::IntTy::U8,
+            }
+        );
+    }
+
+    #[test]
+    fn compact_byte_arrays_reject_small_noncanonical_records() {
+        let mut e = Encoder::new();
+        2_u8.encode(&mut e).unwrap();
+        0_u32.encode(&mut e).unwrap();
+        e.blob(b"small").unwrap();
+        let bytes = e.into_bytes();
+        let mut d = Decoder::new(&bytes);
+        assert_eq!(
+            decode_fields(&mut d).unwrap_err().to_string(),
+            "noncanonical compact byte allocation"
+        );
+    }
+
     #[test]
     fn union_storage_keeps_its_field_and_shared_payload() {
         let payload = Arc::new(Value::Aggregate(

@@ -475,3 +475,44 @@ fn streaming_preserves_assembly_error_stage_and_diagnostic() {
     assert_eq!(actual.to_string(), expected.to_string());
     assert!(scopes.codegen.is_some() && scopes.assemble.is_some());
 }
+
+#[test]
+fn lifecycle_arrays_survive_object_emission_on_both_native_formats() {
+    use keel_ir::{DataInit, DataItem, DataObject, section::SectionName};
+
+    for (target, name, emitted_name) in [
+        (
+            Target::Aarch64AppleDarwin,
+            "__DATA,__mod_init_func",
+            "__mod_init_func",
+        ),
+        (Target::X86_64LinuxGnu, ".init_array", ".init_array"),
+        (Target::X86_64LinuxGnu, ".fini_array", ".fini_array"),
+    ] {
+        let mut module = keel_ir::parse("func @register() {\nblock0:\n return\n}\n").unwrap();
+        let section = SectionName::new(name).unwrap();
+        module.data.push(DataObject {
+            name: "registration".into(),
+            local: false,
+            hidden: false,
+            thread_local: false,
+            weak_odr: false,
+            weak: false,
+            section: Some(section),
+            retain: false,
+            init: Some(DataInit {
+                constant: true,
+                align: 8,
+                items: vec![DataItem::Ptr {
+                    symbol: "register".into(),
+                    addend: 0,
+                }],
+            }),
+        });
+        let object =
+            flux_codegen::compile_object(&mut module, target, OptimizationTier::Full).unwrap();
+        assert_eq!(module.data[0].section, Some(section));
+        let name = emitted_name.as_bytes();
+        assert!(object.windows(name.len()).any(|bytes| bytes == name));
+    }
+}

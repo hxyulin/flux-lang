@@ -11,6 +11,8 @@ use super::{
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TypeScope<'a> {
     pub self_ty: Option<Ty>,
+    /// The written impl header provides the inputs of bare `Self::Assoc`.
+    pub self_impl: Option<flux_hir::ImplId>,
     pub generics: &'a [Symbol],
     /// The type of each of `generics` that is a const parameter, `None`
     /// for a type parameter ([`generic_consts`]); empty where they are
@@ -590,11 +592,9 @@ pub(crate) fn fill_type_defaults(
     }
     let names = generic_names(items, None, generics);
     let consts = generic_consts(items, loc.module, None, generics);
-    let unsized_flags = flux_solve::unsized_params(items, None, generics);
     let own = TypeScope {
         generics: &names,
         consts: &consts,
-        unsized_params: &unsized_flags,
         signature_of: Some("generic parameter defaults"),
         lens: scope.lens,
         defaults: scope.defaults,
@@ -602,18 +602,29 @@ pub(crate) fn fill_type_defaults(
         ..TypeScope::default()
     };
     while args.len() < generics.len() {
-        let ty = match &generics.params[args.len()].default {
-            Some((ty, range)) => resolve_generic_arg(
-                items,
-                loc.module,
-                loc.module,
-                Some(&generics.params[args.len()]),
-                ty,
-                own,
-                *range,
-                errors,
-            )
-            .subst(args),
+        let param = &generics.params[args.len()];
+        let ty = match &param.default {
+            Some((written, range)) => {
+                let ty = resolve_generic_arg(
+                    items,
+                    loc.module,
+                    loc.module,
+                    Some(param),
+                    written,
+                    own,
+                    *range,
+                    errors,
+                )
+                .subst(args);
+                // A default can require its earlier type parameters to be
+                // sized even if explicitly specifying this argument does not.
+                if let Some(invalid) = unsized_argument(items, scope, ty) {
+                    errors.push((*range, unsized_error(invalid)));
+                    Ty::ERROR
+                } else {
+                    ty
+                }
+            }
             None => Ty::ERROR,
         };
         args.push(ty);
@@ -664,6 +675,9 @@ pub(super) fn check_type_defaults(
             // need a qualified path, as in rustc (E0220).
             let scope = TypeScope {
                 bounds: &[],
+                // Dependent Sized requirements are checked when the default
+                // is substituted. Explicit uses can supply their own type.
+                unsized_params: &[],
                 ..scope
             };
             let resolved = resolve_generic_arg(
@@ -975,7 +989,10 @@ pub fn resolve_type(
             };
             let description = fn_regions::describe(
                 items,
-                module,
+                fn_regions::Scope {
+                    module,
+                    self_impl: scope.self_impl,
+                },
                 bound_lifetimes,
                 written,
                 written_ret,
@@ -1303,7 +1320,11 @@ fn assoc_type(
     let TyKind::Alias(alias) = base.kind() else {
         return base;
     };
-    if scope.in_fn_pointer && path.qself.is_none() && regions::has_projection_inputs(items, alias) {
+    if scope.in_fn_pointer
+        && path.qself.is_none()
+        && regions::has_projection_inputs(items, alias)
+        && fn_regions::projection_impl(items, scope.self_impl, path, alias).is_none()
+    {
         errors.push((
             range,
             "associated family regions in function pointers are not supported yet".into(),

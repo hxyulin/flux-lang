@@ -500,6 +500,7 @@ pub(super) fn extend_signatures(
             flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits, None);
         let scope = TypeScope {
             bounds: &bounds,
+            self_impl: Some(id),
             self_trait,
             self_supertraits: &self_supertraits,
             self_inherited_types: &self_inherited_types,
@@ -684,6 +685,7 @@ pub(super) fn extend_signatures(
             flux_solve::traits::associated_self_types(items, &sigs, &self_supertraits, None);
         let scope = TypeScope {
             self_ty: self_ty(&sigs, konst.owner),
+            self_impl: konst.owner.and_then(Owner::as_impl),
             self_supertraits: &self_supertraits,
             self_inherited_types: &self_inherited_types,
             generics: &generics,
@@ -819,6 +821,7 @@ pub(super) fn extend_signatures(
             consts: &consts,
             unsized_params: &unsized_params,
             signature_of: Some("functions"),
+            self_impl: items.impl_of(id),
             size_sigs: Some(&sigs),
             self_trait,
             self_types: &self_types,

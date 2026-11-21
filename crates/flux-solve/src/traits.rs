@@ -729,7 +729,11 @@ impl<'a> RigidSolver<'a> {
                 ClosureGoal::No => {}
             }
         }
-        if let Some(owner) = declared_alias_bound(self.sigs, goal) {
+        if let Some(owner) = declared_alias_bound(self.sigs, goal, |bounds| {
+            caller::matches(bounds, goal, self.bound_matching, |p| {
+                Self::normalize_predicate(self.items, self.sigs, self.projections, p)
+            })
+        }) {
             path.push(goal);
             let proven = self.holds_at(owner, path);
             path.pop();
@@ -1063,14 +1067,16 @@ pub fn in_env(sigs: &Signatures, env: &[Predicate], goal: Predicate) -> bool {
 
 // A declared output bound is usable only after independently proving that
 // the projection's receiver implements its owning trait.
-fn declared_alias_bound(sigs: &Signatures, goal: Predicate) -> Option<Predicate> {
+fn declared_alias_bound(
+    sigs: &Signatures,
+    goal: Predicate,
+    matches: impl FnOnce(&[Predicate]) -> bool,
+) -> Option<Predicate> {
     let TyKind::Alias(alias) = goal.self_ty.kind() else {
         return None;
     };
     let owner = alias_predicate(alias);
-    alias_bounds(sigs, &[owner], goal.self_ty)
-        .contains(&goal)
-        .then_some(owner)
+    matches(&alias_bounds(sigs, &[owner], goal.self_ty)).then_some(owner)
 }
 
 /// What trait object `ty`, `d`, implements: its trait, with its
@@ -2526,7 +2532,7 @@ impl Holds<'_> {
             self.overflowed = true;
             return false;
         }
-        if let Some(owner) = declared_alias_bound(sigs, goal)
+        if let Some(owner) = declared_alias_bound(sigs, goal, |bounds| bounds.contains(&goal))
             && self.nested(goal, owner, path)
         {
             return true;

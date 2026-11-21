@@ -56,6 +56,7 @@ pub fn selected_method_signature(
                 ty,
                 row,
                 block.header_selections.get(index + 1).map_or(&[], |s| s),
+                &block.outlives,
                 &mut selections,
             )?,
             None => SelectedSignatureType {
@@ -83,6 +84,7 @@ pub fn selected_method_signature(
                 ty,
                 row,
                 regions.selected_inputs.get(index).map_or(&[], |s| s),
+                &regions.outlives,
                 &mut selections,
             )
         })
@@ -97,6 +99,7 @@ pub fn selected_method_signature(
             .selected_inputs
             .get(function.params.len())
             .map_or(&[], |s| s),
+        &regions.outlives,
         &mut selections,
     )?;
     Some(SelectedMethodSignature {
@@ -115,6 +118,7 @@ fn select_occurrence(
     ty: Ty,
     regions: &[Region],
     inputs: &[ProjectionSelection],
+    assumptions: &[Outlives<Region>],
     selections: &mut Vec<(crate::AliasTy, Box<[Region]>)>,
 ) -> Option<SelectedSignatureType> {
     let inputs: Vec<_> = inputs
@@ -124,7 +128,15 @@ fn select_occurrence(
         .collect();
     let mut next = 0;
     let selected = select(
-        items, sigs, written, ty, regions, &inputs, &mut next, selections,
+        items,
+        sigs,
+        written,
+        ty,
+        regions,
+        &inputs,
+        assumptions,
+        &mut next,
+        selections,
     )?;
     (next == inputs.len()).then_some(selected)
 }
@@ -137,6 +149,7 @@ fn select(
     ty: Ty,
     regions: &[Region],
     inputs: &[ProjectionSelection],
+    assumptions: &[Outlives<Region>],
     next: &mut usize,
     selections: &mut Vec<(crate::AliasTy, Box<[Region]>)>,
 ) -> Option<SelectedSignatureType> {
@@ -166,6 +179,7 @@ fn select(
                     receiver,
                     &[],
                     inputs,
+                    assumptions,
                     next,
                     selections,
                 )?;
@@ -198,7 +212,7 @@ fn select(
                 let row = if slots(items, normalized) == 0 {
                     Vec::new()
                 } else {
-                    selected::projection(items, sigs, alias, &input_row)?
+                    selected::projection_in_signature(items, sigs, alias, &input_row, assumptions)?
                 };
                 if row.len() != slots(items, normalized) {
                     return None;
@@ -246,7 +260,17 @@ fn select(
         let count = slots(items, child);
         let row = regions.get(at..at + count)?;
         let selected = match written_children.get(index) {
-            Some(written) => select(items, sigs, written, child, row, inputs, next, selections)?,
+            Some(written) => select(
+                items,
+                sigs,
+                written,
+                child,
+                row,
+                inputs,
+                assumptions,
+                next,
+                selections,
+            )?,
             None => SelectedSignatureType {
                 ty: child,
                 regions: row.into(),
@@ -270,6 +294,33 @@ fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_method_checks_the_projection_impls_lifetime_bounds() {
+        let (_, root, hir) = flux_hir::lower_text(
+            "selected_projection_owner_bounds.rs",
+            include_str!("../../../../tests/run/selected_projection_owner_bounds.rs"),
+        );
+        let (mut sigs, diagnostics) = crate::signatures_checked(&hir.items, true, None);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let (imp, implementation) = hir
+            .items
+            .impls
+            .iter()
+            .find(|(id, data)| {
+                data.file == root
+                    && sigs
+                        .impl_traits
+                        .get(*id)
+                        .is_some_and(|t| t.name.as_str() == "Peek")
+            })
+            .unwrap();
+        let method = implementation.functions[0];
+        assert!(selected_method_signature(&hir.items, &sigs, imp, method).is_some());
+
+        sigs.regions.fns.get_mut(method).unwrap().outlives = Box::default();
+        assert!(selected_method_signature(&hir.items, &sigs, imp, method).is_none());
+    }
 
     #[test]
     fn selected_method_inputs_reject_corruption_and_unused_occurrences() {

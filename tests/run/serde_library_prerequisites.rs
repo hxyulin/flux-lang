@@ -59,6 +59,12 @@ fn main() {
         assert_eq!(iter.len(), 77);
         drop(iter);
         assert_eq!(list.iter().map(|n| n.value).sum::<u32>(), 3604);
+        let tail = list.back().unwrap() as *const _;
+        let mut suffix = list.split_off(77);
+        assert_eq!(list.len(), 77);
+        assert_eq!(suffix.len(), 2);
+        assert_eq!(suffix.back().unwrap() as *const _, tail);
+        list.append(&mut suffix);
         let mut owned = list.into_iter();
         assert_eq!(owned.next().unwrap().value, 101);
         assert_eq!(owned.next_back().unwrap().value, 301);
@@ -67,6 +73,13 @@ fn main() {
     assert_eq!(drops.get(), 81);
     let mut list: LinkedList<_> = [1, 2, 3].into_iter().collect();
     assert_eq!(list.iter().copied().collect::<Vec<_>>(), [1, 2, 3]);
+    let mut suffix = list.split_off(1);
+    assert_eq!(list.pop_front(), Some(1));
+    assert_eq!(suffix.iter().copied().collect::<Vec<_>>(), [2, 3]);
+    assert!(suffix.split_off(2).is_empty());
+    let whole = suffix.split_off(0);
+    assert!(suffix.is_empty() && suffix.split_off(0).is_empty());
+    assert_eq!(whole.into_iter().collect::<Vec<_>>(), [2, 3]);
     list.clear();
     list.push_back(9);
     assert_eq!(list.pop_back(), Some(9));

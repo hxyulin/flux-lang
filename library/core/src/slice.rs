@@ -3,7 +3,7 @@
 use crate::clone::Clone;
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::cmp::{Eq, Ord, PartialEq, PartialOrd};
-use crate::intrinsics::{read, subslice, subslice_mut, write};
+use crate::intrinsics::{subslice, subslice_mut};
 use crate::iter::{DoubleEndedIterator, ExactSizeIterator, IntoIterator, Iterator};
 use crate::marker::Copy;
 use crate::ops::{
@@ -429,12 +429,14 @@ impl<T> [T] {
 
     /// Swaps the elements at `a` and `b`; panics if either is out of
     /// bounds.
-    pub fn swap(&mut self, a: usize, b: usize) {
-        let x = unsafe { read(&self[a]) };
-        let y = unsafe { read(&self[b]) };
+    #[track_caller]
+    pub const fn swap(&mut self, a: usize, b: usize) {
+        let a = &raw mut self[a];
+        let b = &raw mut self[b];
+        // SAFETY: indexing checks both bounds. The raw borrows come from
+        // the exclusive slice, and ptr::swap permits overlap.
         unsafe {
-            write(&mut self[a], y);
-            write(&mut self[b], x);
+            crate::ptr::swap(a, b);
         }
     }
 

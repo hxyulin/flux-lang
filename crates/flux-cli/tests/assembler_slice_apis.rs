@@ -13,13 +13,22 @@ fn production_retain_mut_preserves_unvisited_values_on_unwind() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let source = std::fs::read_to_string(repo.join("library/alloc/src/vec.rs")).unwrap();
     let method_start = source.find("    pub fn retain_mut<").unwrap();
-    let method_end = method_start + source[method_start..].find("    /// Adds `value`").unwrap();
+    let method_end = method_start
+        + source[method_start..]
+            .find("    /// Lazily removes")
+            .unwrap();
+    let extract_start = source.find("    fn extract_if_range<").unwrap();
+    let extract_end = extract_start
+        + source[extract_start..]
+            .find("    /// Adds `value`")
+            .unwrap();
     let guard_start = source.find("struct RetainGuard<'a, T>").unwrap();
     let guard_end = guard_start
         + source[guard_start..]
             .find("/// Drops the values at `base`")
             .unwrap();
     let method = &source[method_start..method_end];
+    let extract = &source[extract_start..extract_end];
     let guard = &source[guard_start..guard_end];
     // Compile the production method and guard unchanged. The host wrapper
     // supplies only Vec storage so unwinding can exercise their cleanup.
@@ -30,8 +39,10 @@ struct Vec<T> {{ storage: std::mem::ManuallyDrop<std::vec::Vec<T>>, len: usize }
 impl<T> Vec<T> {{
     fn new(storage: std::vec::Vec<T>) -> Self {{ let len = storage.len(); Self {{ storage: std::mem::ManuallyDrop::new(storage), len }} }}
     fn as_mut_ptr(&mut self) -> *mut T {{ self.storage.as_mut_ptr() }}
+    fn as_ptr(&self) -> *const T {{ self.storage.as_ptr() }}
     fn as_slice(&self) -> &[T] {{ unsafe {{ std::slice::from_raw_parts(self.storage.as_ptr(), self.len) }} }}
 {method}
+{extract}
 }}
 impl<T> Drop for Vec<T> {{ fn drop(&mut self) {{ unsafe {{ self.storage.set_len(self.len); std::mem::ManuallyDrop::drop(&mut self.storage); }} }} }}
 {guard}
@@ -50,6 +61,15 @@ fn main() {{
     assert!(catch_unwind(AssertUnwindSafe(||v.retain_mut(|_|false))).is_err());
     assert_eq!(v.as_slice().iter().map(|x|x.n).collect::<std::vec::Vec<_>>(),[2,3,4]);
     assert_eq!(drops.get(),2); drop(v); assert_eq!(drops.get(),5);
+    drops.set(0);
+    let mut v=Vec::new((0..5).map(|n|Item{{n,drops:&drops,bomb:&bomb}}).collect());
+    assert!(catch_unwind(AssertUnwindSafe(||{{
+        let mut iter=v.extract_if_range(1,4,|x|{{if x.n==3{{panic!("predicate");}}x.n % 2==0}});
+        drop(iter.next());
+        let _=iter.next();
+    }})).is_err());
+    assert_eq!(v.as_slice().iter().map(|x|x.n).collect::<std::vec::Vec<_>>(),[0,1,3,4]);
+    assert_eq!(drops.get(),1); drop(v); assert_eq!(drops.get(),5);
 }}
 "#
     );

@@ -18,6 +18,16 @@ fn type_parameter_defaults_match_rustc() {
             true,
         ),
         (
+            "conditional_sized_default",
+            include_str!("../../../tests/run/conditional_type_default.rs"),
+            true,
+        ),
+        (
+            "invalid_selected_sized_default",
+            "struct S<T:?Sized,U=Vec<T>>(U,std::marker::PhantomData<T>);fn main(){let _:Option<S<str>>=None;}",
+            false,
+        ),
+        (
             "expected",
             "struct S<T=u16>(T);fn main(){let s:S<u32>=S(2);let _:u32=s.0;}",
             true,
@@ -76,6 +86,11 @@ fn type_parameter_defaults_match_rustc() {
             "trait_unchanged",
             "trait Tr<T:?Sized=Self>{fn same(&self,x:&T)->bool;}impl Tr for u8{fn same(&self,x:&u8)->bool{*self==*x}}fn main(){assert!(3u8.same(&3));}",
             true,
+        ),
+        (
+            "trait_expression_reference_default_is_fixed",
+            "trait P<T,U=&'static i32>{fn pass(self,x:U);}impl<'a>P<(),&'a i32>for u32{fn pass(self,_:&'a i32){}}fn main(){let local=1;<u32 as P<()>>::pass(1,&local);}",
+            false,
         ),
         (
             "const_literal",

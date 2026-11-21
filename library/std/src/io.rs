@@ -4,6 +4,9 @@ use crate::alloc_crate::vec::Vec;
 
 mod buffered;
 pub use buffered::{BufRead, BufReader, BufWriter, Bytes, IntoInnerError, LineWriter, Lines, Split, Take, WriterPanicked};
+mod pipe;
+pub use pipe::{pipe, PipeReader, PipeWriter};
+pub(crate) use pipe::pipe_files;
 mod stdio;
 pub use stdio::{stdin, stdout, stderr, Stdin, StdinLock, Stdout, StdoutLock, Stderr, StderrLock, IsTerminal};
 

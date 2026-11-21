@@ -299,9 +299,11 @@ impl<T> crate::fmt::Debug for MaybeUninit<T> {
 }
 
 /// Swaps the values `x` and `y` refer to.
-pub fn swap<T>(x: &mut T, y: &mut T) {
-    // Each value is read out once and written back once, to the other
-    // place, so none is dropped or duplicated.
+pub const fn swap<T>(x: &mut T, y: &mut T) {
+    let x = &raw mut *x;
+    let y = &raw mut *y;
+    // SAFETY: these disjoint mutable references give access to two initialized
+    // values, each moved exactly once into the other's storage.
     unsafe {
         let a = crate::intrinsics::read(x);
         let b = crate::intrinsics::read(y);

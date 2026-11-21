@@ -293,23 +293,46 @@ pub mod unix {
         }
     }
     pub mod net {
-        pub use crate::net::unix::UnixStream;
+        pub use crate::net::unix::{UnixDatagram, UnixListener, UnixStream};
 
         #[derive(Clone)]
-        pub struct SocketAddr{path:Option<crate::path::PathBuf>}
+        pub struct SocketAddr {
+            path: Option<crate::path::PathBuf>,
+            #[cfg(target_os = "linux")]
+            abstract_name: Option<crate::ffi::OsString>,
+        }
         impl SocketAddr{
             pub fn from_pathname<P:AsRef<crate::path::Path>>(path:P)->crate::io::Result<Self>{
                 let path=path.as_ref();let bytes=path.as_os_str().as_encoded_bytes();
                 #[cfg(target_os="macos")]let capacity=104;
                 #[cfg(not(target_os="macos"))]let capacity=108;
                 if bytes.contains(&0)||bytes.len()>=capacity{return Err(crate::io::Error::new(crate::io::ErrorKind::InvalidInput,"invalid Unix socket path"));}
-                Ok(Self{path:if bytes.is_empty(){None}else{Some(path.to_path_buf())}})
+                Ok(Self::from_native(bytes, false))
+            }
+            pub(crate) fn from_native(bytes: &[u8], abstract_address: bool) -> Self {
+                use super::ffi::OsStrExt;
+                let path = if bytes.is_empty() || abstract_address {
+                    None
+                } else {
+                    Some(crate::path::PathBuf::from(crate::ffi::OsStr::from_bytes(bytes)))
+                };
+                Self {
+                    path,
+                    #[cfg(target_os = "linux")]
+                    abstract_name: abstract_address.then(|| crate::ffi::OsStr::from_bytes(bytes).to_os_string()),
+                }
             }
             pub fn as_pathname(&self)->Option<&crate::path::Path>{self.path.as_ref().map(|path|path.as_path())}
-            pub fn is_unnamed(&self)->bool{self.path.is_none()}
+            pub fn is_unnamed(&self)->bool {
+                #[cfg(target_os = "linux")]
+                if self.abstract_name.is_some() { return false; }
+                self.path.is_none()
+            }
         }
         impl core::fmt::Debug for SocketAddr{
             fn fmt(&self,f:&mut core::fmt::Formatter<'_>)->core::fmt::Result{
+                #[cfg(target_os = "linux")]
+                if let Some(name) = &self.abstract_name { return write!(f, "{:?} (abstract)", name); }
                 match self.as_pathname(){Some(path)=>write!(f,"{:?} (pathname)",path),None=>f.write_str("(unnamed)")}
             }
         }

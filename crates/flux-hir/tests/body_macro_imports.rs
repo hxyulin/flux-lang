@@ -88,6 +88,72 @@ fn later_block_items_still_shadow_dependency_macro_paths() {
 }
 
 #[test]
+fn deferred_item_definitions_are_visible_only_after_the_call() {
+    let (_, _, hir) = flux_hir::lower_text(
+        "deferred.rs",
+        r#"
+        mod consumer {
+            fn before() { generated!(); }
+            crate::later::define!();
+            fn after() { generated!(); }
+        }
+        mod sibling {
+            fn outside() { generated!(); }
+        }
+        mod later {
+            macro_rules! define {
+                () => { macro_rules! generated { () => { () }; } };
+            }
+            pub(crate) use define;
+        }
+        "#,
+    );
+    let missing: Vec<_> = hir.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(missing, ["cannot find macro `generated` in this scope"; 2]);
+}
+
+#[test]
+fn failed_item_expansion_does_not_hide_following_imports() {
+    let (_, _, hir) = flux_hir::lower_text(
+        "deferred.rs",
+        r#"
+        macro_rules! kept { () => { () }; }
+        mod consumer {
+            crate::missing!();
+            pub(crate) use kept as imported;
+            fn after() { kept!(); }
+        }
+        fn main() { consumer::imported!(); }
+        "#,
+    );
+    let errors: Vec<_> = hir.diagnostics.iter().map(|d| d.message.as_str()).collect();
+    assert_eq!(errors, ["cannot find macro `missing` in this scope"]);
+}
+
+#[test]
+fn selective_extern_macros_import_only_the_requested_names() {
+    let dependency = r#"
+        #[macro_export] macro_rules! first { () => { 41 }; }
+        #[macro_export] macro_rules! second { () => { 42 }; }
+        pub use first as reexported;
+    "#;
+    let errors = dependency_errors(
+        dependency,
+        r#"
+        #[macro_use(first, reexported,)] extern crate renamed as _;
+        fn main() { let _ = (first!(), reexported!(), second!()); }
+        "#,
+    );
+    assert_eq!(errors, ["cannot find macro `second` in this scope"]);
+
+    let errors = dependency_errors(
+        dependency,
+        "#[macro_use(missing)] extern crate renamed; fn main() {}",
+    );
+    assert_eq!(errors, ["imported macro `missing` not found"]);
+}
+
+#[test]
 fn changed_macro_resolution_never_reuses_a_different_definition() {
     // Rustc prints "replacement". Sequential collection initially sees the
     // prelude println; reusing that expansion would silently print "original".

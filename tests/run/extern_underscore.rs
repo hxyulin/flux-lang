@@ -1,5 +1,5 @@
 #![no_std]
-#[macro_use]
+#[macro_use(println,)]
 extern crate std as _;
 extern crate alloc;
 extern crate alloc as _;

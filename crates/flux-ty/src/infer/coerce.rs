@@ -569,8 +569,15 @@ impl Ctx<'_> {
             && !d
                 .callable_signature()
                 .and_then(|signature| signature.regions)
-                .and_then(|regions| regions.inputs_output.last())
-                .is_some_and(|row| row.iter().all(|region| *region == crate::FnRegion::Static))
+                .is_some_and(|regions| {
+                    regions.inputs_output.last().is_some_and(|row| {
+                        row.iter().all(|region| *region == crate::FnRegion::Static)
+                            || (regions.bound == 0
+                                && d.args
+                                    .iter()
+                                    .all(|&ty| crate::regions::slots(self.items, ty) == 0))
+                    })
+                })
         {
             self.error(
                 range,

@@ -89,6 +89,8 @@ record!(Const {
     is_static,
     extern_symbol,
     export_symbol,
+    link_section,
+    used,
     specialization,
     anon,
     macro_scope
@@ -195,6 +197,7 @@ record!(Function {
     target_features,
     is_extern,
     link_name,
+    link_section,
     abi,
     is_const,
     is_async,

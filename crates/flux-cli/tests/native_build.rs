@@ -138,6 +138,56 @@ fn main(){
 }
 
 #[test]
+fn used_initializers_run_across_edition_and_crate_boundaries() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nhelper={path='helper'}\n",
+    );
+    f.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2021'\n",
+    );
+    f.write("Cargo.lock", "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['helper']\n[[package]]\nname='helper'\nversion='0.1.0'\n");
+    f.write(
+        "helper/src/lib.rs",
+        r#"
+use std::sync::atomic::{AtomicU32, Ordering};
+
+#[macro_export]
+macro_rules! register {
+    ($callback:path) => {
+        const _: () = {
+            #[used]
+            #[cfg_attr(target_vendor = "apple", link_section = "__DATA,__mod_init_func,mod_init_funcs")]
+            #[cfg_attr(target_os = "linux", link_section = ".init_array")]
+            static REGISTRATION: unsafe extern "C" fn() = $callback;
+        };
+    };
+}
+
+static CALLS: AtomicU32 = AtomicU32::new(0);
+pub fn increment() { CALLS.fetch_add(1, Ordering::Relaxed); }
+pub fn calls() -> u32 { CALLS.load(Ordering::Relaxed) }
+unsafe extern "C" fn register_library() { increment(); }
+register!(register_library);
+"#,
+    );
+    f.write(
+        "src/main.rs",
+        r#"
+unsafe extern "C" fn register_application() { helper::increment(); }
+helper::register!(register_application);
+fn main() { println!("{}", helper::calls()); }
+"#,
+    );
+    f.success(&[], "unused");
+    f.run(b"2\n");
+    assert!(f.success(&[], "unused").contains("Fresh helper"));
+    f.run(b"2\n");
+}
+
+#[test]
 fn concurrent_crates_share_builtins_and_keep_type_identities_separate() {
     let f = Fixture::new();
     f.write(

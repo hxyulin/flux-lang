@@ -423,6 +423,10 @@ pub struct Const {
     pub extern_symbol: Option<Symbol>,
     /// The native name of a defined static marked `no_mangle`.
     pub export_symbol: Option<Symbol>,
+    /// The section explicitly requested for the static's storage.
+    pub link_section: Option<Symbol>,
+    /// A compiler root even if no Rust expression refers to the static.
+    pub used: bool,
     /// `#[rustc_specialization]` in `core`: an associated constant
     /// standing in for what rustc's `core` learns by specialization
     /// (whether an iterator is `TrustedLen`, ...), which as there does
@@ -865,6 +869,8 @@ pub struct Function {
     pub is_extern: bool,
     /// An explicit native symbol, from `link_name` or `no_mangle`.
     pub link_name: Option<Symbol>,
+    /// The section explicitly requested for the function's code.
+    pub link_section: Option<Symbol>,
     /// The ABI written on the function, or its `extern` block's.
     pub abi: Abi,
     /// `const fn`: callable in constants.
@@ -3541,7 +3547,11 @@ pub(crate) fn expand_types(
     ) {
         // Collection reports malformed attributes. This preliminary walk
         // only decides which subtrees may contain macros to expand.
-        if !item_enabled(node, &mut Vec::new()) {
+        // Bodies and inline modules can introduce imports and textual macros.
+        // Their consumers expand types after entering those scopes.
+        if matches!(node.kind(), SyntaxKind::BLOCK_EXPR | SyntaxKind::MODULE)
+            || !item_enabled(node, &mut Vec::new())
+        {
             return;
         }
         if node.kind() == SyntaxKind::MACRO_TYPE {

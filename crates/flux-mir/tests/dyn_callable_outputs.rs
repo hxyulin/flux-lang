@@ -101,6 +101,11 @@ fn callable_object_outputs_match_rustc() {
             false,
         ),
         (
+            "boxed_generic_output_requires_region_equality",
+            "fn shorten<'a,'b:'a>(f:impl Fn()->&'b str+'a)->Box<dyn Fn()->&'a str+'a>{Box::new(f)}",
+            false,
+        ),
+        (
             "generic_pointer_output",
             "fn forward<'a,F:Fn(&str)->&str>(f:F,x:&'a str)->&'a str{f(x)}fn apply<'a>(f:fn(&str)->&str,x:&'a str)->&'a str{forward(f,x)}",
             true,

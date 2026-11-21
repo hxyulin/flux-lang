@@ -151,6 +151,11 @@ record!(FamilyRegions {
     projections,
     selections
 });
+record!(ProjectionOutlives {
+    ty,
+    regions,
+    target
+});
 record!(ImplRegions {
     families,
     names,
@@ -162,6 +167,7 @@ record!(ImplRegions {
     type_selections,
     outlives,
     bounds,
+    projection_bounds,
     bound_selfs,
     bound_traits,
     projections
@@ -352,6 +358,7 @@ impl Encode for FnDefTy {
         self.function.encode(e)?;
         self.name.encode(e)?;
         self.args.encode(e)?;
+        self.owner_lifetimes.encode(e)?;
         self.sig.encode(e)?;
         Ok(())
     }
@@ -362,6 +369,7 @@ impl Decode for FnDefTy {
             function: Decode::decode(d)?,
             name: Decode::decode(d)?,
             args: Ty::list(&Vec::<Ty>::decode(d)?),
+            owner_lifetimes: Decode::decode(d)?,
             sig: Decode::decode(d)?,
         })
     }
@@ -1285,6 +1293,7 @@ mod type_form_tests {
                 function,
                 name,
                 args,
+                owner_lifetimes: 1,
                 sig,
             })),
             Ty::new(TyKind::FnPtr(sig)),

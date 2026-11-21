@@ -10,6 +10,60 @@ struct FamilyInputs {
 }
 
 impl Cx<'_> {
+    pub(super) fn assume_projection_bounds(
+        &mut self,
+        bounds: &[ProjectionOutlives],
+        map: impl Fn(Region) -> Option<Var>,
+    ) {
+        for bound in bounds {
+            if let Some(target) = map(bound.target)
+                && let Some(row) = bound.regions.iter().copied().map(&map).collect()
+            {
+                self.projection_outlives.push((bound.ty, row, target));
+            }
+        }
+    }
+
+    pub(super) fn prove_projection_bounds(
+        &mut self,
+        bounds: &[ProjectionOutlives],
+        lifetimes: &[Var],
+        args: &[Ty],
+        type_vars: &[Vec<Var>],
+        env: &[ImplRegionGoal],
+        range: TextRange,
+    ) -> bool {
+        let map = |region| match region {
+            Region::Static => Some(STATIC),
+            Region::Param(index) => lifetimes.get(index as usize).copied(),
+            Region::Erased | Region::Late(_) => None,
+        };
+        for bound in bounds {
+            let Some(target) = map(bound.target) else {
+                return false;
+            };
+            let Some(row) =
+                self.instantiate_sig(bound.ty, &bound.regions, &mut { map }, args, type_vars)
+            else {
+                return false;
+            };
+            let instance = self.normalize(bound.ty.subst(args));
+            if row.len() != self.slots(instance) as usize {
+                return false;
+            }
+            if let TyKind::Alias(alias) = instance.kind()
+                && flux_ty::regions::has_projection_inputs(self.items, alias)
+            {
+                if !self.constrain_family_outlives(instance, &row, target, env, range) {
+                    return false;
+                }
+            } else {
+                self.stored_type_outlives(instance, &row, target, self.proving, range);
+            }
+        }
+        true
+    }
+
     /// An abstract output inherits bounds from its independently proven owner.
     /// Its row captures the owning trait occurrence, not the output's fields.
     pub(super) fn associated_output_bounds(
@@ -997,6 +1051,7 @@ impl Cx<'_> {
                 .get(imp)
                 .is_none_or(|p| p.is_empty())
             && impl_regions.bounds.is_empty()
+            && impl_regions.projection_bounds.is_empty()
             && impl_regions.names.is_empty()
             && impl_regions.self_ty.is_empty()
             && impl_regions.trait_lifetimes.is_empty()

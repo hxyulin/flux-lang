@@ -16,6 +16,7 @@
 mod aarch64_asm;
 mod error;
 pub use error::{Error, Stage};
+mod lifecycle;
 mod linux;
 mod lower;
 mod native;
@@ -290,6 +291,7 @@ fn compile_object_inner(
     if panic_strategy == flux_mir::PanicStrategy::Unwind {
         emission.unwind_tables = keel_codegen::UnwindTables::All;
     }
+    let lifecycle = lifecycle::Sections::prepare(module, target)?;
     let result = keel_codegen::Request::new(target, pipeline)
         .emission(emission)
         .program_chunks(module, &mut |mut chunk| {
@@ -309,6 +311,7 @@ fn compile_object_inner(
                         }
                     }
                 }
+                lifecycle.rewrite(&mut chunk);
                 assembler.push(chunk);
                 emitted = true;
                 if let Some(start) = start {
@@ -316,6 +319,7 @@ fn compile_object_inner(
                 }
             }
         });
+    lifecycle.restore(module);
     if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
         // Encoding happens inside the codegen callback. Keep the two scopes exclusive.
         timings.codegen = Some(start.elapsed().saturating_sub(encoding));

@@ -171,30 +171,13 @@ fn lookup(host: &str, port: u16) -> io::Result<Vec<SocketAddr>> {
     while !current.is_null() {
         // SAFETY: the list and each address remain owned by `owner` until return.
         let info = unsafe { &*current };
-        #[cfg(target_os = "macos")]
-        let ipv6 = 30;
-        #[cfg(not(target_os = "macos"))]
-        let ipv6 = 10;
-        if !info.addr.is_null() && info.family == 2 && info.addrlen >= 16 {
-            // SAFETY: the IPv4 sockaddr has at least 16 bytes; its address is bytes 4..8.
-            let bytes = unsafe { core::slice::from_raw_parts(info.addr, 16) };
-            addresses.push(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(bytes[4], bytes[5], bytes[6], bytes[7])),
-                port,
-            ));
-        } else if !info.addr.is_null() && info.family == ipv6 && info.addrlen >= 28 {
-            // SAFETY: the IPv6 sockaddr has at least 28 bytes with the platform's standard layout.
-            let bytes = unsafe { core::slice::from_raw_parts(info.addr, 28) };
-            let mut octets = [0u8; 16];
-            octets.copy_from_slice(&bytes[8..24]);
-            let flowinfo = u32::from_ne_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-            let scope = u32::from_ne_bytes([bytes[24], bytes[25], bytes[26], bytes[27]]);
-            addresses.push(SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::from(octets),
-                port,
-                flowinfo,
-                scope,
-            )));
+        if !info.addr.is_null() {
+            // SAFETY: getaddrinfo provides an initialized address with this length.
+            let bytes = unsafe { core::slice::from_raw_parts(info.addr, info.addrlen as usize) };
+            if let Ok(mut address) = super::ip::decode_address(bytes) {
+                address.set_port(port);
+                addresses.push(address);
+            }
         }
         current = info.next;
     }

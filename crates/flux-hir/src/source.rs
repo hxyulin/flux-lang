@@ -125,13 +125,25 @@ const STD_FILES: &[(&str, &str)] = &[
         include_str!("../../../library/std/src/io/buffered.rs"),
     ),
     (
+        "io/pipe.rs",
+        include_str!("../../../library/std/src/io/pipe.rs"),
+    ),
+    (
         "io/stdio.rs",
         include_str!("../../../library/std/src/io/stdio.rs"),
     ),
     ("net.rs", include_str!("../../../library/std/src/net.rs")),
     (
+        "net/ip.rs",
+        include_str!("../../../library/std/src/net/ip.rs"),
+    ),
+    (
         "net/lookup.rs",
         include_str!("../../../library/std/src/net/lookup.rs"),
+    ),
+    (
+        "net/native.rs",
+        include_str!("../../../library/std/src/net/native.rs"),
     ),
     (
         "net/unix.rs",

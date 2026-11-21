@@ -179,6 +179,14 @@ pub(crate) fn check_impl_supertraits_from(
         .skip(first as usize)
         .filter_map(|(imp, data)| {
             data.trait_?;
+            if !regions::impl_projection_bounds_well_formed(items, sigs, imp) {
+                let mut d = Diagnostic::new(
+                    data.self_range,
+                    "associated output does not fulfill the required lifetime in the impl header",
+                );
+                d.file = data.file;
+                return Some(d);
+            }
             let message = match regions::impl_supertraits_match(items, sigs, imp) {
                 Some(true) => return None,
                 Some(false) => "supertrait lifetime requirements are not satisfied by the impl header",

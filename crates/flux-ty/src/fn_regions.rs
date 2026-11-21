@@ -1,6 +1,6 @@
 //! Canonical region recipes for bare function-pointer types.
 use crate::{FnPtrRegions, FnRegion, Ty, TyKind};
-use flux_hir::{ItemTree, LifetimeRef, ModuleId, TypeRef};
+use flux_hir::{ImplId, ItemTree, LifetimeRef, ModuleId, Path, TypeRef};
 use flux_intern::Symbol;
 use flux_syntax::TextRange;
 
@@ -10,9 +10,28 @@ pub(crate) struct Description {
     pub captures: Vec<(TypeRef, Ty)>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct Scope {
+    pub module: ModuleId,
+    pub self_impl: Option<ImplId>,
+}
+
+pub(crate) fn projection_impl<'a>(
+    items: &'a ItemTree,
+    self_impl: Option<ImplId>,
+    path: &Path,
+    alias: crate::AliasTy,
+) -> Option<&'a flux_hir::Impl> {
+    if path.qself.is_some() || path.segments.first() != Some(&flux_intern::kw::SelfUpper) {
+        return None;
+    }
+    let imp = &items.impls[self_impl?];
+    (imp.trait_ == Some(alias.trait_)).then_some(imp)
+}
+
 struct Builder<'a> {
     items: &'a ItemTree,
-    module: ModuleId,
+    scope: Scope,
     names: Vec<(Symbol, Option<u32>)>,
     bound: u32,
     free: Vec<LifetimeRef>,
@@ -22,12 +41,13 @@ struct Builder<'a> {
     output: bool,
     enclosing: Option<FnRegion>,
     elision_only: bool,
+    in_impl_header: bool,
     errors: &'a mut Vec<(TextRange, String)>,
 }
 
 pub(crate) fn describe(
     items: &ItemTree,
-    module: ModuleId,
+    scope: Scope,
     names: &[Symbol],
     params: &[TypeRef],
     ret: &TypeRef,
@@ -44,7 +64,7 @@ pub(crate) fn describe(
     }
     let mut cx = Builder {
         items,
-        module,
+        scope,
         names: names.iter().map(|&n| (n, None)).collect(),
         bound: 0,
         free: Vec::new(),
@@ -54,6 +74,7 @@ pub(crate) fn describe(
         output: false,
         enclosing: None,
         elision_only: false,
+        in_impl_header: false,
         errors,
     };
     let mut rows = Vec::new();
@@ -143,6 +164,13 @@ impl Builder<'_> {
                 }
             };
             return FnRegion::Free(index as u32);
+        }
+        if self.in_impl_header {
+            self.errors.push((
+                at,
+                "elided impl header lifetimes in function pointers are not supported yet".into(),
+            ));
+            return FnRegion::Static;
         }
         if self.output {
             if let [region] = &*self.inputs {
@@ -250,12 +278,17 @@ impl Builder<'_> {
         path: &flux_hir::Path,
         alias: crate::AliasTy,
     ) -> Option<Vec<FnRegion>> {
-        let qself = path.qself.as_ref()?;
-        let owner = qself.trait_.as_ref()?;
+        let written_impl = projection_impl(self.items, self.scope.self_impl, path, alias);
+        let (owner, self_ty, module) = if let Some(qself) = &path.qself {
+            (qself.trait_.as_ref()?, &qself.ty, self.scope.module)
+        } else {
+            let imp = written_impl?;
+            (&imp.trait_ref.as_ref()?.path, &imp.self_ty, imp.module)
+        };
         if self
             .items
             .resolve_trait(
-                self.module,
+                module,
                 &flux_hir::Bound {
                     path: owner.clone(),
                     bound_lifetimes: Box::default(),
@@ -273,10 +306,15 @@ impl Builder<'_> {
             return None;
         }
         let mut inputs = Vec::new();
+        let old_header = self.in_impl_header;
+        let old_module = self.scope.module;
+        self.in_impl_header |= written_impl.is_some();
+        self.scope.module = module;
         for &lifetime in lifetimes {
             inputs.push(self.lifetime(Some(lifetime), lifetime.range));
         }
-        inputs.extend(self.walk(&qself.ty, alias.args[0]));
+        inputs.extend(self.walk(self_ty, alias.args[0]));
+        let mut represented = true;
         for (index, &ty) in alias.args.iter().skip(1).enumerate() {
             if let Some(written) = owner_args.and_then(|a| a.types.get(index)) {
                 inputs.extend(self.walk(written, ty));
@@ -284,8 +322,14 @@ impl Builder<'_> {
                 || ty.has_aliases()
                 || crate::regions::slots(self.items, ty) != 0
             {
-                return None;
+                represented = false;
+                break;
             }
+        }
+        self.in_impl_header = old_header;
+        self.scope.module = old_module;
+        if !represented {
+            return None;
         }
         let family_args = path.args(path.segments.len().saturating_sub(1));
         let lifetimes = family_args.map_or(&[][..], |a| &a.lifetimes);
@@ -340,7 +384,7 @@ impl Builder<'_> {
         let mut errors = Vec::new();
         let mut view = Builder {
             items: self.items,
-            module: self.module,
+            scope: self.scope,
             names: self.names.clone(),
             bound: self.bound,
             free: self.free.clone(),
@@ -350,6 +394,7 @@ impl Builder<'_> {
             output: self.output,
             enclosing: self.enclosing,
             elision_only: true,
+            in_impl_header: self.in_impl_header,
             errors: &mut errors,
         };
         view.walk(written, ty)
@@ -362,7 +407,7 @@ impl Builder<'_> {
         if let TypeRef::Path(path) = written
             && let Ok(flux_hir::def_map::Resolved::Def(flux_hir::def_map::Def::TypeAlias(id))) =
                 self.items
-                    .resolve(self.module, path, flux_hir::def_map::Ns::Types)
+                    .resolve(self.scope.module, path, flux_hir::def_map::Ns::Types)
         {
             if crate::regions::slots(self.items, ty) == 0 {
                 return self.capture(written, ty);
@@ -418,7 +463,7 @@ impl Builder<'_> {
                 // Match the ordinary object region layout: the object bound,
                 // principal arguments, then equalities in declaring-trait order.
                 if let Some(bound) = d.bounds.iter().find(|bound| {
-                    self.items.resolve_trait(self.module, bound).0 == Some(dynamic.trait_)
+                    self.items.resolve_trait(self.scope.module, bound).0 == Some(dynamic.trait_)
                 }) {
                     let args = bound.path.args(bound.path.segments.len().saturating_sub(1));
                     if dynamic.quantified.is_none() {

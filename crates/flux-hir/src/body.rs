@@ -54,6 +54,9 @@ pub struct BodySourceMap {
     pub pat_editions: ArenaMap<Pat, flux_syntax::Edition>,
     pub exprs: ArenaMap<Expr, TextRange>,
     pub pats: ArenaMap<Pat, TextRange>,
+    /// Destructuring assignment uses place syntax and never auto-dereferences
+    /// the corresponding right-hand value as a match pattern would.
+    pub assignment_patterns: ArenaMap<Pat, ()>,
     pub types: ArenaMap<TypeRef, TextRange>,
     /// The field names of a `Field` expression (one) or a `Record`
     /// expression (one per field, in order), and the method name of a

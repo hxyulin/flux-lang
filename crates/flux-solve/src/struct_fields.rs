@@ -27,15 +27,43 @@ pub fn fields(sigs: &Signatures, ty: Ty) -> Option<&'static [Ty]> {
 pub fn variant_fields(sigs: &Signatures, ty: Ty, variant: u32) -> Option<&'static [Ty]> {
     match ty.kind() {
         TyKind::Adt(adt, args) if sigs.is_enum(adt.strukt) => {
-            let starts = &sigs.variant_starts[adt.strukt];
-            let (start, end) = (
-                *starts.get(variant as usize)? as usize,
-                *starts.get(variant as usize + 1)? as usize,
-            );
-            Some(&adt_field_types(sigs, ty, adt.strukt, args)[start..end])
+            let range = variant_range(sigs, adt.strukt, variant)?;
+            Some(&adt_field_types(sigs, ty, adt.strukt, args)[range])
         }
         _ => fields(sigs, ty),
     }
+}
+
+fn variant_range(
+    sigs: &Signatures,
+    strukt: StructId,
+    variant: u32,
+) -> Option<std::ops::Range<usize>> {
+    let starts = &sigs.variant_starts[strukt];
+    let start = *starts.get(variant as usize)? as usize;
+    let end = *starts.get(variant as usize + 1)? as usize;
+    Some(start..end)
+}
+
+/// Substitute a variant's field types for a caller that will normalize
+/// associated projections with its own bounds.
+pub fn substituted_variant_fields(
+    sigs: &Signatures,
+    ty: Ty,
+    variant: u32,
+) -> Option<&'static [Ty]> {
+    let TyKind::Adt(adt, args) = ty.kind() else {
+        return fields(sigs, ty);
+    };
+    let mut fields = sigs.structs[adt.strukt];
+    if sigs.is_enum(adt.strukt) {
+        fields = &fields[variant_range(sigs, adt.strukt, variant)?];
+    }
+    Some(if args.is_empty() {
+        fields
+    } else {
+        ty::map_list(fields, |field| field.subst(args))
+    })
 }
 
 /// The types of everything a value of `ty` may hold directly: a

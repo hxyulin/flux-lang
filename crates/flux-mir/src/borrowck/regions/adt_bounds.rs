@@ -91,10 +91,23 @@ fn type_has_adt_contract(items: &ItemTree, sigs: &Signatures, ty: Ty) -> bool {
     false
 }
 
+#[derive(Clone, Copy)]
+enum AdtUseContext<'a> {
+    Body(TextRange),
+    Declaration(&'a [ImplRegionGoal]),
+}
+
 impl Cx<'_> {
     /// Walk type arguments, never nominal field definitions. Fields are checked
     /// once at their declaration, so recursive nominal graphs stay bounded.
-    fn adt_uses(&mut self, ty: Ty, vars: &[Var], out: &mut Vec<AdtUse>, depth: u32) -> bool {
+    fn adt_uses(
+        &mut self,
+        ty: Ty,
+        vars: &[Var],
+        out: &mut Vec<AdtUse>,
+        context: AdtUseContext<'_>,
+        depth: u32,
+    ) -> bool {
         if depth > 64 {
             return false;
         }
@@ -114,7 +127,7 @@ impl Cx<'_> {
                     let Some(row) = vars.get(next..next + count) else {
                         return false;
                     };
-                    if !self.adt_uses(arg, row, out, depth + 1) {
+                    if !self.adt_uses(arg, row, out, context, depth + 1) {
                         return false;
                     }
                     types.push(row.to_vec());
@@ -132,9 +145,11 @@ impl Cx<'_> {
                     });
                 }
             }
-            TyKind::Ref(_, inner) => return self.adt_uses(inner, &vars[1..], out, depth + 1),
+            TyKind::Ref(_, inner) => {
+                return self.adt_uses(inner, &vars[1..], out, context, depth + 1);
+            }
             TyKind::RawPtr(_, inner) | TyKind::Array(inner, _) | TyKind::Slice(inner) => {
-                return self.adt_uses(inner, vars, out, depth + 1);
+                return self.adt_uses(inner, vars, out, context, depth + 1);
             }
             TyKind::Tuple(elements) => {
                 let mut next = 0;
@@ -143,7 +158,7 @@ impl Cx<'_> {
                     let Some(row) = vars.get(next..next + n) else {
                         return false;
                     };
-                    if !self.adt_uses(elem, row, out, depth + 1) {
+                    if !self.adt_uses(elem, row, out, context, depth + 1) {
                         return false;
                     }
                     next += n;
@@ -154,6 +169,7 @@ impl Cx<'_> {
                     flux_ty::ClosureArgs::split(args).upvars,
                     vars,
                     out,
+                    context,
                     depth + 1,
                 );
             }
@@ -164,7 +180,7 @@ impl Cx<'_> {
                     let Some(row) = vars.get(next..next + n) else {
                         return false;
                     };
-                    if !self.adt_uses(arg, row, out, depth + 1) {
+                    if !self.adt_uses(arg, row, out, context, depth + 1) {
                         return false;
                     }
                     next += n;
@@ -177,7 +193,7 @@ impl Cx<'_> {
                     let Some(row) = vars.get(next..next + n) else {
                         return false;
                     };
-                    if !self.adt_uses(arg, row, out, depth + 1) {
+                    if !self.adt_uses(arg, row, out, context, depth + 1) {
                         return false;
                     }
                     next += n;
@@ -188,21 +204,63 @@ impl Cx<'_> {
                     let Some(row) = vars.get(next..next + n) else {
                         return false;
                     };
-                    if !self.adt_uses(arg, row, out, depth + 1) {
+                    if !self.adt_uses(arg, row, out, context, depth + 1) {
                         return false;
                     }
                     next += n;
                 }
             }
-            // The value row represents free captures, not universally bound
-            // lifetimes in the pointer's argument types.
             TyKind::FnPtr(signature)
                 if signature
                     .inputs_output
                     .iter()
                     .any(|&ty| self.type_has_adt_contract(ty)) =>
             {
-                return false;
+                let before = self.vars;
+                let bound_count = signature.regions.map_or(0, |r| r.bound);
+                let bound = match context {
+                    AdtUseContext::Body(_) => self.fresh_list(bound_count),
+                    AdtUseContext::Declaration(_) => (0..bound_count)
+                        .map(|i| self.new_universal(format!("'adt_pointer{i}")))
+                        .collect(),
+                };
+                let rows = match signature.regions {
+                    None if signature
+                        .inputs_output
+                        .iter()
+                        .all(|&ty| self.slots(ty) == 0) =>
+                    {
+                        Some(vec![Vec::new(); signature.inputs_output.len()])
+                    }
+                    Some(recipe) if recipe.projections.is_empty() => {
+                        flux_ty::regions::instantiate_fn_pointer(
+                            self.items, signature, vars, &bound, STATIC,
+                        )
+                    }
+                    Some(_) => match context {
+                        AdtUseContext::Body(_) => self.instantiate_pointer(signature, vars, &bound),
+                        AdtUseContext::Declaration(env) => {
+                            self.close_known();
+                            self.instantiate_pointer_with_env(signature, vars, &bound, env)
+                        }
+                    },
+                    None => None,
+                };
+                let Some(rows) = rows else {
+                    return false;
+                };
+                if let AdtUseContext::Body(range) = context
+                    && !bound.is_empty()
+                {
+                    self.record_pointer_check(before, bound, Vec::new(), range);
+                }
+                for (&ty, row) in signature.inputs_output.iter().zip(rows) {
+                    if self.type_has_adt_contract(ty)
+                        && !self.adt_uses(ty, &row, out, context, depth + 1)
+                    {
+                        return false;
+                    }
+                }
             }
             _ => {}
         }
@@ -218,7 +276,7 @@ impl Cx<'_> {
             return;
         }
         let mut uses = Vec::new();
-        if !self.adt_uses(ty, vars, &mut uses, 0) {
+        if !self.adt_uses(ty, vars, &mut uses, AdtUseContext::Body(range), 0) {
             self.errors.push(Diagnostic::new(
                 range,
                 "ADT trait lifetime requirements are not represented at this use",
@@ -322,7 +380,7 @@ impl Cx<'_> {
         // of projections that normalization has already replaced.
         let ty = self.normalize(ty);
         let mut uses = Vec::new();
-        if !self.adt_uses(ty, vars, &mut uses, 0) {
+        if !self.adt_uses(ty, vars, &mut uses, AdtUseContext::Declaration(env), 0) {
             return None;
         }
         for use_ in uses {

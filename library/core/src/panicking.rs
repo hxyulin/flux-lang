@@ -64,6 +64,15 @@ pub const fn panic_fmt(args: Arguments<'_>) -> ! {
     unsafe { __flux_panic_fmt(&args, Location::caller()) }
 }
 
+/// Reports invalid floating-point clamp bounds. Constant evaluation uses the
+/// static message while the runtime also formats the supplied bounds.
+#[lang = "panic_float_clamp"]
+#[track_caller]
+#[rustc_do_not_const_check]
+pub(crate) const fn panic_float_clamp<T: Debug>(min: T, max: T) -> ! {
+    panic!("min > max, or either was NaN. min = {min:?}, max = {max:?}")
+}
+
 /// `Option::expect` and `Result::expect` with message `msg`.
 #[track_caller]
 #[doc(hidden)]

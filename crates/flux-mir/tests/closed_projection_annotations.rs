@@ -138,6 +138,18 @@ fn independent_projection_outlives_bounds_follow_the_call() {
 }
 
 #[test]
+fn trait_default_projection_outlives_bounds_follow_the_call() {
+    let source = include_str!("../../../tests/run/trait_default_projection_outlives.rs");
+    check(source, true);
+    check(
+        &format!(
+            "{source}\nfn escape(input: &u8) {{ <() as Parallel<_>>::first(Some(input).into_iter()); }}"
+        ),
+        false,
+    );
+}
+
+#[test]
 fn abbreviated_local_projection_needs_an_unambiguous_owner() {
     check(
         "trait Family<'a>{type Out;} fn f<'a,'b,C:Family<'a>+Family<'b>>(){let _: Option<C::Out>=None;} fn main(){}",
@@ -224,5 +236,136 @@ fn closed_callable_and_nested_selections_keep_their_header_obligations() {
             "{source}\ntrait Fixed<'a> {{type Value;}} impl Fixed<'static> for () {{type Value = u32;}} fn reject<'a>(_: &'a u8) {{let _ = identity::<<&'static <() as Fixed<'a>>::Value as Convert>::Abi>(37);}}"
         ),
         false,
+    );
+}
+
+#[test]
+fn impl_projection_outlives_applies_to_the_selected_output() {
+    check(
+        include_str!("../../../tests/run/projected_impl_outlives.rs"),
+        true,
+    );
+    check(
+        r#"
+        trait Select<'a> { type Output; }
+        struct Key;
+        impl<'a> Select<'a> for Key { type Output = &'a u32; }
+        struct Wrapper<'a>(&'a u32);
+        impl<'a> Wrapper<'a>
+        where
+            <Key as Select<'a>>::Output: 'static,
+        {
+            fn new(value: &'a u32) -> Self { Self(value) }
+        }
+        fn main() {
+            let value = 123;
+            let _ = Wrapper::new(&value);
+        }
+        "#,
+        false,
+    );
+}
+
+#[test]
+fn trait_impl_projection_lifetime_checks_declarations_and_calls() {
+    let source = r#"
+        trait Family<'a> { type View; }
+        struct Key;
+        impl<'a> Family<'a> for Key { type View = &'a u32; }
+        struct Wrapper<'a, K: Family<'a>>(&'a u32, K);
+        trait Mark {}
+        impl<'a, K: Family<'a>> Mark for Wrapper<'a, K>
+        where K::View: 'static {}
+        fn marked<T: Mark>(_: T) {}
+        static VALUE: u32 = 7;
+        fn main() { marked(Wrapper(&VALUE, Key)); }
+    "#;
+    check(source, true);
+    check(
+        &source.replace(
+            "marked(Wrapper(&VALUE, Key));",
+            "let value = VALUE; marked(Wrapper(&value, Key));",
+        ),
+        false,
+    );
+
+    let concrete = source
+        .replace(
+            "impl<'a, K: Family<'a>> Mark for Wrapper<'a, K>",
+            "impl<'a> Mark for Wrapper<'a, Key>",
+        )
+        .replace("K::View: 'static", "<Key as Family<'a>>::View: 'static");
+    check(&concrete, false);
+    check(
+        &concrete.replace("impl<'a> Mark", "impl<'a: 'static> Mark"),
+        true,
+    );
+}
+
+#[test]
+fn only_written_projection_lifetimes_count_for_elision() {
+    check(
+        include_str!("../../../tests/run/projected_return_elision.rs"),
+        true,
+    );
+    check(
+        r#"
+        trait Family<'a> { type Owned; }
+        fn from_owned<'a, T: Family<'a>>(_: &<T as Family<'a>>::Owned) -> &u32 { loop {} }
+        fn main() {}
+        "#,
+        false,
+    );
+}
+
+#[test]
+fn captured_projection_uses_its_reference_bound() {
+    let source = include_str!("../../../tests/run/projected_closure_capture.rs");
+    check(source, true);
+    check(
+        &source.replace("Item = &'a u32", "Item = &'static u32"),
+        false,
+    );
+}
+
+#[test]
+fn projected_static_bounds_survive_pointer_annotations() {
+    let source = include_str!("../../../tests/run/yoke_projected_static_bound.rs");
+    let invalid = source.replace(
+        "let ptr: *const Self::Output =",
+        "require_static::<Self::Output>(); let ptr: *const Self::Output =",
+    );
+    check(
+        &format!("{invalid}\nfn require_static<T: 'static>() {{}}"),
+        false,
+    );
+}
+
+#[test]
+fn qualified_callable_output_inherits_the_single_input_lifetime() {
+    let source = include_str!("../../../tests/run/callable_projection_owner_elision.rs");
+    check(source, true);
+    check(
+        &source
+            .replace("FnOnce(&[u8])", "FnOnce(&[u8], &[u8])")
+            .replace("f(&bytes)", "f(&bytes, &bytes)")
+            .replace("|bytes|", "|bytes, _|"),
+        false,
+    );
+}
+
+#[test]
+fn provider_signature_retains_the_static_projection_contract() {
+    check(
+        include_str!("../../../tests/run/provider_static_projection.rs"),
+        true,
+    );
+}
+
+#[test]
+fn selected_nominal_defaults_refresh_outlives_subjects() {
+    check(
+        include_str!("../../../tests/run/nominal_projection_argument_outlives.rs"),
+        true,
     );
 }

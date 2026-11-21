@@ -76,6 +76,7 @@ pub(super) fn closed_type_projection(
     };
     if !metadata.names.is_empty()
         || !metadata.bounds.is_empty()
+        || !metadata.projection_bounds.is_empty()
         || metadata.bound_selfs.iter().any(|row| !row.is_empty())
         || !metadata.bound_traits.iter().all(row_free)
     {
@@ -279,6 +280,7 @@ impl ZeroRowSelection<'_> {
         if depth > 32
             || !rows.names.is_empty()
             || !rows.bounds.is_empty()
+            || !rows.projection_bounds.is_empty()
             || !rows.trait_lifetimes.is_empty()
             || !rows.self_ty.is_empty()
             || rows.trait_args.iter().any(|row| !row.is_empty())
@@ -379,7 +381,18 @@ pub(crate) fn projection(
     alias: crate::AliasTy,
     inputs: &[Region],
 ) -> Option<Vec<Region>> {
-    projection_at(items, sigs, alias, inputs, 0).map(|(_, row)| row)
+    projection_at(items, sigs, alias, inputs, None, 0).map(|(_, row)| row)
+}
+
+/// Selects a signature row under its declaration's existing lifetime bounds.
+pub(super) fn projection_in_signature(
+    items: &ItemTree,
+    sigs: &Signatures,
+    alias: crate::AliasTy,
+    inputs: &[Region],
+    assumptions: &[Outlives<Region>],
+) -> Option<Vec<Region>> {
+    projection_at(items, sigs, alias, inputs, Some(assumptions), 0).map(|(_, row)| row)
 }
 
 fn projection_at(
@@ -387,6 +400,7 @@ fn projection_at(
     sigs: &Signatures,
     mut alias: crate::AliasTy,
     inputs: &[Region],
+    assumptions: Option<&[Outlives<Region>]>,
     depth: u32,
 ) -> Option<(Ty, Vec<Region>)> {
     if depth >= 32 || has_declared_projection_inputs(alias) {
@@ -401,7 +415,7 @@ fn projection_at(
                 if slots(items, ty) != 0 {
                     return None;
                 }
-                let (actual, row) = projection_at(items, sigs, input, &[], depth + 1)?;
+                let (actual, row) = projection_at(items, sigs, input, &[], assumptions, depth + 1)?;
                 if !row.is_empty() || slots(items, actual) != 0 {
                     return None;
                 }
@@ -418,7 +432,7 @@ fn projection_at(
     let (imp, args) = flux_solve::traits::select_impl(items, sigs, goal)?;
     let metadata = sigs.regions.impls.get(imp)?;
     if !metadata.trait_lifetimes.is_empty()
-        || !metadata.bounds.is_empty()
+        || !metadata.projection_bounds.is_empty()
         || sigs.regions.traits.get(alias.trait_).is_some_and(|r| {
             // A concrete region-free subject satisfies a static owner
             // bound without adding anything to this projection's row.
@@ -449,6 +463,20 @@ fn projection_at(
         return None;
     }
     let binding = bind_header(items, sigs, imp, &args, goal, inputs)?;
+    for bound in &metadata.bounds {
+        let assumptions = assumptions?;
+        let Outlives::Region(a, b) = *bound else {
+            return None;
+        };
+        let (a, b) = (binding.region(a)?, binding.region(b)?);
+        if ![a, b]
+            .iter()
+            .all(|r| matches!(r, Region::Static | Region::Param(_)))
+            || !super::resolve::outlives_known(Outlives::Region(a, b), assumptions)
+        {
+            return None;
+        }
+    }
     let template = flux_solve::traits::impl_type(sigs, imp, alias.name)?;
     let own = &metadata
         .types
@@ -461,7 +489,7 @@ fn projection_at(
     if instance == output {
         Some((output, row))
     } else if let TyKind::Alias(forwarded) = instance.kind() {
-        let (selected, row) = projection_at(items, sigs, forwarded, &row, depth + 1)?;
+        let (selected, row) = projection_at(items, sigs, forwarded, &row, assumptions, depth + 1)?;
         (selected == output).then_some((selected, row))
     } else if row.is_empty()
         && is_closed_region_free(items, output)
@@ -547,7 +575,10 @@ impl ClosedSelection<'_> {
         }
         let (imp, args) = self.proof.select_impl(goal)?;
         let block = sigs.regions.impls.get(imp)?;
-        if !block.bounds.is_empty() || block.header_selections.iter().any(|rows| !rows.is_empty()) {
+        if !block.bounds.is_empty()
+            || !block.projection_bounds.is_empty()
+            || block.header_selections.iter().any(|rows| !rows.is_empty())
+        {
             return None;
         }
         // The erased solver verified these equalities. Here only types

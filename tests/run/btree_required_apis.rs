@@ -156,6 +156,32 @@ fn main() {
     let names = BTreeMap::from([(String::from("alpha"), 7), (String::from("beta"), 9)]);
     let (key, value) = names.get_key_value("alpha").unwrap();
     assert_eq!((key.as_str(), *value), ("alpha", 7));
+    let mut range_map = BTreeMap::new();
+    for key in [8, 2, 7, 0, 1, 9, 6, 5, 3, 4] {
+        range_map.insert(key, key);
+    }
+    range_map.remove(&3);
+    range_map.insert(11, 11);
+    let mut range = range_map.range_mut(2..=6);
+    let (first, a) = range.next().unwrap();
+    let (last, b) = range.next_back().unwrap();
+    let (middle, c) = range.next().unwrap();
+    assert_eq!((*first, *last, *middle), (2, 6, 4));
+    *a += 20;
+    *b += 60;
+    *c += 40;
+    assert_eq!(range.next_back().map(|(key, _)| *key), Some(5));
+    assert!(range.next().is_none());
+    assert!(range.next_back().is_none());
+    let upper = range_map.split_off(&5);
+    assert_eq!(range_map.into_iter().collect::<Vec<_>>(), [(0, 0), (1, 1), (2, 22), (4, 44)]);
+    assert_eq!(upper.keys().copied().collect::<Vec<_>>(), [5, 6, 7, 8, 9, 11]);
+    assert_eq!(upper[&6], 66);
+    let mut names = names;
+    let mut upper_names = names.split_off("alpha");
+    assert!(names.is_empty());
+    assert!(upper_names.split_off("z").is_empty());
+    assert_eq!(upper_names.pop_last().unwrap().0, "beta");
     let kd = Cell::new(0);
     let vd = Cell::new(0);
     let mut left = BTreeMap::new();

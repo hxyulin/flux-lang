@@ -82,12 +82,20 @@ impl MacroKind {
 pub struct MacroScope {
     pub parent: Option<MacroScopeId>,
     pub name: Symbol,
-    pub def: MacroId,
+    pub def: Option<MacroId>,
+    /// A deferred item expansion can add definitions at this position.
+    pub(crate) pending: bool,
     /// How many definitions are before it, `parent`'s included.
     pub(crate) depth: u32,
     /// An ancestor further up, for finding one at a given depth in
     /// logarithmic time (skew-binary jump pointers).
     pub(crate) jump: Option<MacroScopeId>,
+}
+
+pub(crate) enum TextualMacro {
+    Defined(MacroId),
+    Missing,
+    Pending,
 }
 
 impl ItemTree {
@@ -100,6 +108,7 @@ impl ItemTree {
     ) -> MacroScopeId {
         let (depth, jump) = match parent {
             None => (0, None),
+            Some(p) if self.macro_scopes[p].depth == u32::MAX => (u32::MAX, None),
             Some(p) => {
                 let pd = &self.macro_scopes[p];
                 let jump = match pd.jump {
@@ -123,7 +132,8 @@ impl ItemTree {
         let id = self.macro_scopes.alloc(MacroScope {
             parent,
             name,
-            def,
+            def: Some(def),
+            pending: false,
             depth,
             jump,
         });
@@ -131,15 +141,111 @@ impl ItemTree {
         id
     }
 
+    pub(crate) fn defer_macro_scope(&mut self, parent: Option<MacroScopeId>) -> MacroScopeId {
+        self.macro_scopes.alloc(MacroScope {
+            parent,
+            name: kw::Empty,
+            def: None,
+            pending: true,
+            depth: u32::MAX,
+            jump: None,
+        })
+    }
+
+    pub(crate) fn has_pending_macro_scope(&self, mut scope: Option<MacroScopeId>) -> bool {
+        while let Some(id) = scope {
+            let entry = &self.macro_scopes[id];
+            if entry.depth != u32::MAX {
+                return false;
+            }
+            if entry.pending {
+                return true;
+            }
+            scope = entry.parent;
+        }
+        false
+    }
+
+    /// Remove temporary expansion positions and restore the parent-first
+    /// order and jump pointers used by ordinary lookup and metadata.
+    pub(crate) fn finish_macro_scopes(&mut self, from: usize, items: crate::ItemCounts) {
+        let scopes: Vec<_> = self.macro_scopes.values().skip(from).copied().collect();
+        self.macro_scopes.truncate(from);
+        self.macro_names.retain(|_, ids| {
+            ids.retain(|id| id.index() < from);
+            !ids.is_empty()
+        });
+        let mut remapped = vec![None; scopes.len()];
+        let mut path = Vec::new();
+        for index in 0..scopes.len() {
+            let mut id = Some(Idx::from_raw((from + index) as u32));
+            let mut parent = loop {
+                let Some(scope) = id else { break None };
+                let Some(offset) = scope.index().checked_sub(from) else {
+                    break Some(scope);
+                };
+                if let Some(mapped) = remapped[offset] {
+                    break mapped;
+                }
+                path.push(offset);
+                id = scopes[offset].parent;
+            };
+            while let Some(offset) = path.pop() {
+                let scope = scopes[offset];
+                debug_assert!(!scope.pending);
+                if let Some(def) = scope.def {
+                    parent = Some(self.push_macro_scope(parent, scope.name, def));
+                }
+                remapped[offset] = Some(parent);
+            }
+        }
+        let restore = |id: Option<MacroScopeId>| {
+            id.and_then(|id| {
+                id.index().checked_sub(from).map_or(Some(id), |offset| {
+                    remapped[offset].expect("collected macro scope")
+                })
+            })
+        };
+        for raw in items.functions..self.functions.len() as u32 {
+            let f = &mut self.functions[Idx::from_raw(raw)];
+            f.macro_scope = restore(f.macro_scope);
+        }
+        for raw in items.consts..self.consts.len() as u32 {
+            let c = &mut self.consts[Idx::from_raw(raw)];
+            c.macro_scope = restore(c.macro_scope);
+        }
+    }
+
     /// The macro named `name` in textual scope at `scope`: the latest
     /// definition of the name that is `scope` or one of its ancestors.
     pub(crate) fn textual_macro(
         &self,
-        scope: Option<MacroScopeId>,
+        mut scope: Option<MacroScopeId>,
         name: Symbol,
-    ) -> Option<MacroId> {
-        let scope = scope?;
-        let candidates = self.macro_names.get(&name)?;
+    ) -> TextualMacro {
+        // During collection the deferred scopes can gain ancestors. Walk
+        // those prefixes directly until we reach an indexed ancestor.
+        let scope = loop {
+            let Some(id) = scope else {
+                return TextualMacro::Missing;
+            };
+            let entry = &self.macro_scopes[id];
+            if entry.depth != u32::MAX {
+                break id;
+            }
+            if entry.pending {
+                return TextualMacro::Pending;
+            }
+            if entry.name == name
+                && let Some(def) = entry.def
+            {
+                return TextualMacro::Defined(def);
+            }
+            scope = entry.parent;
+        };
+        let Some(candidates) = self.macro_names.get(&name) else {
+            return TextualMacro::Missing;
+        };
         let depth = self.macro_scopes[scope].depth;
         for &c in candidates.iter().rev() {
             let cd = self.macro_scopes[c].depth;
@@ -155,10 +261,12 @@ impl ItemTree {
                 };
             }
             if v == c {
-                return Some(self.macro_scopes[c].def);
+                return TextualMacro::Defined(
+                    self.macro_scopes[c].def.expect("indexed definition"),
+                );
             }
         }
-        None
+        TextualMacro::Missing
     }
 }
 
@@ -374,8 +482,10 @@ pub(crate) fn resolve<'a, L>(
             if let Some((_, l)) = local.iter().rev().find(|(n, _)| *n == name) {
                 return Ok(Resolved::Local(l));
             }
-            if let Some(def) = items.textual_macro(scope, name) {
-                return Ok(Resolved::Def(def));
+            match items.textual_macro(scope, name) {
+                TextualMacro::Defined(def) => return Ok(Resolved::Def(def)),
+                TextualMacro::Pending => return Err(not_found()),
+                TextualMacro::Missing => {}
             }
             if let Some(id) = by_path() {
                 return Ok(Resolved::Def(id));

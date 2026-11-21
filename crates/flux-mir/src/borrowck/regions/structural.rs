@@ -287,6 +287,7 @@ impl Cx<'_> {
             && regions.trait_args.iter().all(|row| row.is_empty())
             && regions.header_selections.iter().all(|row| row.is_empty())
             && regions.bounds.is_empty()
+            && regions.projection_bounds.is_empty()
             && regions.bound_selfs.iter().all(|row| row.is_empty())
             && regions.bound_traits.iter().all(|bound| {
                 bound.bound == 0

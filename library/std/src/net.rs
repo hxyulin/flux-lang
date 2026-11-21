@@ -70,3 +70,7 @@ socket_owner!(UdpSocket);
 
 #[path = "net/unix.rs"]
 pub(crate) mod unix;
+#[path = "net/native.rs"]
+mod native;
+#[path = "net/ip.rs"]
+mod ip;

@@ -1,5 +1,5 @@
 //! Scoped function-pointer binder proofs and per-call instantiation.
-use super::{Category, Cx, FunctionUse, STATIC, UniversalRelationMode, Var};
+use super::{Category, Cx, FunctionUse, ItemRegions, STATIC, UniversalRelationMode, Var};
 use crate::Place;
 use flux_hir::Diagnostic;
 use flux_syntax::TextRange;
@@ -405,7 +405,7 @@ impl Cx<'_> {
                         written,
                         FunctionUse::Reification,
                         range,
-                        captured.unwrap_or_default(),
+                        captured.map_or(ItemRegions::Owner(&[]), ItemRegions::Stored),
                     )
                     .is_none()
             {
@@ -418,14 +418,13 @@ impl Cx<'_> {
         };
         // Owner lifetimes belong to the function item. Allocate them outside
         // the pointer binder so the leak check keeps them fixed across calls.
-        let fixed_owner = if let Some(captured) = captured {
-            captured.to_vec()
-        } else if r.bound == 0 {
-            Vec::new()
-        } else {
+        let fresh_owner = if captured.is_none() && r.bound != 0 {
             let count = self.sigs.regions.fns.get(function).map_or(0, |r| r.owner);
             self.fresh_list(count)
+        } else {
+            Vec::new()
         };
+        let item_regions = captured.map_or(ItemRegions::Owner(&fresh_owner), ItemRegions::Stored);
         let before = self.vars;
         let universal = self.universal.len();
         let known = self.known_pairs.len();
@@ -512,6 +511,9 @@ impl Cx<'_> {
                         function,
                         name: data.name,
                         args: Ty::list(args),
+                        owner_lifetimes: flux_ty::regions::function_item_owner_lifetimes(
+                            self.items, self.sigs, function,
+                        ),
                         sig,
                     }));
                     let old = std::mem::replace(&mut self.call_range, range);
@@ -521,7 +523,7 @@ impl Cx<'_> {
                         &inputs,
                         FunctionUse::Reification,
                         written,
-                        &fixed_owner,
+                        item_regions,
                     ) {
                         self.relate_types(
                             signature.ret,

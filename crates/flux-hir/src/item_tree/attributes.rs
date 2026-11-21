@@ -635,6 +635,42 @@ pub(crate) fn check_attr(attr: ast::Attr<'_>, diagnostics: &mut Vec<Diagnostic>)
     diagnostics.push(Diagnostic::new(attr.syntax().text_range(), message));
 }
 
+pub(super) fn link_section_attr(
+    attr: ast::Attr<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Symbol> {
+    let range = attr.syntax().text_range();
+    let meta = attr.meta()?;
+    let edition = meta.path()?.syntax().tokens().next()?.edition();
+    if edition == flux_syntax::Edition::E2024 && meta.unsafe_token().is_none() {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "unsafe attribute used without unsafe",
+        ));
+    }
+    let Some(ast::Expr::Literal(literal)) = meta.expr() else {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "expected a string in `link_section`",
+        ));
+        return None;
+    };
+    let Some(token) = literal.value().filter(|t| t.kind() == SyntaxKind::STRING) else {
+        diagnostics.push(Diagnostic::new(
+            range,
+            "expected a string in `link_section`",
+        ));
+        return None;
+    };
+    match crate::literal::unescape_str(token.text()) {
+        Ok(name) => Some(Symbol::intern(&name)),
+        Err(message) => {
+            diagnostics.push(Diagnostic::new(range, message));
+            None
+        }
+    }
+}
+
 /// Native names are safe string-valued attributes; unused placements have
 /// no effect, as rustc's unused-attribute diagnostic does not reject them.
 pub(super) fn link_name_attr(

@@ -260,6 +260,14 @@ pub struct FamilyRegions {
     pub selections: Box<[ProjectionSelection]>,
 }
 
+/// An associated output outlives bound with its original projection inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionOutlives {
+    pub ty: Ty,
+    pub regions: Box<[Region]>,
+    pub target: Region,
+}
+
 /// The lifetimes of an `impl` block's header.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImplRegions {
@@ -285,6 +293,8 @@ pub struct ImplRegions {
     /// Its bounds alone (`'b: 'a`, `T: 'a`): what a use of it must
     /// meet.
     pub bounds: Box<[Outlives<Region>]>,
+    /// Explicit bounds on the selected outputs of associated types.
+    pub projection_bounds: Box<[ProjectionOutlives]>,
     /// The slots of the types its bounds are on, as
     /// [`crate::Signatures::impl_predicates`] lists them.
     pub bound_selfs: Box<[Box<[Region]>]>,
@@ -399,12 +409,19 @@ pub fn object_associated_range(
     None
 }
 
-/// The fixed trait binder of an associated function item, when tracked.
-pub fn item_owner_lifetimes(items: &ItemTree, def: crate::FnDefTy) -> usize {
-    items.functions[def.function]
-        .owner
-        .and_then(flux_hir::Owner::as_trait)
-        .map_or(0, |owner| items.traits[owner].generics.lifetimes.len())
+/// The fixed owner binder of an associated function item, when tracked.
+pub fn function_item_owner_lifetimes(
+    items: &ItemTree,
+    sigs: &crate::Signatures,
+    function: flux_hir::FunctionId,
+) -> u32 {
+    match items.functions[function].owner {
+        Some(flux_hir::Owner::Trait(owner)) => items.traits[owner].generics.lifetimes.len() as u32,
+        Some(flux_hir::Owner::Impl(owner)) if items.impls[owner].trait_ref.is_none() => {
+            sigs.regions.fns.get(function).map_or(0, |r| r.owner)
+        }
+        _ => 0,
+    }
 }
 
 /// How many region slots `ty` has.
@@ -437,8 +454,8 @@ pub fn slots(items: &ItemTree, ty: Ty) -> usize {
                     .map(|ty| slots(items, ty))
                     .sum::<usize>()
         }
-        TyKind::FnDef(def) if item_owner_lifetimes(items, def) != 0 => {
-            item_owner_lifetimes(items, def)
+        TyKind::FnDef(def) => {
+            def.owner_lifetimes as usize
                 + def.args.iter().map(|&ty| slots(items, ty)).sum::<usize>()
         }
         TyKind::FnPtr(sig) => sig.regions.map_or(0, |r| {
@@ -538,8 +555,8 @@ fn instantiate_at<R: Copy>(
                 instantiate_at(items, ty, own, next, region, args, out);
             }
         }
-        TyKind::FnDef(def) if item_owner_lifetimes(items, def) != 0 => {
-            for _ in 0..item_owner_lifetimes(items, def) {
+        TyKind::FnDef(def) => {
+            for _ in 0..def.owner_lifetimes as usize {
                 own_slot(next, out);
             }
             for &ty in def.args {

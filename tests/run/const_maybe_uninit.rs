@@ -12,7 +12,16 @@ const OPTIONAL: Option<MaybeUninit<bool>> = Some(MaybeUninit::uninit());
 const READY: u32 = unsafe { MaybeUninit::new(42).assume_init() };
 enum Void {}
 const VOID: MaybeUninit<Void> = MaybeUninit::uninit();
+
+trait Property { type Stored; }
+struct Key;
+impl Property for Key { type Stored = u32; }
+struct Projected<T: Property>(MaybeUninit<T::Stored>);
+const PROJECTED: Projected<Key> = Projected(MaybeUninit::uninit());
+
 fn main() {
+    let mut projected = PROJECTED.0;
+    assert_eq!(*projected.write(42), 42);
     let mut values = EMPTY;
     for (i, value) in values.iter_mut().enumerate() { value.write(i as u32 + READY); }
     let sum: u32 = values.into_iter().map(|value| unsafe { value.assume_init() }).sum();

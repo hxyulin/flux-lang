@@ -191,6 +191,46 @@ fn math_availability_and_const_rules_match_rustc() {
 }
 
 #[test]
+fn invalid_const_clamp_reports_a_panic() {
+    let dir = std::env::temp_dir().join(format!("flux-const-clamp-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("bad.rs");
+    for (name, expr) in [
+        ("reversed", "0.0_f32.clamp(2.0, -1.0)"),
+        ("nan", "0.0_f64.clamp(-1.0, f64::NAN)"),
+    ] {
+        if !case_filter::selected(name) {
+            continue;
+        }
+        std::fs::write(
+            &source,
+            format!("const _: () = {{ let _ = {expr}; }}; fn main() {{}}"),
+        )
+        .unwrap();
+        let expected = Command::new("rustc")
+            .args(["--edition=2024", "--emit=metadata", "--out-dir"])
+            .arg(&dir)
+            .arg(&source)
+            .output()
+            .unwrap();
+        let actual = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+            .arg("mir")
+            .arg(&source)
+            .output()
+            .unwrap();
+        for output in [expected, actual] {
+            assert!(!output.status.success(), "{name}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("min > max, or either was NaN"),
+                "{name}: {stderr}"
+            );
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn user_std_name_cannot_define_primitive_impls() {
     let dir = std::env::temp_dir().join(format!("flux-math-std-spoof-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

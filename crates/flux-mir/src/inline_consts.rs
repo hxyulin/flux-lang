@@ -54,7 +54,7 @@ pub(crate) fn closed(body: &Body, parameters: usize) -> bool {
             .iter()
             .any(|(_, rows)| rows.iter().any(|(_, row)| captured(row)))
         || body
-            .reification_regions
+            .operand_type_args
             .iter()
             .any(|(_, rows)| rows.iter().any(|(_, row)| captured(row)))
     {

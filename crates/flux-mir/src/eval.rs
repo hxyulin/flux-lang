@@ -955,10 +955,17 @@ impl<'a> Evaluator<'a> {
                         return Err(unsupported_view(range));
                     }
                     let at = layout.field_offset(variant, i);
+                    let aggregate = ty;
                     ty = *flux_solve::variant_fields(self.sigs, ty, variant)
                         .and_then(|f| f.get(i as usize))
                         .ok_or_else(|| unsupported_view(range))?;
-                    sequence_len = ty.array_len();
+                    // A slice-tailed DST and its unsized field have the
+                    // same element-count metadata, even through a cast.
+                    if self.sigs.metadata(aggregate) != flux_ty::Metadata::Length
+                        || self.sigs.metadata(ty) != flux_ty::Metadata::Length
+                    {
+                        sequence_len = ty.array_len();
+                    }
                     variant = 0;
                     at
                 }
@@ -1021,10 +1028,9 @@ impl<'a> Evaluator<'a> {
                 "constant pointer offset is out of bounds".into(),
             ));
         }
-        if matches!(
-            pointer_pointee(target).map(Ty::kind),
-            Some(TyKind::Slice(_) | TyKind::Str)
-        ) && metadata.is_none()
+        if metadata.is_none()
+            && pointer_pointee(target)
+                .is_some_and(|pointee| self.sigs.metadata(pointee) == flux_ty::Metadata::Length)
         {
             metadata = sequence_len;
         }
@@ -1267,8 +1273,8 @@ impl<'a> Evaluator<'a> {
         Ok(result)
     }
 
-    /// Length metadata applies to a slice and its transparent single-field
-    /// wrappers. Keep their allocation symbolic while validating each element.
+    /// Interpret a length-metadata view without changing its allocation.
+    /// Field offsets include the prefix before a struct's unsized tail.
     #[allow(clippy::too_many_arguments)]
     fn memory_view(
         &mut self,
@@ -1335,46 +1341,89 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(result)
             }
-            TyKind::Adt(adt, _)
-                if self.sigs.is_unsized(to) && self.items.structs[adt.strukt].repr_transparent =>
-            {
+            TyKind::Adt(..) if self.sigs.metadata(to) == flux_ty::Metadata::Length => {
+                let len = len.ok_or_else(|| unsupported_view(range))?;
+                let layout = self.view_layout(to, range)?;
+                let start = offset;
+                let end = self.length_view_end(to, start, len, range)?;
+                let stored = self.view_layout(from, range)?;
+                if !stored.exact || end > stored.size {
+                    return Err(error(
+                        range,
+                        "constant pointer read is out of bounds".into(),
+                    ));
+                }
                 let fields =
                     flux_solve::fields(self.sigs, to).ok_or_else(|| unsupported_view(range))?;
-                let mut values = Vec::with_capacity(fields.len());
-                let mut tail = false;
-                for &field in fields {
-                    if self.sigs.is_unsized(field) {
-                        if tail {
-                            return Err(unsupported_view(range));
-                        }
-                        tail = true;
-                        values.push(self.memory_view(
-                            value,
-                            from,
-                            offset,
-                            field,
-                            len,
-                            range,
-                            depth + 1,
-                        )?);
-                    } else {
-                        let layout = self.view_layout(field, range)?;
-                        if !layout.exact || layout.size != 0 || layout.align != 1 {
-                            return Err(unsupported_view(range));
-                        }
-                        let mut value = Value::Uninit(field);
-                        self.materialize_zero_sized(&mut value, field, range)?;
-                        self.initialized(&value, field, range)?;
-                        values.push(value);
-                    }
-                }
-                if !tail {
+                let crate::layout::Shape::Struct(offsets) = &layout.shape else {
                     return Err(unsupported_view(range));
+                };
+                if offsets.len() != fields.len() {
+                    return Err(unsupported_view(range));
+                }
+                let mut values = Vec::with_capacity(fields.len());
+                for (&field, &relative) in fields.iter().zip(offsets) {
+                    let offset = start
+                        .checked_add(relative)
+                        .ok_or_else(|| unsupported_view(range))?;
+                    values.push(self.memory_view(
+                        value,
+                        from,
+                        offset,
+                        field,
+                        Some(len),
+                        range,
+                        depth + 1,
+                    )?);
                 }
                 Ok(Value::Aggregate(values.into()))
             }
             _ => self.memory_value(value, from, offset, to, range, depth),
         }
+    }
+
+    /// Compute the whole DST extent, including padding after its tail. The
+    /// metadata counts tail elements, independently of any fixed fields.
+    fn length_view_end(
+        &mut self,
+        mut ty: Ty,
+        start: u64,
+        len: u64,
+        range: TextRange,
+    ) -> Result<u64, EvalError> {
+        let align = self.view_layout(ty, range)?.align;
+        let mut prefix = 0_u64;
+        for _ in 0..=DEPTH_LIMIT {
+            let layout = self.view_layout(ty, range)?;
+            if !layout.exact {
+                return Err(unsupported_view(range));
+            }
+            let stride = match (&layout.shape, ty.kind()) {
+                (crate::layout::Shape::Struct(offsets), TyKind::Adt(..)) => {
+                    let (&offset, &tail) = offsets
+                        .last()
+                        .zip(flux_solve::fields(self.sigs, ty).and_then(|fields| fields.last()))
+                        .ok_or_else(|| unsupported_view(range))?;
+                    prefix = prefix
+                        .checked_add(offset)
+                        .ok_or_else(|| unsupported_view(range))?;
+                    ty = tail;
+                    continue;
+                }
+                (
+                    crate::layout::Shape::Array { stride, .. },
+                    TyKind::Slice(_) | TyKind::Str | TyKind::CStr,
+                ) => *stride,
+                _ => return Err(unsupported_view(range)),
+            };
+            return len
+                .checked_mul(stride)
+                .and_then(|bytes| prefix.checked_add(bytes))
+                .and_then(|size| size.checked_add(align - 1))
+                .and_then(|size| start.checked_add(size & !(align - 1)))
+                .ok_or_else(|| error(range, "constant pointer read is out of bounds".into()));
+        }
+        Err(unsupported_view(range))
     }
 
     /// Interpret initialized typed storage at a byte offset. Pointer values
@@ -3254,6 +3303,15 @@ impl<'a> Evaluator<'a> {
                 _ => "explicit panic".to_owned(),
             };
             return Ok(Some(message));
+        }
+        if self.items.functions[func].do_not_const_check
+            && self
+                .items
+                .lang_fns
+                .get(&flux_intern::Symbol::intern("panic_float_clamp"))
+                == Some(&func)
+        {
+            return Ok(Some("min > max, or either was NaN".to_owned()));
         }
         let display = self
             .items

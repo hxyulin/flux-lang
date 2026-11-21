@@ -96,7 +96,23 @@ fn set_depth(entry: &mut AllocationMemo, depth: u32) -> Result<(), Error> {
     Ok(())
 }
 
+// Compact definitions can expand far beyond their on-disk size. Charge
+// only new definitions, not references to allocations already counted.
+fn charge_expansion(total: &mut usize, count: usize, element_size: usize) -> Result<(), Error> {
+    const MAX_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
+    *total = count
+        .checked_mul(element_size)
+        .and_then(|bytes| total.checked_add(bytes))
+        .filter(|&bytes| bytes <= MAX_EXPANDED_BYTES)
+        .ok_or(Error("expanded metadata allocation limit exceeded"))?;
+    Ok(())
+}
+
 impl Encoder {
+    pub fn charge_allocation_expansion(&mut self, count: usize, size: usize) -> Result<(), Error> {
+        charge_expansion(&mut self.expanded_allocation_bytes, count, size)
+    }
+
     /// Holds an allocation owner so its pointer key cannot be recycled during encoding.
     /// `raw` identifies the allocation retained by `owner`; it is never serialized.
     pub fn retain_allocation<T: Clone + Send + Sync + 'static>(
@@ -181,6 +197,10 @@ impl Encoder {
 }
 
 impl Decoder<'_> {
+    pub fn charge_allocation_expansion(&mut self, count: usize, size: usize) -> Result<(), Error> {
+        charge_expansion(&mut self.expanded_allocation_bytes, count, size)
+    }
+
     /// Reserves the next allocation slot before reading its payload.
     pub fn reserve_allocation(&mut self, domain: u8, wire: u32) -> Result<(), Error> {
         if self.allocations.len() >= MAX_RECORD_LENGTH {

@@ -536,8 +536,7 @@ fn method_profile(
                 || !function.generics.outlives.is_empty()
                 || !function.generics.type_outlives.is_empty()))
             || function.generics.params.iter().any(|parameter| {
-                parameter.is_const()
-                    || (!projected && parameter.maybe_unsized)
+                (!projected && (parameter.is_const() || parameter.maybe_unsized))
                     || parameter.default.is_some()
             })
         {
@@ -1218,8 +1217,7 @@ pub(crate) fn family_method_profile(
         return false;
     };
     if data.generics.lifetimes.len() != 1
-        || !data.generics.params.is_empty()
-        || !data.generics.predicates.is_empty()
+        || data.generics.params.iter().any(|param| param.is_const())
         || !data.consts.is_empty()
         || data.types.is_empty()
         || data.is_unsafe
@@ -1351,13 +1349,17 @@ pub(crate) fn family_method_profile(
                 .chain(function.generics.lifetimes.iter().map(|l| Some(l.name)))
                 .collect(),
         );
+        let predicates = flux_solve::traits::predicates_of(items, sigs, method);
         walker.scope = TypeScope {
             self_ty: Some(Ty::param(0, flux_intern::kw::SelfUpper)),
             generics: &names,
+            bounds: &predicates,
+            defaults: Some(&sigs.trait_defaults),
             ..TypeScope::default()
         };
         walker.self_projection_owner = Some((id, Box::new([Region::Param(0)])));
         walker.add_trait_projection_bounds(id);
+        walker.add_projection_bounds(&data.generics);
         walker.elided = Elided::Fresh;
         let mut distinct = Vec::new();
         for ((written, &ty), expected) in function

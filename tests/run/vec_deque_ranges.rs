@@ -1,6 +1,19 @@
 use std::collections::VecDeque;
 
+fn insert_wrapped() {
+    let mut queue = VecDeque::with_capacity(4);
+    queue.extend([1, 2, 3, 4]);
+    assert_eq!(queue.pop_front(), Some(1));
+    queue.push_back(5);
+    queue.insert(1, 9);
+    queue.insert(4, 8);
+    queue.insert(0, 0);
+    queue.insert(queue.len(), 6);
+    assert_eq!(queue.into_iter().collect::<Vec<_>>(), [0, 2, 9, 3, 4, 8, 5, 6]);
+}
+
 fn main() {
+    insert_wrapped();
     let mut queue = VecDeque::with_capacity(8);
     let capacity = queue.capacity();
     queue.extend(0..capacity);

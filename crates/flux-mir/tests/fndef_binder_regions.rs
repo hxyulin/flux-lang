@@ -20,6 +20,11 @@ fn fixed_owner_callback_binders_match_rustc() {
             ));
         }
     }
+    cases.push((
+        "negative_stored_owner".into(),
+        format!("{owner} fn get(x: &'a i32) -> &'a i32 {{ x }} }} fn need<F: for<'x> Fn(&'x i32) -> &'x i32>(_: F) {{}} fn f<'x>(_: &'x i32) {{ let callback = S::<'x>::get; need(callback); }} fn main() {{}}"),
+        false,
+    ));
     cases.push(("negative_elided".into(), format!("{owner} fn get(x: &'a i32) -> &'a i32 {{ x }} }} fn need<F: Fn(&i32) -> &i32>(_: F) {{}} fn f() {{ need(S::get); }} fn main() {{}}"), false));
     cases.push(("negative_mixed".into(), format!("{owner} fn get(_: i32, x: &'a i32) -> i32 {{ *x }} }} fn need<T, F: Fn(T, &i32) -> i32>(_: T, _: F) {{}} fn f() {{ need(0, S::get); }} fn main() {{}}"), false));
     cases.push(("positive_free_identity".into(), "fn get(x: &i32) -> &i32 { x } fn need<F: for<'a> Fn(&'a i32) -> &'a i32>(_: F) {} fn main() { need(get); }".into(), true));

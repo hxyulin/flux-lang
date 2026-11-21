@@ -611,6 +611,8 @@ pub struct FnDefTy {
     pub function: FunctionId,
     pub name: Symbol,
     pub args: GenericArgs,
+    /// Region slots belonging to this item's enclosing impl or trait.
+    pub owner_lifetimes: u32,
     pub sig: FnSigTy,
 }
 
@@ -1603,6 +1605,7 @@ mod tests {
             function: FunctionId::from_raw(0),
             name: Symbol::intern("child_fn"),
             args,
+            owner_lifetimes: 0,
             sig,
         }));
         assert_eq!(

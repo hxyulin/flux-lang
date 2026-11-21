@@ -227,9 +227,12 @@ impl<'a> Attrs<'a> {
             }
             for part in parts {
                 let mut text = String::from("#[");
-                let mut origins = Vec::new();
+                let mut origins = Vec::with_capacity(part.len());
+                let mut editions = Vec::with_capacity(part.len());
                 for t in part {
-                    origins.push((text.len() as u32, t.origin));
+                    let start = text.len() as u32;
+                    origins.push((start, t.origin));
+                    editions.push((start, t.edition));
                     text.push_str(t.text.as_str());
                     if !t.joint {
                         text.push(' ');
@@ -242,6 +245,7 @@ impl<'a> Attrs<'a> {
                     range,
                     flux_syntax::parser::Fragment::Items,
                 )
+                .with_token_editions(&editions)
                 .with_cfg_options(self.cfg.clone());
                 if let Some(error) = parse.errors().first() {
                     return Err((error.range, error.message.clone()));

@@ -6,6 +6,7 @@ static DROPPED: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
     static VALUE: Cell<usize> = const { Cell::new(0) };
     static NUMBERS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static SET_ONLY: RefCell<Vec<usize>> = panic!("set should bypass this initializer");
     static GUARD: Guard = {
         INITIALIZED.fetch_add(1, Ordering::SeqCst);
         Guard
@@ -46,6 +47,10 @@ fn local_declaration() {
     LOCAL.with(|v| assert_eq!(v.get(), 19));
 }
 fn main() {
+    SET_ONLY.set(vec![1]);
+    SET_ONLY.with_borrow(|values| assert_eq!(values.as_slice(), &[1]));
+    SET_ONLY.set(vec![7, 9]);
+    SET_ONLY.with_borrow(|values| assert_eq!(values.as_slice(), &[7, 9]));
     NUMBERS.with_borrow_mut(|numbers| numbers.push(42));
     VALUE.with(|v| v.set(37));
     #[cfg(target_os = "macos")]

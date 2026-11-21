@@ -131,6 +131,21 @@ fn main() {
         assert_eq!(copy.as_slice()[0].n, 99);
     }
     assert_eq!(drops.get(), 7);
+    let mut values = vec![0, 1, 2, 3, 4, 5];
+    let mut selected = values.extract_if(1..5, |value| {
+        *value *= 10;
+        *value == 20 || *value == 40
+    });
+    assert_eq!(selected.size_hint(), (0, Some(4)));
+    assert_eq!(selected.next(), Some(20));
+    assert_eq!(
+        format!("{selected:?}"),
+        "ExtractIf { retained: [0, 10], remainder: [3, 4], skipped_tail: [5], .. }"
+    );
+    drop(selected);
+    assert_eq!(values, [0, 10, 3, 4, 5]);
+    assert_eq!(values.extract_if(.., |value| *value >= 4).collect::<Vec<_>>(), [10, 4, 5]);
+    assert_eq!(values, [0, 3]);
     let mut keyed = vec![(2, 'a'), (1, 'b'), (2, 'c'), (0, 'd'), (1, 'e')];
     let calls = Cell::new(0);
     keyed.sort_by_cached_key(|item| {

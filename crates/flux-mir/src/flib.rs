@@ -1216,7 +1216,7 @@ impl Encode for Body {
             self.region_annotations.encode(e)?;
             self.region_relations.encode(e)?;
             encode_map(&self.call_regions, e)?;
-            encode_map(&self.reification_regions, e)?;
+            encode_map(&self.operand_type_args, e)?;
             encode_arena(&self.blocks, e)?;
             self.param_count.encode(e)?;
             self.c_strings.encode(e)?;
@@ -1254,7 +1254,7 @@ impl Decode for Body {
                 call_regions: ArenaMap::new(),
                 item_callees: Default::default(),
                 item_reifications: Default::default(),
-                reification_regions: ArenaMap::new(),
+                operand_type_args: ArenaMap::new(),
                 blocks: decode_arena(d)?,
                 param_count: Decode::decode(d)?,
                 c_strings: Decode::decode(d)?,
@@ -1283,7 +1283,7 @@ impl Decode for Body {
                 if local.index() >= body.locals.len() {
                     return Err(Error::new("invalid MIR reification local"));
                 }
-                if body.reification_regions.insert(local, rows).is_some() {
+                if body.operand_type_args.insert(local, rows).is_some() {
                     return Err(Error::new("duplicate MIR reification local"));
                 }
             }
@@ -1442,7 +1442,7 @@ fn validate_body_indices(body: &Body) -> Result<(), Error> {
         return Err(Error::new("invalid MIR block reference"));
     }
     if body
-        .reification_regions
+        .operand_type_args
         .iter()
         .any(|(local, _)| local.index() >= body.locals.len())
     {
@@ -1818,7 +1818,7 @@ mod boundary_tests {
             .unwrap()
             .0;
         let body = &mir.bodies[id];
-        let (local, rows) = body.reification_regions.iter().next().unwrap();
+        let (local, rows) = body.operand_type_args.iter().next().unwrap();
         assert_eq!(rows[0].1.as_ref(), &[flux_ty::regions::Region::Static]);
         let mut e = Encoder::new();
         body.encode(&mut e).unwrap();
@@ -1827,7 +1827,7 @@ mod boundary_tests {
         let decoded = Body::decode(&mut d).unwrap();
         d.finish().unwrap();
         boundary::body(&decoded, &hir.items, &typed.sigs, true).unwrap();
-        assert_eq!(decoded.reification_regions.get(local), Some(rows));
+        assert_eq!(decoded.operand_type_args.get(local), Some(rows));
         for row in [
             vec![(u32::MAX, rows[0].1.clone())],
             vec![(0, Box::new([]))],
@@ -1836,7 +1836,7 @@ mod boundary_tests {
             vec![rows[0].clone(), rows[0].clone()],
         ] {
             let mut bad = decoded.clone();
-            bad.reification_regions.insert(local, row);
+            bad.operand_type_args.insert(local, row);
             assert!(boundary::body(&bad, &hir.items, &typed.sigs, true).is_err());
         }
         let mut bad = decoded.clone();
@@ -1893,12 +1893,12 @@ mod boundary_tests {
         boundary::body(&body, &hir.items, &typed.sigs, true).unwrap();
         for index in [TRAIT_LIFETIMES_ARG, IMPL_SELF_ARG] {
             let (local, _) = body
-                .reification_regions
+                .operand_type_args
                 .iter()
                 .find(|(_, rows)| rows.as_slice() == [(index, [Region::Static].into())])
                 .unwrap();
             let mut bad = body.clone();
-            bad.reification_regions
+            bad.operand_type_args
                 .insert(local, vec![(index, Box::new([]))]);
             assert!(boundary::body(&bad, &hir.items, &typed.sigs, true).is_err());
         }

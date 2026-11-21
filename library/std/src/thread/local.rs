@@ -260,6 +260,18 @@ impl<T: 'static> LocalKey<T> {
         Ok(f(unsafe { &(*(pointer as *const Slot<T>)).value }))
     }
 
+    fn set_value<F: FnOnce(&T, T)>(&'static self, value: T, update: F) {
+        let (key, pointer) = self.storage()
+            .expect("cannot access a Thread Local Storage value during or after destruction");
+        if pointer.is_null() {
+            self.initialize(key, || value)
+                .expect("cannot access a Thread Local Storage value during or after destruction");
+        } else {
+            // SAFETY: storage returned this thread's live Slot<T>.
+            update(unsafe { &(*(pointer as *const Slot<T>)).value }, value);
+        }
+    }
+
     fn storage(&'static self) -> Result<(Key, *mut u8), AccessError> {
         let key = *self.key.get_or_init(|| {
             let mut key: Key = 0;
@@ -302,15 +314,7 @@ impl<T: 'static> LocalKey<core::cell::Cell<T>> {
     /// Setting an uninitialized key supplies its initial value directly;
     /// the thread_local initializer is deliberately not run.
     pub fn set(&'static self, value: T) {
-        let (key, pointer) = self.storage()
-            .expect("cannot access a Thread Local Storage value during or after destruction");
-        if pointer.is_null() {
-            self.initialize(key, || core::cell::Cell::new(value))
-                .expect("cannot access a Thread Local Storage value during or after destruction");
-        } else {
-            // SAFETY: storage returned this thread's live Slot<Cell<T>>.
-            unsafe { &(*(pointer as *const Slot<core::cell::Cell<T>>)).value }.set(value);
-        }
+        self.set_value(core::cell::Cell::new(value), |cell, value| cell.set(value.into_inner()));
     }
 
     /// Replaces the thread's value, running the initializer if needed.
@@ -324,6 +328,14 @@ impl<T: Copy + 'static> LocalKey<core::cell::Cell<T>> {
 }
 
 impl<T: 'static> LocalKey<core::cell::RefCell<T>> {
+    /// Replaces this thread's value. For an unused key, this initializes
+    /// the cell directly without calling the declared initializer.
+    pub fn set(&'static self, value: T) {
+        self.set_value(core::cell::RefCell::new(value), |cell, value| {
+            *cell.borrow_mut() = value.into_inner();
+        });
+    }
+
     pub fn with_borrow<F: FnOnce(&T) -> R, R>(&'static self, f: F) -> R {
         self.with(|cell| f(&cell.borrow()))
     }

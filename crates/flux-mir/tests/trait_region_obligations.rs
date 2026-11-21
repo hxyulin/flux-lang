@@ -2,6 +2,45 @@
 use std::process::Command;
 
 #[test]
+fn associated_constant_lifetime_contracts_match_rustc() {
+    let cases = [
+        (
+            "constant_return_escape",
+            "trait Has<T> { const VALUE: T; } fn leak<'a, P: Has<&'a u8>>(_: &'a u8) -> &'static u8 { <P as Has<&'a u8>>::VALUE }",
+            false,
+        ),
+        (
+            "unrelated_constant_argument",
+            "trait Has<T> { const VALUE: T; } fn get<'a, 'b, P: Has<&'a u8>>(_: &'a u8, _: &'b u8) -> &'b u8 { <P as Has<&'b u8>>::VALUE }",
+            false,
+        ),
+        (
+            "invariant_implemented_constant",
+            "use core::marker::PhantomData; struct Witness<T>(PhantomData<fn(T) -> T>); trait Has<T> { const VALUE: Witness<T>; } impl<'a> Has<&'a u8> for () { const VALUE: Witness<&'static u8> = Witness(PhantomData); }",
+            false,
+        ),
+        (
+            "covariant_implemented_constant",
+            "trait Has<T> { const VALUE: T; } impl<'a> Has<&'a u8> for () { const VALUE: &'static u8 = &42; } fn get<'a>(_: &'a u8) -> &'a u8 { <() as Has<&'a u8>>::VALUE }",
+            true,
+        ),
+    ];
+    check_cases(&cases, "associated-const");
+}
+
+#[test]
+fn sized_supertrait_can_be_implied_by_a_conditional_impl_header() {
+    check_cases(
+        &[(
+            "conditional_slice",
+            "trait Create: Sized {} impl<T> Create for [T] where Self: FromIterator<T> {}",
+            true,
+        )],
+        "conditional-sized",
+    );
+}
+
+#[test]
 fn impl_header_regions_constrain_obligations_like_rustc() {
     let cases = [
         (

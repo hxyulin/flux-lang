@@ -38,10 +38,10 @@ pub use flux_ty_ir::fn_regions::{
 pub use flux_ty_ir::regions::{
     AliasRegions, CallbackBinder, FUNCTION_LIFETIMES_ARG, FamilyProjection, FamilyRegions,
     FnRegions, IMPL_SELF_ARG, ImplRegions, LifetimeName, OpaqueBoundRegions, OpaqueRegions,
-    Outlives, ProjectionSelection, Region, RegionSigs, StructRegions, TRAIT_LIFETIMES_ARG,
-    TraitRefRegions, TraitRegions, TypeArgRegions, Variance, has_declared_projection_inputs,
-    has_projection_inputs, instantiate, item_owner_lifetimes, object_associated_range,
-    object_own_slots, object_region_types, slots,
+    Outlives, ProjectionOutlives, ProjectionSelection, Region, RegionSigs, StructRegions,
+    TRAIT_LIFETIMES_ARG, TraitRefRegions, TraitRegions, TypeArgRegions, Variance,
+    function_item_owner_lifetimes, has_declared_projection_inputs, has_projection_inputs,
+    instantiate, object_associated_range, object_own_slots, object_region_types, slots,
 };
 
 pub use crate::fn_regions::variances as fn_pointer_variances;
@@ -77,9 +77,7 @@ pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
 mod method_binders;
 mod object;
 mod projection_outlives;
-pub use projection_outlives::{
-    ProjectionOutlives, signature_projection_outlives, type_projection_outlives,
-};
+pub use projection_outlives::{signature_projection_outlives, type_projection_outlives};
 mod resolve;
 mod selected;
 pub(crate) use selected::closed_impl_predicates_hold;
@@ -575,7 +573,10 @@ impl<'a> Walker<'a> {
         }
         let description = crate::fn_regions::describe(
             self.items,
-            self.module,
+            crate::fn_regions::Scope {
+                module: self.module,
+                self_impl: self.scope.self_impl,
+            },
             names,
             params,
             ret,
@@ -743,7 +744,9 @@ impl<'a> Walker<'a> {
             && row.len() == slots(self.items, ty)
         {
             self.check_args(path);
-            out.extend_from_slice(row);
+            if !self.elision_only {
+                out.extend_from_slice(row);
+            }
             if let Some(selections) = &mut self.selections
                 && let Some((_, associated)) = self
                     .self_type_selections
@@ -866,7 +869,9 @@ impl<'a> Walker<'a> {
             && let Some((_, regions)) = self.self_types.iter().find(|(n, _)| *n == name)
         {
             self.check_args(path);
-            out.extend_from_slice(regions);
+            if !self.elision_only || path.qself.is_some() {
+                out.extend_from_slice(regions);
+            }
             return;
         }
         if path.qself.is_none()
@@ -874,7 +879,9 @@ impl<'a> Walker<'a> {
             && let Some((_, regions)) = self.inherited_self_types.iter().find(|(n, _)| *n == name)
         {
             self.check_args(path);
-            out.extend_from_slice(regions);
+            if !self.elision_only || path.qself.is_some() {
+                out.extend_from_slice(regions);
+            }
             return;
         }
         let resolved = match self.items.resolve(self.module, path, Ns::Types) {
@@ -1150,10 +1157,20 @@ impl<'a> Walker<'a> {
             })
             .map(|path| (self.module, path.clone()));
         let explicit_owner = owner_path.is_some();
+        // Lifetimes recovered from a declaration or an impl's Self
+        // identity are not written dependencies of an input type.
+        let infer_owner = !self.elision_only;
         let candidates: Vec<_> = self
             .projection_owners
             .iter()
-            .filter(|owner| owner.subject == alias.args[0] && owner.trait_ == alias.trait_)
+            .filter(|owner| {
+                infer_owner
+                    && owner.subject == alias.args[0]
+                    && owner.trait_ == alias.trait_
+                    // An inferred occurrence can instantiate a higher-ranked
+                    // bound, but its binder is not a named body lifetime.
+                    && (!self.infer_unknown_owners || owner.bound.bound_lifetimes.is_empty())
+            })
             .map(|owner| (owner.module, &owner.bound.path))
             .collect();
         let owner_path = owner_path.or_else(|| {
@@ -1169,7 +1186,8 @@ impl<'a> Walker<'a> {
             Some(q) => matches!(&q.ty, TypeRef::Path(p) if p.as_name() == Some(kw::SelfUpper)),
             None => path.segments.first() == Some(&kw::SelfUpper),
         };
-        let reuse_self_owner = !explicit_owner
+        let reuse_self_owner = infer_owner
+            && !explicit_owner
             && written_self
             && self.scope.self_ty == Some(alias.args[0])
             && self
@@ -1178,7 +1196,7 @@ impl<'a> Walker<'a> {
                 .is_some_and(|(trait_, lifetimes)| {
                     *trait_ == alias.trait_ && lifetimes.len() == alias.owner_lifetimes as usize
                 });
-        let inherited = if owner_path.is_none() && !reuse_self_owner {
+        let inherited = if infer_owner && owner_path.is_none() && !reuse_self_owner {
             self.inherited_projection_inputs(alias)
         } else {
             None
@@ -1193,15 +1211,23 @@ impl<'a> Walker<'a> {
                 out.extend(lifetimes.iter().copied());
             } else if let Some((module, owner)) = &owner_path {
                 self.in_module(*module, |walker| {
-                    walker.trait_lifetimes(owner, alias.trait_, false, out);
+                    if explicit_owner {
+                        // A qualified projection is a type occurrence. Its
+                        // omitted lifetime participates in type elision,
+                        // including the output of a parenthesized Fn bound.
+                        walker.lifetime_args(owner, "trait", alias.owner_lifetimes as usize, out);
+                    } else {
+                        walker.trait_lifetimes(owner, alias.trait_, false, out);
+                    }
                 });
-            } else if let Some((trait_, lifetimes)) = &self.self_projection_owner
+            } else if infer_owner
+                && let Some((trait_, lifetimes)) = &self.self_projection_owner
                 && *trait_ == alias.trait_
                 && self.scope.self_ty == Some(alias.args[0])
                 && lifetimes.len() == alias.owner_lifetimes as usize
             {
                 out.extend(lifetimes.iter().copied());
-            } else if self.infer_unknown_owners {
+            } else if self.infer_unknown_owners || !infer_owner {
                 out.extend(std::iter::repeat_n(
                     Region::Erased,
                     alias.owner_lifetimes as usize,
@@ -1221,7 +1247,7 @@ impl<'a> Walker<'a> {
         let self_start = out.len();
         if let Some(qself) = &path.qself {
             self.walk(&qself.ty, self_ty, out);
-        } else if path.segments.first() == Some(&kw::SelfUpper) {
+        } else if !self.elision_only && path.segments.first() == Some(&kw::SelfUpper) {
             if let Some(regions) = self.self_regions {
                 out.extend(regions.iter().copied());
             } else {
@@ -2000,7 +2026,12 @@ pub fn trait_requirements(
                     &mut table,
                 );
                 out.extend(table.into_iter().map(|a| Outlives::Region(a, b)));
-                outlives_params(items, sigs, ty.subst(&types), b, &mut out);
+                // Rust decides nominal outlives bounds from the type's
+                // arguments. A projection used only in a field is not an
+                // extra obligation on the impl header.
+                for component in type_outlives_components(items, sigs, ty.subst(&types), false) {
+                    out.push(Outlives::Type(component, b));
+                }
             }
         }
     }
@@ -2068,7 +2099,12 @@ fn stored_regions<R: Copy>(items: &ItemTree, ty: Ty, regions: &[R]) -> Vec<R> {
                     visit(items, ty, row, next, out);
                 }
             }
-            TyKind::FnDef(_) => *next += slots(items, ty),
+            TyKind::FnDef(def) => {
+                *next += def.owner_lifetimes as usize;
+                for &arg in def.args {
+                    visit(items, arg, row, next, out);
+                }
+            }
             TyKind::Array(elem, _) => visit(items, elem, row, next, out),
             _ => {
                 for child in ty.children() {
@@ -2404,6 +2440,15 @@ pub fn outlives_structs_with_projections(
 /// such as `Cow<B>`'s `B::Owned`. Include those components in both implied
 /// assumptions and obligations, using the same storage traversal.
 pub fn outlives_type_components(items: &ItemTree, sigs: &Signatures, ty: Ty) -> Vec<Ty> {
+    type_outlives_components(items, sigs, ty, true)
+}
+
+fn type_outlives_components(
+    items: &ItemTree,
+    sigs: &Signatures,
+    ty: Ty,
+    include_projected_fields: bool,
+) -> Vec<Ty> {
     // A nominal type gets its free regions through its declaration inputs.
     // A closed instance has no such regions. Its hidden projections can have
     // explicit lifetime rows, which cannot be recovered from their erased types.
@@ -2559,7 +2604,11 @@ pub fn outlives_type_components(items: &ItemTree, sigs: &Signatures, ty: Ty) -> 
     let mut components = Components {
         items,
         sigs,
-        projected: outlives_structs_with_projections(sigs, ty),
+        projected: if include_projected_fields {
+            outlives_structs_with_projections(sigs, ty)
+        } else {
+            Default::default()
+        },
         active: Vec::new(),
         expanding: Default::default(),
         visited: Default::default(),

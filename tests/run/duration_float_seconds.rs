@@ -12,7 +12,12 @@ fn print_result(value: f64) {
 
 fn main() {
     println!("{}", SECONDS.to_bits());
-    for (secs, nanos) in [(0, 1), (1, 999_999_999), (16_777_217, 500_000_000), (u64::MAX, 0)] {
+    for (secs, nanos) in [
+        (0, 1),
+        (1, 999_999_999),
+        (16_777_217, 500_000_000),
+        (u64::MAX, 0),
+    ] {
         println!("{}", Duration::new(secs, nanos).as_secs_f32().to_bits());
     }
     for bits in [
@@ -33,5 +38,15 @@ fn main() {
         f64::NAN.to_bits(),
     ] {
         print_result(f64::from_bits(bits));
+    }
+
+    for value in [-0.0, 2.25f32, 1.0 / 1024.0, 3.0 / 1024.0, 1.0e-8, 1.0e18] {
+        let duration = Duration::from_secs_f32(value);
+        assert_eq!(Duration::try_from_secs_f32(value), Ok(duration));
+        assert_eq!(Duration::from_secs_f64(value as f64), duration);
+        println!("{} {}", duration.as_secs(), duration.subsec_nanos());
+    }
+    for value in [-1.0, f32::INFINITY, f32::NAN] {
+        println!("{}", Duration::try_from_secs_f32(value).unwrap_err());
     }
 }

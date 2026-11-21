@@ -415,13 +415,14 @@ fn guards(_1: Option<i32>, _2: Option<i32>, _3: Option<S>) -> () {
     let _9: ();
     let _10: &mut i32; // n
     let _11: isize;
-    let _12: bool;
-    let _13: ();
-    let _14: i32;
-    let _15: S; // s
-    let _16: isize;
-    let _17: bool;
-    let _18: S;
+    let _12: &mut i32; // n
+    let _13: bool;
+    let _14: ();
+    let _15: i32;
+    let _16: S; // s
+    let _17: isize;
+    let _18: bool;
+    let _19: S;
 
     bb0: {
         _5 = discriminant(_1);
@@ -469,8 +470,8 @@ fn guards(_1: Option<i32>, _2: Option<i32>, _3: Option<S>) -> () {
     }
 
     bb9: {
-        _16 = discriminant(_3);
-        switchInt(copy _16) -> [1: bb19, otherwise: bb18];
+        _17 = discriminant(_3);
+        switchInt(copy _17) -> [1: bb19, otherwise: bb18];
     }
 
     bb10: {
@@ -478,12 +479,12 @@ fn guards(_1: Option<i32>, _2: Option<i32>, _3: Option<S>) -> () {
     }
 
     bb11: {
-        _10 = &mut (_2 as #1).0;
-        _14 = copy (*_10);
-        (*_10) = Add(copy _14, const 1_i32);
-        _13 = const ();
-        _12 = const true;
-        switchInt(copy _12) -> [0: bb14, otherwise: bb13];
+        _12 = &mut (_2 as #1).0;
+        _15 = copy (*_12);
+        (*_12) = Add(copy _15, const 1_i32);
+        _14 = const ();
+        _13 = const true;
+        switchInt(copy _13) -> [0: bb14, otherwise: bb13];
     }
 
     bb12: {
@@ -493,11 +494,13 @@ fn guards(_1: Option<i32>, _2: Option<i32>, _3: Option<S>) -> () {
     }
 
     bb13: {
+        StorageDead(_12);
+        _10 = &mut (_2 as #1).0;
         goto -> bb12;
     }
 
     bb14: {
-        StorageDead(_10);
+        StorageDead(_12);
         goto -> bb10;
     }
 
@@ -519,18 +522,18 @@ fn guards(_1: Option<i32>, _2: Option<i32>, _3: Option<S>) -> () {
     }
 
     bb19: {
-        _18 = copy (_3 as #1).0;
-        _17 = take_bool(move _18) -> bb23;
+        _19 = copy (_3 as #1).0;
+        _18 = take_bool(move _19) -> bb23;
     }
 
     bb20: {
         _0 = const ();
-        StorageDead(_15);
+        StorageDead(_16);
         goto -> bb17;
     }
 
     bb21: {
-        _15 = move (_3 as #1).0;
+        _16 = move (_3 as #1).0;
         goto -> bb20;
     }
 
@@ -539,7 +542,7 @@ fn guards(_1: Option<i32>, _2: Option<i32>, _3: Option<S>) -> () {
     }
 
     bb23: {
-        switchInt(copy _17) -> [0: bb22, otherwise: bb21];
+        switchInt(copy _18) -> [0: bb22, otherwise: bb21];
     }
 
     bb24: {

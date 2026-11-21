@@ -227,27 +227,31 @@ impl<T> Vec<T> {
     /// Mutates elements and keeps those accepted by `f`, in order.
     /// Unvisited elements stay in the vector if the predicate unwinds.
     pub fn retain_mut<F: FnMut(&mut T) -> bool>(&mut self, mut f: F) {
+        for value in self.extract_if_range(0, self.len, |value| !f(value)) {
+            drop(value);
+        }
+    }
+
+    /// Lazily removes and yields elements in `range` for which `filter`
+    /// returns true. Unvisited elements remain in the vector on drop.
+    ///
+    /// # Panics
+    /// Panics if the range is reversed or outside the vector.
+    #[track_caller]
+    pub fn extract_if<R, F>(&mut self, range: R, filter: F) -> ExtractIf<'_, T, F>
+    where R: core::ops::RangeBounds<usize>, F: FnMut(&mut T) -> bool {
+        let core::ops::Range { start, end } = core::slice::range(range, ..self.len);
+        self.extract_if_range(start, end, filter)
+    }
+
+    fn extract_if_range<F>(&mut self, start: usize, end: usize, filter: F) -> ExtractIf<'_, T, F>
+    where F: FnMut(&mut T) -> bool {
         let original = self.len;
         self.len = 0;
-        let mut guard = RetainGuard { vec: self, original, processed: 0, deleted: 0 };
-        while guard.processed < original {
-            // SAFETY: processed indexes the initialized unvisited interval.
-            // Its unique reference ends before moving or dropping the value.
-            let current = unsafe { guard.vec.as_mut_ptr().add(guard.processed) };
-            if !f(unsafe { &mut *current }) {
-                guard.processed += 1;
-                guard.deleted += 1;
-                // SAFETY: the slot is removed from the live interval before
-                // running user Drop, so the guard never drops it again.
-                unsafe { ptr::drop_in_place(current) };
-            } else {
-                if guard.deleted != 0 {
-                    // SAFETY: the destination is a preceding deleted slot.
-                    // Each initialized retained element moves exactly once.
-                    unsafe { ptr::copy_nonoverlapping(current, guard.vec.as_mut_ptr().add(guard.processed - guard.deleted), 1) };
-                }
-                guard.processed += 1;
-            }
+        ExtractIf {
+            state: RetainGuard { vec: self, original, processed: start, deleted: 0 },
+            end,
+            filter,
         }
     }
 
@@ -596,14 +600,71 @@ struct RetainGuard<'a, T> { vec: &'a mut Vec<T>, original: usize, processed: usi
 impl<T> Drop for RetainGuard<'_, T> {
     fn drop(&mut self) {
         if self.deleted != 0 && self.processed != self.original {
-            // SAFETY: move the still-initialized unvisited tail into the gap.
-            // Overlap is allowed; the old trailing bytes cease to be live.
+            // SAFETY: the tail was never moved, and copy permits overlap.
+            // After the move only the compacted prefix and tail stay live.
             unsafe {
                 let base = self.vec.as_mut_ptr();
                 ptr::copy(base.add(self.processed), base.add(self.processed - self.deleted), self.original - self.processed);
             }
         }
         self.vec.len = self.original - self.deleted;
+    }
+}
+
+/// The values lazily removed by [`Vec::extract_if`].
+pub struct ExtractIf<'a, T, F> {
+    state: RetainGuard<'a, T>,
+    end: usize,
+    filter: F,
+}
+
+impl<T, F: FnMut(&mut T) -> bool> Iterator for ExtractIf<'_, T, F> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<T> {
+        while self.state.processed < self.end {
+            let index = self.state.processed;
+            let base = self.state.vec.as_mut_ptr();
+            // SAFETY: index denotes the first unvisited initialized value.
+            // The temporary exclusive reference ends before the slot moves.
+            let current = unsafe { base.add(index) };
+            let remove = (self.filter)(unsafe { &mut *current });
+            self.state.processed += 1;
+            if remove {
+                self.state.deleted += 1;
+                // SAFETY: the iterator no longer treats this slot as live.
+                return Some(unsafe { ptr::read(current) });
+            }
+            if self.state.deleted != 0 {
+                // SAFETY: the destination precedes the source in a hole
+                // created by prior removals. Ownership moves exactly once.
+                unsafe { ptr::copy_nonoverlapping(current, base.add(index - self.state.deleted), 1) };
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.end - self.state.processed))
+    }
+}
+
+impl<T: core::fmt::Debug, F> core::fmt::Debug for ExtractIf<'_, T, F> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let base = self.state.vec.as_ptr();
+        // SAFETY: the compacted prefix and unvisited tail are initialized.
+        let (retained, remainder, skipped_tail) = unsafe {
+            (
+                core::slice::from_raw_parts(base, self.state.processed - self.state.deleted),
+                core::slice::from_raw_parts(base.add(self.state.processed), self.end - self.state.processed),
+                core::slice::from_raw_parts(base.add(self.end), self.state.original - self.end),
+            )
+        };
+        f.debug_struct("ExtractIf")
+            .field("retained", &retained)
+            .field("remainder", &remainder)
+            .field("skipped_tail", &skipped_tail)
+            .finish_non_exhaustive()
     }
 }
 
@@ -948,6 +1009,11 @@ impl<T> IntoIter<T> {
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         // SAFETY: only this iterator owns the remaining initialized interval.
         unsafe { core::slice::from_raw_parts_mut(self.buf.ptr().add(self.start), self.end - self.start) }
+    }
+}
+impl<T> Default for IntoIter<T> {
+    fn default() -> Self {
+        Vec::new().into_iter()
     }
 }
 impl<T: Clone> Clone for IntoIter<T> {

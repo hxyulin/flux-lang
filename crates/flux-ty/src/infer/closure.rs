@@ -470,30 +470,55 @@ impl Ctx<'_> {
         at: TextRange,
     ) {
         for (&arg, &param) in args.iter().zip(params) {
-            self.hint_closure_arg(function, generic_args, param, arg, at);
+            self.hint_closure_arg(param, arg, at, &mut |cx, param| {
+                cx.closure_hint(function, generic_args, param)
+            });
         }
+    }
+
+    pub(super) fn hint_constructor_closure(
+        &mut self,
+        owner: Ty,
+        field: Ty,
+        expression: ExprId,
+        range: TextRange,
+    ) {
+        let TyKind::Adt(adt, args) = owner.kind() else {
+            return;
+        };
+        let predicates = self
+            .sigs
+            .struct_predicates
+            .get(adt.strukt)
+            .map_or(&[][..], |p| p);
+        if predicates.is_empty() {
+            return;
+        }
+        let projections = self
+            .sigs
+            .struct_projections
+            .get(adt.strukt)
+            .map_or(&[][..], |p| p);
+        self.hint_closure_arg(field, expression, range, &mut |cx, field| {
+            cx.closure_hint_from(predicates, projections, args, field)
+        });
     }
 
     fn hint_closure_arg(
         &mut self,
-        function: FunctionId,
-        generic_args: &[Ty],
         param: Ty,
         arg: ExprId,
         at: TextRange,
+        hint: &mut impl FnMut(&mut Self, Ty) -> Option<Hint>,
     ) {
         let mut closure = self.blame(arg);
         if let Expr::Tuple(fields) = self.body.exprs[closure] {
             if let TyKind::Tuple(elements) = self.shallow(param).kind()
                 && self.body.lists[fields].len() == elements.len()
             {
-                self.hint_closure_args(
-                    function,
-                    generic_args,
-                    elements,
-                    &self.body.lists[fields],
-                    at,
-                );
+                for (&field, &ty) in self.body.lists[fields].iter().zip(elements) {
+                    self.hint_closure_arg(ty, field, at, hint);
+                }
             }
             return;
         }
@@ -505,7 +530,7 @@ impl Ctx<'_> {
             closure = expr;
         }
         if matches!(self.body.exprs[closure], Expr::Closure { .. })
-            && let Some(mut hint) = self.closure_hint(function, generic_args, param)
+            && let Some(mut hint) = hint(self, param)
         {
             if shared {
                 hint.kind = ClosureKind::Fn;

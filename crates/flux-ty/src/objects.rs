@@ -324,7 +324,10 @@ pub(crate) fn resolve_dyn(
             let signature = crate::FnSigTy::new(types, *tys.first()?, false);
             let description = crate::fn_regions::describe(
                 items,
-                module,
+                crate::fn_regions::Scope {
+                    module,
+                    self_impl: scope.self_impl,
+                },
                 &bound_lifetimes,
                 &params,
                 &ret,
@@ -375,7 +378,10 @@ pub(crate) fn resolve_dyn(
         };
         let description = crate::fn_regions::describe(
             items,
-            module,
+            crate::fn_regions::Scope {
+                module,
+                self_impl: scope.self_impl,
+            },
             &first.bound_lifetimes,
             &params,
             &flux_hir::TypeRef::Tuple(Box::default()),

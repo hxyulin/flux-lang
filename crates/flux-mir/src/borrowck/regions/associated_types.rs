@@ -59,6 +59,258 @@ pub(crate) fn impl_associated_values_match(
 }
 
 impl Cx<'_> {
+    pub(super) fn check_impl_const_regions(
+        &mut self,
+        id: flux_hir::ConstId,
+        imp: flux_hir::ImplId,
+        lifetimes: &[Var],
+    ) {
+        let items = self.items;
+        let sigs = self.sigs;
+        let Some(&trait_ref) = sigs.impl_traits.get(imp) else {
+            return;
+        };
+        let konst = &items.consts[id];
+        let Some(required) = konst
+            .name
+            .and_then(|name| items.traits[trait_ref.trait_].konst(items, name))
+        else {
+            return;
+        };
+        let Some(&source) = sigs.consts.get(id) else {
+            return;
+        };
+        let Some(&template) = sigs.consts.get(required) else {
+            return;
+        };
+        let args: Vec<_> = std::iter::once(sigs.impls[imp])
+            .chain(trait_ref.args.iter().copied())
+            .collect();
+        let Some(block) = sigs.regions.impls.get(imp) else {
+            return;
+        };
+        // The trait's signature can name associated types defined by this
+        // very impl. Use the checked RHS of each ordinary associated type.
+        let map = |region| match region {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            _ => None,
+        };
+        let env_start = self.env.len();
+        let regions_start = self.env_regions.len();
+        for (name, table) in &block.types {
+            let Some(ty) = flux_solve::traits::impl_type(sigs, imp, *name) else {
+                continue;
+            };
+            let alias = flux_solve::traits::alias_of(items, trait_ref, args[0], *name);
+            if alias.owner_lifetimes != 0
+                || items.impls[imp].types.iter().any(|item| {
+                    item.name == *name
+                        && (!item.generics.lifetimes.is_empty() || !item.generics.params.is_empty())
+                })
+            {
+                continue;
+            }
+            if let Some(vars) = self.instantiate_sig(ty, table, &mut |r| map(r), &[], &[])
+                && vars.len() == self.slots(self.normalize(ty)) as usize
+            {
+                self.env.push(flux_ty::Projection { alias, ty });
+                self.env_regions.push((alias, vars));
+            }
+        }
+        let target = self.normalize(template.subst(&args));
+        let normalized = self.normalize(source);
+        if self.slots(target) == 0
+            && self.slots(normalized) == 0
+            && flux_solve::fn_regions::same_binders(items, normalized, target)
+        {
+            self.env.truncate(env_start);
+            self.env_regions.truncate(regions_start);
+            return;
+        }
+        let range = konst.ty_range;
+        let rows = (|| {
+            if block.trait_args.len() != trait_ref.args.len() {
+                return None;
+            }
+            let mut vars = Vec::with_capacity(args.len());
+            for (&ty, row) in args
+                .iter()
+                .zip(std::iter::once(&block.self_ty).chain(block.trait_args.iter()))
+            {
+                let values = self.instantiate_sig(ty, row, &mut |r| map(r), &[], &[])?;
+                if values.len() != self.slots(self.normalize(ty)) as usize {
+                    return None;
+                }
+                vars.push(values);
+            }
+            let owner = block
+                .trait_lifetimes
+                .iter()
+                .copied()
+                .map(map)
+                .collect::<Option<Vec<_>>>()?;
+            let mut map_trait = |region| match region {
+                Region::Static => Some(STATIC),
+                Region::Param(i) => owner.get(i as usize).copied(),
+                _ => None,
+            };
+            let found = self.instantiate_sig(
+                source,
+                sigs.regions.consts.get(id)?,
+                &mut |r| map(r),
+                &[],
+                &[],
+            )?;
+            let expected = self.instantiate_sig(
+                template,
+                sigs.regions.consts.get(required)?,
+                &mut map_trait,
+                &args,
+                &vars,
+            )?;
+            (found.len() == self.slots(self.normalize(source)) as usize
+                && expected.len() == self.slots(target) as usize)
+                .then_some((found, expected))
+        })();
+        if let Some((found, expected)) = rows {
+            self.relate_types(
+                source,
+                &found,
+                target,
+                &expected,
+                Variance::Covariant,
+                Category::Boring,
+                range,
+            );
+        } else {
+            self.errors.push(Diagnostic::new(
+                range,
+                "implemented constant lifetime arguments are not represented",
+            ));
+        }
+        self.env.truncate(env_start);
+        self.env_regions.truncate(regions_start);
+    }
+
+    pub(super) fn associated_const_value(
+        &mut self,
+        id: flux_hir::ConstId,
+        args: &[Ty],
+        written: &flux_ty::regions::TypeArgRegions,
+        range: TextRange,
+    ) -> Option<(Ty, Vec<Var>)> {
+        let items = self.items;
+        let sigs = self.sigs;
+        let Some(flux_hir::Owner::Trait(owner)) = items.consts[id].owner else {
+            return None;
+        };
+        let header = sigs.regions.traits.get(owner)?;
+        let owner_goal = flux_solve::traits::trait_self_predicate(items, owner);
+        if args.len() != owner_goal.trait_ref.args.len() + 1 {
+            return None;
+        }
+        let lifetimes = self.fresh_list(header.names.len() as u32);
+        let types = self.instantiated_type_vars(args);
+        for (index, row) in written {
+            let vars = if *index == flux_ty::regions::TRAIT_LIFETIMES_ARG {
+                &lifetimes
+            } else {
+                types.get(*index as usize)?
+            };
+            if row.len() != vars.len() {
+                return None;
+            }
+            for (&var, &region) in vars.iter().zip(row.iter()) {
+                let declared = match region {
+                    Region::Static => Some(STATIC),
+                    Region::Param(i) => self.universal.get(1 + i as usize).map(|&(v, _)| v),
+                    Region::Erased => continue,
+                    Region::Late(_) => None,
+                }?;
+                self.equate(var, declared, Category::CallArgument, range);
+            }
+        }
+        for (&ty, vars) in args.iter().zip(&types) {
+            let ty = self.normalize(ty);
+            self.adt_obligations(ty, vars, range);
+            self.require_written_type_wf(ty, vars, Category::CallArgument, range);
+        }
+        let map = |r| match r {
+            Region::Static => Some(STATIC),
+            Region::Param(i) => lifetimes.get(i as usize).copied(),
+            _ => None,
+        };
+        for &requirement in &header.outlives {
+            match requirement {
+                Outlives::Region(a, b) => {
+                    self.outlives(map(a)?, map(b)?, Category::CallArgument, range);
+                }
+                Outlives::Type(ty, b) => {
+                    let row = self.instantiate_sig(ty, &[], &mut |r| map(r), args, &types)?;
+                    let ty = self.normalize(ty.subst(args));
+                    if row.len() != self.slots(ty) as usize {
+                        return None;
+                    }
+                    self.stored_type_outlives(ty, &row, map(b)?, Category::CallArgument, range);
+                }
+            }
+        }
+        self.prove(owner_goal.subst(args), &types, &lifetimes, range, 0);
+        let scheme = flux_ty::regions::trait_bound_schemes(items, sigs, owner)?;
+        let bounds: Vec<_> = scheme
+            .predicates
+            .iter()
+            .copied()
+            .zip(scheme.subjects.iter())
+            .zip(scheme.traits.iter().cloned())
+            .map(|((predicate, row), regions)| (predicate, row.as_ref(), regions))
+            .collect();
+        let projections = &sigs.traits.get(owner)?.header_projections;
+        if projections.len() != scheme.projections.len() {
+            return None;
+        }
+        let previous = std::mem::replace(
+            &mut self.call_projections,
+            projections
+                .iter()
+                .copied()
+                .zip(scheme.projections.iter().cloned())
+                .collect(),
+        );
+        for (predicate, row, regions) in &bounds {
+            self.prove_bound(*predicate, row, regions, &lifetimes, args, &types, range, 0);
+        }
+        self.call_projections = previous;
+        for (index, (&projection, row)) in projections
+            .iter()
+            .zip(scheme.projections.iter())
+            .enumerate()
+        {
+            let input =
+                self.declared_projection_input(&scheme.schema, projections, index, &bounds, range);
+            self.prove_projection(
+                projection,
+                row,
+                input.as_ref(),
+                &lifetimes,
+                args,
+                &types,
+                range,
+            );
+        }
+        let template = *sigs.consts.get(id)?;
+        let row = self.instantiate_sig(
+            template,
+            sigs.regions.consts.get(id)?,
+            &mut |r| map(r),
+            args,
+            &types,
+        )?;
+        let value = self.normalize(template.subst(args));
+        (row.len() == self.slots(value) as usize).then_some((value, row))
+    }
+
     /// A region-free output may follow from a quantified original header even
     /// when the projection's selection inputs contain references. Match those
     /// inputs before using the equality; never install an erased alias globally.
@@ -212,6 +464,7 @@ impl Cx<'_> {
                 Outlives::Type(t, b) => self.known_types.push((t, map(b)?)),
             }
         }
+        self.assume_projection_bounds(&block.projection_bounds, map);
         // Elaborating header predicates can instantiate a selected family.
         // Its proof may query universals, so close the original header facts
         // before adding any obligations from that selection.
@@ -349,7 +602,12 @@ impl Cx<'_> {
             let Some(own) = self.instantiate_sig(ty, table, &mut map, args, arg_vars) else {
                 return false;
             };
-            let signature = match (if args.is_empty() { ty } else { ty.subst(args) }).kind() {
+            // The recipe proves the original projection, but an expanded
+            // row has the selected output's shape, which can add slots.
+            let signature = match self
+                .normalize(if args.is_empty() { ty } else { ty.subst(args) })
+                .kind()
+            {
                 TyKind::FnPtr(signature) => signature,
                 _ => return false,
             };

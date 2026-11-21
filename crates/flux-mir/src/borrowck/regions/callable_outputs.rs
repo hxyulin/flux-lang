@@ -291,12 +291,14 @@ impl Cx<'_> {
                 .collect();
             // Include the owner's fixed variables in the outer side of the
             // binder proof even though its input rows are already available.
-            let fixed_owner = if let TyKind::FnDef(def) = callee.kind()
-                && flux_ty::regions::item_owner_lifetimes(self.items, def) != 0
-            {
-                actual_rows.first()?.clone()
-            } else {
+            let stored = matches!(callee.kind(), TyKind::FnDef(_))
+                .then(|| actual_rows.first())
+                .flatten()
+                .filter(|row| !row.is_empty());
+            let fixed_owner = if stored.is_none() {
                 self.fresh_list(owner_count)
+            } else {
+                Vec::new()
             };
             if !bound.is_empty() {
                 let implied: Vec<_> = self
@@ -313,7 +315,7 @@ impl Cx<'_> {
             self.late_inputs = self.late_slots(predicate.trait_ref.args[0], inputs, args, arg_vars);
             // The erased FnDef trait check cannot establish its owner
             // provenance, even when no Output equality was written.
-            let item_output = if fixed_owner.is_empty() {
+            let item_output = if stored.is_none() && fixed_owner.is_empty() {
                 None
             } else {
                 let TyKind::Tuple(input_types) = input_ty.kind() else {
@@ -325,7 +327,9 @@ impl Cx<'_> {
                     inputs,
                     FunctionUse::CallableEquality,
                     None,
-                    &fixed_owner,
+                    stored.map_or(ItemRegions::Owner(&fixed_owner), |row| {
+                        ItemRegions::Stored(row)
+                    }),
                 )?)
             };
             // Angle-bracket Fn<Args> in the trusted forwarding impls need not
@@ -406,7 +410,7 @@ impl Cx<'_> {
                         inputs,
                         FunctionUse::CallableEquality,
                         None,
-                        &[],
+                        ItemRegions::Stored(own),
                     ),
                     TyKind::FnPtr(_) | TyKind::Dynamic(_) => {
                         let (signature, own) = match source.kind() {

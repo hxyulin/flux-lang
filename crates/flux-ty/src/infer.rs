@@ -91,6 +91,8 @@ pub struct InferenceResult {
     pub calls: ArenaMap<Expr, Instance>,
     /// Written function type arguments, indexed in the full generic argument list.
     pub call_regions: ArenaMap<Expr, crate::regions::TypeArgRegions>,
+    /// The owner argument regions at a trait associated constant use.
+    pub const_arg_regions: ArenaMap<Expr, crate::regions::TypeArgRegions>,
     /// The slots of constructors' types as their paths' generic arguments
     /// write them: `S<'a, T>` for `S::<'a, T> { .. }`, `S::<'a, T>(x)` (at
     /// the call) and `E::<'a, T>::A`. The value has exactly that type,
@@ -1536,6 +1538,7 @@ impl Ctx<'_> {
         );
         let scope = TypeScope {
             self_ty: self.self_ty,
+            self_impl: self.owner_fn.and_then(|f| self.items.impl_of(f)),
             self_supertraits: &self_supertraits,
             self_inherited_types: &self_inherited_types,
             generics: &self.generics,
@@ -1647,6 +1650,7 @@ impl Ctx<'_> {
         walker.infer_objects = local || argument;
         walker.scope = TypeScope {
             self_ty: self.self_ty,
+            self_impl: walker.scope.self_impl,
             generics: &self.generics,
             consts: &self.const_params,
             bounds: &self.param_env,
@@ -1701,6 +1705,7 @@ impl Ctx<'_> {
         &mut self,
         calls: &ArenaMap<Expr, Instance>,
         consts: &ArenaMap<Expr, ConstInstance>,
+        const_arg_regions: &ArenaMap<Expr, crate::regions::TypeArgRegions>,
     ) -> ArenaMap<Expr, Box<[crate::regions::Region]>> {
         const UNSUPPORTED: &str = "lifetime arguments in expressions are not supported yet";
         let body = self.body;
@@ -1782,6 +1787,9 @@ impl Ctx<'_> {
                 // Written in the path's type, which `call_regions` has, or
                 // reported where it is resolved.
                 Expr::Path(Res::Assoc { trait_: None, .. }) => (false, true),
+                Expr::Path(Res::Assoc { .. }) if const_arg_regions.get(expr).is_some() => {
+                    (false, true)
+                }
                 // The trait's, which `call_regions` has at a call of one of
                 // its functions.
                 Expr::Path(Res::Assoc {
@@ -1850,6 +1858,7 @@ impl Ctx<'_> {
                 ty: Some(written), ..
             }) = data
                 && calls.get(expr).is_none()
+                && const_arg_regions.get(expr).is_none()
             {
                 let mut found = Vec::new();
                 crate::regions::lifetimes_in(&body.types[*written], &mut found);
@@ -1899,8 +1908,7 @@ impl Ctx<'_> {
                 let Some(trait_sig) = self.sigs.traits.get(trait_) else {
                     return false;
                 };
-                if !trait_data.generics.lifetimes.is_empty()
-                    || !trait_sig.header_projections.is_empty()
+                if !trait_sig.header_projections.is_empty()
                     || !trait_sig.supertraits.is_empty()
                     || self
                         .sigs
@@ -1936,9 +1944,10 @@ impl Ctx<'_> {
         };
         if block.self_ty.len() != crate::regions::slots(self.items, self.sigs.impls[imp])
             || !block.self_ty.iter().all(represented)
-            || !block.trait_lifetimes.is_empty()
+            || (predicate.is_none() && !block.trait_lifetimes.is_empty())
             || block.trait_args.iter().any(|row| !row.is_empty())
             || block.header_selections.iter().any(|row| !row.is_empty())
+            || !block.projection_bounds.is_empty()
             || !crate::regions::closed_impl_predicates_hold(self.items, self.sigs, imp, impl_args)
             || self
                 .sigs
@@ -1985,6 +1994,7 @@ impl Ctx<'_> {
             return false;
         }
         if block.bounds.is_empty()
+            && block.trait_lifetimes.is_empty()
             && row.iter().all(|&r| r == Region::Static)
             && lifetimes.iter().all(|l| l.is_static() || l.is_anonymous())
         {
@@ -2027,7 +2037,20 @@ impl Ctx<'_> {
             return false;
         }
         let requirements = if let Some(predicate) = predicate {
+            // The selected impl's trait lifetimes must follow from the
+            // written Self occurrence. A lifetime absent from that
+            // occurrence cannot be inferred from an erased constant value.
+            let Some(trait_lifetimes) = block
+                .trait_lifetimes
+                .iter()
+                .copied()
+                .map(map)
+                .collect::<Option<Box<_>>>()
+            else {
+                return false;
+            };
             let regions = crate::regions::TraitRefRegions {
+                lifetimes: trait_lifetimes,
                 args: vec![Box::default(); predicate.trait_ref.args.len()].into(),
                 ..Default::default()
             };
@@ -2081,7 +2104,7 @@ impl Ctx<'_> {
     /// separately against the written type.
     fn closed_const_owner_type(&self, ty: Ty) -> bool {
         match ty.kind() {
-            TyKind::Adt(adt, _) => {
+            TyKind::Adt(adt, args) => {
                 if self
                     .sigs
                     .struct_predicates
@@ -2095,6 +2118,17 @@ impl Ctx<'_> {
                 {
                     return false;
                 }
+                let params = &self.items.structs[adt.strukt].generics.params;
+                return args.len() == params.len()
+                    && args.iter().zip(params).all(|(&arg, param)| {
+                        if param.is_const() {
+                            // A symbolic const argument selects a value, but
+                            // contributes no type or lifetime obligation.
+                            matches!(arg.kind(), TyKind::Param(_) | TyKind::Value(_))
+                        } else {
+                            self.closed_const_owner_type(arg)
+                        }
+                    });
             }
             TyKind::Dynamic(object) => {
                 if crate::fn_trait_kind(self.items, object.trait_).is_none()
@@ -2157,6 +2191,7 @@ impl Ctx<'_> {
         }
         walker.scope = TypeScope {
             self_ty: self.self_ty,
+            self_impl: owner_impl,
             self_trait: self.self_trait,
             self_types: owner_impl
                 .and_then(|imp| self.sigs.impl_types.get(imp))
@@ -2232,6 +2267,55 @@ impl Ctx<'_> {
         Some(regions)
     }
 
+    fn constant_arg_regions(
+        &mut self,
+        expr: ExprId,
+        instance: ConstInstance,
+    ) -> Option<crate::regions::TypeArgRegions> {
+        let Some(flux_hir::Owner::Trait(owner)) = self.items.consts[instance.konst].owner else {
+            return None;
+        };
+        let carries_regions = !self.items.traits[owner].generics.lifetimes.is_empty()
+            || instance
+                .args
+                .iter()
+                .any(|&ty| crate::regions::slots(self.items, ty) != 0);
+        if !carries_regions {
+            return None;
+        }
+        let const_impl = match self.closure_owner {
+            crate::ClosureOwner::Const(id) => self.items.consts[id]
+                .owner
+                .and_then(flux_hir::Owner::as_impl),
+            crate::ClosureOwner::Function(_) => None,
+        };
+        let mut tables = Vec::new();
+        if let Expr::Path(Res::Assoc { ty, trait_, .. }) = self.body.exprs[expr] {
+            if let Some(written) = ty
+                && let Some(&self_ty) = instance.args.first()
+                && let Some(row) = self.written_type_regions_in(written, self_ty, const_impl)
+            {
+                tables.push((0, row));
+            }
+            if trait_ == Some(owner)
+                && let Some(written) = self.body.generic_args.get(expr).and_then(|g| g.ty.as_ref())
+            {
+                for (index, (&ty, &written)) in
+                    instance.args[1..].iter().zip(&written.types).enumerate()
+                {
+                    if let Some(row) = self.written_type_regions_in(written, ty, const_impl) {
+                        tables.push((index as u32 + 1, row));
+                    }
+                }
+                if let Some(row) = self.written_trait_lifetimes(owner, written) {
+                    tables.push((crate::regions::TRAIT_LIFETIMES_ARG, row));
+                }
+            }
+        }
+        tables.retain(|(_, row)| row.iter().any(|r| *r != crate::regions::Region::Erased));
+        Some(tables)
+    }
+
     /// The lifetimes written in generic arguments `written`, `'_` aside.
     fn written_lifetimes(&self, written: &SegmentArgs) -> Vec<flux_hir::LifetimeRef> {
         let mut found = written.lifetimes.to_vec();
@@ -2254,19 +2338,109 @@ impl Ctx<'_> {
         }
     }
 
+    /// Convert the written self type's regions into the function item's
+    /// owner and type argument slots. The self type can reorder or repeat them.
+    fn function_item_self_regions(
+        &self,
+        def: crate::FnDefTy,
+        written: &[crate::regions::Region],
+        row: &mut [crate::regions::Region],
+    ) -> Option<()> {
+        use crate::regions::{Region, instantiate, slots};
+
+        #[derive(Clone, Copy)]
+        enum Slot {
+            Item(usize),
+            Static,
+            Untracked,
+        }
+
+        let imp = self.items.impl_of(def.function)?;
+        let self_ty = *self.sigs.impls.get(imp)?;
+        let regions = self.sigs.regions.impls.get(imp)?;
+        let owner = def.owner_lifetimes as usize;
+        let mut starts = Vec::with_capacity(def.args.len() + 1);
+        starts.push(owner);
+        for &arg in def.args {
+            starts.push(starts.last()? + slots(self.items, arg));
+        }
+        let mut self_slots = Vec::new();
+        instantiate(
+            self.items,
+            self_ty,
+            &regions.self_ty,
+            &mut |region| match region {
+                Region::Param(i) if (i as usize) < owner => Slot::Item(i as usize),
+                Region::Static => Slot::Static,
+                _ => Slot::Untracked,
+            },
+            &|index| {
+                let index = index as usize;
+                starts
+                    .get(index)
+                    .zip(starts.get(index + 1))
+                    .map_or_else(Vec::new, |(&start, &end)| {
+                        (start..end).map(Slot::Item).collect()
+                    })
+            },
+            &mut self_slots,
+        );
+        if self_slots.len() != written.len() {
+            return None;
+        }
+        for (slot, &region) in self_slots.into_iter().zip(written) {
+            if region == Region::Erased {
+                continue;
+            }
+            match slot {
+                Slot::Item(i) if matches!(row[i], Region::Erased) || row[i] == region => {
+                    row[i] = region;
+                }
+                Slot::Static if region == Region::Static => {}
+                _ => return None,
+            }
+        }
+        Some(())
+    }
+
     /// The slots of `ty`, the body's type `written` resolved.
     fn written_type_regions(
         &mut self,
         written: TypeRefId,
         ty: Ty,
     ) -> Option<Box<[crate::regions::Region]>> {
+        self.written_type_regions_in(written, ty, None)
+    }
+
+    fn written_type_regions_in(
+        &mut self,
+        written: TypeRefId,
+        ty: Ty,
+        const_impl: Option<flux_hir::ImplId>,
+    ) -> Option<Box<[crate::regions::Region]>> {
         let mut found = Vec::new();
         crate::regions::lifetimes_in(&self.body.types[written], &mut found);
-        if self.unrepresented_lifetimes(&found) {
+        let const_header = const_impl.and_then(|imp| self.sigs.regions.impls.get(imp));
+        if const_header.is_none() && self.unrepresented_lifetimes(&found) {
             return None;
         }
         let inferred = self.inferred_body_alias(written);
         let mut walker = self.body_walker();
+        if let Some(header) = const_header {
+            walker.names = header.names.iter().map(|n| n.name).collect();
+            walker.self_regions = Some(&header.self_ty);
+            walker.self_types = &header.types;
+        }
+        if ty.has_aliases()
+            && let Some(function) = self.owner_fn
+        {
+            let declaration = &self.items.functions[function];
+            walker.module = declaration.loc.module;
+            if let Some(generics) = self.items.owner_generics(declaration.owner) {
+                walker.add_projection_bounds(generics);
+            }
+            walker.add_projection_bounds(&declaration.generics);
+        }
         walker.inferred_root_alias = inferred;
         walker.module = self
             .type_modules
@@ -2523,6 +2697,9 @@ impl Ctx<'_> {
                 defaults: Some(&self.sigs.trait_defaults),
                 struct_fields: Some(&self.sigs.structs),
                 lens: Some(&self.lens),
+                unsized_params: &self.unsized_params,
+                bounds: &self.param_env,
+                size_sigs: Some(self.sigs),
                 ..TypeScope::default()
             };
             let mut errors = Vec::new();
@@ -2578,6 +2755,7 @@ impl Ctx<'_> {
         );
         let scope = TypeScope {
             self_ty: self.self_ty,
+            self_impl: self.owner_fn.and_then(|f| self.items.impl_of(f)),
             self_supertraits: &self_supertraits,
             self_inherited_types: &self_inherited_types,
             generics: &self.generics,
@@ -2678,7 +2856,7 @@ impl Ctx<'_> {
 
     /// The types of the fields of variant `variant` of `ty`, normalized.
     fn variant_fields_of(&mut self, ty: Ty, variant: u32, range: TextRange) -> &'static [Ty] {
-        let fields = flux_solve::variant_fields(self.sigs, ty, variant).unwrap_or(&[]);
+        let fields = flux_solve::substituted_variant_fields(self.sigs, ty, variant).unwrap_or(&[]);
         if !fields.iter().any(|f| f.has_aliases()) {
             return fields;
         }
@@ -2876,6 +3054,44 @@ impl Ctx<'_> {
             .unwrap_or(Ty::ERROR)
             .subst(&args);
         self.normalize(ty, range)
+    }
+
+    /// A default can constrain the selected impl's regions, even if the
+    /// erased types match. Omitted arguments need a row before they can do so.
+    fn check_trait_default_regions(
+        &mut self,
+        expr: ExprId,
+        owner: Option<flux_hir::Owner>,
+        args: &[Ty],
+    ) {
+        let Some(flux_hir::Owner::Trait(trait_)) = owner else {
+            return;
+        };
+        let Expr::Path(Res::Assoc {
+            trait_: Some(written_trait),
+            ..
+        }) = self.body.exprs[expr]
+        else {
+            return;
+        };
+        if written_trait != trait_ {
+            return;
+        }
+        let Some(written) = self.body.generic_args.get(expr).and_then(|g| g.ty.as_ref()) else {
+            return;
+        };
+        let end = 1 + self.items.traits[trait_].generics.params.len();
+        let start = 1 + written.types.len();
+        if args.get(start..end).is_some_and(|defaults| {
+            defaults
+                .iter()
+                .any(|&ty| crate::regions::slots(self.items, ty) != 0)
+        }) {
+            self.error(
+                written.segment,
+                "lifetimes in default trait type arguments are not supported yet",
+            );
+        }
     }
 
     /// Whether the lexical function enables every callee feature. Closures
@@ -3201,11 +3417,12 @@ impl Ctx<'_> {
             | Pat::Range { .. } => true,
             _ => false,
         };
-        let (expected, mode) = if sees_through {
-            self.peel_refs(pat, expected, mode)
-        } else {
-            (expected, mode)
-        };
+        let (expected, mode) =
+            if sees_through && self.source_map.assignment_patterns.get(pat).is_none() {
+                self.peel_refs(pat, expected, mode)
+            } else {
+                (expected, mode)
+            };
         self.pat_types.insert(pat, expected);
         match &body.pats[pat] {
             Pat::Missing | Pat::Wild => {}
@@ -3362,6 +3579,16 @@ impl Ctx<'_> {
             } => {
                 let count = prefix.len() + suffix.len();
                 let (elem, rest_ty) = match self.shallow(expected).kind() {
+                    TyKind::Infer(var)
+                        if slice.is_none() && !self.unknown(var).0 && !self.float_var(var) =>
+                    {
+                        // An exact pattern determines an array's length even
+                        // before the scrutinee's element type is known.
+                        let elem = self.new_var(false, range);
+                        let ty = Ty::array_of(elem, Ty::usize_value(count as u64));
+                        self.unify(expected, ty);
+                        (elem, Ty::ERROR)
+                    }
                     TyKind::Array(elem, len) => {
                         if slice.is_none() && matches!(self.shallow(len).kind(), TyKind::Infer(_)) {
                             self.unify(len, Ty::usize_value(count as u64));
@@ -3720,7 +3947,7 @@ impl Ctx<'_> {
                                         format!("field `{name}` is private"),
                                     );
                                 }
-                                (i, flux_solve::field_types(self.sigs, adt.strukt, args)[i])
+                                (i, self.sigs.structs[adt.strukt][i].subst(args))
                             })
                         }
                         TyKind::Tuple(elements) => name
@@ -4873,7 +5100,24 @@ impl Ctx<'_> {
                 crate::FnSigTy::new(params, parts.ret(), false)
             }
         };
-        let sig = crate::FnSigTy { is_unsafe, ..sig };
+        let mut sig = crate::FnSigTy { is_unsafe, ..sig };
+        if sig.regions.is_none() && !sig.inputs_output.iter().any(|ty| ty.has_infer()) {
+            // A join of distinct function items can retain a shared binder
+            // shape, including repeated lifetimes within one input type.
+            // Leave joins without an identical source recipe to coercion.
+            let mut recipes = found.iter().map(|&(_, ty)| {
+                let TyKind::FnDef(def) = ty.kind() else {
+                    return None;
+                };
+                self.inferred_item_pointer_regions(sig, def.function, def.args)
+            });
+            if let Some(Some(first)) = recipes.next()
+                && first.free == 0
+                && recipes.all(|recipe| recipe == Some(first))
+            {
+                sig.regions = Some(first);
+            }
+        }
         let ptr = if from_closures && !sig.inputs_output.iter().any(|ty| ty.has_infer()) {
             self.closure_pointer_type(sig)
         } else {
@@ -5003,7 +5247,7 @@ impl Ctx<'_> {
             }
             rows.push(row);
         }
-        (free != 0 && rows.len() == sig.inputs_output.len())
+        ((bound != 0 || free != 0) && rows.len() == sig.inputs_output.len())
             .then(|| crate::FnPtrRegions::intern(bound, free, &rows, &[]))
     }
 
@@ -5018,6 +5262,7 @@ impl Ctx<'_> {
             .zip(args)
             .map(|(def, args)| self.inferred_item_pointer_regions(sig, def.function, args));
         if let Some(Some(first)) = recipes.next()
+            && first.free != 0
             && recipes.all(|recipe| recipe == Some(first))
         {
             sig.regions = Some(first);
@@ -5089,6 +5334,55 @@ impl Ctx<'_> {
         args.iter().any(|ty| ty.has_error())
             && (!self.lens.missing.borrow().is_empty()
                 || !self.lens.new_arg_tys.borrow().is_empty())
+    }
+
+    /// A direct conversion into an unsized shared owner can use the expected
+    /// type once the argument establishes that conversion. Otherwise the
+    /// argument can still select a sized owner before unsizing.
+    fn constrain_shared_from_result(&mut self, call: ExprId, function: FunctionId, sig: &FnSig) {
+        let data = &self.items.functions[function];
+        let Some(flux_hir::Owner::Trait(trait_)) = data.owner else {
+            return;
+        };
+        if !self.items.traits[trait_]
+            .lang
+            .is_some_and(|lang| lang.as_str() == "From")
+        {
+            return;
+        }
+        let ([source], Some(&expected)) = (sig.params.as_ref(), self.expected.get(call)) else {
+            return;
+        };
+        let result = self.shallow(sig.ret);
+        let expected = self.known(expected);
+        let Some((wanted, actual)) = crate::shared_pointees(self.items, expected, result) else {
+            return;
+        };
+        if !self.sigs.is_unsized(wanted) || !matches!(self.shallow(actual).kind(), TyKind::Infer(_))
+        {
+            return;
+        }
+        let source = self.known(*source);
+        if source.has_infer() || source.has_error() || expected.has_infer() || expected.has_error()
+        {
+            return;
+        }
+        let goal = crate::TraitRef {
+            trait_,
+            name: self.items.traits[trait_].name,
+            args: Ty::list(&[source]),
+        }
+        .with_self(expected);
+        let proof = flux_solve::traits::RigidSolver::new(
+            self.items,
+            self.sigs,
+            &self.param_env,
+            &self.env_projections,
+            &self.unsized_params,
+        );
+        if proof.holds(goal, &mut Vec::new()) {
+            self.unify(result, expected);
+        }
     }
 
     fn infer_call(&mut self, id: ExprId, callee: ExprId, args: &[ExprId]) -> Ty {
@@ -5220,6 +5514,7 @@ impl Ctx<'_> {
         for closures in [false, true] {
             // What can be selected first, as for method calls.
             if closures {
+                self.constrain_shared_from_result(id, function, sig);
                 let segment = self.source_map.segments.get(callee).copied();
                 let site = CallSite {
                     callee: segment.unwrap_or_else(|| self.range(callee)),
@@ -5351,6 +5646,9 @@ impl Ctx<'_> {
             function,
             name,
             args: Ty::list(&args),
+            owner_lifetimes: crate::regions::function_item_owner_lifetimes(
+                items, self.sigs, function,
+            ),
             sig: crate::FnSigTy {
                 is_variadic: data.is_variadic,
                 abi: data.abi,
@@ -5587,13 +5885,21 @@ impl Ctx<'_> {
                 ),
             );
         }
-        for (i, &arg) in args.iter().enumerate() {
-            if let Some(&field) = fields.get(i) {
-                self.expect(arg, field);
-            }
-            let ty = self.infer_expr(arg);
-            if let Some(&field) = fields.get(i) {
-                self.coerce(ty, field, arg);
+        for closures in [false, true] {
+            for (i, &arg) in args.iter().enumerate() {
+                if self.is_closure(arg) != closures {
+                    continue;
+                }
+                if let Some(&field) = fields.get(i) {
+                    if closures {
+                        self.hint_constructor_closure(ty, field, arg, self.range(callee));
+                    }
+                    self.expect(arg, field);
+                }
+                let actual = self.infer_expr(arg);
+                if let Some(&field) = fields.get(i) {
+                    self.coerce(actual, field, arg);
+                }
             }
         }
         // As rustc, at the argument, then the whole call.
@@ -6112,6 +6418,14 @@ impl Ctx<'_> {
         // goes: the first with an accessible field of this name, else
         // the first with a private one.
         let mut base_ty = self.shallow(ty);
+        if matches!(base_ty.kind(), TyKind::Infer(var) if !self.unknown(var).0)
+            && name.as_str().parse::<usize>().is_ok()
+        {
+            // A closure pattern can expose a receiver's tuple shape after
+            // its iterator and associated type obligations were registered.
+            self.select_obligations();
+            base_ty = self.shallow(ty);
+        }
         let mut derefs = 0;
         let mut steps: Vec<OverloadedDeref> = Vec::new();
         let mut private = None;
@@ -6180,7 +6494,10 @@ impl Ctx<'_> {
                 .and_then(|i| Some((i, *elements.get(i)?))),
             TyKind::Adt(adt, args) => items.structs[adt.strukt]
                 .field(name)
-                .map(|(i, _)| (i, flux_solve::field_types(sigs, adt.strukt, args)[i]))
+                // Keep the declared projection until the caller's bounds
+                // can decide it. Layout's field query may select a merely
+                // possible impl without that environment.
+                .map(|(i, _)| (i, sigs.structs[adt.strukt][i].subst(args)))
                 .map(|(i, ty)| (i, self.normalize(ty, range))),
             TyKind::Error => return Ty::ERROR,
             TyKind::Int(_) | TyKind::Float(_) | TyKind::Bool => {
@@ -7881,10 +8198,20 @@ impl Ctx<'_> {
             }
             self.deferred.push(check);
         }
-        // What closures capture needs the types, as rustc finds it after
-        // inference, numeric literals' defaults included.
-        if !self.closures.is_empty() {
+        // Inference obligations can settle a `?` output before never
+        // fallback. In particular, unsizing an enclosing value can select an
+        // impl whose caller bounds constrain that output.
+        let try_outputs = std::mem::take(&mut self.try_outputs);
+        if !self.closures.is_empty()
+            || try_outputs
+                .iter()
+                .any(|&ty| matches!(self.shallow(ty).kind(), TyKind::Infer(_)))
+        {
             self.select_obligations();
+        }
+        // Closure captures also need numeric literal defaults and the types
+        // inferred by trait selection.
+        if !self.closures.is_empty() {
             self.default_numeric_vars();
             self.analyze_closures();
         }
@@ -7900,7 +8227,7 @@ impl Ctx<'_> {
         // Resolve unconstrained outputs fed only by divergence before trait
         // obligations ask whether their fallback type implements a bound.
         // `?` supplies a diverging break arm in every edition.
-        for output in std::mem::take(&mut self.try_outputs) {
+        for output in try_outputs {
             if let TyKind::Infer(var) = self.shallow(output).kind()
                 && !self.unknown(var).0
                 && !self.float_var(var)
@@ -8031,6 +8358,7 @@ impl Ctx<'_> {
             let function = *function;
             let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
             self.check_sized_args(expr, function, args);
+            self.check_trait_default_regions(expr, self.items.functions[function].owner, args);
             if self.items.functions[function].ctor.is_some()
                 && self
                     .sigs
@@ -8179,14 +8507,24 @@ impl Ctx<'_> {
                     call_regions.insert(expr, tables);
                 } else if let Some(&ty) = self.expr_types.get(expr)
                     && let TyKind::FnDef(def) = ty.kind()
-                    && crate::regions::item_owner_lifetimes(self.items, def) != 0
+                    && crate::regions::slots(self.items, ty) != 0
                 {
-                    use crate::regions::{
-                        Region, TRAIT_LIFETIMES_ARG, item_owner_lifetimes, slots,
-                    };
-                    let owner = item_owner_lifetimes(self.items, def);
+                    use crate::regions::{IMPL_SELF_ARG, Region, TRAIT_LIFETIMES_ARG, slots};
+                    let owner = def.owner_lifetimes as usize;
                     let mut row = vec![Region::Erased; slots(self.items, ty)];
                     for (index, written) in tables {
+                        if index == IMPL_SELF_ARG {
+                            if self
+                                .function_item_self_regions(def, &written, &mut row)
+                                .is_none()
+                            {
+                                self.error(
+                                    self.range(expr),
+                                    "unrepresented function item self type lifetimes",
+                                );
+                            }
+                            continue;
+                        }
                         let span = if index == TRAIT_LIFETIMES_ARG {
                             0..owner
                         } else if let Some(arg) = def.args.get(index as usize) {
@@ -8239,13 +8577,19 @@ impl Ctx<'_> {
         }
         let used = std::mem::take(&mut self.consts);
         let mut consts = ArenaMap::new();
+        let mut const_arg_regions = ArenaMap::new();
         for (expr, (konst, args)) in used.iter() {
             let konst = *konst;
             let args = crate::ty::map_list(args, |a| self.resolve(a, &mut reported));
-            consts.insert(expr, ConstInstance { konst, args });
+            self.check_trait_default_regions(expr, self.items.consts[konst].owner, args);
+            let instance = ConstInstance { konst, args };
+            if let Some(rows) = self.constant_arg_regions(expr, instance) {
+                const_arg_regions.insert(expr, rows);
+            }
+            consts.insert(expr, instance);
         }
         self.consts = used;
-        let mut expr_regions = self.constructor_regions(&calls, &consts);
+        let mut expr_regions = self.constructor_regions(&calls, &consts, &const_arg_regions);
         for (expr, row) in item_value_regions {
             expr_regions.insert(expr, row);
         }
@@ -8513,6 +8857,7 @@ impl Ctx<'_> {
             reified,
             calls,
             call_regions,
+            const_arg_regions,
             expr_regions,
             overloads,
             consts,

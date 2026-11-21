@@ -75,7 +75,7 @@ impl CrateIndices {
             macro_scopes: items
                 .macro_scopes
                 .iter()
-                .filter(|(_, x)| items.macros[x.def].krate == krate)
+                .filter(|(_, x)| x.def.is_some_and(|def| items.macros[def].krate == krate))
                 .map(|(id, _)| id.into_raw())
                 .collect(),
             files: Vec::new(),

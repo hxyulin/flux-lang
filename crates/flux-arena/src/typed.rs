@@ -262,6 +262,14 @@ impl<T> LayeredArena<T> {
         self.frozen.len() + self.data.len()
     }
 
+    /// Discards a suffix of unfrozen entries, preserving the prefix's indices.
+    pub fn truncate(&mut self, len: usize) {
+        let own = len
+            .checked_sub(self.frozen.len())
+            .expect("frozen values cannot be removed");
+        self.data.truncate(own);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

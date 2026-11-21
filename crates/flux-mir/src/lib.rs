@@ -130,9 +130,9 @@ pub struct Body {
     pub item_callees: ArenaMap<BasicBlockData, Place>,
     /// Function-item locals whose regions supply a pointer reification.
     pub item_reifications: ArenaMap<LocalDecl, Local>,
-    /// Written generic argument regions at immediate function-item reifications.
-    /// Each key names a dedicated temporary assigned the function pointer once.
-    pub reification_regions: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
+    /// Owner argument regions for function reification and trait constant values.
+    /// Each key names a dedicated temporary written once by the operand.
+    pub operand_type_args: ArenaMap<LocalDecl, flux_ty::regions::TypeArgRegions>,
     pub blocks: Arena<BasicBlockData>,
     pub param_count: usize,
     /// The bytes of each C string constant, without the terminating NUL;
@@ -206,6 +206,14 @@ impl Body {
         for (index, data) in self.blocks.values_mut().enumerate() {
             let block = BasicBlock::from_raw(index as u32);
             if !reached[index] {
+                for statement in &data.statements {
+                    if let StatementKind::Assign(dest, _) = &statement.kind
+                        && dest.projection.is_empty()
+                    {
+                        self.operand_type_args.remove(dest.local);
+                        self.item_reifications.remove(dest.local);
+                    }
+                }
                 data.statements.clear();
                 data.terminator.kind = TerminatorKind::Unreachable;
                 data.terminator.unwind = UnwindAction::Unreachable;
@@ -285,7 +293,7 @@ impl Body {
             call_regions: ArenaMap::new(),
             item_callees: Default::default(),
             item_reifications: Default::default(),
-            reification_regions: ArenaMap::new(),
+            operand_type_args: ArenaMap::new(),
             region_annotations: Vec::new(),
             region_relations: Vec::new(),
             blocks: Arena::new(),

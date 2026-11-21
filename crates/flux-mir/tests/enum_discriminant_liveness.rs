@@ -61,6 +61,16 @@ fn enum_discriminant_liveness_matches_rustc() {
             false,
         ),
         (
+            "discriminant_with_live_field_loan",
+            "enum E{A(u32),B(u32)}fn f(e:&mut E)->u8{let r=match e{E::A(r)|E::B(r)=>r};let tag=match *e{E::A(_)=>1,E::B(_)=>2};*r+=1;tag}",
+            false,
+        ),
+        (
+            "guard_read_cannot_escape_then_mutate",
+            "fn f(e:&mut Option<u32>){let mut saved=None;match e{Some(x)if{saved=Some(&*x);true}=>{*x+=1;}_=>{}}println!(\"{saved:?}\");}",
+            false,
+        ),
+        (
             "borrowed_discriminant",
             "fn f(){let r;{let e=Some(7);r=&e;}match r{Some(_)=>(),None=>()}}",
             false,

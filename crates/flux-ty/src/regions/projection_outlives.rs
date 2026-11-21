@@ -1,14 +1,6 @@
 //! Recover associated output occurrences from existing signature region tables.
 use super::*;
 
-/// An implied output-outlives requirement with its original selection inputs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectionOutlives {
-    pub ty: Ty,
-    pub regions: Box<[Region]>,
-    pub target: Region,
-}
-
 /// Recover reference-implied projection requirements without changing storage.
 /// A projection's inputs identify the occurrence; they are not stored output
 /// lifetimes and must not themselves be required to outlive the reference.
@@ -146,19 +138,71 @@ impl ProjectionWalk<'_> {
         let TyKind::Adt(adt, args) = ty.kind() else {
             return Some(blocked);
         };
-        if !self.has_projected_fields(adt.strukt, ty) {
+        let expands_fields = self.has_projected_fields(adt.strukt, ty);
+        let Some(metadata) = sigs.regions.structs.get(adt.strukt) else {
+            return (!expands_fields).then_some(blocked);
+        };
+        let has_bounds = metadata
+            .outlives
+            .iter()
+            .any(|bound| matches!(bound, Outlives::Type(..)));
+        if !expands_fields && !has_bounds {
             return Some(blocked);
         }
-        if let Some(index) = self.active.iter().position(|&id| id == adt.strukt) {
-            return Some(blocked.min(index));
-        }
-        let metadata = sigs.regions.structs.get(adt.strukt)?;
         let mut at = metadata.lifetimes as usize;
         let mut arguments = Vec::new();
         for &arg in args {
             let end = at.checked_add(slots(items, arg))?;
             arguments.push(row.get(at..end)?.to_vec());
             at = end;
+        }
+        // A nominal requirement can name a projection of a type parameter,
+        // for example `M::Data: 'static`. Its erased template may have no
+        // slots, while its substituted owner has lifetime arguments.
+        for &bound in &metadata.outlives {
+            let Outlives::Type(subject, target) = bound else {
+                continue;
+            };
+            if slots(items, subject) != 0 {
+                continue;
+            }
+            let instance = subject.subst(args);
+            let TyKind::Alias(alias) = instance.kind() else {
+                continue;
+            };
+            if !has_projection_inputs(items, alias) {
+                continue;
+            }
+            let target = match target {
+                Region::Static => Region::Static,
+                Region::Param(index) if index < metadata.lifetimes => *row.get(index as usize)?,
+                _ => continue,
+            };
+            let mut selected = Vec::new();
+            instantiate(
+                items,
+                subject,
+                &[],
+                &mut |_| Region::Erased,
+                &|index| arguments.get(index as usize).cloned().unwrap_or_default(),
+                &mut selected,
+            );
+            if selected.len() == slots(items, instance) && !selected.contains(&Region::Erased) {
+                let fact = ProjectionOutlives {
+                    ty: instance,
+                    regions: selected.into(),
+                    target,
+                };
+                if !self.out.contains(&fact) {
+                    self.out.push(fact);
+                }
+            }
+        }
+        if !expands_fields {
+            return Some(blocked);
+        }
+        if let Some(index) = self.active.iter().position(|&id| id == adt.strukt) {
+            return Some(blocked.min(index));
         }
         let depth = self.active.len();
         self.active.push(adt.strukt);
@@ -216,11 +260,31 @@ pub fn signature_projection_outlives(
         return Vec::new();
     };
     let signature = &sigs.fns[function];
-    signature
+    let mut out: Vec<_> = signature
         .params
         .iter()
         .chain([&signature.ret])
         .zip(regions.params.iter().chain([&regions.ret]))
         .flat_map(|(&ty, row)| type_projection_outlives(items, sigs, ty, row))
-        .collect()
+        .collect();
+    if let Some(imp) = items.functions[function]
+        .owner
+        .and_then(flux_hir::Owner::as_impl)
+        && let Some(owner) = sigs.regions.impls.get(imp)
+    {
+        // Method summaries include requirements implied by the impl header,
+        // even for associated functions with no Self parameter.
+        out.extend(type_projection_outlives(
+            items,
+            sigs,
+            sigs.impls[imp],
+            &owner.self_ty,
+        ));
+        if let Some(trait_ref) = sigs.impl_traits.get(imp) {
+            for (&ty, row) in trait_ref.args.iter().zip(&owner.trait_args) {
+                out.extend(type_projection_outlives(items, sigs, ty, row));
+            }
+        }
+    }
+    out
 }

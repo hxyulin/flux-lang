@@ -73,6 +73,33 @@ impl Duration {
         )
     }
 
+    /// Converts seconds, panicking if the value cannot form a duration.
+    pub fn from_secs_f32(secs: f32) -> Self {
+        Self::from_secs_f64(secs as f64)
+    }
+
+    /// Converts seconds, panicking if the value cannot form a duration.
+    pub fn from_secs_f64(secs: f64) -> Self {
+        match Self::try_from_secs_f64(secs) {
+            Ok(duration) => duration,
+            Err(error) => match error.kind {
+                TryFromFloatSecsErrorKind::Negative => {
+                    panic!("cannot convert float seconds to Duration: value is negative")
+                }
+                TryFromFloatSecsErrorKind::OverflowOrNan => {
+                    panic!(
+                        "cannot convert float seconds to Duration: value is either too big or NaN"
+                    )
+                }
+            },
+        }
+    }
+
+    /// Converts seconds with nanosecond rounding. Widening to `f64` is exact.
+    pub fn try_from_secs_f32(secs: f32) -> Result<Self, TryFromFloatSecsError> {
+        Self::try_from_secs_f64(secs as f64)
+    }
+
     /// Converts finite, nonnegative seconds, rounding to the nearest
     /// nanosecond with ties rounded to even.
     pub fn try_from_secs_f64(secs: f64) -> Result<Self, TryFromFloatSecsError> {

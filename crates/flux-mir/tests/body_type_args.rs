@@ -67,6 +67,26 @@ fn body_type_arguments_match_rustc() {
         ("static", "fn f(x: &i32) { id::<&'static i32>(x); }", false),
         ("static_ok", "fn f() { id::<&'static i32>(&1); }", true),
         (
+            "stored_item_named",
+            "fn f<'a>(x:&'a i32)->&'a i32{let f=id::<&'a i32>;f(x)}",
+            true,
+        ),
+        (
+            "stored_item_static",
+            "fn f()->&'static i32{let f=id::<&'static i32>;let g:fn(&'static i32)->&'static i32=f;g(&7)}",
+            true,
+        ),
+        (
+            "stored_item_escape",
+            "fn f<'a>(x:&'a i32)->&'static i32{let f=id::<&'a i32>;f(x)}",
+            false,
+        ),
+        (
+            "stored_item_static_bound",
+            "fn needs_static<F:'static>(_: F){}fn f<'a>(_: &'a i32){let f=id::<&'a i32>;needs_static(f)}",
+            false,
+        ),
+        (
             "local_selected_static",
             "trait Ref{type Out;}impl<'a>Ref for &'a i32{type Out=&'a i32;}fn f(x:&i32){let _:<&'static i32 as Ref>::Out=x;}",
             false,
@@ -240,14 +260,6 @@ fn body_type_arguments_match_rustc() {
 #[test]
 fn body_lifetime_boundaries_remain_closed() {
     for (body, diagnostic) in [
-        (
-            "fn f<'a>(x: &'a i32) { let _ = id::<&'a i32>; }",
-            "lifetimes in function item values",
-        ),
-        (
-            "fn f() { let _ = id::<&'static i32>; }",
-            "lifetimes in function item values",
-        ),
         (
             "trait Ref { type Out; } impl<'a> Ref for &'a i32 { type Out = &'a i32; } fn f(x: &i32) { id::<<&'static i32 as Ref>::Out>(x); }",
             "escapes",

@@ -161,7 +161,7 @@ impl<'a> Reach<'a> {
             symbolic_constants: FxHashMap::default(),
         };
         for (id, konst) in hir.items.consts.iter() {
-            if konst.export_symbol.is_some() && reach.own(konst.loc.module) {
+            if (konst.used || konst.export_symbol.is_some()) && reach.own(konst.loc.module) {
                 reach.konst(id);
             }
         }

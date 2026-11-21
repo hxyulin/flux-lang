@@ -58,6 +58,24 @@ fn const_pointer_reads_match_rustc() {
             r#"#[repr(transparent)]struct View([u8]);const X:&View=unsafe{&*(b"abc".as_slice() as *const [u8] as *const View)};fn main(){assert_eq!(&X.0,b"abc");}"#,
         ),
         (
+            "projected_slice_tail_reborrow",
+            true,
+            true,
+            include_str!("../../../tests/run/const_projected_slice_tail.rs"),
+        ),
+        (
+            "prefixed_slice_tail_view",
+            true,
+            true,
+            include_str!("../../../tests/run/const_prefixed_slice_tail.rs"),
+        ),
+        (
+            "prefixed_slice_tail_requires_prefix_bytes",
+            false,
+            false,
+            r#"#[repr(C,packed)]struct Packet{header:u16,body:[u8]} const VALUE:&Packet=unsafe{&*(std::ptr::slice_from_raw_parts(b"x".as_ptr(),0) as *const Packet)}; fn main(){let _=VALUE;}"#,
+        ),
+        (
             "reinterpreted_slice_bounds",
             false,
             false,

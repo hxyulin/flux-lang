@@ -163,6 +163,27 @@ fn promoted_hidden_bound() {
 }
 
 #[test]
+fn promoted_cast_preserves_hidden_bound() {
+    compare(
+        "promoted_cast_preserves_hidden_bound",
+        r#"fn size<T: 'static>() -> usize { std::mem::size_of::<T>() }
+           fn f<'a>(_: &'a u8) -> &'static fn() -> usize {
+               &(size::<&'a u8> as fn() -> usize)
+           }"#,
+        false,
+    );
+}
+
+#[test]
+fn cast_of_local_pointer_is_not_promoted() {
+    compare(
+        "cast_of_local_pointer_is_not_promoted",
+        r#"fn f(pointer: fn()) -> &'static fn() { &(pointer as fn()) }"#,
+        false,
+    );
+}
+
+#[test]
 fn cast_static_argument() {
     compare(
         "cast_static_argument",

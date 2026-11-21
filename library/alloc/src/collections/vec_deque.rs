@@ -150,6 +150,26 @@ impl<T> VecDeque<T> {
         Some(unsafe { ptr::read(self.buf.ptr().add(index)) })
     }
 
+    /// Inserts `value` at `index`, shifting the nearer end of the deque.
+    ///
+    /// # Panics
+    /// Panics when `index` exceeds the deque's length.
+    pub fn insert(&mut self, index: usize, value: T) {
+        let len = self.len;
+        assert!(index <= len, "insertion index out of bounds");
+        if index < len - index {
+            self.push_front(value);
+            for i in 0..index {
+                self.swap(i, i + 1);
+            }
+        } else {
+            self.push_back(value);
+            for i in (index..len).rev() {
+                self.swap(i, i + 1);
+            }
+        }
+    }
+
     /// Removes and returns the element at `index`, preserving the other elements' order.
     pub fn remove(&mut self, index: usize) -> Option<T> {
         if index >= self.len {

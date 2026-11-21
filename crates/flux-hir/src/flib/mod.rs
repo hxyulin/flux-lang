@@ -149,6 +149,7 @@ pub struct Encoder {
     type_depths: BTreeMap<u32, u32>,
     allocations: BTreeMap<allocations::AllocationKey, allocations::AllocationMemo>,
     next_allocation: u32,
+    expanded_allocation_bytes: usize,
 }
 impl Encoder {
     pub fn new() -> Self {
@@ -166,6 +167,7 @@ impl Encoder {
             type_depths: BTreeMap::new(),
             allocations: BTreeMap::new(),
             next_allocation: 0,
+            expanded_allocation_bytes: 0,
         }
     }
     /// Returns a memoized semantic depth without requiring a wire definition.
@@ -266,6 +268,7 @@ pub struct Decoder<'a> {
     type_depths: BTreeMap<u32, u32>,
     allocations: Vec<allocations::DecodedAllocation>,
     allocation_memo: BTreeMap<allocations::AllocationKey, allocations::AllocationMemo>,
+    expanded_allocation_bytes: usize,
 }
 impl<'a> Decoder<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
@@ -296,6 +299,7 @@ impl<'a> Decoder<'a> {
             type_depths: BTreeMap::new(),
             allocations: Vec::new(),
             allocation_memo: BTreeMap::new(),
+            expanded_allocation_bytes: 0,
         }
     }
     /// Installs the driver-owned host resolver shared by one compilation graph.

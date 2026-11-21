@@ -444,6 +444,23 @@ fn main() {
 }
 
 #[test]
+fn match_arm_temporaries_drop_before_pattern_bindings() {
+    let case = Case::new();
+    let source = include_str!("fixtures/edition2021/match_arm_drop_order.rs");
+    for edition in [Edition::E2018, Edition::E2021, Edition::E2024] {
+        case.check(source, edition, true);
+        #[cfg(any(
+            all(target_os = "macos", target_arch = "aarch64"),
+            all(target_os = "linux", target_arch = "x86_64")
+        ))]
+        assert_eq!(
+            case.runtime(source, edition),
+            b"borrowed 1\nowner 1\nborrowed 2\nowner 2\n1 2\n"
+        );
+    }
+}
+
+#[test]
 fn boxed_slice_into_iter_respects_edition_2024_boundary() {
     let case = Case::new();
     let borrowed = r#"fn main(){let values:Box<[String]>=vec![String::from("first"),String::from("second")].into_boxed_slice();let mut iter=values.into_iter();let first:&String=iter.next().unwrap();println!("{} {}",first,values[1]);}"#;
