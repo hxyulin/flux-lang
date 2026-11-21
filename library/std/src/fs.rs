@@ -542,6 +542,12 @@ unsafe extern "C" {
 
 /// A directory stream. Entries copy native names before advancing the stream.
 pub struct ReadDir { directory: *mut core::ffi::c_void, path: PathBuf, done: bool }
+// SAFETY: the iterator exclusively owns the stream, which may be transferred
+// to another thread. Each call uses that thread's errno.
+unsafe impl Send for ReadDir {}
+// SAFETY: shared access only reads the owned path. Advancing and closing the
+// stream require exclusive access.
+unsafe impl Sync for ReadDir {}
 impl Drop for ReadDir {
     fn drop(&mut self) {
         // SAFETY: this iterator owns the successful opendir result exclusively.

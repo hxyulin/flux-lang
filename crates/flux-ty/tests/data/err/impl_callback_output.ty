@@ -1,0 +1,7 @@
+struct Once {}
+fn run<F>(Self, F) -> ()
+fn run<F>(Once, F) -> <F as FnOnce<()>>::Output
+    self@0: Once
+    f@1: F
+fn main() -> ()
+error 87..140: impl has stricter requirements than trait

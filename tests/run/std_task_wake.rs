@@ -64,6 +64,8 @@ fn main() {
     let by_ref = Arc::new(ByRef { wakes: AtomicUsize::new(0), by_ref: AtomicUsize::new(0) });
     let waker: Waker = by_ref.clone().into();
     let mut cx = Context::from_waker(&waker);
+    let debug = format!("{:?}", &mut cx);
+    assert!(debug.starts_with("Context { waker: Waker {"));
     let mut future = Twice { polls: 0 };
     let mut pinned = Pin::new(&mut future);
     let result = loop {

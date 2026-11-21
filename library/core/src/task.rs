@@ -85,6 +85,12 @@ impl<'a> Context<'a> {
     pub const fn waker(&self)->&'a Waker { self.waker }
 }
 
+impl crate::fmt::Debug for Context<'_> {
+    fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {
+        f.debug_struct("Context").field("waker", &self.waker).finish()
+    }
+}
+
 /// Extracts a Ready value, or returns Pending from the enclosing function.
 #[doc(hidden)]
 #[macro_export]

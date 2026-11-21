@@ -1291,6 +1291,13 @@ fn check_method(
         .get(imp)
         .map_or(Vec::new(), |p| p.to_vec());
     extend_impl_associated_equalities(items, sigs, imp, &mut projections);
+    projections.extend(
+        sigs.fn_projections
+            .get(required)
+            .into_iter()
+            .flatten()
+            .map(|projection| projection.subst(&args)),
+    );
     let projections = &projections[..];
     // Only the impl's bounds and the trait method's declared bounds are
     // assumptions here. An impl method cannot justify its signature with
@@ -1402,6 +1409,21 @@ fn check_method(
     env.extend(declared.iter().map(|p| norm_predicate(p.subst(&args))));
     let env = elaborate(sigs, &env);
     let bound_proof = RigidSolver::new(items, sigs, &env, projections, &parameters);
+    // A method's trait memberships can match while its output equalities
+    // impose additional requirements on callers.
+    for &projection in sigs.fn_projections.get(f).into_iter().flatten() {
+        let actual = bound_proof.normalize_ty(Ty::alias(projection.alias), None);
+        let expected = bound_proof.normalize_rhs(projection);
+        if !actual.has_error()
+            && !expected.has_error()
+            && !flux_solve::fn_regions::same_mir_shape(items, actual, expected)
+        {
+            error(
+                function.def_range,
+                "impl has stricter requirements than trait".to_owned(),
+            );
+        }
+    }
     for p in implicit_sized_predicates(items, sigs, &function.generics, first) {
         if !bound_proof.holds(p, &mut Vec::new()) {
             let index = match p.self_ty.kind() {

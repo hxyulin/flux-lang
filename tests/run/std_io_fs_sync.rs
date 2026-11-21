@@ -110,6 +110,13 @@ fn main() {
     std::os::unix::fs::symlink("original.txt", &soft).unwrap();
     println!("{:?} {} {}", fs::read_link(&soft).unwrap(), soft.is_symlink(), fs::exists(&soft).unwrap());
     println!("{:?}", fs::copy(&root, root.join("dir-copy")).map_err(|error| error.kind()));
+    fn assert_sync<T: Sync>(_: &T) {}
+    let mut entries = fs::read_dir(&root).unwrap();
+    assert_sync(&entries);
+    let found = std::thread::spawn(move || {
+        entries.any(|entry| entry.unwrap().file_name() == "original.txt")
+    }).join().unwrap();
+    assert!(found);
     fs::remove_dir_all(&root).unwrap();
 
     let pair = Arc::new((Mutex::new(0), Condvar::new()));
