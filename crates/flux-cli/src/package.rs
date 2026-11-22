@@ -88,6 +88,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
             panic_strategy,
             optimize: options.optimize,
             fast_build: options.fast_build,
+            optimize_build_script: false,
             timings: options.timings,
             debug_assertions: Some(crate::cargo::profile_debug_assertions(
                 &options.manifest_path,

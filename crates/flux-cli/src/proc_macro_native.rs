@@ -126,6 +126,7 @@ fn main() {{ __flux_macro_run().expect("procedural macro host failed"); }}
                 panic_strategy: flux_syntax::PanicStrategy::Abort,
                 optimize: false,
                 fast_build: false,
+                optimize_build_script: false,
                 timings: false,
                 debug_assertions: None,
             },

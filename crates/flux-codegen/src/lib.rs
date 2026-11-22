@@ -77,6 +77,8 @@ pub enum ObjectOptimization {
     Tier(OptimizationTier),
     /// Short IR optimization with full native instruction selection.
     FastBuild,
+    /// Optimize the startup and execution of a native build-script executable.
+    BuildScript,
 }
 /// Object policy carried independently of optimization and timing observations.
 #[derive(Clone, Copy, Debug)]
@@ -115,6 +117,10 @@ fn compile_options(
         ObjectOptimization::Tier(tier) => (tier, None),
         ObjectOptimization::FastBuild => (
             OptimizationTier::Fast,
+            Some(keel_codegen::SelectionTier::Full),
+        ),
+        ObjectOptimization::BuildScript => (
+            OptimizationTier::Balanced,
             Some(keel_codegen::SelectionTier::Full),
         ),
     };

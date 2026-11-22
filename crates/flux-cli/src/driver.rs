@@ -150,6 +150,7 @@ impl BuildArgs {
         let mut options = BuildOptions {
             optimize: self.optimize,
             fast_build: self.fast_build,
+            optimize_build_script: false,
             timings: self.timings,
             debug_assertions: None,
             panic_strategy: PanicStrategy::Abort,
@@ -162,6 +163,7 @@ impl BuildArgs {
 pub(crate) struct BuildOptions {
     pub(crate) optimize: bool,
     pub(crate) fast_build: bool,
+    pub(crate) optimize_build_script: bool,
     pub(crate) timings: bool,
     pub(crate) debug_assertions: Option<bool>,
     pub(crate) panic_strategy: PanicStrategy,
@@ -174,7 +176,7 @@ impl BuildOptions {
     }
 
     pub(crate) fn optimized(&self) -> bool {
-        self.optimize || self.fast_build
+        self.optimize || self.fast_build || self.optimize_build_script
     }
 
     pub(crate) fn tier(&self) -> flux_codegen::OptimizationTier {
@@ -191,6 +193,8 @@ impl BuildOptions {
         flux_codegen::ObjectOptions {
             optimization: if self.fast_build {
                 flux_codegen::ObjectOptimization::FastBuild
+            } else if self.optimize_build_script {
+                flux_codegen::ObjectOptimization::BuildScript
             } else {
                 flux_codegen::ObjectOptimization::Tier(self.tier())
             },
@@ -264,6 +268,7 @@ pub fn compiler_main() -> ExitCode {
         let mut options = BuildOptions {
             optimize: false,
             fast_build: false,
+            optimize_build_script: false,
             timings: false,
             debug_assertions: None,
             panic_strategy: PanicStrategy::Abort,
@@ -400,6 +405,7 @@ fn run(command: Command) -> Result<bool, String> {
             let mut options = BuildOptions {
                 optimize,
                 fast_build: false,
+                optimize_build_script: false,
                 timings: false,
                 debug_assertions: None,
                 panic_strategy: PanicStrategy::Abort,

@@ -650,6 +650,7 @@ fn configuration(
     encode(whole_program.encode(&mut e))?;
     encode(options.optimize.encode(&mut e))?;
     encode(options.fast_build.encode(&mut e))?;
+    encode(options.optimize_build_script.encode(&mut e))?;
     encode(
         crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?
             .get()
@@ -801,6 +802,7 @@ mod tests {
         let options = super::BuildOptions {
             optimize: false,
             fast_build: false,
+            optimize_build_script: false,
             timings: false,
             debug_assertions: None,
             panic_strategy: flux_syntax::PanicStrategy::Unwind,

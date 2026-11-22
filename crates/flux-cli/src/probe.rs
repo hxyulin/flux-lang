@@ -85,6 +85,7 @@ fn compile(probe: Probe) -> Result<(), String> {
         panic_strategy: flux_syntax::PanicStrategy::Abort,
         optimize: false,
         fast_build: false,
+        optimize_build_script: false,
         timings: false,
         debug_assertions: None,
     };

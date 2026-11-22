@@ -55,6 +55,8 @@ struct Request {
     backend_jobs: usize,
     optimize: bool,
     fast_build: bool,
+    #[serde(default)]
+    optimize_build_script: bool,
     debug_assertions: bool,
     panic_strategy: String,
     timings: bool,
@@ -115,6 +117,7 @@ impl Request {
             backend_jobs: 1,
             optimize: options.optimize,
             fast_build: options.fast_build,
+            optimize_build_script: options.optimize_build_script,
             debug_assertions: options.debug_assertions(),
             panic_strategy: options.panic_strategy.as_str().into(),
             timings: options.timings,
@@ -183,6 +186,7 @@ fn compile_request(
         panic_strategy: crate::cargo::parse_panic_strategy(&request.panic_strategy)?,
         optimize: request.optimize,
         fast_build: request.fast_build,
+        optimize_build_script: request.optimize_build_script,
         debug_assertions: Some(request.debug_assertions),
         timings: request.timings,
     };
@@ -284,10 +288,10 @@ pub(super) fn run_script(
             dependencies: directory,
             artifacts,
             shared_outputs: true,
-            optimize_root: options.optimize,
+            optimize_root: options.optimize_build_script,
         },
         BuildOptions {
-            optimize: false,
+            optimize_build_script: false,
             ..options
         },
         jobs,
@@ -326,7 +330,7 @@ fn run_in_directory(
         let mut request = Request::new(&sources[index], options)?;
         if index == root && !library {
             request.native = native.into();
-            request.optimize |= optimize_root;
+            request.optimize_build_script |= optimize_root;
             // Every needed dependency is finished before the binary starts.
             request.backend_jobs = jobs;
         }

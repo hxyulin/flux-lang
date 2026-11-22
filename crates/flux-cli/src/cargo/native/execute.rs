@@ -590,8 +590,9 @@ fn flux_unit(
     eprintln!("flux host {} build-script ({index})", package.name);
     let options = crate::BuildOptions {
         panic_strategy: flux_syntax::PanicStrategy::Abort,
-        optimize: optimize_scripts,
+        optimize: false,
         fast_build: false,
+        optimize_build_script: optimize_scripts,
         timings,
         debug_assertions: Some(debug_assertions),
     };

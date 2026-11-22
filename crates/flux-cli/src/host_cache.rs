@@ -84,6 +84,7 @@ impl HostCache {
         field!(current);
         field!(request.options.optimize);
         field!(request.options.fast_build);
+        field!(request.options.optimize_build_script);
         field!(crate::backend_units::count(request.options.fast_build)?.get());
         field!(request.options.debug_assertions());
         field!(request.options.panic_strategy.as_str().to_owned());
