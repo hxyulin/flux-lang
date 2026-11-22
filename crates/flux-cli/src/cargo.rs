@@ -97,6 +97,9 @@ pub(crate) struct Options {
     /// Use Cargo for host preparation instead of the native package pipeline.
     #[arg(long)]
     pub(crate) cargo: bool,
+    /// Optimize native build-script executables. Shared host libraries keep their usual settings.
+    #[arg(long, conflicts_with = "cargo")]
+    pub(crate) optimize_build_scripts: bool,
     /// Maximum number of concurrent crate compilations.
     #[arg(short = 'j', long, value_parser = clap::value_parser!(u32).range(1..))]
     pub(crate) jobs: Option<u32>,

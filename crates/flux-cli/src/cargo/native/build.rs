@@ -256,6 +256,7 @@ pub(crate) fn run(
             dependencies: &parent.join("deps"),
             artifacts: &artifacts,
             shared_outputs: false,
+            optimize_root: false,
         },
         options,
         jobs,
@@ -271,6 +272,7 @@ pub(super) fn run_script(
     directory: &Path,
     artifacts: &FreshArtifacts,
     options: BuildOptions,
+    jobs: usize,
     native: &flux_codegen::NativeLink,
 ) -> Result<ExitCode, String> {
     let root = sources.len().checked_sub(1).ok_or("missing build script")?;
@@ -282,9 +284,13 @@ pub(super) fn run_script(
             dependencies: directory,
             artifacts,
             shared_outputs: true,
+            optimize_root: options.optimize,
         },
-        options,
-        1,
+        BuildOptions {
+            optimize: false,
+            ..options
+        },
+        jobs,
         false,
         native,
     )
@@ -295,6 +301,7 @@ struct Destination<'a> {
     dependencies: &'a Path,
     artifacts: &'a FreshArtifacts,
     shared_outputs: bool,
+    optimize_root: bool,
 }
 
 fn run_in_directory(
@@ -305,6 +312,7 @@ fn run_in_directory(
         dependencies: directory,
         artifacts,
         shared_outputs,
+        optimize_root,
     }: Destination<'_>,
     options: BuildOptions,
     jobs: usize,
@@ -318,6 +326,7 @@ fn run_in_directory(
         let mut request = Request::new(&sources[index], options)?;
         if index == root && !library {
             request.native = native.into();
+            request.optimize |= optimize_root;
             // Every needed dependency is finished before the binary starts.
             request.backend_jobs = jobs;
         }

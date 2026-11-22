@@ -141,6 +141,27 @@ fn main() {
     assert_eq!(edited.matches("Fresh helper\n").count(), 1, "{edited}");
     verify_outputs("13");
     assert_eq!(artifacts(), first_artifacts);
+
+    let optimized = fixture.prepare("", &["--workspace", "-j1", "--optimize-build-scripts"]);
+    assert_eq!(
+        optimized.matches("Fresh helper\n").count(),
+        2,
+        "{optimized}"
+    );
+    assert_eq!(
+        optimized.matches("Compiling build_script_build\n").count(),
+        2,
+        "{optimized}"
+    );
+    verify_outputs("13");
+    let repeated = fixture.prepare("", &["--workspace", "-j8", "--optimize-build-scripts"]);
+    assert_eq!(
+        repeated.matches("Fresh build_script_build\n").count(),
+        2,
+        "{repeated}"
+    );
+    assert_eq!(artifacts(), first_artifacts);
+    verify_outputs("13");
 }
 
 #[test]

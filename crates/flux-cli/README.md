@@ -210,6 +210,10 @@ limit a build. Explicit binary paths replace matching automatic targets.
 remains a compatibility alias. The output root stays separate from Cargo's
 artifacts because Flux libraries use `.flib`, not `.rlib`.
 
+`--optimize-build-scripts` trades compilation time for faster native build
+script execution. Shared host libraries keep their usual settings. Their
+compilation uses spare slots from the same `-j` budget as other host jobs.
+
 Fresh libraries and executables print `Fresh <crate>` and skip compilation.
 Changed units print `Compiling <crate>`. Reuse checks compiler identity, options,
 package identity, cfg, dependencies, source and include contents, module lookup

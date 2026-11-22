@@ -82,8 +82,13 @@ pub(super) fn run(
     } else {
         crate::cargo::profile_panic_strategy(&manifest, optimize)?
     };
+    let shared_build_scripts = shared_build_scripts(&plan);
     if build.is_some() {
         crate::builtins::select_for_strategy(panic_strategy)?;
+    } else if !shared_build_scripts.is_empty() {
+        // Direct-source and shared-library workers must agree on the
+        // builtins before either can enter the compiler.
+        crate::builtins::select_for_strategy(flux_syntax::PanicStrategy::Abort)?;
     }
     let _strategy = crate::builtins::strategy_scope(panic_strategy)?;
     let build = build.map(|b| crate::BuildOptions {
@@ -127,11 +132,11 @@ pub(super) fn run(
     let mut outputs: Vec<Output> = plan.units.iter().map(|_| Output::default()).collect();
     let mut done: Vec<bool> = selected.iter().map(|s| !s).collect();
     let mut started = done.clone();
+    let mut reservations = vec![0; plan.units.len()];
     let jobs = options.jobs.map_or_else(
         || std::thread::available_parallelism().map_or(1, |n| n.get()),
         |n| n as usize,
     );
-    let shared_build_scripts = shared_build_scripts(&plan);
     let host_artifacts = FreshArtifacts::for_outputs(&root);
     let (finished, completions) = std::sync::mpsc::channel::<(usize, Result<Option<Output>>)>();
     let host = HostSettings {
@@ -142,6 +147,9 @@ pub(super) fn run(
         debug_assertions,
         release: optimize,
         jobs,
+        compile_jobs: 1,
+        optimize_scripts: options.optimize_build_scripts,
+        timings: start.is_some(),
         shared_dependencies: false,
         artifacts: &host_artifacts,
     };
@@ -153,7 +161,7 @@ pub(super) fn run(
         let mut received = None;
         loop {
             for (index, result) in received.take().into_iter().chain(completions.try_iter()) {
-                running -= 1;
+                running -= std::mem::take(&mut reservations[index]);
                 match result {
                     Ok(output) => {
                         if let Some(output) = output {
@@ -196,6 +204,7 @@ pub(super) fn run(
                     outputs[index].artifact = Some(work.artifact.clone());
                     started[index] = true;
                     running += 1;
+                    reservations[index] = 1;
                     let sender = finished.clone();
                     scope.spawn(move || {
                         let mut completion = super::build::JobCompletion {
@@ -213,6 +222,7 @@ pub(super) fn run(
                             started[index] = true;
                             let host = HostSettings {
                                 shared_dependencies: shared_build_scripts.contains(&index),
+                                compile_jobs: jobs.min(4),
                                 ..host
                             };
                             match flux_unit(&plan, &outputs, index, &root, &host) {
@@ -225,18 +235,29 @@ pub(super) fn run(
                             continue;
                         }
                     } else {
-                        for index in 0..plan.units.len() {
+                        let ready_scripts: Vec<_> = (0..plan.units.len())
+                            .filter(|&index| script(index) && ready(&started, index))
+                            .collect();
+                        let ready_count = ready_scripts.len();
+                        for (position, index) in ready_scripts.into_iter().enumerate() {
                             if running == jobs {
                                 break;
                             }
-                            if !script(index) || !ready(&started, index) {
-                                continue;
-                            }
+                            let shared_dependencies = shared_build_scripts.contains(&index);
+                            // Leave a slot for each other ready script, then lend
+                            // spare slots to this script's dependency scheduler.
+                            let other_scripts = ready_count - position - 1;
+                            let compile_jobs = if shared_dependencies {
+                                (jobs - running).saturating_sub(other_scripts).clamp(1, 4)
+                            } else {
+                                1
+                            };
                             // The worker reads completed outputs. The coordinator
                             // publishes this script's output only after it succeeds.
                             let inputs = outputs.clone();
                             let host = HostSettings {
-                                shared_dependencies: shared_build_scripts.contains(&index),
+                                shared_dependencies,
+                                compile_jobs,
                                 ..host
                             };
                             let sender = finished.clone();
@@ -255,7 +276,8 @@ pub(super) fn run(
                                 })
                                 .map_err(|error| format!("cannot start build script: {error}"))?;
                             started[index] = true;
-                            running += 1;
+                            running += compile_jobs;
+                            reservations[index] = compile_jobs;
                         }
                     }
                 }
@@ -503,6 +525,9 @@ struct HostSettings<'a> {
     debug_assertions: bool,
     release: bool,
     jobs: usize,
+    compile_jobs: usize,
+    optimize_scripts: bool,
+    timings: bool,
     shared_dependencies: bool,
     artifacts: &'a FreshArtifacts,
 }
@@ -523,6 +548,9 @@ fn flux_unit(
         debug_assertions,
         release,
         jobs,
+        compile_jobs,
+        optimize_scripts,
+        timings,
         shared_dependencies,
         artifacts,
     } = *host;
@@ -556,14 +584,15 @@ fn flux_unit(
             built.out_dir.to_string_lossy().into_owned(),
         );
     }
+    let compile_started = timings.then(std::time::Instant::now);
     let artifact = directory.join("build-script");
     let (sources, native) = host_sources(plan, outputs, index, version)?;
     eprintln!("flux host {} build-script ({index})", package.name);
     let options = crate::BuildOptions {
         panic_strategy: flux_syntax::PanicStrategy::Abort,
-        optimize: false,
+        optimize: optimize_scripts,
         fast_build: false,
-        timings: false,
+        timings,
         debug_assertions: Some(debug_assertions),
     };
     let compiled = if shared_dependencies && native == flux_codegen::NativeLink::default() {
@@ -573,6 +602,7 @@ fn flux_unit(
             &root.join("flux-deps"),
             artifacts,
             options,
+            compile_jobs,
             &native,
         )? == ExitCode::SUCCESS
     } else {
@@ -590,6 +620,13 @@ fn flux_unit(
             "cannot compile build script for {} with flux",
             package.name
         ));
+    }
+    if let Some(started) = compile_started {
+        eprintln!(
+            "build script {} compile: {:.2?}",
+            package.name,
+            started.elapsed()
+        );
     }
     let out = directory.join("out");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
@@ -641,9 +678,17 @@ fn flux_unit(
     }
     cache.invalidate().map_err(|e| e.to_string())?;
     let started = std::time::SystemTime::now();
+    let run_started = timings.then(std::time::Instant::now);
     let result = run
         .output()
         .map_err(|e| format!("cannot run build script for {}: {e}", package.name))?;
+    if let Some(started) = run_started {
+        eprintln!(
+            "build script {} run: {:.2?}",
+            package.name,
+            started.elapsed()
+        );
+    }
     std::fs::write(directory.join("stdout"), &result.stdout).map_err(|e| e.to_string())?;
     std::fs::write(directory.join("stderr"), &result.stderr).map_err(|e| e.to_string())?;
     if !result.status.success() {
