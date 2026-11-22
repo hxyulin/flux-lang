@@ -1446,7 +1446,7 @@ pub(crate) fn expand_proc(
             return None;
         }
     };
-    let result = host.expander.expand(crate::ProcMacroInput {
+    let result = host.expander.expand_with_tracking(crate::ProcMacroInput {
         invocation_crate: site.krate.0,
         tokens: to_host(tokens),
         attributes: attributes.map(to_host),
@@ -1458,8 +1458,12 @@ pub(crate) fn expand_proc(
         current_dir,
     });
     match result {
-        Ok(tokens) => {
-            site.items.crates[site.krate.0 as usize].record_macro_output(&tokens);
+        Ok(crate::ProcMacroExpansion {
+            tokens,
+            no_tracked_inputs,
+        }) => {
+            site.items.crates[site.krate.0 as usize]
+                .record_macro_output(&tokens, no_tracked_inputs);
             Some(
                 tokens
                     .into_iter()

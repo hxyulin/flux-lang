@@ -33,6 +33,12 @@ pub struct Snapshot {
     observed_environment: BTreeMap<String, Option<String>>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MacroFreshness {
+    Reexpand,
+    Cargo,
+}
+
 enum RootSource<'a> {
     Physical,
     Generated { path: &'a Path, text: &'a str },
@@ -56,6 +62,7 @@ impl Snapshot {
             &CrateIndices::collect(items, krate),
             configuration,
             dependencies,
+            MacroFreshness::Reexpand,
         )
     }
 
@@ -65,6 +72,7 @@ impl Snapshot {
         indices: &CrateIndices,
         configuration: &[u8],
         dependencies: &[[u8; 32]],
+        macros: MacroFreshness,
     ) -> Result<Option<Self>, String> {
         Self::capture_checked_root(
             items,
@@ -73,6 +81,7 @@ impl Snapshot {
             configuration,
             dependencies,
             RootSource::Physical,
+            macros,
         )
     }
 
@@ -92,6 +101,7 @@ impl Snapshot {
             configuration,
             dependencies,
             RootSource::MacroWrapper,
+            MacroFreshness::Reexpand,
         )
     }
 
@@ -113,6 +123,7 @@ impl Snapshot {
                 path,
                 text,
             }),
+            MacroFreshness::Reexpand,
         )
     }
 
@@ -123,17 +134,20 @@ impl Snapshot {
         configuration: &[u8],
         dependencies: &[[u8; 32]],
         root_source: RootSource<'_>,
+        macros: MacroFreshness,
     ) -> Result<Option<Self>, String> {
         let data = items
             .crates
             .get(krate.0 as usize)
             .ok_or("invalid snapshot crate")?;
-        // Only actual host invocations have untracked execution effects.
-        // Merely importing or reexporting a macro does not execute its code.
-        // An empty token result still occupies an outer trace entry.
-        let Some(tracked) =
-            data.with_tracked_inputs(|trace| trace.macro_outputs.is_empty().then(|| trace.clone()))
-        else {
+        // Cargo's contract uses explicit host tracking. Keep re-expanding when
+        // the host cannot report dependencies or has tracked inputs to check.
+        let Some((tracked_files, tracked_env)) = data.with_tracked_inputs(|trace| {
+            let check_macros =
+                macros == MacroFreshness::Cargo && !data.macro_inputs_require_expansion();
+            (check_macros || trace.macro_outputs.is_empty())
+                .then(|| (trace.files.clone(), trace.environment.clone()))
+        }) else {
             return Ok(None);
         };
         let current = std::env::current_dir()
@@ -191,7 +205,7 @@ impl Snapshot {
                 }
             }
         }
-        for (path, hash) in &tracked.files {
+        for (path, hash) in &tracked_files {
             let path = absolute(&current, path);
             let Ok(bytes) = std::fs::read(&path) else {
                 return Ok(None);
@@ -214,7 +228,7 @@ impl Snapshot {
             }
             inputs.insert(path, input);
         }
-        for (key, expected) in &tracked.environment {
+        for (key, expected) in &tracked_env {
             if read_environment(key, data.environment.as_deref())?.as_ref() != expected.as_ref() {
                 return Ok(None);
             }
@@ -229,7 +243,7 @@ impl Snapshot {
             dependencies: dependencies.to_vec(),
             environment: data.environment.as_ref().map(|e| e.as_ref().clone()),
             inputs: inputs.into_values().collect(),
-            observed_environment: tracked.environment,
+            observed_environment: tracked_env,
         }))
     }
 

@@ -1039,6 +1039,8 @@ pub fn is_fresh(
     snapshot.is_fresh(configuration, dependencies, environment)
 }
 
+type OutputLock = std::sync::Arc<std::sync::Mutex<()>>;
+
 /// Validated metadata shared by the workers of one package build. The cache
 /// retains identities and freshness snapshots, and drops the archive bytes.
 #[derive(Default)]
@@ -1046,6 +1048,7 @@ pub(crate) struct FreshArtifacts {
     entries: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, StampedArtifact>>,
     indexes: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, StampedIndex>>,
     output_directory: Option<std::path::PathBuf>,
+    output_locks: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, OutputLock>>,
 }
 
 struct StampedArtifact {
@@ -1070,6 +1073,15 @@ pub(crate) struct DependencyIdentities {
 }
 
 impl FreshArtifacts {
+    pub(crate) fn output_lock(&self, path: &std::path::Path) -> OutputLock {
+        self.output_locks
+            .lock()
+            .expect("shared host output locks poisoned")
+            .entry(path.to_owned())
+            .or_default()
+            .clone()
+    }
+
     /// Only a package build's own output directory gets disk cache records.
     pub(crate) fn for_outputs(directory: &std::path::Path) -> Self {
         Self {

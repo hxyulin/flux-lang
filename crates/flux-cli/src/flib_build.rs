@@ -1,6 +1,7 @@
 //! Driver for explicit Fluxlib compilation.
 
 use crate::build::SourceInput;
+use crate::flib::freshness::{MacroFreshness, Snapshot};
 use crate::flib::semantic::Capability;
 use crate::flib::semantic::{
     self, CheckedCrate, DependencyState, crate_hash_with_indices, write_checked_with_indices,
@@ -57,6 +58,16 @@ pub(crate) struct ExternalLibraries<'a> {
     pub externs: &'a [(String, std::path::PathBuf)],
     pub dependency_files: Option<&'a [&'a Path]>,
     pub cache: Option<&'a semantic::FreshArtifacts>,
+}
+
+impl ExternalLibraries<'_> {
+    fn macro_freshness(self) -> MacroFreshness {
+        if self.dependency_files.is_some() {
+            MacroFreshness::Cargo
+        } else {
+            MacroFreshness::Reexpand
+        }
+    }
 }
 
 pub(crate) fn compile_native(
@@ -187,7 +198,16 @@ pub(crate) fn compile_native(
         )
     });
     let own = collected.items.main_crate();
-    let configuration = configuration(input, options, kind, capability, &aliases, native)?;
+    let macro_freshness = libraries.macro_freshness();
+    let configuration = configuration(
+        input,
+        options,
+        kind,
+        capability,
+        &aliases,
+        native,
+        macro_freshness,
+    )?;
     let own_indices = flux_hir::flib::CrateIndices::collect(&collected.items, own);
     let reused_library = |hash, minimum| {
         semantic::reusable_library(output, &checked_dependencies, libraries.cache).is_ok_and(
@@ -463,12 +483,13 @@ pub(crate) fn compile_native(
             eprintln!("warning: {warning}");
         }
         let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
-        let freshness = crate::flib::freshness::Snapshot::capture_with_indices(
+        let freshness = Snapshot::capture_with_indices(
             &hir.items,
             own,
             &own_indices,
             &configuration,
             &dependency_hashes,
+            macro_freshness,
         )?;
         // Resolve and hash again after linking. A changing archive or search
         // result must not authorize reuse of a link made from earlier inputs.
@@ -484,19 +505,24 @@ pub(crate) fn compile_native(
         crate::artifact_cache::record(output, freshness.as_ref(), hash, stable_native)?;
     } else {
         let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
-        use crate::flib::freshness::Snapshot;
-        let capture = if input.host_macros.is_some() {
-            Snapshot::capture_macro_wrapper
+        let freshness = if input.host_macros.is_some() {
+            Snapshot::capture_macro_wrapper(
+                &hir.items,
+                own,
+                &own_indices,
+                &configuration,
+                &dependency_hashes,
+            )
         } else {
-            Snapshot::capture_with_indices
-        };
-        let freshness = capture(
-            &hir.items,
-            own,
-            &own_indices,
-            &configuration,
-            &dependency_hashes,
-        )?;
+            Snapshot::capture_with_indices(
+                &hir.items,
+                own,
+                &own_indices,
+                &configuration,
+                &dependency_hashes,
+                macro_freshness,
+            )
+        }?;
         // Only archives whose source executed macros need an expansion
         // recheck. Ordinary edits go directly to the full loader.
         let checked_dependencies = if !checked_dependencies.is_empty()
@@ -577,13 +603,15 @@ fn configuration(
     capability: Capability,
     aliases: &[(String, [u8; 32])],
     native: &flux_codegen::NativeLink,
+    macro_freshness: MacroFreshness,
 ) -> Result<Vec<u8>, String> {
     let whole_program = kind == CrateType::Bin && *native != Default::default();
     let effective_native = options.native_link(native);
     let native = &effective_native;
     let mut e = Encoder::new();
     let encode = |result: Result<(), flux_hir::flib::Error>| result.map_err(|e| e.to_string());
-    encode("FLIB-REQUEST-v1".encode(&mut e))?;
+    encode("FLIB-REQUEST-v2".encode(&mut e))?;
+    encode((macro_freshness == MacroFreshness::Cargo).encode(&mut e))?;
     encode(input.file.encode(&mut e))?;
     encode(input.name.encode(&mut e))?;
     encode(input.package_identity.encode(&mut e))?;
@@ -760,6 +788,7 @@ fn freshness_configuration(
         },
         &aliases,
         native,
+        libraries.macro_freshness(),
     )?;
     Ok((config, dependencies))
 }
@@ -787,6 +816,7 @@ mod tests {
                 super::Capability::Object,
                 &[],
                 native,
+                super::MacroFreshness::Reexpand,
             )
             .unwrap()
         };

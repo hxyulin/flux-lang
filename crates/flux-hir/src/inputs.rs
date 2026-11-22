@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Actual file contents and environment values consumed by macro expansion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -17,19 +17,33 @@ pub struct TrackedInputs {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct InputTrace(pub(crate) Mutex<TrackedInputs>, AtomicU64);
+pub(crate) struct InputTrace {
+    inputs: Mutex<TrackedInputs>,
+    observations: AtomicU64,
+    macro_needs_expansion: AtomicBool,
+}
 
 impl InputTrace {
     pub(crate) fn from_inputs(inputs: TrackedInputs) -> Self {
-        Self(Mutex::new(inputs), AtomicU64::default())
+        // An archive preserves the outputs, but cannot certify the host's report.
+        let needs_expansion = !inputs.macro_outputs.is_empty();
+        Self {
+            inputs: Mutex::new(inputs),
+            observations: AtomicU64::default(),
+            macro_needs_expansion: AtomicBool::new(needs_expansion),
+        }
     }
 }
 impl Clone for InputTrace {
     fn clone(&self) -> Self {
-        Self(
-            Mutex::new(self.0.lock().expect("input trace lock poisoned").clone()),
-            AtomicU64::new(self.1.load(Ordering::Relaxed)),
-        )
+        let inputs = self.inputs.lock().expect("input trace lock poisoned");
+        Self {
+            inputs: Mutex::new(inputs.clone()),
+            observations: AtomicU64::new(self.observations.load(Ordering::Relaxed)),
+            macro_needs_expansion: AtomicBool::new(
+                self.macro_needs_expansion.load(Ordering::Relaxed),
+            ),
+        }
     }
 }
 
@@ -37,18 +51,20 @@ impl crate::CrateData {
     /// Counts external read and host expansion attempts, including repeats.
     /// Compare within one compilation before and after a lowering phase.
     pub fn observation_count(&self) -> u64 {
-        self.input_trace.1.load(Ordering::Relaxed)
+        self.input_trace.observations.load(Ordering::Relaxed)
     }
 
     pub(crate) fn observe_input(&self) {
-        self.input_trace.1.fetch_add(1, Ordering::Relaxed);
+        self.input_trace
+            .observations
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Whether lowering executed a host macro, including empty expansions.
     pub fn expanded_host_macros(&self) -> bool {
         !self
             .input_trace
-            .0
+            .inputs
             .lock()
             .expect("input trace lock poisoned")
             .macro_outputs
@@ -64,26 +80,42 @@ impl crate::CrateData {
     pub fn with_tracked_inputs<R>(&self, read: impl FnOnce(&TrackedInputs) -> R) -> R {
         let trace = self
             .input_trace
-            .0
+            .inputs
             .lock()
             .expect("input trace lock poisoned");
         read(&trace)
     }
 
-    pub(crate) fn record_macro_output(&self, tokens: &[crate::ProcMacroToken]) {
+    /// Whether any successful host macro needs expansion to check its current output.
+    pub fn macro_inputs_require_expansion(&self) -> bool {
         self.input_trace
-            .0
+            .macro_needs_expansion
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn record_macro_output(
+        &self,
+        tokens: &[crate::ProcMacroToken],
+        no_tracked_inputs: bool,
+    ) {
+        let mut trace = self
+            .input_trace
+            .inputs
             .lock()
-            .expect("input trace lock poisoned")
-            .macro_outputs
-            .push(tokens.to_vec());
+            .expect("input trace lock poisoned");
+        if !no_tracked_inputs {
+            self.input_trace
+                .macro_needs_expansion
+                .store(true, Ordering::Relaxed);
+        }
+        trace.macro_outputs.push(tokens.to_vec());
     }
 
     pub(crate) fn record_file_input(&self, path: PathBuf, bytes: &[u8]) -> Result<(), String> {
         let digest = crate::flib::digest(bytes);
         let mut trace = self
             .input_trace
-            .0
+            .inputs
             .lock()
             .expect("input trace lock poisoned");
         if trace
@@ -108,7 +140,7 @@ impl crate::CrateData {
         let value = value.map(str::to_owned);
         let mut trace = self
             .input_trace
-            .0
+            .inputs
             .lock()
             .expect("input trace lock poisoned");
         if trace

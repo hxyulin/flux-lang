@@ -62,7 +62,21 @@ fn two_build_scripts_reuse_their_shared_library() {
         "helper/Cargo.toml",
         "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
     );
-    fixture.write("helper/src/lib.rs", "pub fn value() -> u32 { 11 }\n");
+    fixture.write(
+        "helper/src/lib.rs",
+        "pub fn value() -> u32 { env!(\"HELPER_VALUE\").parse().unwrap() }\n",
+    );
+    fixture.write(
+        "helper/build.rs",
+        r#"
+fn main() {
+    println!("cargo:rerun-if-changed=value.txt");
+    let value = std::fs::read_to_string("value.txt").unwrap();
+    println!("cargo:rustc-env=HELPER_VALUE={value}");
+}
+"#,
+    );
+    fixture.write("helper/value.txt", "11");
     for package in ["first", "second"] {
         fixture.write(
             &format!("{package}/Cargo.toml"),
@@ -95,21 +109,38 @@ fn main() {
             .unwrap()
             .iter()
             .filter_map(|output| output["script"]["out_dir"].as_str())
-            .map(|dir| std::fs::read_to_string(Path::new(dir).join("value.txt")).unwrap())
+            .map(|dir| Path::new(dir).join("value.txt"))
+            .filter(|path| path.exists())
+            .map(|path| std::fs::read_to_string(path).unwrap())
             .collect();
         assert_eq!(values, [expected, expected]);
     };
 
-    let first = fixture.prepare("", &["--workspace"]);
+    let first = fixture.prepare("", &["--workspace", "-j2"]);
     assert_eq!(first.matches("Compiling helper\n").count(), 1, "{first}");
     assert_eq!(first.matches("Fresh helper\n").count(), 1, "{first}");
     verify_outputs("11");
 
-    fixture.write("helper/src/lib.rs", "pub fn value() -> u32 { 13 }\n");
-    let edited = fixture.prepare("", &["--workspace"]);
+    let artifacts = || {
+        std::fs::read_dir(fixture.path().join("target/flux/native-host/flux-deps"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry.file_name().to_string_lossy().starts_with("helper-")
+                    && entry.path().extension().is_some_and(|ext| ext == "flib")
+            })
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>()
+    };
+    let first_artifacts = artifacts();
+    assert_eq!(first_artifacts.len(), 1);
+
+    fixture.write("helper/value.txt", "13");
+    let edited = fixture.prepare("", &["--workspace", "-j2"]);
     assert_eq!(edited.matches("Compiling helper\n").count(), 1, "{edited}");
     assert_eq!(edited.matches("Fresh helper\n").count(), 1, "{edited}");
     verify_outputs("13");
+    assert_eq!(artifacts(), first_artifacts);
 }
 
 #[test]
@@ -548,4 +579,128 @@ pub fn empty(_:proc_macro::TokenStream)->proc_macro::TokenStream{
         .unwrap();
     support::oracle::success(&output, "changed macro wrapper");
     assert_eq!(output.stdout, b"3\n");
+}
+
+#[test]
+fn rustc_macro_consumer_reuses_only_expansions_without_tracked_inputs() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[workspace]\nmembers=['app','macros']\ndefault-members=['app']\nresolver='3'\n",
+    );
+    f.write("app/Cargo.toml", "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nmacros={path='../macros'}\n");
+    f.write(
+        "macros/Cargo.toml",
+        "[package]\nname='macros'\nversion='0.1.0'\nedition='2024'\n[lib]\nproc-macro=true\n",
+    );
+    f.write("Cargo.lock", "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['macros']\n[[package]]\nname='macros'\nversion='0.1.0'\n");
+    f.write(
+        "app/src/main.rs",
+        "fn main() { println!(\"{}\", macros::value!()); }\n",
+    );
+    let source = r#"
+#![feature(proc_macro_tracked_path)]
+#[proc_macro]
+pub fn value(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let path = std::env::current_dir().unwrap().join("value.txt");
+    let value = std::fs::read_to_string(path).unwrap();
+    format!("{value}").parse().unwrap()
+}
+"#;
+    f.write("macros/src/lib.rs", source);
+    f.write("value.txt", "10");
+    let build = |expected: &str, fresh| {
+        let output = support::process::run(
+            Command::new(env!("CARGO_BIN_EXE_flux"))
+                .args([
+                    "build",
+                    "--offline",
+                    "--macro-host-compiler",
+                    "rustc",
+                    "--manifest-path",
+                ])
+                .arg(f.path().join("Cargo.toml"))
+                .env("RUSTC_BOOTSTRAP", "macros"),
+            f.path(),
+            "rustc-macro-freshness",
+            Duration::from_secs(120),
+        )
+        .completed();
+        support::oracle::success(&output, "rustc macro consumer build");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.contains("Fresh app"), fresh, "{stderr}");
+        let output = Command::new(f.path().join("target/flux/debug/app"))
+            .output()
+            .unwrap();
+        support::oracle::success(&output, "rustc macro consumer");
+        assert_eq!(output.stdout, expected.as_bytes());
+    };
+
+    build("10\n", false);
+    build("10\n", true);
+    f.write("value.txt", "20");
+    build("10\n", true);
+
+    let tracked = source.replace(
+        "let value = std::fs::read_to_string(path).unwrap();",
+        "proc_macro::tracked::path(&path); let value = std::fs::read_to_string(path).unwrap();",
+    );
+    f.write("macros/src/lib.rs", &tracked);
+    build("20\n", false);
+    build("20\n", false);
+    f.write("value.txt", "30");
+    build("30\n", false);
+}
+
+#[test]
+fn build_scripts_overlap_when_the_normal_dependency_has_no_links_metadata() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[workspace]\nmembers=['app','helper']\ndefault-members=['app']\nresolver='3'\n",
+    );
+    f.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    f.write("helper/src/lib.rs", "pub fn answer() -> u32 { 42 }");
+    f.write(
+        "app/Cargo.toml",
+        "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nhelper={path='../helper'}\n",
+    );
+    f.write(
+        "app/src/main.rs",
+        "fn main() { assert_eq!(helper::answer(), 42); }",
+    );
+    f.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['helper']\n[[package]]\nname='helper'\nversion='0.1.0'\n",
+    );
+    let script = r#"
+fn main() {
+    use std::time::{Duration, Instant};
+
+    let dir = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let workspace = dir.parent().unwrap();
+    std::fs::write(workspace.join("OWN.started"), "").unwrap();
+
+    let start = Instant::now();
+    while !workspace.join("OTHER.started").exists() {
+        assert!(start.elapsed() < Duration::from_secs(20), "the peer script did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+"#;
+    for (own, other) in [("app", "helper"), ("helper", "app")] {
+        f.write(
+            &format!("{own}/build.rs"),
+            &script
+                .replace("OWN.started", &format!("{own}.started"))
+                .replace("OTHER.started", &format!("{other}.started")),
+        );
+    }
+    let output = f.invoke("build", "", &["-j2"]);
+    support::oracle::success(&output, "independent build scripts");
+    assert!(f.path().join("app.started").exists());
+    assert!(f.path().join("helper.started").exists());
 }

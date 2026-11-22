@@ -4,7 +4,7 @@ pub mod local;
 pub use flib::FlibHostResolver;
 mod protocol;
 mod tokens;
-use flux_hir::{ProcMacro, ProcMacroExpander, ProcMacroInput, ProcMacroToken};
+use flux_hir::{ProcMacro, ProcMacroExpander, ProcMacroExpansion, ProcMacroInput, ProcMacroToken};
 use flux_intern::Symbol;
 use protocol::{Message, Request, Response, ServerConfig, SpanMode};
 use std::io::{BufRead, BufReader, Write};
@@ -158,6 +158,11 @@ impl ProcMacroExpander for Host {
         self.identity.descriptor(&self.name).ok()
     }
     fn expand(&self, input: ProcMacroInput) -> Result<Vec<ProcMacroToken>, String> {
+        self.expand_with_tracking(input)
+            .map(|expansion| expansion.tokens)
+    }
+
+    fn expand_with_tracking(&self, input: ProcMacroInput) -> Result<ProcMacroExpansion, String> {
         self.identity.verify()?;
         let service = self.catalog.for_crate(input.invocation_crate)?;
         let reply = service.submit(Task::Expand {
@@ -167,7 +172,7 @@ impl ProcMacroExpander for Host {
         })?;
         self.identity.verify()?;
         match reply {
-            Reply::Tokens(tokens) => Ok(tokens),
+            Reply::Expansion(expansion) => Ok(expansion),
             _ => Err("unexpected proc-macro expansion reply".into()),
         }
     }
@@ -189,7 +194,7 @@ enum Task {
 }
 enum Reply {
     List(Vec<(String, protocol::ProcMacroKind)>),
-    Tokens(Vec<ProcMacroToken>),
+    Expansion(ProcMacroExpansion),
 }
 struct Job {
     task: Task,
@@ -330,9 +335,11 @@ fn execute(session: &mut Session, task: Task) -> Result<Reply, String> {
                 },
             };
             match session.request(Request::ExpandMacro(Box::new(request)), Some(&codec))? {
-                Response::ExpandMacro(Ok(output)) => codec
-                    .decode(output.tree, &output.span_data_table)
-                    .map(Reply::Tokens),
+                Response::ExpandMacro(Ok(output)) => Ok(Reply::Expansion(ProcMacroExpansion {
+                    tokens: codec.decode(output.tree, &output.span_data_table)?,
+                    no_tracked_inputs: output.tracked_paths.is_empty()
+                        && output.tracked_env_vars.is_empty(),
+                })),
                 Response::ExpandMacro(Err(error)) => {
                     Err(format!("expansion panicked: {}", error.0))
                 }

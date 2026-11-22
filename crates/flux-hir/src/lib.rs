@@ -39,8 +39,8 @@ mod macros;
 mod pretty;
 mod proc_macro;
 pub use proc_macro::{
-    ProcMacro, ProcMacroExpander, ProcMacroInput, ProcMacroKind, ProcMacroResolver, ProcMacroToken,
-    proc_macro_declarations,
+    ProcMacro, ProcMacroExpander, ProcMacroExpansion, ProcMacroInput, ProcMacroKind,
+    ProcMacroResolver, ProcMacroToken, proc_macro_declarations,
 };
 mod source;
 

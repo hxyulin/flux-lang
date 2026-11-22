@@ -40,9 +40,26 @@ pub struct ProcMacroInput {
     pub current_dir: PathBuf,
 }
 
+/// Tokens and the host's report about explicitly tracked inputs.
+#[derive(Debug)]
+pub struct ProcMacroExpansion {
+    /// Replacement tokens returned by the host.
+    pub tokens: Vec<ProcMacroToken>,
+    /// True when the host supports tracking and reported no tracked inputs.
+    pub no_tracked_inputs: bool,
+}
+
 /// Drivers implement host execution; HIR neither loads dylibs nor mutates env.
 pub trait ProcMacroExpander: std::fmt::Debug + Send + Sync {
     fn expand(&self, input: ProcMacroInput) -> Result<Vec<ProcMacroToken>, String>;
+
+    /// Expands and reports whether the host observed any explicit dependencies.
+    fn expand_with_tracking(&self, input: ProcMacroInput) -> Result<ProcMacroExpansion, String> {
+        Ok(ProcMacroExpansion {
+            tokens: self.expand(input)?,
+            no_tracked_inputs: false,
+        })
+    }
 
     /// Returns a private, immutable host identity that a graph-scoped resolver can restore.
     /// Custom expanders without a persistent host return `None`.

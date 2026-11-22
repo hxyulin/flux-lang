@@ -22,13 +22,13 @@ struct Macro {
 
 /// Reports a failed job during unwinding too, so the scheduler can stop
 /// waiting before the thread scope propagates the worker's panic.
-struct JobCompletion {
-    sender: std::sync::mpsc::Sender<(usize, Result<bool, String>)>,
-    index: usize,
-    result: Option<Result<bool, String>>,
+pub(super) struct JobCompletion<T> {
+    pub(super) sender: std::sync::mpsc::Sender<(usize, Result<T, String>)>,
+    pub(super) index: usize,
+    pub(super) result: Option<Result<T, String>>,
 }
 
-impl Drop for JobCompletion {
+impl<T> Drop for JobCompletion<T> {
     fn drop(&mut self) {
         let result = self
             .result
@@ -255,6 +255,7 @@ pub(crate) fn run(
             output,
             dependencies: &parent.join("deps"),
             artifacts: &artifacts,
+            shared_outputs: false,
         },
         options,
         jobs,
@@ -280,6 +281,7 @@ pub(super) fn run_script(
             output,
             dependencies: directory,
             artifacts,
+            shared_outputs: true,
         },
         options,
         1,
@@ -292,6 +294,7 @@ struct Destination<'a> {
     output: &'a Path,
     dependencies: &'a Path,
     artifacts: &'a FreshArtifacts,
+    shared_outputs: bool,
 }
 
 fn run_in_directory(
@@ -301,6 +304,7 @@ fn run_in_directory(
         output,
         dependencies: directory,
         artifacts,
+        shared_outputs,
     }: Destination<'_>,
     options: BuildOptions,
     jobs: usize,
@@ -320,6 +324,11 @@ fn run_in_directory(
         // Native-linked executables keep one whole-program backend pass. The
         // DAG caches checked MIR instead of multiplying generic native objects.
         request.metadata_only = (index != root) && !library && *native != Default::default();
+        request.externs = sources[index]
+            .dependencies
+            .iter()
+            .map(|(name, id)| (name.clone(), requests[id].1.output.clone()))
+            .collect();
         // Identity excludes plan position, compiler version, timing output and dependency contents.
         // Configuration and compiler changes are checked by the artifact's input snapshot.
         let identity = serde_json::to_vec(&(
@@ -331,6 +340,25 @@ fn run_in_directory(
             request.metadata_only,
         ))
         .map_err(|e| e.to_string())?;
+        // Script subgraphs may build concurrently into the same directory.
+        // Do not share a destination between requests that use different
+        // generated source directories or dependency configurations. Values
+        // produced by a script stay in the freshness snapshot.
+        let identity = if shared_outputs {
+            let generated_dir = request
+                .environment
+                .as_ref()
+                .and_then(|env| env.get("OUT_DIR"));
+            serde_json::to_vec(&(
+                identity,
+                generated_dir,
+                &request.externs,
+                (index == root).then_some(output),
+            ))
+            .map_err(|e| e.to_string())?
+        } else {
+            identity
+        };
         let hash = blake3::hash(&identity).to_hex();
         let stem = format!("{}-{}", request.name, &hash[..16]);
         request.output = if index == root && !library {
@@ -339,11 +367,6 @@ fn run_in_directory(
             directory.join(format!("{stem}.flib"))
         };
         request.library = index != root || library;
-        request.externs = sources[index]
-            .dependencies
-            .iter()
-            .map(|(name, id)| (name.clone(), requests[id].1.output.clone()))
-            .collect();
         let path = directory.join(format!("{stem}.unit.json"));
         let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         let unchanged = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file())
@@ -399,6 +422,11 @@ fn run_in_directory(
                             // solver scopes on this thread. Only immutable builtins
                             // and the synchronized interners are shared across jobs.
                             completion.result = Some(dependency_files(index).and_then(|files| {
+                                let lock =
+                                    shared_outputs.then(|| artifacts.output_lock(&request.output));
+                                let _guard = lock.as_ref().map(|lock| {
+                                    lock.lock().expect("shared host output lock poisoned")
+                                });
                                 compile_request(request, artifacts, Some(&files))
                             }));
                         })
@@ -482,7 +510,7 @@ mod tests {
     fn panicking_job_notifies_scheduler() {
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let _completion = JobCompletion {
+            let _completion = JobCompletion::<bool> {
                 sender,
                 index: 7,
                 result: None,

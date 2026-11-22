@@ -10,7 +10,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 struct ScriptOutput {
     cfgs: Vec<String>,
     check_cfgs: Vec<String>,
@@ -23,7 +23,7 @@ struct ScriptOutput {
     link_args: Vec<(Option<String>, String)>,
     out_dir: PathBuf,
 }
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 struct Output {
     artifact: Option<PathBuf>,
     script: Option<ScriptOutput>,
@@ -109,8 +109,20 @@ pub(super) fn run(
                     || rustc_units.contains(&index))
         })
         .collect();
+    let serial_macro_hosts = native_macros
+        && plan
+            .units
+            .iter()
+            .any(|unit| unit.target.kind == "proc-macro");
     let waits: Vec<Vec<usize>> = (0..plan.units.len())
-        .map(|index| prerequisites(&plan, index))
+        .map(|index| {
+            let mut waits = prerequisites(&plan, index);
+            let kind = plan.units[index].target.kind.as_str();
+            if kind == "build-script" || (native_macros && kind == "proc-macro") {
+                flux_host_prerequisites(&plan, index, &mut waits);
+            }
+            waits
+        })
         .collect();
     let mut outputs: Vec<Output> = plan.units.iter().map(|_| Output::default()).collect();
     let mut done: Vec<bool> = selected.iter().map(|s| !s).collect();
@@ -121,96 +133,140 @@ pub(super) fn run(
     );
     let shared_build_scripts = shared_build_scripts(&plan);
     let host_artifacts = FreshArtifacts::for_outputs(&root);
-    let (finished, completions) = std::sync::mpsc::channel::<(usize, Result<()>)>();
-    let mut running = 0;
-    let mut failure = None;
-    loop {
-        while let Ok((index, result)) = completions.try_recv() {
-            running -= 1;
-            match result {
-                Ok(()) => done[index] = true,
-                Err(error) => {
-                    failure.get_or_insert(error);
-                }
-            }
-        }
-        if failure.is_none() {
-            let ready = |started: &[bool], index: usize| {
-                !started[index] && waits[index].iter().all(|d| done[*d])
-            };
-            let script = |index: usize| plan.units[index].target.kind == "build-script";
-            for index in 0..plan.units.len() {
-                if running == jobs {
-                    break;
-                }
-                if script(index) || native_macros || !ready(&started, index) {
-                    continue;
-                }
-                started[index] = true;
-                let work = match rustc_unit(
-                    &plan,
-                    &outputs,
-                    index,
-                    &root,
-                    &rustc,
-                    &version,
-                    host_profile.as_ref().expect("rustc host unit selected"),
-                ) {
-                    Ok(work) => work,
-                    Err(error) => {
-                        failure = Some(error);
-                        break;
-                    }
-                };
-                outputs[index].artifact = Some(work.artifact.clone());
-                running += 1;
-                let finished = finished.clone();
-                std::thread::spawn(move || {
-                    let _ = finished.send((index, work.run()));
-                });
-            }
-            // Flux compiles build scripts and native macro hosts on this
-            // thread, while rustc units keep running in their workers.
-            let next =
-                (0..plan.units.len()).find(|&i| ready(&started, i) && (script(i) || native_macros));
-            if let Some(index) = next.filter(|_| failure.is_none() && running < jobs) {
-                started[index] = true;
-                let host = HostSettings {
-                    version: &version,
-                    cfg: &cfg,
-                    rustc: &rustc,
-                    native_macros,
-                    debug_assertions,
-                    release: optimize,
-                    jobs,
-                    shared_dependencies: shared_build_scripts.contains(&index),
-                    artifacts: &host_artifacts,
-                };
-                match flux_unit(&plan, &outputs, index, &root, &host) {
+    let (finished, completions) = std::sync::mpsc::channel::<(usize, Result<Option<Output>>)>();
+    let host = HostSettings {
+        version: &version,
+        cfg: &cfg,
+        rustc: &rustc,
+        native_macros,
+        debug_assertions,
+        release: optimize,
+        jobs,
+        shared_dependencies: false,
+        artifacts: &host_artifacts,
+    };
+    let plan_ref = &plan;
+    let output_root = root.as_path();
+    std::thread::scope(|scope| -> Result<()> {
+        let mut running = 0;
+        let mut failure = None;
+        let mut received = None;
+        loop {
+            for (index, result) in received.take().into_iter().chain(completions.try_iter()) {
+                running -= 1;
+                match result {
                     Ok(output) => {
-                        outputs[index] = output;
+                        if let Some(output) = output {
+                            outputs[index] = output;
+                        }
                         done[index] = true;
                     }
-                    Err(error) => failure = Some(error),
+                    Err(error) => {
+                        failure.get_or_insert(error);
+                    }
                 }
-                continue;
             }
-        }
-        if running == 0 {
-            break;
-        }
-        let (index, result) = completions.recv().map_err(|e| e.to_string())?;
-        running -= 1;
-        match result {
-            Ok(()) => done[index] = true,
-            Err(error) => {
-                failure.get_or_insert(error);
+            if failure.is_none() {
+                let ready = |started: &[bool], index: usize| {
+                    !started[index] && waits[index].iter().all(|d| done[*d])
+                };
+                let script = |index: usize| plan.units[index].target.kind == "build-script";
+                for index in 0..plan.units.len() {
+                    if running == jobs {
+                        break;
+                    }
+                    if script(index) || native_macros || !ready(&started, index) {
+                        continue;
+                    }
+                    let work = match rustc_unit(
+                        &plan,
+                        &outputs,
+                        index,
+                        &root,
+                        &rustc,
+                        &version,
+                        host_profile.as_ref().expect("rustc host unit selected"),
+                    ) {
+                        Ok(work) => work,
+                        Err(error) => {
+                            failure = Some(error);
+                            break;
+                        }
+                    };
+                    outputs[index].artifact = Some(work.artifact.clone());
+                    started[index] = true;
+                    running += 1;
+                    let sender = finished.clone();
+                    scope.spawn(move || {
+                        let mut completion = super::build::JobCompletion {
+                            sender,
+                            index,
+                            result: None,
+                        };
+                        completion.result = Some(work.run().map(|()| None));
+                    });
+                }
+                if failure.is_none() {
+                    if serial_macro_hosts {
+                        // Keep the Flux macro-host path in its original order.
+                        if let Some(index) = (0..plan.units.len()).find(|&i| ready(&started, i)) {
+                            started[index] = true;
+                            let host = HostSettings {
+                                shared_dependencies: shared_build_scripts.contains(&index),
+                                ..host
+                            };
+                            match flux_unit(&plan, &outputs, index, &root, &host) {
+                                Ok(output) => {
+                                    outputs[index] = output;
+                                    done[index] = true;
+                                }
+                                Err(error) => failure = Some(error),
+                            }
+                            continue;
+                        }
+                    } else {
+                        for index in 0..plan.units.len() {
+                            if running == jobs {
+                                break;
+                            }
+                            if !script(index) || !ready(&started, index) {
+                                continue;
+                            }
+                            // The worker reads completed outputs. The coordinator
+                            // publishes this script's output only after it succeeds.
+                            let inputs = outputs.clone();
+                            let host = HostSettings {
+                                shared_dependencies: shared_build_scripts.contains(&index),
+                                ..host
+                            };
+                            let sender = finished.clone();
+                            std::thread::Builder::new()
+                                .stack_size(8 * 1024 * 1024)
+                                .spawn_scoped(scope, move || {
+                                    let mut completion = super::build::JobCompletion {
+                                        sender,
+                                        index,
+                                        result: None,
+                                    };
+                                    completion.result = Some(
+                                        flux_unit(plan_ref, &inputs, index, output_root, &host)
+                                            .map(Some),
+                                    );
+                                })
+                                .map_err(|error| format!("cannot start build script: {error}"))?;
+                            started[index] = true;
+                            running += 1;
+                        }
+                    }
+                }
             }
+            if running == 0 {
+                break;
+            }
+            received = Some(completions.recv().map_err(|e| e.to_string())?);
         }
-    }
-    if let Some(error) = failure {
-        return Err(error);
-    }
+        failure.map_or(Ok(()), Err)
+    })?;
     if done.iter().any(|d| !d) {
         return Err("native host units depend on each other in a cycle".into());
     }
@@ -341,10 +397,33 @@ fn prerequisites(plan: &Plan, index: usize) -> Vec<usize> {
             owner
                 .dependencies
                 .iter()
-                .filter_map(|(_, d)| plan.units[*d].build_script),
+                .filter_map(|(_, d)| linked_build_script(plan, *d).map(|(_, script)| script)),
         );
     }
     waits
+}
+
+/// Build scripts and native macro hosts compile their host libraries from
+/// source. Before starting, wait for the outputs those libraries consume.
+fn flux_host_prerequisites(plan: &Plan, root: usize, waits: &mut Vec<usize>) {
+    let mut seen = BTreeSet::new();
+    let mut pending: Vec<_> = plan.units[root]
+        .dependencies
+        .iter()
+        .map(|(_, id)| *id)
+        .collect();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let unit = &plan.units[id];
+        waits.extend(unit.build_script);
+        if unit.target.kind == "proc-macro" {
+            waits.push(id);
+        } else {
+            pending.extend(unit.dependencies.iter().map(|(_, id)| *id));
+        }
+    }
 }
 
 /// A stable directory name for a unit: its identity, not its plan position
@@ -1206,25 +1285,32 @@ fn dependency_metadata(
         })
         .ok_or("build script has no owning package unit")?;
     let mut env = BTreeMap::new();
-    for (_, dependency) in &owner.dependencies {
-        let dependency = &plan.units[*dependency];
-        if let Some(links) = &plan.packages[dependency.package].links
-            && let Some(script) = dependency.build_script
-        {
-            let output = outputs
-                .get(script)
-                .and_then(|o| o.script.as_ref())
-                .ok_or("dependency metadata is not ready")?;
-            for (key, value) in &output.metadata {
-                env.insert(
-                    format!("DEP_{}_{}", env_name(links)?, env_name(key)?),
-                    value.clone(),
-                );
-            }
+    for (links, script) in owner
+        .dependencies
+        .iter()
+        .filter_map(|(_, d)| linked_build_script(plan, *d))
+    {
+        let output = outputs
+            .get(script)
+            .and_then(|o| o.script.as_ref())
+            .ok_or("dependency metadata is not ready")?;
+        for (key, value) in &output.metadata {
+            env.insert(
+                format!("DEP_{}_{}", env_name(links)?, env_name(key)?),
+                value.clone(),
+            );
         }
     }
     Ok(env)
 }
+fn linked_build_script(plan: &Plan, dependency: usize) -> Option<(&str, usize)> {
+    let unit = &plan.units[dependency];
+    Some((
+        plan.packages[unit.package].links.as_deref()?,
+        unit.build_script?,
+    ))
+}
+
 fn parse_script(text: &str, out_dir: PathBuf) -> Result<(ScriptOutput, script_cache::Rerun)> {
     let mut output = ScriptOutput {
         out_dir,
