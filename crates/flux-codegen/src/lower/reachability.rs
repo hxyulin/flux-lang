@@ -1469,6 +1469,7 @@ struct GrowthCache {
     unknowns: FxHashMap<Ty, Ty>,
     arguments: FxHashMap<flux_ty::GenericArgs, flux_ty::GenericArgs>,
     embeddings: FxHashMap<(Ty, Ty), bool>,
+    sizes: FxHashMap<Ty, u32>,
 }
 
 impl GrowthCache {
@@ -1506,7 +1507,24 @@ impl GrowthCache {
             && previous
                 .iter()
                 .zip(next)
+                .all(|(&left, &right)| self.size(left) <= self.size(right))
+            && previous
+                .iter()
+                .zip(next)
                 .all(|(&left, &right)| embeds_cached(left, right, &mut self.embeddings))
+    }
+
+    fn size(&mut self, ty: Ty) -> u32 {
+        if let Some(&size) = self.sizes.get(&ty) {
+            return size;
+        }
+        // Embedding can discard nodes from the larger tree, but cannot
+        // embed more nodes than it contains. Saturation only loses pruning.
+        let size = ty
+            .children()
+            .fold(1u32, |size, child| size.saturating_add(self.size(child)));
+        self.sizes.insert(ty, size);
+        size
     }
 }
 

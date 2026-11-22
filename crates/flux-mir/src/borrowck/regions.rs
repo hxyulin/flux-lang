@@ -4087,7 +4087,6 @@ impl<'a> Cx<'a> {
     /// everything, and transitive.
     fn close_known(&mut self) {
         let n = self.universal.len();
-        self.known = vec![false; n * n];
         let known_edges = Adjacency::new(
             n,
             self.known_pairs.iter().filter_map(|&(a, b)| {
@@ -4096,10 +4095,15 @@ impl<'a> Cx<'a> {
                 (a != 0 && a != b).then_some((a, b))
             }),
         );
-        if self.known_edges != known_edges {
-            self.caller_reachability.get_mut().baseline = None;
-            self.known_edges = known_edges;
+        // The adjacency includes the universal count and their indexed edges.
+        // Repeated proof queries can close the same relation many times.
+        if self.known_edges == known_edges {
+            return;
         }
+        self.caller_reachability.get_mut().baseline = None;
+        self.known_edges = known_edges;
+        self.known.clear();
+        self.known.resize(n * n, false);
         if n == 0 {
             return;
         }
@@ -11400,6 +11404,29 @@ mod graph_tests {
             .push(trait_ref.with_self(param));
         cx.normalization.projections_mut().clear();
         assert_eq!(cx.normalize(Ty::alias(alias)), Ty::alias(alias));
+    }
+
+    #[test]
+    fn closing_known_regions_tracks_changes_to_trial_edges() {
+        let body = Body::empty(None);
+        let items = ItemTree::default();
+        let sigs = Signatures::default();
+        let requirements = Requirements::default();
+        let mut cx = Cx::new(&body, &items, &sigs, &requirements);
+        cx.new_universal("'static".into());
+        let a = cx.new_universal("'a".into());
+        let b = cx.new_universal("'b".into());
+        let c = cx.new_universal("'c".into());
+        cx.known_pairs.extend([(a, b), (b, c)]);
+        cx.close_known();
+        cx.close_known();
+        assert!(cx.known(1, 3));
+
+        cx.known_pairs.truncate(1);
+        cx.known_pairs.push((c, b));
+        cx.close_known();
+        assert!(!cx.known(1, 3));
+        assert!(cx.known(3, 2));
     }
 
     #[test]

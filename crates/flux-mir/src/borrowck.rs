@@ -477,9 +477,12 @@ fn held_locals_at(
     let mut state = State::new(paths.paths.len());
     let held = |state: &State| {
         let mut locals = BitSet::new_empty(body.locals.len());
-        for (index, path) in paths.paths.iter().enumerate() {
-            if state.maybe_held.contains(index) {
-                locals.insert(path.local.index());
+        for (word_index, &word) in state.maybe_held.words.iter().enumerate() {
+            let mut bits = word;
+            while bits != 0 {
+                let index = word_index * 64 + bits.trailing_zeros() as usize;
+                locals.insert(paths.paths[index].local.index());
+                bits &= bits - 1;
             }
         }
         locals
