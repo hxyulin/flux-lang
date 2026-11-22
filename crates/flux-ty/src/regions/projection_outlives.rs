@@ -1,5 +1,53 @@
 //! Recover associated output occurrences from existing signature region tables.
 use super::*;
+use std::cell::RefCell;
+
+const MAX_CACHED_ROWS: usize = 16_384;
+
+type ProjectionRows = rustc_hash::FxHashMap<Box<[Region]>, Vec<ProjectionOutlives>>;
+
+struct Cache {
+    items: *const ItemTree,
+    sigs: *const Signatures,
+    rows: rustc_hash::FxHashMap<Ty, ProjectionRows>,
+    entries: usize,
+}
+
+impl Cache {
+    fn matches(&self, items: &ItemTree, sigs: &Signatures) -> bool {
+        std::ptr::eq(self.items, items) && std::ptr::eq(self.sigs, sigs)
+    }
+}
+
+thread_local! {
+    static CACHE: RefCell<Option<Cache>> = const { RefCell::new(None) };
+}
+
+/// Reuses completed walks while the item tree and signatures are immutable.
+pub fn with_projection_outlives_cache<T>(
+    items: &ItemTree,
+    sigs: &Signatures,
+    run: impl FnOnce() -> T,
+) -> T {
+    let previous = CACHE.with_borrow_mut(|cache| {
+        cache.replace(Cache {
+            items,
+            sigs,
+            rows: Default::default(),
+            entries: 0,
+        })
+    });
+    let _restore = RestoreCache(previous);
+    run()
+}
+
+struct RestoreCache(Option<Cache>);
+
+impl Drop for RestoreCache {
+    fn drop(&mut self) {
+        CACHE.with_borrow_mut(|cache| *cache = self.0.take());
+    }
+}
 
 /// Recover reference-implied projection requirements without changing storage.
 /// A projection's inputs identify the occurrence; they are not stored output
@@ -10,6 +58,18 @@ pub fn type_projection_outlives(
     ty: Ty,
     row: &[Region],
 ) -> Vec<ProjectionOutlives> {
+    let cached = CACHE.with_borrow(|cache| {
+        cache
+            .as_ref()
+            .filter(|cache| cache.matches(items, sigs))?
+            .rows
+            .get(&ty)?
+            .get(row)
+            .cloned()
+    });
+    if let Some(cached) = cached {
+        return cached;
+    }
     let mut walk = ProjectionWalk {
         items,
         sigs,
@@ -22,6 +82,21 @@ pub fn type_projection_outlives(
     if walk.visit(ty, row, &[]).is_none() {
         walk.out.clear();
     }
+    CACHE.with_borrow_mut(|cache| {
+        let Some(cache) = cache.as_mut().filter(|cache| cache.matches(items, sigs)) else {
+            return;
+        };
+        if cache.entries >= MAX_CACHED_ROWS {
+            cache.rows.clear();
+            cache.entries = 0;
+        }
+        cache
+            .rows
+            .entry(ty)
+            .or_default()
+            .insert(row.into(), walk.out.clone());
+        cache.entries += 1;
+    });
     walk.out
 }
 

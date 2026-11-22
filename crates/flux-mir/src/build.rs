@@ -132,6 +132,18 @@ fn build_file_inner(
     required_functions: &[FunctionId],
     strategy: crate::PanicStrategy,
 ) -> FileMir {
+    flux_ty::regions::with_projection_outlives_cache(&hir.items, &typed.sigs, || {
+        build_and_check_file(hir, typed, imported, required_functions, strategy)
+    })
+}
+
+fn build_and_check_file(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: Option<&crate::imported::ImportedMir>,
+    required_functions: &[FunctionId],
+    strategy: crate::PanicStrategy,
+) -> FileMir {
     if imported.is_some_and(|imported| imported.mir().panic_strategy != strategy) {
         return FileMir {
             panic_strategy: strategy,

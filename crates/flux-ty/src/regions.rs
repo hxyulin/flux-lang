@@ -77,7 +77,9 @@ pub(crate) const BODY_PROJECTION_LIFETIMES: &str =
 mod method_binders;
 mod object;
 mod projection_outlives;
-pub use projection_outlives::{signature_projection_outlives, type_projection_outlives};
+pub use projection_outlives::{
+    signature_projection_outlives, type_projection_outlives, with_projection_outlives_cache,
+};
 mod resolve;
 mod selected;
 pub(crate) use selected::closed_impl_predicates_hold;

@@ -392,6 +392,46 @@ fn shared_projection_outlives_paths_keep_each_region_row() {
     );
 }
 
+#[test]
+fn projection_outlives_cache_distinguishes_lifetime_rows() {
+    use flux_ty::regions::{Region, type_projection_outlives, with_projection_outlives_cache};
+
+    let hir = lowered(
+        "trait Value<'a> { type Stored; }
+         struct Wrap<'a, T: Value<'a>>(<T as Value<'a>>::Stored);
+         fn probe<'a, 'b, T: Value<'b>>(_: &'a Wrap<'b, T>) {}
+         fn main() {}"
+            .into(),
+    );
+    let (sigs, errors) = flux_ty::signatures(&hir.items);
+    assert!(errors.is_empty(), "{errors:?}");
+    let (probe, _) = hir
+        .items
+        .functions
+        .iter()
+        .find(|(_, f)| f.name.as_str() == "probe")
+        .unwrap();
+    let ty = sigs.fns[probe].params[0];
+    let original = &sigs.regions.fns[probe].params[0];
+    let mut changed = original.to_vec();
+    changed[1] = Region::Static;
+    let original_outlives = type_projection_outlives(&hir.items, &sigs, ty, original);
+    let changed_outlives = type_projection_outlives(&hir.items, &sigs, ty, &changed);
+    assert_ne!(original_outlives, changed_outlives);
+    with_projection_outlives_cache(&hir.items, &sigs, || {
+        for (row, expected) in [
+            (&original[..], &original_outlives),
+            (&changed[..], &changed_outlives),
+            (&original[..], &original_outlives),
+        ] {
+            assert_eq!(
+                &type_projection_outlives(&hir.items, &sigs, ty, row),
+                expected
+            );
+        }
+    });
+}
+
 /// Concrete recursive HIR types form many field paths but store no hidden
 /// associated outputs. Their traversal must depend on declarations, not paths.
 #[test]
