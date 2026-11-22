@@ -92,8 +92,10 @@ impl Fixture {
         put(&source, "Cargo.toml", &manifest);
         put(&source, "src/lib.rs", "pub fn value()->usize{7}\n");
         let archive = self.root.join("registry").join(format!("{package}.crate"));
+        // Keep the package fixture independent of macOS filesystem metadata.
         let output = Command::new("tar")
-            .args(["-czf"])
+            .env("COPYFILE_DISABLE", "1")
+            .args(["--format=ustar", "-czf"])
             .arg(&archive)
             .arg("-C")
             .arg(source.parent().unwrap())

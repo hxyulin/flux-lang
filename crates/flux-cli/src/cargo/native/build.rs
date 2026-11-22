@@ -8,6 +8,8 @@ use flux_intern::Symbol;
 use serde::{Deserialize, Serialize};
 
 use crate::build::SourceInput;
+use crate::flib::semantic::FreshArtifacts;
+use crate::flib_build::ExternalLibraries;
 use crate::{BuildOptions, CrateType};
 
 #[derive(Deserialize, Serialize)]
@@ -169,6 +171,14 @@ impl Request {
 pub(crate) fn worker(path: &Path) -> Result<bool, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    compile_request(&request, &Default::default(), None)
+}
+
+fn compile_request(
+    request: &Request,
+    artifacts: &FreshArtifacts,
+    dependency_files: Option<&[&Path]>,
+) -> Result<bool, String> {
     let options = BuildOptions {
         panic_strategy: crate::cargo::parse_panic_strategy(&request.panic_strategy)?,
         optimize: request.optimize,
@@ -177,25 +187,32 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
         timings: request.timings,
     };
     options.validate()?;
-    crate::builtins::initialize_for_strategy(options.panic_strategy)?;
+    crate::builtins::select_for_strategy(options.panic_strategy)?;
     let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
     let source = request.source()?;
     let native = request.native.link();
+    let libraries = ExternalLibraries {
+        externs: &request.externs,
+        dependency_files,
+        cache: Some(artifacts),
+    };
     let fresh = if request.library {
         crate::flib_build::is_fresh_with_capability(
             &source,
             &request.output,
             options,
-            &request.externs,
+            libraries,
             request.metadata_only,
+            artifacts,
         )?
     } else {
         crate::flib_build::is_binary_fresh(
             &source,
             &request.output,
             options,
-            &request.externs,
+            libraries,
             &native,
+            artifacts,
         )?
     };
     if fresh {
@@ -214,7 +231,7 @@ pub(crate) fn worker(path: &Path) -> Result<bool, String> {
                 CrateType::Bin
             },
             request.metadata_only,
-            &request.externs,
+            libraries,
             &native,
         )
     })
@@ -230,22 +247,68 @@ pub(crate) fn run(
     native: &flux_codegen::NativeLink,
 ) -> Result<ExitCode, String> {
     let parent = output.parent().ok_or("build output has no parent")?;
-    let directory = parent.join("deps");
-    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-    let mut needed = BTreeSet::new();
-    let mut pending = vec![root];
-    while let Some(index) = pending.pop() {
-        if !needed.insert(index) {
-            continue;
-        }
-        let source = sources.get(index).ok_or("missing build unit")?;
-        for (_, dependency) in &source.dependencies {
-            if *dependency >= index {
-                return Err("build units are not in dependency order".into());
-            }
-            pending.push(*dependency);
-        }
-    }
+    let artifacts = FreshArtifacts::for_outputs(parent);
+    run_in_directory(
+        sources,
+        root,
+        Destination {
+            output,
+            dependencies: &parent.join("deps"),
+            artifacts: &artifacts,
+        },
+        options,
+        jobs,
+        library,
+        native,
+    )
+}
+
+/// All callers preparing scripts for the same plan use the same dependency directory.
+pub(super) fn run_script(
+    sources: &[SourceInput],
+    output: &Path,
+    directory: &Path,
+    artifacts: &FreshArtifacts,
+    options: BuildOptions,
+    native: &flux_codegen::NativeLink,
+) -> Result<ExitCode, String> {
+    let root = sources.len().checked_sub(1).ok_or("missing build script")?;
+    run_in_directory(
+        sources,
+        root,
+        Destination {
+            output,
+            dependencies: directory,
+            artifacts,
+        },
+        options,
+        1,
+        false,
+        native,
+    )
+}
+
+struct Destination<'a> {
+    output: &'a Path,
+    dependencies: &'a Path,
+    artifacts: &'a FreshArtifacts,
+}
+
+fn run_in_directory(
+    sources: &[SourceInput],
+    root: usize,
+    Destination {
+        output,
+        dependencies: directory,
+        artifacts,
+    }: Destination<'_>,
+    options: BuildOptions,
+    jobs: usize,
+    library: bool,
+    native: &flux_codegen::NativeLink,
+) -> Result<ExitCode, String> {
+    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    let needed = needed_units(sources, root)?;
     let mut requests: BTreeMap<usize, (PathBuf, Request)> = BTreeMap::new();
     for &index in &needed {
         let mut request = Request::new(&sources[index], options)?;
@@ -282,13 +345,21 @@ pub(crate) fn run(
             .map(|(name, id)| (name.clone(), requests[id].1.output.clone()))
             .collect();
         let path = directory.join(format!("{stem}.unit.json"));
-        crate::flib::write_atomic(
-            &path,
-            &serde_json::to_vec(&request).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+        let unchanged = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file())
+            && std::fs::read(&path).is_ok_and(|saved| saved == bytes);
+        if !unchanged {
+            crate::flib::write_atomic(&path, &bytes).map_err(|e| e.to_string())?;
+        }
         requests.insert(index, (path, request));
     }
+    let dependency_files = |index| -> Result<Vec<&Path>, String> {
+        Ok(needed_units(sources, index)?
+            .into_iter()
+            .filter(|&dependency| dependency != index)
+            .map(|dependency| requests[&dependency].1.output.as_path())
+            .collect())
+    };
     let (finished, completions) = std::sync::mpsc::channel();
     let mut started = BTreeSet::new();
     let mut done = BTreeSet::new();
@@ -298,7 +369,7 @@ pub(crate) fn run(
     std::thread::scope(|scope| -> Result<(), String> {
         loop {
             if failure.is_none() && !diagnosed {
-                for (&index, (path, _)) in &requests {
+                for (&index, (_, request)) in &requests {
                     if running == jobs {
                         break;
                     }
@@ -327,7 +398,9 @@ pub(crate) fn run(
                             // Each job owns its source/dependency state and creates
                             // solver scopes on this thread. Only immutable builtins
                             // and the synchronized interners are shared across jobs.
-                            completion.result = Some(worker(path));
+                            completion.result = Some(dependency_files(index).and_then(|files| {
+                                compile_request(request, artifacts, Some(&files))
+                            }));
                         })
                         .map_err(|error| format!("cannot start compiler unit: {error}"))?;
                 }
@@ -363,12 +436,42 @@ pub(crate) fn run(
     }
     if library {
         let request = &requests[&root].1;
-        if !crate::flib_build::is_fresh(&sources[root], output, options, &request.externs)? {
+        let files = dependency_files(root)?;
+        if !crate::flib_build::is_fresh_with_capability(
+            &sources[root],
+            output,
+            options,
+            ExternalLibraries {
+                externs: &request.externs,
+                dependency_files: Some(&files),
+                cache: Some(artifacts),
+            },
+            false,
+            artifacts,
+        )? {
             let bytes = std::fs::read(&request.output).map_err(|e| e.to_string())?;
             crate::flib::write_atomic(output, &bytes).map_err(|e| e.to_string())?;
         }
     }
     Ok(ExitCode::SUCCESS)
+}
+
+fn needed_units(sources: &[SourceInput], root: usize) -> Result<BTreeSet<usize>, String> {
+    let mut needed = BTreeSet::new();
+    let mut pending = vec![root];
+    while let Some(index) = pending.pop() {
+        if !needed.insert(index) {
+            continue;
+        }
+        let source = sources.get(index).ok_or("missing build unit")?;
+        for (_, dependency) in &source.dependencies {
+            if *dependency >= index {
+                return Err("build units are not in dependency order".into());
+            }
+            pending.push(*dependency);
+        }
+    }
+    Ok(needed)
 }
 
 #[cfg(test)]

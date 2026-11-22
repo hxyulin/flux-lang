@@ -3,10 +3,12 @@
 use std::io::Read;
 use std::path::Path;
 
-use flux_hir::flib::{Decode, Decoder, Encode, Encoder, Error, digest};
+use flux_hir::flib::{Decode, Decoder, Encode, Encoder, Error};
+
+use crate::flib::digest;
 
 /// The stat fields that change whenever a file's content is replaced or written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub(crate) struct Stamp {
     device: u64,
     inode: u64,
@@ -40,6 +42,15 @@ impl Stamp {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
         cfg!(unix) && now - self.changed >= 2
+    }
+
+    pub(crate) fn changed_before(&self, time: std::time::SystemTime) -> bool {
+        time.duration_since(std::time::UNIX_EPOCH)
+            .is_ok_and(|elapsed| {
+                cfg!(unix)
+                    && (self.changed, self.changed_ns)
+                        < (elapsed.as_secs() as i64, i64::from(elapsed.subsec_nanos()))
+            })
     }
 
     #[cfg(not(unix))]
@@ -140,21 +151,20 @@ impl ExecutableIdentity {
     }
 }
 
-impl Encode for ExecutableIdentity {
+impl Encode for Stamp {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
-        self.stamp.device.encode(e)?;
-        self.stamp.inode.encode(e)?;
-        self.stamp.size.encode(e)?;
-        self.stamp.modified.encode(e)?;
-        self.stamp.modified_ns.encode(e)?;
-        self.stamp.changed.encode(e)?;
-        self.stamp.changed_ns.encode(e)?;
-        self.hash.as_slice().encode(e)
+        self.device.encode(e)?;
+        self.inode.encode(e)?;
+        self.size.encode(e)?;
+        self.modified.encode(e)?;
+        self.modified_ns.encode(e)?;
+        self.changed.encode(e)?;
+        self.changed_ns.encode(e)
     }
 }
-impl Decode for ExecutableIdentity {
+impl Decode for Stamp {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
-        let stamp = Stamp {
+        let stamp = Self {
             device: Decode::decode(d)?,
             inode: Decode::decode(d)?,
             size: Decode::decode(d)?,
@@ -168,6 +178,19 @@ impl Decode for ExecutableIdentity {
         {
             return Err(Error::new("invalid executable timestamp"));
         }
+        Ok(stamp)
+    }
+}
+
+impl Encode for ExecutableIdentity {
+    fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        self.stamp.encode(e)?;
+        self.hash.as_slice().encode(e)
+    }
+}
+impl Decode for ExecutableIdentity {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        let stamp = Stamp::decode(d)?;
         let hash = Vec::<u8>::decode(d)?
             .try_into()
             .map_err(|_| Error::new("invalid executable hash"))?;

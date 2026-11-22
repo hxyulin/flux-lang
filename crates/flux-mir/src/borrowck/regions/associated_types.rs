@@ -96,7 +96,7 @@ impl Cx<'_> {
             Region::Param(i) => lifetimes.get(i as usize).copied(),
             _ => None,
         };
-        let env_start = self.env.len();
+        let env_start = self.normalization.projections().len();
         let regions_start = self.env_regions.len();
         for (name, table) in &block.types {
             let Some(ty) = flux_solve::traits::impl_type(sigs, imp, *name) else {
@@ -114,7 +114,9 @@ impl Cx<'_> {
             if let Some(vars) = self.instantiate_sig(ty, table, &mut |r| map(r), &[], &[])
                 && vars.len() == self.slots(self.normalize(ty)) as usize
             {
-                self.env.push(flux_ty::Projection { alias, ty });
+                self.normalization
+                    .projections_mut()
+                    .push(flux_ty::Projection { alias, ty });
                 self.env_regions.push((alias, vars));
             }
         }
@@ -124,7 +126,7 @@ impl Cx<'_> {
             && self.slots(normalized) == 0
             && flux_solve::fn_regions::same_binders(items, normalized, target)
         {
-            self.env.truncate(env_start);
+            self.normalization.projections_mut().truncate(env_start);
             self.env_regions.truncate(regions_start);
             return;
         }
@@ -189,7 +191,7 @@ impl Cx<'_> {
                 "implemented constant lifetime arguments are not represented",
             ));
         }
-        self.env.truncate(env_start);
+        self.normalization.projections_mut().truncate(env_start);
         self.env_regions.truncate(regions_start);
     }
 
@@ -410,15 +412,19 @@ impl Cx<'_> {
                 && ty.children().all(|child| type_only(items, child))
         }
         for projection in
-            flux_solve::traits::implied_projections(self.sigs, &self.header_predicates)
+            flux_solve::traits::implied_projections(self.sigs, self.normalization.memberships())
         {
             if type_only(
                 self.items,
                 Ty::alias(projection.alias.map_args(|ty| self.normalize(ty))),
             ) && type_only(self.items, self.normalize(projection.ty))
-                && !self.env.iter().any(|known| known.alias == projection.alias)
+                && !self
+                    .normalization
+                    .projections()
+                    .iter()
+                    .any(|known| known.alias == projection.alias)
             {
-                self.env.push(projection);
+                self.normalization.projections_mut().push(projection);
                 // These header consequences have no region slots on either
                 // side. Keep the empty output row as well as the type equality,
                 // so declaration checks need not select an abstract receiver.
@@ -436,12 +442,12 @@ impl Cx<'_> {
         imp: flux_hir::ImplId,
     ) -> Option<(Vec<Var>, Vec<ImplRegionGoal>)> {
         let block = self.sigs.regions.impls.get(imp)?;
-        self.env = self
+        *self.normalization.projections_mut() = self
             .sigs
             .impl_projections
             .get(imp)
             .map_or(Vec::new(), |p| p.to_vec());
-        self.header_predicates = self
+        *self.normalization.memberships_mut() = self
             .sigs
             .impl_predicates
             .get(imp)
@@ -488,7 +494,13 @@ impl Cx<'_> {
         let env = self.original_region_goals(written, &lifetimes);
         // Callable header binders can extend the universal region set.
         self.close_known();
-        for (p, table) in self.env.clone().iter().zip(block.projections.iter()) {
+        for (p, table) in self
+            .normalization
+            .projections()
+            .to_vec()
+            .iter()
+            .zip(block.projections.iter())
+        {
             let late = table.iter().any(|region| matches!(region, Region::Late(_)));
             let mut inputs = &[][..];
             if late {

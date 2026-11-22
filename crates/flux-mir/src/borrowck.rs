@@ -425,14 +425,13 @@ pub(crate) fn liveness_where(
             for statement in data.statements.iter().rev() {
                 statement_transfer(&statement.kind, &mut set);
             }
+            // Every set bit has an entry in members. Consume those bits here
+            // to reset the scratch set and keep each live local only once.
             members.retain(|&local| {
-                live.contains(local as usize)
+                live.set(local as usize, false)
                     && held.is_none_or(|held| held[block.index()].0.contains(local as usize))
             });
             members.sort_unstable();
-            members.dedup();
-            // Filtering initialization may remove a member while its bit was set.
-            live.words.fill(0);
             if members != live_in[block.index()] {
                 live_in[block.index()].clone_from(&members);
                 changed = true;

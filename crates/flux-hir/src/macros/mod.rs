@@ -661,9 +661,9 @@ fn resolve_predecessor_inner(
             // current-crate scope is audited after item collection.
             if !bare_macro
                 && lowered.anchor == crate::PathAnchor::Plain
-                && items.modules.iter().any(|(_, m)| {
-                    m.parent == Some(items.named_module(lookup_module)) && m.name == first
-                })
+                && items
+                    .module_children
+                    .contains(&(items.named_module(lookup_module), first))
             {
                 return None;
             }
@@ -678,9 +678,8 @@ fn resolve_predecessor_inner(
                 // Only failed prefix lookups need the glob seed scan. Normal
                 // dependency paths must not scan the crate's entire import list.
                 let globs = globs.unwrap_or_else(|| {
-                    items.uses.iter().any(|import| {
-                        matches!(import.kind, crate::item_tree::UseKind::Glob)
-                            && items.modules[import.module].krate == krate
+                    items.uses.all_globs().any(|import| {
+                        items.modules[import.module].krate == krate
                             && resolve_predecessor_inner(
                                 items,
                                 import.module,
@@ -944,6 +943,16 @@ fn expand_at_depth(
             }
         }
         &MacroKind::Builtin(builtin) => {
+            if matches!(
+                builtin,
+                Builtin::Include
+                    | Builtin::IncludeStr
+                    | Builtin::IncludeBytes
+                    | Builtin::Env
+                    | Builtin::OptionEnv
+            ) {
+                site.items.crates[site.krate.0 as usize].observe_input();
+            }
             // `panic!` and `unreachable!` pass their first argument to
             // `format_args!`, or in editions 2015 and 2018 take a single
             // literal, which a macro such as `concat!` may produce.
@@ -1401,6 +1410,7 @@ pub(crate) fn expand_proc(
     contexts: &mut Vec<(u32, u32)>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<Vec<Tok>> {
+    site.items.crates[site.krate.0 as usize].observe_input();
     let source = site.items.files.get(&site.real_file)?.clone();
     let to_host = |tokens: &[Tok]| {
         tokens

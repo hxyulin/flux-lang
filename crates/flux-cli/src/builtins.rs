@@ -4,11 +4,12 @@ use flux_syntax::PanicStrategy;
 use std::cell::Cell;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use flux_hir::flib::{Decode, Decoder, Encode, Encoder, digest};
+use flux_hir::flib::{Decode, Decoder, Encode, Encoder};
+
+use crate::flib::digest;
 use flux_hir::{ItemTree, SourceDb};
 use flux_mir::FileMir;
 use flux_ty::Signatures;
@@ -20,11 +21,11 @@ const MAGIC: &[u8; 8] = b"FLUXSUIT";
 const VERSION: u32 = 8;
 const NAME: &str = "flux-builtins.flib";
 const UNWIND_NAME: &str = "flux-builtins-unwind.flib";
-static ABORT: OnceLock<Option<Arc<BuiltinSuite>>> = OnceLock::new();
-static UNWIND: OnceLock<Option<Arc<BuiltinSuite>>> = OnceLock::new();
-static SOURCE_SELECTED: AtomicBool = AtomicBool::new(false);
+static ABORT: OnceLock<Option<PreparedSuite>> = OnceLock::new();
+static UNWIND: OnceLock<Option<PreparedSuite>> = OnceLock::new();
+static SELECTION: Mutex<()> = Mutex::new(());
 std::thread_local! { static STRATEGY: Cell<PanicStrategy> = const { Cell::new(PanicStrategy::Abort) }; }
-fn slot(strategy: PanicStrategy) -> &'static OnceLock<Option<Arc<BuiltinSuite>>> {
+fn slot(strategy: PanicStrategy) -> &'static OnceLock<Option<PreparedSuite>> {
     match strategy {
         PanicStrategy::Abort => &ABORT,
         PanicStrategy::Unwind => &UNWIND,
@@ -49,10 +50,18 @@ impl Drop for StrategyGuard {
 /// In-process callers which never selected a suite continue to use sources.
 pub(crate) fn strategy_scope(strategy: PanicStrategy) -> Result<StrategyGuard, String> {
     if ABORT.get().is_some() || UNWIND.get().is_some() {
-        initialize_for_strategy(strategy)?;
+        select_for_strategy(strategy)?;
     }
     let previous = STRATEGY.with(|current| current.replace(strategy));
     Ok(StrategyGuard(previous))
+}
+
+/// Establishes the built-in context for code that will use semantic tables.
+pub(crate) fn compilation_scope(strategy: PanicStrategy) -> Result<StrategyGuard, String> {
+    if ABORT.get().is_some() || UNWIND.get().is_some() {
+        initialize_for_strategy(strategy)?;
+    }
+    strategy_scope(strategy)
 }
 
 /// One trusted, interleaved `core`, `alloc` and `std` prefix.
@@ -69,7 +78,27 @@ pub struct BuiltinSuite {
 
 /// The suite explicitly selected by the CLI. In-process callers stay in source mode.
 pub fn active() -> Option<&'static Arc<BuiltinSuite>> {
+    selected().and_then(|suite| suite.decoded.get()?.as_ref().ok())
+}
+
+fn selected() -> Option<&'static PreparedSuite> {
     slot(selected_strategy()).get().and_then(Option::as_ref)
+}
+
+pub(crate) fn has_staged_libraries() -> bool {
+    selected().is_some()
+}
+
+pub(crate) fn object_hash(optimized: bool) -> Option<&'static [u8]> {
+    selected()?.object_hash(optimized)
+}
+
+pub(crate) fn object_link_hash(optimized: bool) -> Option<&'static [u8]> {
+    selected()?.object_link_hash(optimized)
+}
+
+pub(crate) fn payload_checksum() -> Option<[u8; 32]> {
+    selected().map(|suite| suite.payload_checksum)
 }
 
 /// Selects one source or suite path before any compilation starts.
@@ -78,14 +107,28 @@ pub fn initialize() -> Result<(), String> {
 }
 
 pub(crate) fn initialize_for_strategy(strategy: PanicStrategy) -> Result<(), String> {
+    select_for_strategy(strategy)?;
+    if let Some(suite) = slot(strategy).get().and_then(Option::as_ref) {
+        suite.activate()?;
+    }
+    Ok(())
+}
+
+/// Selects and validates the archive framing and identity before freshness checks.
+pub(crate) fn select_for_strategy(strategy: PanicStrategy) -> Result<(), String> {
     let active = slot(strategy);
+    if active.get().is_some() {
+        return Ok(());
+    }
+    let _selection = SELECTION.lock().unwrap_or_else(|error| error.into_inner());
     if active.get().is_some() {
         return Ok(());
     }
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
     let path = executable.with_file_name(suite_name(strategy));
     let trace = std::env::var_os("FLUX_BUILTINS_TRACE").is_some();
-    let selected = if SOURCE_SELECTED.load(Ordering::Acquire)
+    let selected = if ABORT.get().is_some_and(Option::is_none)
+        || UNWIND.get().is_some_and(Option::is_none)
         || std::env::var_os("FLUX_BUILTINS_SOURCE").is_some()
     {
         if trace {
@@ -94,21 +137,25 @@ pub(crate) fn initialize_for_strategy(strategy: PanicStrategy) -> Result<(), Str
         None
     } else {
         let start = Instant::now();
-        match load(&path, &executable)? {
-            Some((suite, method)) => {
-                if suite.mir.panic_strategy != strategy {
+        match prepare(&path, &executable)? {
+            Some(suite) => {
+                if suite.options.strategy != strategy {
                     return Err(invalid(&path, "built-in panic strategy mismatch"));
                 }
-                crate::flib::checked_compiler_identity(suite.compiler)?;
+                crate::flib::checked_compiler_identity(suite.compiler.hash)?;
+                if !suite.cached {
+                    suite.activate()?;
+                }
                 flux_hir::Core::forbid_source_loading();
                 if trace {
                     eprintln!(
-                        "flux builtins: suite {} identity={method:?} load={:.3}ms",
+                        "flux builtins: suite {} identity={:?} select={:.3}ms",
                         path.display(),
+                        suite.compiler.method,
                         start.elapsed().as_secs_f64() * 1000.0
                     );
                 }
-                Some(Arc::new(suite))
+                Some(suite)
             }
             None => {
                 if trace {
@@ -137,7 +184,6 @@ pub(crate) fn initialize_for_strategy(strategy: PanicStrategy) -> Result<(), Str
                 path.display()
             ));
         }
-        SOURCE_SELECTED.store(true, Ordering::Release);
     }
     active
         .set(selected)
@@ -165,8 +211,68 @@ fn measured<T>(phase: &str, f: impl FnOnce() -> Result<T, String>) -> Result<T, 
     result
 }
 
+struct PreparedSuite {
+    path: PathBuf,
+    compiler: CheckedIdentity,
+    options: SuiteOptions,
+    payload_checksum: [u8; 32],
+    link_hash: Option<[u8; 32]>,
+    cached: bool,
+    archive: Mutex<Option<(Archive, Option<SuiteStamp>)>>,
+    decoded: OnceLock<Result<Arc<BuiltinSuite>, String>>,
+}
+
+impl PreparedSuite {
+    fn object_hash(&self, optimized: bool) -> Option<&[u8]> {
+        (self.options.optimized == optimized
+            && std::env::var_os("FLUX_BUILTINS_MIR_ONLY").is_none())
+        .then_some(self.options.object_hash.as_deref())
+        .flatten()
+    }
+
+    fn object_link_hash(&self, optimized: bool) -> Option<&[u8]> {
+        self.object_hash(optimized)?;
+        self.link_hash.as_ref().map(|hash| hash.as_slice())
+    }
+
+    fn decode(&self) -> Result<BuiltinSuite, String> {
+        let (archive, stamp) = self
+            .archive
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .ok_or("built-in archive was already consumed")?;
+        let (_, payload, _) = envelope(&archive.metadata).map_err(|e| invalid(&self.path, e))?;
+        let mut suite =
+            decode_payload(payload, archive.object, true).map_err(|e| invalid(&self.path, e))?;
+        suite.compiler = self.compiler.hash;
+        if let Some(stamp) = stamp {
+            let _ = write_stamp_record(&self.path, &stamp.suite, stamp.executable);
+        }
+        Ok(suite)
+    }
+
+    fn activate(&self) -> Result<(), String> {
+        self.decoded
+            .get_or_init(|| self.decode().map(Arc::new))
+            .as_ref()
+            .map(|_| ())
+            .map_err(Clone::clone)
+    }
+}
+
 /// Loads matching metadata, or returns source fallback for a missing/stale suite.
 pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, CheckMethod)>, String> {
+    prepare(path, executable)?
+        .map(|suite| {
+            suite
+                .decode()
+                .map(|decoded| (decoded, suite.compiler.method))
+        })
+        .transpose()
+}
+
+fn prepare(path: &Path, executable: &Path) -> Result<Option<PreparedSuite>, String> {
     let start = Instant::now();
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -214,22 +320,39 @@ pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, Chec
         Ok(())
     })
     .map_err(|e| invalid(path, e))?;
-    if !cached || current.is_some() {
-        // Both files matched by content. Record their current stat fields so
-        // the next process can skip hashing; a read-only install keeps working.
-        let (suite, seen) = match stamp {
-            Some(stamp) if cached => (stamp.suite, stamp.executable),
-            _ => (
-                ExecutableIdentity::from_metadata(&metadata, digest(&bytes)),
-                None,
-            ),
-        };
-        let _ = write_stamp_record(path, &suite, current.or(seen));
-    }
-    // Staging type checked these exact bytes with this compiler.
-    let mut suite = decode_payload(payload, archive.object, true).map_err(|e| invalid(path, e))?;
-    suite.compiler = checked.hash;
-    Ok(Some((suite, checked.method)))
+    let options = read_payload_options(&mut Decoder::new(payload), archive.object.as_deref())
+        .map_err(|e| invalid(path, e))?;
+    let link_hash = archive
+        .object
+        .as_deref()
+        .map(|object| *blake3::hash(object).as_bytes());
+    // Only an archive already checked by this compiler can defer decoding.
+    // Record a newly verified archive after semantic validation succeeds.
+    let pending_stamp = if cached {
+        if let Some(current) = current
+            && let Some(stamp) = stamp
+        {
+            let _ = write_stamp_record(path, &stamp.suite, Some(current));
+        }
+        None
+    } else {
+        Some(SuiteStamp {
+            suite: ExecutableIdentity::from_metadata(&metadata, digest(&bytes)),
+            executable: current,
+        })
+    };
+    Ok(Some(PreparedSuite {
+        path: path.to_owned(),
+        compiler: checked,
+        options,
+        payload_checksum: checksum
+            .try_into()
+            .map_err(|_| invalid(path, "invalid suite checksum length"))?,
+        link_hash,
+        cached,
+        archive: Mutex::new(Some((archive, pending_stamp))),
+        decoded: OnceLock::new(),
+    }))
 }
 
 /// The `.flib.stamp` record: the suite file's stat fields and hash, and the
@@ -353,7 +476,13 @@ fn already_staged(
             (None, None) => true,
             _ => false,
         };
-        Ok(valid.then_some(bytes))
+        if !valid {
+            return Ok(None);
+        }
+        // Restaging can refresh the validation stamp. Check the semantic payload
+        // before letting subsequent package builds defer its decode.
+        decode_payload(payload, archive.object, true)?;
+        Ok(Some(bytes))
     })();
     check.ok().flatten()
 }
@@ -369,20 +498,21 @@ fn write_stamp(path: &Path, bytes: &[u8], executable: &Path) -> Result<(), Strin
     write_stamp_record(path, &stamp, ExecutableIdentity::capture(executable).ok())
 }
 
-fn decode_payload(
-    payload: &[u8],
-    object: Option<Vec<u8>>,
-    staged: bool,
-) -> Result<BuiltinSuite, String> {
-    let mut d = Decoder::new(payload);
-    if staged {
-        d.skip_staged_mir_typing();
-    }
-    let target = String::decode(&mut d).map_err(|e| e.to_string())?;
+struct SuiteOptions {
+    optimized: bool,
+    strategy: PanicStrategy,
+    object_hash: Option<Vec<u8>>,
+}
+
+fn read_payload_options(
+    d: &mut Decoder<'_>,
+    object: Option<&[u8]>,
+) -> Result<SuiteOptions, String> {
+    let target = String::decode(d).map_err(|e| e.to_string())?;
     if flux_codegen::Target::host().is_none_or(|host| host.triple() != target) {
         return Err("built-in suite target mismatch".into());
     }
-    let flags = u8::decode(&mut d).map_err(|e| e.to_string())?;
+    let flags = u8::decode(d).map_err(|e| e.to_string())?;
     if flags & !3 != 0 {
         return Err("invalid built-in configuration flags".into());
     }
@@ -392,12 +522,33 @@ fn decode_payload(
     } else {
         PanicStrategy::Abort
     };
-    let object_hash = Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
-    match (&object, object_hash) {
-        (Some(bytes), Some(hash)) if hash.as_slice() == digest(bytes) => {}
+    let object_hash = Option::<Vec<u8>>::decode(d).map_err(|e| e.to_string())?;
+    match (object, object_hash.as_deref()) {
+        (Some(bytes), Some(hash)) if hash == digest(bytes) => {}
         (None, None) => {}
         _ => return Err("built-in object checksum mismatch".into()),
     }
+    Ok(SuiteOptions {
+        optimized,
+        strategy,
+        object_hash,
+    })
+}
+
+fn decode_payload(
+    payload: &[u8],
+    object: Option<Vec<u8>>,
+    staged: bool,
+) -> Result<BuiltinSuite, String> {
+    let mut d = Decoder::new(payload);
+    if staged {
+        d.skip_staged_mir_typing();
+    }
+    let SuiteOptions {
+        optimized,
+        strategy,
+        ..
+    } = read_payload_options(&mut d, object.as_deref())?;
     let (db, items) = measured("hir-and-sources", || {
         flux_hir::flib::read_builtin_suite(&mut d).map_err(|e| e.to_string())
     })?;

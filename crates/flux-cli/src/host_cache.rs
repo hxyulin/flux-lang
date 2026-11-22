@@ -92,10 +92,7 @@ impl HostCache {
                 .ok_or("unsupported host target")?
                 .triple()
         );
-        let builtin = crate::builtins::active()
-            .filter(|suite| suite.use_object(request.options.optimized()))
-            .and_then(|suite| suite.object.as_deref())
-            .map(|object| flux_hir::flib::digest(object).to_vec());
+        let builtin = crate::builtins::object_hash(request.options.optimized()).map(<[u8]>::to_vec);
         field!(builtin);
         field!(serde_json::to_vec(&native).map_err(|error| error.to_string())?);
         field!(request.sources.len());
@@ -116,7 +113,7 @@ impl HostCache {
             field!(original);
         }
         Ok(Some(Self {
-            key: flux_hir::flib::digest(&e.into_bytes()).to_vec(),
+            key: crate::flib::digest(&e.into_bytes()).to_vec(),
             native,
         }))
     }

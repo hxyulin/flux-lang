@@ -182,7 +182,7 @@ fn compile_inner(
     cache: Option<(&crate::host_cache::HostCache, Option<&str>)>,
 ) -> Result<bool, String> {
     request.options.validate()?;
-    let _strategy = crate::builtins::strategy_scope(request.options.panic_strategy)?;
+    let _strategy = crate::builtins::compilation_scope(request.options.panic_strategy)?;
     let cache_request = &request;
     let mut linked_inputs = None;
     let CompileRequest {
@@ -293,14 +293,17 @@ fn compile_inner(
         errors.push(d);
     }
     if !errors.is_empty() {
-        let more = timings.time("mir checks on clean bodies", || {
+        let mut reported = errors.clone();
+        report_all(&db, &mut reported);
+        let mut more = timings.time("mir checks on clean bodies", || {
             if let Some((_, imported)) = &providers {
                 flux_mir::check_clean_bodies_from(&hir, &typed, &errors, imported)
             } else {
                 flux_mir::check_clean_bodies(&hir, &typed, &errors)
             }
         });
-        errors.extend(more);
+        crate::driver::report_remaining(&db, &mut more, &reported);
+        return Ok(false);
     } else {
         let mir = timings.time("mir build + checks", || {
             if let Some((_, imported)) = &providers {

@@ -1,6 +1,5 @@
 //! Lockfile-only source acquisition. No dependency resolution or host compilation.
 use super::{Lock, Locked, Result};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
@@ -227,7 +226,7 @@ fn verify_archive(path: &Path, package: &Locked) -> Result<()> {
     Ok(())
 }
 pub(super) fn hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
+    let digest = crate::flib::digest(bytes);
     let mut text = String::with_capacity(64);
     const HEX: &[u8] = b"0123456789abcdef";
     for byte in digest {

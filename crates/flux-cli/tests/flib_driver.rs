@@ -27,6 +27,74 @@ impl Scratch {
 }
 
 #[test]
+fn final_link_supplies_generic_requirements_through_a_reexport() {
+    use flux_cli::flib::{Archive, Metadata};
+    use flux_hir::flib::{Decode, Decoder, digest};
+
+    let s = scratch();
+    for (file, text) in [
+        (
+            "a.rs",
+            "pub fn message() -> String { format!(\"{:?}\", [21u16, 34]) }",
+        ),
+        (
+            "b.rs",
+            "pub use a::message; pub fn independent() -> u32 { 7 }",
+        ),
+        (
+            "program.rs",
+            "fn main() { println!(\"{} {}\", b::independent(), b::message()); }",
+        ),
+    ] {
+        std::fs::write(s.path().join(file), text).unwrap();
+    }
+    s.command(&["build", "a.rs", "--crate-type", "lib", "-O", "-o", "a.flib"]);
+    s.command(&[
+        "build",
+        "b.rs",
+        "--crate-type",
+        "lib",
+        "-O",
+        "--extern",
+        "a=a.flib",
+        "-o",
+        "b.flib",
+    ]);
+    let compiler = digest(&std::fs::read(env!("CARGO_BIN_EXE_fluxc")).unwrap());
+    let requirement_count = |file| {
+        let archive = Archive::decode(&std::fs::read(s.path().join(file)).unwrap()).unwrap();
+        let metadata = Metadata::decode(&archive.metadata, compiler).unwrap();
+        let mut linkage =
+            Decoder::new(&metadata.sections.iter().find(|s| s.tag == 9).unwrap().bytes);
+        u32::decode(&mut linkage).unwrap();
+        String::decode(&mut linkage).unwrap();
+        Option::<Vec<u8>>::decode(&mut linkage).unwrap();
+        Decoder::new(linkage.blob().unwrap()).length().unwrap()
+    };
+    assert!(requirement_count("a.flib") > 0);
+    assert_eq!(requirement_count("b.flib"), 0);
+    for file in ["a.rs", "b.rs"] {
+        std::fs::remove_file(s.path().join(file)).unwrap();
+    }
+    s.command(&[
+        "build",
+        "program.rs",
+        "-O",
+        "--extern",
+        "b=b.flib",
+        "-o",
+        "program",
+    ]);
+    let output = flib_support::run(&mut Command::new(s.path().join("program")), "reexport-run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"7 [21, 34]\n");
+}
+
+#[test]
 fn decoded_dependency_preserves_roots_constants_types_and_generic_mir() {
     let s = scratch();
     std::fs::write(

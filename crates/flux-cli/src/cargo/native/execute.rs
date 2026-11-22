@@ -1,6 +1,9 @@
 //! Flux build-script compilation and native host preparation.
+mod script_cache;
+
 use super::{Domain, Options, Plan, PlannedPackage, Result, Target};
 use crate::build::{CompileRequest, SourceInput};
+use crate::flib::semantic::FreshArtifacts;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -66,20 +69,21 @@ pub(super) fn run(
     // with `--release`, `dev` otherwise. An explicit setting overrides it.
     let command_options = options;
     let optimize = build.is_some_and(|b| b.optimized());
+    let manifest = plan.workspace_root.join("Cargo.toml");
+    let host_profile = (!rustc_units.is_empty())
+        .then(|| RustcHostProfile::read(&manifest, optimize))
+        .transpose()?;
     let debug_assertions = match build.and_then(|b| b.debug_assertions) {
         Some(enabled) => enabled,
-        None => crate::cargo::profile_debug_assertions(
-            &plan.workspace_root.join("Cargo.toml"),
-            optimize,
-        )?,
+        None => crate::cargo::profile_debug_assertions(&manifest, optimize)?,
     };
     let panic_strategy = if options.test_mode {
         flux_syntax::PanicStrategy::Unwind
     } else {
-        crate::cargo::profile_panic_strategy(&plan.workspace_root.join("Cargo.toml"), optimize)?
+        crate::cargo::profile_panic_strategy(&manifest, optimize)?
     };
     if build.is_some() {
-        crate::builtins::initialize_for_strategy(panic_strategy)?;
+        crate::builtins::select_for_strategy(panic_strategy)?;
     }
     let _strategy = crate::builtins::strategy_scope(panic_strategy)?;
     let build = build.map(|b| crate::BuildOptions {
@@ -115,6 +119,8 @@ pub(super) fn run(
         || std::thread::available_parallelism().map_or(1, |n| n.get()),
         |n| n as usize,
     );
+    let shared_build_scripts = shared_build_scripts(&plan);
+    let host_artifacts = FreshArtifacts::for_outputs(&root);
     let (finished, completions) = std::sync::mpsc::channel::<(usize, Result<()>)>();
     let mut running = 0;
     let mut failure = None;
@@ -141,7 +147,15 @@ pub(super) fn run(
                     continue;
                 }
                 started[index] = true;
-                let work = match rustc_unit(&plan, &outputs, index, &root, &rustc, &version) {
+                let work = match rustc_unit(
+                    &plan,
+                    &outputs,
+                    index,
+                    &root,
+                    &rustc,
+                    &version,
+                    host_profile.as_ref().expect("rustc host unit selected"),
+                ) {
                     Ok(work) => work,
                     Err(error) => {
                         failure = Some(error);
@@ -169,6 +183,8 @@ pub(super) fn run(
                     debug_assertions,
                     release: optimize,
                     jobs,
+                    shared_dependencies: shared_build_scripts.contains(&index),
+                    artifacts: &host_artifacts,
                 };
                 match flux_unit(&plan, &outputs, index, &root, &host) {
                     Ok(output) => {
@@ -350,7 +366,7 @@ fn unit_name(plan: &Plan, index: usize, rustc: &str) -> String {
         unit.features,
         rustc,
     ]);
-    let hash = hex(&flux_hir::flib::digest(identity.to_string().as_bytes())[..8]);
+    let hash = hex(&crate::flib::digest(identity.to_string().as_bytes())[..8]);
     if unit.target.kind == "build-script" {
         format!("build-{}-{hash}", package.name)
     } else {
@@ -362,6 +378,43 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Find scripts that can reuse a library built for another script in this plan.
+fn shared_build_scripts(plan: &Plan) -> BTreeSet<usize> {
+    let mut first_user = vec![None; plan.units.len()];
+    let mut seen = vec![None; plan.units.len()];
+    let mut shared = BTreeSet::new();
+    let mut pending = Vec::new();
+    let mut dependencies = Vec::new();
+    for (script, unit) in plan.units.iter().enumerate() {
+        if unit.domain != Domain::Host || unit.target.kind != "build-script" {
+            continue;
+        }
+        pending.clear();
+        dependencies.clear();
+        pending.extend(unit.dependencies.iter().map(|(_, id)| *id));
+        while let Some(id) = pending.pop() {
+            if seen[id].replace(script) == Some(script) {
+                continue;
+            }
+            // Proc-macro hosts have a separate compilation and loading path.
+            if plan.units[id].target.kind == "proc-macro" {
+                dependencies.clear();
+                break;
+            }
+            dependencies.push(id);
+            pending.extend(plan.units[id].dependencies.iter().map(|(_, dep)| *dep));
+        }
+        for &id in &dependencies {
+            let first = *first_user[id].get_or_insert(script);
+            if first != script {
+                shared.insert(first);
+                shared.insert(script);
+            }
+        }
+    }
+    shared
+}
+
 /// Settings shared by every host unit that Flux compiles.
 struct HostSettings<'a> {
     version: &'a str,
@@ -371,6 +424,8 @@ struct HostSettings<'a> {
     debug_assertions: bool,
     release: bool,
     jobs: usize,
+    shared_dependencies: bool,
+    artifacts: &'a FreshArtifacts,
 }
 
 /// Compiles a build script with Flux and runs it, or builds a Flux macro host.
@@ -389,6 +444,8 @@ fn flux_unit(
         debug_assertions,
         release,
         jobs,
+        shared_dependencies,
+        artifacts,
     } = *host;
     let unit = &plan.units[index];
     let package = &plan.packages[unit.package];
@@ -423,20 +480,33 @@ fn flux_unit(
     let artifact = directory.join("build-script");
     let (sources, native) = host_sources(plan, outputs, index, version)?;
     eprintln!("flux host {} build-script ({index})", package.name);
-    if !crate::build::compile_cached(CompileRequest {
-        file: &unit.target.root,
-        crate_name: &stem,
-        output: &artifact,
-        sources: &sources,
-        native,
-        options: crate::BuildOptions {
-            panic_strategy: flux_syntax::PanicStrategy::Abort,
-            optimize: false,
-            fast_build: false,
-            timings: false,
-            debug_assertions: Some(debug_assertions),
-        },
-    })? {
+    let options = crate::BuildOptions {
+        panic_strategy: flux_syntax::PanicStrategy::Abort,
+        optimize: false,
+        fast_build: false,
+        timings: false,
+        debug_assertions: Some(debug_assertions),
+    };
+    let compiled = if shared_dependencies && native == flux_codegen::NativeLink::default() {
+        super::build::run_script(
+            &sources,
+            &artifact,
+            &root.join("flux-deps"),
+            artifacts,
+            options,
+            &native,
+        )? == ExitCode::SUCCESS
+    } else {
+        crate::build::compile_cached(CompileRequest {
+            file: &unit.target.root,
+            crate_name: &stem,
+            output: &artifact,
+            sources: &sources,
+            native,
+            options,
+        })?
+    };
+    if !compiled {
         return Err(format!(
             "cannot compile build script for {} with flux",
             package.name
@@ -481,6 +551,17 @@ fn flux_unit(
     for (name, value) in dependency_metadata(plan, index, outputs)? {
         run.env(name, value);
     }
+    let cache = script_cache::RunCache::new(&directory, &out);
+    if let Some(stdout) = cache.fresh_stdout(&run)
+        && let Ok((script, _)) = parse_script(&stdout, out.clone())
+    {
+        eprintln!("fresh build script {}", package.name);
+        output.script = Some(script);
+        output.artifact = Some(artifact);
+        return Ok(output);
+    }
+    cache.invalidate().map_err(|e| e.to_string())?;
+    let started = std::time::SystemTime::now();
     let result = run
         .output()
         .map_err(|e| format!("cannot run build script for {}: {e}", package.name))?;
@@ -497,9 +578,97 @@ fn flux_unit(
     }
     let text = String::from_utf8(result.stdout)
         .map_err(|e| format!("invalid build-script output: {e}"))?;
-    output.script = Some(parse_script(&text, out)?);
+    let (script, rerun) = parse_script(&text, out.clone())?;
+    cache.record(&run, &rerun, &text, started);
+    output.script = Some(script);
     output.artifact = Some(artifact);
     Ok(output)
+}
+
+/// Profile settings for rustc-compiled host libraries and procedural macros.
+struct RustcHostProfile {
+    opt_level: String,
+    debug_assertions: bool,
+    overflow_checks: bool,
+}
+
+impl RustcHostProfile {
+    fn read(manifest: &Path, release: bool) -> Result<Self> {
+        let name = if release { "release" } else { "dev" };
+        let env_prefix = format!("CARGO_PROFILE_{}", name.to_ascii_uppercase());
+        let text = std::fs::read_to_string(manifest)
+            .map_err(|e| format!("cannot read {}: {e}", manifest.display()))?;
+        let table: toml::Table = text
+            .parse()
+            .map_err(|e| format!("invalid manifest {}: {e}", manifest.display()))?;
+        let profile = table.get("profile").and_then(|profiles| profiles.get(name));
+        let overrides = profile.and_then(|profile| profile.get("build-override"));
+        let env_setting = |prefix: &str, key: &str| {
+            let env = format!("{prefix}_{}", key.replace('-', "_").to_ascii_uppercase());
+            std::env::var_os(&env)
+                .map(|value| {
+                    value
+                        .into_string()
+                        .map_err(|_| format!("{env} must be Unicode"))
+                })
+                .transpose()
+        };
+        let env_override = |key: &str| env_setting(&format!("{env_prefix}_BUILD_OVERRIDE"), key);
+        let opt_level = match (
+            env_override("opt-level")?,
+            overrides.and_then(|o| o.get("opt-level")),
+        ) {
+            (Some(value), _) => value,
+            (None, None) => "0".into(),
+            (None, Some(toml::Value::Integer(value))) => value.to_string(),
+            (None, Some(toml::Value::String(value))) => value.clone(),
+            _ => return Err(format!("invalid profile.{name}.build-override.opt-level")),
+        };
+        if !matches!(opt_level.as_str(), "0" | "1" | "2" | "3" | "s" | "z") {
+            return Err(format!(
+                "invalid profile.{name}.build-override.opt-level: {opt_level}"
+            ));
+        }
+        // Unlike the optimization level, these settings inherit from the
+        // parent profile. A rustc optimization flag alone also changes its
+        // implicit assertion and overflow settings.
+        let checks = |key: &str| {
+            let error = || format!("invalid host profile {name} {key}");
+            for (env, value) in [
+                (env_override(key)?, overrides.and_then(|o| o.get(key))),
+                (
+                    env_setting(&env_prefix, key)?,
+                    profile.and_then(|p| p.get(key)),
+                ),
+            ] {
+                if let Some(env) = env {
+                    return env.parse().map_err(|_| error());
+                }
+                if let Some(value) = value {
+                    return value.as_bool().ok_or_else(error);
+                }
+            }
+            Ok(!release)
+        };
+        Ok(Self {
+            opt_level,
+            debug_assertions: checks("debug-assertions")?,
+            overflow_checks: checks("overflow-checks")?,
+        })
+    }
+
+    fn apply(&self, command: &mut Command) {
+        let optimized = self.opt_level != "0";
+        if optimized {
+            command.arg(format!("-Copt-level={}", self.opt_level));
+        }
+        if self.debug_assertions == optimized {
+            command.arg(format!("-Cdebug-assertions={}", self.debug_assertions));
+        }
+        if self.overflow_checks != self.debug_assertions {
+            command.arg(format!("-Coverflow-checks={}", self.overflow_checks));
+        }
+    }
 }
 
 /// A rustc compilation of one host library or proc macro, ready for a worker.
@@ -519,6 +688,7 @@ fn rustc_unit(
     root: &Path,
     rustc: &OsStr,
     version: &str,
+    profile: &RustcHostProfile,
 ) -> Result<RustcUnit> {
     let unit = &plan.units[index];
     let package = &plan.packages[unit.package];
@@ -576,6 +746,7 @@ fn rustc_unit(
     if package.source.is_some() {
         command.args(["--cap-lints", "allow"]);
     }
+    profile.apply(&mut command);
     if proc_macro {
         command.args(["--extern", "proc_macro"]);
     }
@@ -622,7 +793,7 @@ fn rustc_unit(
         key.push_str(&format!(
             "{alias}={} {}\n",
             path.display(),
-            hex(&flux_hir::flib::digest(&fingerprint))
+            hex(&crate::flib::digest(&fingerprint))
         ));
     }
     Ok(RustcUnit {
@@ -631,7 +802,7 @@ fn rustc_unit(
         fingerprint: fingerprint_path(&artifact),
         artifact,
         dep_info,
-        key: hex(&flux_hir::flib::digest(key.as_bytes())),
+        key: hex(&crate::flib::digest(key.as_bytes())),
     })
 }
 
@@ -677,7 +848,7 @@ impl RustcUnit {
         recorded.key == self.key
             && self.artifact.is_file()
             && recorded.files.iter().all(|(path, hash)| {
-                std::fs::read(path).is_ok_and(|b| hex(&flux_hir::flib::digest(&b)) == *hash)
+                std::fs::read(path).is_ok_and(|b| hex(&crate::flib::digest(&b)) == *hash)
             })
             && recorded
                 .env
@@ -717,7 +888,7 @@ impl RustcUnit {
                 let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
                 fingerprint
                     .files
-                    .push((path, hex(&flux_hir::flib::digest(&bytes))));
+                    .push((path, hex(&crate::flib::digest(&bytes))));
             }
         }
         Ok(fingerprint)
@@ -1054,11 +1225,12 @@ fn dependency_metadata(
     }
     Ok(env)
 }
-fn parse_script(text: &str, out_dir: PathBuf) -> Result<ScriptOutput> {
+fn parse_script(text: &str, out_dir: PathBuf) -> Result<(ScriptOutput, script_cache::Rerun)> {
     let mut output = ScriptOutput {
         out_dir,
         ..Default::default()
     };
+    let mut rerun = script_cache::Rerun::default();
     for line in text.lines() {
         let (instruction, modern) = if let Some(s) = line.strip_prefix("cargo::") {
             (s, true)
@@ -1071,7 +1243,12 @@ fn parse_script(text: &str, out_dir: PathBuf) -> Result<ScriptOutput> {
             .split_once('=')
             .ok_or_else(|| format!("invalid build-script directive: {line}"))?;
         match key {
-            "rerun-if-changed" | "rerun-if-env-changed" => {} // Every preparation reruns all host units.
+            "rerun-if-changed" => {
+                rerun.paths.insert(value.into());
+            }
+            "rerun-if-env-changed" => {
+                rerun.environment.insert(value.into());
+            }
             "rustc-cfg" => {
                 crate::cargo::cfg(&[value.into()], &[])?;
                 output.cfgs.push(value.into());
@@ -1125,7 +1302,7 @@ fn parse_script(text: &str, out_dir: PathBuf) -> Result<ScriptOutput> {
             }
         }
     }
-    Ok(output)
+    Ok((output, rerun))
 }
 
 fn compile_plan(

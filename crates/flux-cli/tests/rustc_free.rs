@@ -18,6 +18,120 @@ fn build_scripts_and_dependencies_compile_without_rustc() {
     check(true);
 }
 
+#[test]
+fn declared_script_inputs_and_generated_files_control_reuse() {
+    let scratch = Scratch::new(std::env::temp_dir().join("flux-script-freshness"));
+    let root = scratch.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir(root.join("inputs")).unwrap();
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("inputs/message"), "first").unwrap();
+    std::fs::write(
+        root.join("build.rs"),
+        r#"fn main() {
+            println!("cargo::rerun-if-changed=inputs");
+            println!("cargo:rerun-if-env-changed=SCRIPT_SUFFIX");
+            let value = std::fs::read_to_string("inputs/message").unwrap();
+            let suffix = std::env::var("SCRIPT_SUFFIX").unwrap_or(String::new());
+            let out = std::env::var("OUT_DIR").unwrap();
+            let fail = suffix == "fail";
+            std::fs::write(std::path::Path::new(&out).join("padding"), &[b'x'; 8192][..]).unwrap();
+            std::fs::write(std::path::Path::new(&out).join("message"), value + &suffix).unwrap();
+            if fail {
+                std::process::exit(1);
+            }
+        }"#,
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/main.rs"),
+        r#"fn main() {
+            print!("{}", include_str!(concat!(env!("OUT_DIR"), "/message")));
+        }"#,
+    )
+    .unwrap();
+    let flux = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        command
+            .current_dir(root)
+            .env("CARGO_HOME", root.join("cache"))
+            .env("RUSTC", root.join("no-rustc"))
+            .env_remove("SCRIPT_SUFFIX");
+        command
+    };
+    let lockfile = flux()
+        .args(["generate-lockfile", "--offline"])
+        .output()
+        .unwrap();
+    support::oracle::success(&lockfile, "native build-script lockfile");
+    let build = |suffix: Option<&str>, fresh, expected: &[u8]| {
+        let mut command = flux();
+        command.args(["build", "--offline"]);
+        if let Some(suffix) = suffix {
+            command.env("SCRIPT_SUFFIX", suffix);
+        }
+        let output = command.output().unwrap();
+        support::oracle::success(&output, "native build-script freshness");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.contains("fresh build script app"), fresh, "{stderr}");
+        let output = Command::new(root.join("target/flux/debug/app"))
+            .output()
+            .unwrap();
+        support::oracle::success(&output, "generated value");
+        assert_eq!(output.stdout, expected);
+    };
+    build(None, false, b"first");
+    let script = std::fs::read_dir(root.join("target/flux/native-host"))
+        .unwrap()
+        .flatten()
+        .find(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("build-app-")
+        })
+        .unwrap();
+    let padding = script.path().join("out/padding").canonicalize().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    build(None, true, b"first");
+    let record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(script.path().join("script-fresh.json")).unwrap())
+            .unwrap();
+    assert!(record["file_hashes"][padding.to_str().unwrap()].is_object());
+    let modified = std::fs::metadata(&padding).unwrap().modified().unwrap();
+    std::fs::write(&padding, [b'y'; 8192]).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&padding)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    build(None, false, b"first");
+    assert_eq!(std::fs::read(&padding).unwrap(), [b'x'; 8192]);
+    std::fs::write(root.join("inputs/message"), "second").unwrap();
+    build(None, false, b"second");
+    build(Some("!"), false, b"second!");
+    build(Some("!"), true, b"second!");
+    build(None, false, b"second");
+    std::fs::remove_file(script.path().join("out/message")).unwrap();
+    build(None, false, b"second");
+    build(None, true, b"second");
+    let failed = flux()
+        .args(["build", "--offline"])
+        .env("SCRIPT_SUFFIX", "fail")
+        .output()
+        .unwrap();
+    assert!(!failed.status.success());
+    assert!(!script.path().join("script-fresh.json").exists());
+    build(None, false, b"second");
+    build(None, true, b"second");
+}
+
 fn check(script: bool) {
     let scratch = Scratch::new(std::env::temp_dir().join("flux-rustc-free"));
     let root = scratch.path();

@@ -520,6 +520,63 @@ fn main() { fail(); }
 }
 
 #[test]
+fn fresh_package_build_defers_builtin_decoding() {
+    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        return;
+    }
+    let staged = Staged::new(true);
+    let manifest = staged.write(
+        "Cargo.toml",
+        "[workspace]\n[package]\nname='warm'\nversion='0.1.0'\nedition='2024'\n[[bin]]\nname='warm'\npath='main.rs'\n",
+    );
+    staged.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='warm'\nversion='0.1.0'\n",
+    );
+    staged.write("main.rs", "fn main() { println!(\"first\"); }\n");
+    let build = |label| {
+        let mut command = staged.command();
+        command
+            .args([
+                "package-driver",
+                "build",
+                "--offline",
+                "-j1",
+                "--manifest-path",
+            ])
+            .arg(&manifest);
+        flib_support::run(&mut command, label)
+    };
+
+    let initial = build("warm-suite-initial");
+    success(&initial);
+    trace(&initial, "phase=mir-and-values");
+    let fresh = build("warm-suite-fresh");
+    success(&fresh);
+    trace(&fresh, "Fresh warm");
+    let stderr = String::from_utf8_lossy(&fresh.stderr);
+    assert!(!stderr.contains("phase=hir-and-sources"), "{stderr}");
+    assert!(!stderr.contains("phase=mir-and-values"), "{stderr}");
+
+    staged.write("main.rs", "fn main() { println!(\"edited\"); }\n");
+    let edit = build("warm-suite-edit");
+    success(&edit);
+    trace(&edit, "phase=mir-and-values");
+    let executable = staged.scratch.path().join("target/flux/debug/warm");
+    let output = flib_support::run(&mut Command::new(executable), "warm-suite-execute");
+    success(&output);
+    assert_eq!(output.stdout, b"edited\n");
+
+    let bytes = std::fs::read(&staged.suite).unwrap();
+    let mut archive = flux_cli::flib::Archive::decode(&bytes).unwrap();
+    *archive.metadata.last_mut().unwrap() ^= 1;
+    std::fs::write(&staged.suite, archive.encode().unwrap()).unwrap();
+    let corrupt = build("warm-suite-corrupt");
+    assert!(!corrupt.status.success());
+    trace(&corrupt, "checksum mismatch");
+}
+
+#[test]
 fn suite_checksum_stat_cache_rechecks_a_replaced_file() {
     let staged = Staged::new(false);
     let file = staged.write("main.rs", "fn main() {}\n");

@@ -566,6 +566,12 @@ enum TryResidual {
 /// A check that needs the final types.
 #[derive(Debug, Clone, Copy)]
 enum Deferred {
+    OpaqueBorrow {
+        expr: ExprId,
+        actual: Ty,
+        expected: Ty,
+        source: Ty,
+    },
     RepeatCopy {
         value: ExprId,
         elem: Ty,
@@ -8272,6 +8278,25 @@ impl Ctx<'_> {
         self.select_obligations();
         let deferred = std::mem::take(&mut self.deferred);
         for check in deferred {
+            if let Deferred::OpaqueBorrow {
+                expr,
+                actual,
+                expected,
+                source,
+            } = check
+            {
+                // Numeric hidden types may still need their usual fallback.
+                let source = self.shallow(source);
+                let source = if matches!(source.kind(), TyKind::Infer(_)) {
+                    self.resolve(source, &mut reported)
+                } else {
+                    source
+                };
+                if source != Ty::ERROR {
+                    self.coerce(actual, expected, expr);
+                }
+                continue;
+            }
             if let Deferred::Cast { expr, from, to } = check
                 && let Expr::Cast { expr: operand, .. } = self.body.exprs[expr]
             {
@@ -9441,6 +9466,9 @@ impl Ctx<'_> {
             .collect();
         for deferred in std::mem::take(&mut self.deferred) {
             match deferred {
+                Deferred::OpaqueBorrow { .. } => {
+                    unreachable!("opaque borrows are handled during inference")
+                }
                 Deferred::RepeatCopy { value, elem, len } => {
                     let len = self.resolve(len, reported);
                     let elem = self.resolve(elem, reported);

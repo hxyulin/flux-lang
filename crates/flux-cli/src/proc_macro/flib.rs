@@ -5,7 +5,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use flux_hir::flib::{Decode, Decoder, Encode, Encoder, digest};
+use flux_hir::flib::{Decode, Decoder, Encode, Encoder};
+
+use crate::flib::digest;
 use flux_hir::{ProcMacroExpander, ProcMacroResolver};
 
 use crate::flib::executable::Stamp;
@@ -203,6 +205,50 @@ impl HostIdentity {
 pub struct FlibHostResolver {
     catalogs: Mutex<BTreeMap<Vec<u8>, Arc<Catalog>>>,
 }
+
+type ExportList = [(String, super::protocol::ProcMacroKind)];
+type ExportSlot = Arc<Mutex<Option<Arc<ExportList>>>>;
+static RUSTC_EXPORTS: Mutex<BTreeMap<Vec<u8>, ExportSlot>> = Mutex::new(BTreeMap::new());
+
+/// Reuse the checked export list for identical host files in this driver
+/// process. Each resolver still owns its own expansion processes.
+pub(super) fn rustc_exports(
+    identity: &HostIdentity,
+    catalog: &Catalog,
+) -> Result<Arc<ExportList>, String> {
+    let (server, dylib) = identity.rustc_paths();
+    let mut key = Encoder::new();
+    identity.encode_identity(&mut key)?;
+    let slot = RUSTC_EXPORTS
+        .lock()
+        .expect("proc-macro export cache poisoned")
+        .entry(key.into_bytes())
+        .or_default()
+        .clone();
+    let mut cached = slot.lock().expect("proc-macro export list poisoned");
+    identity.verify()?;
+    if let Some(exports) = &*cached {
+        return Ok(exports.clone());
+    }
+    // The first invocation in this graph can adopt the process used to
+    // discover the exports. No other graph shares that process.
+    let mut state = catalog
+        .processes
+        .lock()
+        .expect("proc-macro catalog poisoned");
+    let service = state
+        .idle
+        .get_or_insert_with(|| Service::start(server.to_owned(), TIMEOUT));
+    let exports: Arc<ExportList> = match crate::flib::time("proc-macro export list", || {
+        service.submit(Task::List(dylib.to_owned()))
+    })? {
+        Reply::List(exports) => Arc::from(exports),
+        _ => return Err("unexpected proc-macro export list".into()),
+    };
+    identity.verify()?;
+    *cached = Some(Arc::clone(&exports));
+    Ok(exports)
+}
 impl std::fmt::Debug for FlibHostResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FlibHostResolver").finish_non_exhaustive()
@@ -211,8 +257,8 @@ impl std::fmt::Debug for FlibHostResolver {
 impl ProcMacroResolver for FlibHostResolver {
     fn resolve(&self, bytes: &[u8]) -> Result<Arc<dyn ProcMacroExpander>, String> {
         let (identity, name) = HostIdentity::decode(bytes)?;
-        identity.verify()?;
         if let HostIdentity::Local { .. } = &identity {
+            identity.verify()?;
             return Ok(super::local::restore_host(identity, name));
         }
         let (server, dylib) = identity.rustc_paths();
@@ -235,26 +281,12 @@ impl ProcMacroResolver for FlibHostResolver {
             }
         };
         drop(catalogs);
-        // Listing uses an idle process that the first invocation crate later
-        // adopts. Keep the catalog lock while starting it so exports agree.
-        let mut state = catalog
-            .processes
-            .lock()
-            .expect("proc-macro catalog poisoned");
-        let service = state
-            .idle
-            .get_or_insert_with(|| Service::start(server.to_owned(), TIMEOUT));
-        let exports = match service.submit(Task::List(dylib.to_owned()))? {
-            Reply::List(exports) => exports,
-            _ => return Err("unexpected proc-macro export list".into()),
-        };
+        let exports = rustc_exports(&identity, &catalog)?;
         if !exports.iter().any(|(export, _)| export == &name) {
             return Err(format!(
                 "procedural macro export `{name}` is not present in host"
             ));
         }
-        identity.verify()?;
-        drop(state);
         Ok(Arc::new(Host {
             catalog,
             dylib: dylib.to_owned(),

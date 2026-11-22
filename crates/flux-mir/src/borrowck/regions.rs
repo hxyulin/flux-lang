@@ -63,6 +63,7 @@ mod adt_bounds;
 mod associated_types;
 mod families;
 mod header_patterns;
+mod normalization;
 mod quantified_objects;
 mod signature_projections;
 mod source_signatures;
@@ -383,11 +384,11 @@ pub(crate) fn impl_method_matches(
     let mut cx = Cx::new(&body, items, sigs, &none);
     // The universal regions: `'static`, the block's lifetimes, and the
     // trait method's; the method's own are to be found.
-    let method_equalities = cx.env.clone();
+    let method_equalities = cx.normalization.projections().to_vec();
     let Some((block_vars, header_goals)) = cx.impl_header_environment(imp) else {
         return false;
     };
-    cx.env = method_equalities;
+    *cx.normalization.projections_mut() = method_equalities;
     let owner = ir.owner as usize;
     if block_vars.len() != owner {
         return false;
@@ -984,11 +985,11 @@ fn impl_header_match(
     let body = Body::empty(None);
     let none = Requirements::default();
     let mut cx = Cx::new(&body, items, sigs, &none);
-    cx.env = sigs
+    *cx.normalization.projections_mut() = sigs
         .impl_projections
         .get(imp)
         .map_or(Vec::new(), |p| p.to_vec());
-    cx.header_predicates = sigs
+    *cx.normalization.memberships_mut() = sigs
         .impl_predicates
         .get(imp)
         .map_or(Vec::new(), |predicates| {
@@ -1044,7 +1045,13 @@ fn impl_header_match(
     // which to recover assumptions. Retain only the original impl header.
     cx.family_goals = env.clone();
 
-    for (p, table) in cx.env.clone().iter().zip(block.projections.iter()) {
+    for (p, table) in cx
+        .normalization
+        .projections()
+        .to_vec()
+        .iter()
+        .zip(block.projections.iter())
+    {
         if let Some(vars) = cx.instantiate_sig(p.ty, table, &mut { map }, &[], &[]) {
             cx.env_regions.push((p.alias, vars));
         }
@@ -1165,7 +1172,9 @@ fn impl_header_match(
             return None;
         }
         let alias = flux_solve::traits::alias_of(items, trait_ref, self_ty, name);
-        cx.env.push(flux_ty::Projection { alias, ty: value });
+        cx.normalization
+            .projections_mut()
+            .push(flux_ty::Projection { alias, ty: value });
         cx.env_regions.push((alias, vars));
     }
     if associated {
@@ -1266,8 +1275,7 @@ struct Cx<'a> {
     body: &'a Body,
     items: &'a ItemTree,
     sigs: &'a Signatures,
-    /// What the bounds in scope say associated types are.
-    env: Vec<flux_ty::Projection>,
+    normalization: normalization::Environment,
     /// Abstract associated values whose owner is an original impl-header
     /// predicate. Only the associated-bound declaration check populates this.
     header_aliases: Vec<AliasTy>,
@@ -1291,7 +1299,6 @@ struct Cx<'a> {
     declaration_call_projections: Vec<(flux_ty::Projection, Box<[Region]>)>,
     declaration_late_inputs: Vec<Var>,
     declaration_call: (TextRange, Category),
-    header_predicates: Vec<flux_ty::Predicate>,
     unsized_params: Vec<bool>,
     slot_counts: FxHashMap<Ty, u32>,
     selected_source_signatures: FxHashMap<
@@ -1447,11 +1454,14 @@ impl<'a> Cx<'a> {
             Some(f) => flux_solve::traits::projections_of(items, sigs, f),
             None => Vec::new(),
         };
+        let memberships = body.owner.map_or(Vec::new(), |f| {
+            flux_solve::traits::elaborate(sigs, &flux_solve::traits::predicates_of(items, sigs, f))
+        });
         Cx {
             body,
             items,
             sigs,
-            env,
+            normalization: normalization::Environment::new(env, memberships),
             header_aliases: Vec::new(),
             family_depth: 0,
             family_goals: Vec::new(),
@@ -1465,12 +1475,6 @@ impl<'a> Cx<'a> {
             declaration_call_projections: Vec::new(),
             declaration_late_inputs: Vec::new(),
             declaration_call: (TextRange::default(), Category::Boring),
-            header_predicates: body.owner.map_or(Vec::new(), |f| {
-                flux_solve::traits::elaborate(
-                    sigs,
-                    &flux_solve::traits::predicates_of(items, sigs, f),
-                )
-            }),
             unsized_params: body.owner.map_or(Vec::new(), |f| {
                 let function = &items.functions[f];
                 flux_solve::unsized_params(items, function.owner, &function.generics)
@@ -1523,7 +1527,11 @@ impl<'a> Cx<'a> {
     fn impl_aliases_known(&self, ty: Ty, args: &[Ty]) -> bool {
         let ty = if args.is_empty() { ty } else { ty.subst(args) };
         if let TyKind::Alias(alias) = ty.kind()
-            && !self.env.iter().any(|p| p.alias == alias)
+            && !self
+                .normalization
+                .projections()
+                .iter()
+                .any(|p| p.alias == alias)
             && !self.header_aliases.contains(&alias)
             && !(self.items.traits[alias.trait_]
                 .generics
@@ -1533,14 +1541,17 @@ impl<'a> Cx<'a> {
                     .args
                     .iter()
                     .all(|&arg| flux_ty::regions::slots(self.items, arg) == 0)
-                && self.header_predicates.contains(&flux_ty::Predicate {
-                    self_ty: alias.args[0],
-                    trait_ref: flux_ty::TraitRef {
-                        trait_: alias.trait_,
-                        name: alias.trait_name,
-                        args: &alias.args[1..],
-                    },
-                }))
+                && self
+                    .normalization
+                    .memberships()
+                    .contains(&flux_ty::Predicate {
+                        self_ty: alias.args[0],
+                        trait_ref: flux_ty::TraitRef {
+                            trait_: alias.trait_,
+                            name: alias.trait_name,
+                            args: &alias.args[1..],
+                        },
+                    }))
         {
             return false;
         }
@@ -2349,6 +2360,24 @@ impl<'a> Cx<'a> {
             if expected.len() != self.slots(expected_ty) as usize {
                 return None;
             }
+            // Parenthesized callable bounds carry their input binders on
+            // the supertrait edge. Use the written edge when proving its
+            // Output equality so references do not lose their input rows.
+            let mut callable_rows = None;
+            if !associated && self.is_fn_output(p.alias) {
+                let regions = self.sigs.regions.traits.get(goal.predicate.trait_ref.trait_)?;
+                for (edge, rows) in declaration.supertraits.iter().zip(regions.supertraits.iter()) {
+                    if flux_ty::fn_trait_kind(items, edge.trait_).is_some()
+                        && edge.args == &p.alias.args[1..]
+                    {
+                        if callable_rows.is_some_and(|previous| previous != rows) {
+                            callable_rows = None;
+                            break;
+                        }
+                        callable_rows = Some(rows);
+                    }
+                }
+            }
             let alias_goal = self.impl_region_goal_with_proof(
                 flux_ty::Predicate {
                     self_ty: p.alias.args[0],
@@ -2359,8 +2388,8 @@ impl<'a> Cx<'a> {
                     },
                 },
                 &[],
-                &TraitRefRegions::default(),
-                &[],
+                callable_rows.unwrap_or(&TraitRefRegions::default()),
+                if callable_rows.is_some() { &goal.lifetimes } else { &[] },
                 &args,
                 &goal.vars,
                 Some((env, 0)),
@@ -2401,7 +2430,7 @@ impl<'a> Cx<'a> {
             // A still-abstract output, or an equality inherited from a
             // proven declaration bound, selects no concrete RHS.
             if family_output.is_none()
-                && !self.env.iter().any(|p| p.alias == alias)
+                && !self.normalization.projections().iter().any(|p| p.alias == alias)
                 && self.normalize(Ty::alias(alias)) != Ty::alias(alias)
                 && !self.declared_region_free_bound(&alias_goal, env)
             {
@@ -2477,8 +2506,8 @@ impl<'a> Cx<'a> {
         let proof = flux_solve::traits::RigidSolver::new(
             self.items,
             self.sigs,
-            &self.header_predicates,
-            &self.env,
+            self.normalization.memberships(),
+            self.normalization.projections(),
             &self.unsized_params,
         );
         proof
@@ -2615,7 +2644,7 @@ impl<'a> Cx<'a> {
             self.own_type_requirements.len(),
             self.known_pairs.len(),
             self.known_types.len(),
-            self.env.len(),
+            self.normalization.projections().len(),
             self.env_regions.len(),
             self.holes.len(),
             self.hole_pairs.len(),
@@ -2992,8 +3021,8 @@ impl<'a> Cx<'a> {
             let proof = flux_solve::traits::RigidSolver::new(
                 self.items,
                 self.sigs,
-                &self.header_predicates,
-                &self.env,
+                self.normalization.memberships(),
+                self.normalization.projections(),
                 &self.unsized_params,
             );
             if proof.normalize_ty(actual_ty, None) != proof.normalize_ty(p.ty.subst(&args), None) {
@@ -3118,13 +3147,7 @@ impl<'a> Cx<'a> {
     }
 
     fn normalize(&self, ty: Ty) -> Ty {
-        flux_solve::traits::normalize_with_memberships(
-            self.items,
-            self.sigs,
-            &self.env,
-            &self.header_predicates,
-            ty,
-        )
+        self.normalization.normalize(self.items, self.sigs, ty)
     }
 
     /// The universal regions, then each local's slots, and the
@@ -3394,18 +3417,19 @@ impl<'a> Cx<'a> {
             // A closure: each lifetime of what it is given is universal,
             // and how they must relate is its creator's to check.
             let by_ref = upvars.kind != flux_ty::ClosureKind::FnOnce;
-            // What its creator's `Fn`-family bounds say their results are,
-            // where those are the arguments' lifetimes (`F: Fn(&T) ->
-            // &U`): its calls of them see the same.
+            // The creator's associated equalities can name parent lifetimes,
+            // such as `I: Iterator<Item = &'a T>`. Keep those rows so a
+            // closure calling `next` does not tie its output to the capture's
+            // temporary mutable borrow.
             if let Some(f) = body.owner
                 && let Some(r) = sigs.regions.fns.get(f)
             {
                 let list = sigs.fn_projections.get(f).map_or(&[][..], |p| p);
                 for (p, table) in list.iter().zip(r.projections.iter()) {
-                    if !self.is_fn_output(p.alias) {
+                    let late = table.iter().any(|r| matches!(r, Region::Late(_)));
+                    if table.is_empty() || (late && !self.is_fn_output(p.alias)) {
                         continue;
                     }
-                    let late = table.iter().any(|r| matches!(r, Region::Late(_)));
                     let mut map = |region| match region {
                         Region::Static | Region::Late(_) => Some(STATIC),
                         Region::Param(index) if (index as usize) < r.names.len() => Some(1 + index),
@@ -4336,7 +4360,11 @@ impl<'a> Cx<'a> {
             && arg_vars.len() == alias.args.len()
             && arg_vars.iter().all(Vec::is_empty)
             && alias.args.iter().all(|&arg| self.slots(arg) == 0)
-            && self.env.iter().any(|projection| projection.alias == alias)
+            && self
+                .normalization
+                .projections()
+                .iter()
+                .any(|projection| projection.alias == alias)
             && let Some(row) = self.inherited_projection_output(alias)
         {
             return Some(row);
@@ -7632,7 +7660,7 @@ impl<'a> Cx<'a> {
         bounds: &[(flux_ty::Predicate, &[Region], TraitRefRegions)],
         range: TextRange,
     ) -> bool {
-        // These keys live in the declaration's namespace. A caller's Cx.env
+        // These keys live in the declaration's namespace. Caller projections
         // or concrete substitutions could conflate independent P/Q binders.
         let facts = flux_solve::traits::caller_projections_of(self.items, self.sigs, function);
         let keys: Vec<_> = bounds
@@ -8553,8 +8581,8 @@ impl<'a> Cx<'a> {
         let selected = flux_solve::traits::RigidSolver::new(
             self.items,
             self.sigs,
-            &self.header_predicates,
-            &self.env,
+            self.normalization.memberships(),
+            self.normalization.projections(),
             &self.unsized_params,
         )
         .candidate(goal);
@@ -9136,7 +9164,7 @@ impl<'a> Cx<'a> {
             // introduces an outlives requirement; retain the full proof then.
             if flux_solve::traits::is_auto_trait(items, goal.trait_ref.trait_)
                 && !self.requires_lifetime_proof(goal, &mut FxHashSet::default(), 0)
-                && flux_solve::traits::holds(items, sigs, &self.header_predicates, goal)
+                && flux_solve::traits::holds(items, sigs, self.normalization.memberships(), goal)
             {
                 return;
             }
@@ -11035,7 +11063,7 @@ impl<'a> Cx<'a> {
         // Caller trait assumptions also supply their declared static Self
         // contract, including owner predicates of default trait methods.
         if represented
-            && self.header_predicates.iter().any(|predicate| {
+            && self.normalization.memberships().iter().any(|predicate| {
                 predicate.self_ty == ty
                     && self
                         .sigs
@@ -11335,6 +11363,44 @@ impl std::ops::Index<usize> for Adjacency {
 #[cfg(test)]
 mod graph_tests {
     use super::*;
+
+    #[test]
+    fn normalization_tracks_projection_environment() {
+        let (_, _, hir) = flux_hir::lower_text("family.rs", "trait Family { type Value; }");
+        let (sigs, errors) = flux_ty::signatures(&hir.items);
+        assert!(errors.is_empty(), "{errors:?}");
+        let (trait_, data) = hir.items.traits.iter().next().unwrap();
+        let trait_ref = flux_ty::TraitRef {
+            trait_,
+            name: data.name,
+            args: &[],
+        };
+        let param = Ty::param(0, flux_intern::Symbol::intern("T"));
+        let alias = flux_solve::traits::alias_of(
+            &hir.items,
+            trait_ref,
+            param,
+            flux_intern::Symbol::intern("Value"),
+        );
+        let body = Body::empty(None);
+        let requirements = Requirements::default();
+        let mut cx = Cx::new(&body, &hir.items, &sigs, &requirements);
+        assert_eq!(cx.normalize(Ty::alias(alias)), Ty::alias(alias));
+        cx.normalization
+            .projections_mut()
+            .push(flux_ty::Projection {
+                alias,
+                ty: Ty::BOOL,
+            });
+        assert_eq!(cx.normalize(Ty::alias(alias)), Ty::BOOL);
+        cx.normalization.projections_mut()[0].ty = Ty::UNIT;
+        assert_eq!(cx.normalize(Ty::alias(alias)), Ty::UNIT);
+        cx.normalization
+            .memberships_mut()
+            .push(trait_ref.with_self(param));
+        cx.normalization.projections_mut().clear();
+        assert_eq!(cx.normalize(Ty::alias(alias)), Ty::alias(alias));
+    }
 
     #[test]
     fn caller_reachability_reuses_committed_edges_without_keeping_trial_equalities() {

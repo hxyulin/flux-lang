@@ -103,19 +103,14 @@ pub(crate) fn exports_from_server(
     let (server, dylib) = identity.rustc_paths();
     let server = server.to_owned();
     let dylib = dylib.to_owned();
-    let service = Service::start(server.clone(), TIMEOUT);
-    let names = match service.submit(Task::List(dylib.clone()))? {
-        Reply::List(names) => names,
-        _ => return Err("unexpected proc-macro export list".into()),
-    };
-    identity.verify()?;
     let catalog = Arc::new(Catalog {
         server,
         processes: std::sync::Mutex::new(CatalogState {
-            idle: Some(service),
+            idle: None,
             crates: Default::default(),
         }),
     });
+    let names = flib::rustc_exports(&identity, &catalog)?;
     let mut db = flux_hir::SourceDb::empty();
     let root = db.load_with_edition(source, edition)?;
     db.set_crate_cfg(root, cfg)?;
@@ -127,7 +122,8 @@ pub(crate) fn exports_from_server(
         .collect();
     let helpers = flux_hir::proc_macro_declarations(&mut db, root, &derives)?;
     names
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|(name, kind)| {
             let kind = match kind {
                 protocol::ProcMacroKind::CustomDerive => flux_hir::ProcMacroKind::Derive,
@@ -696,6 +692,15 @@ static COUNT:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(
         );
         assert_eq!(
             text(counter.expand(input(2, BTreeMap::new())).unwrap()),
+            "0"
+        );
+        // Restoring an identical descriptor reuses the export list without
+        // sharing the dylib's global state across compiler units.
+        let resolver = FlibHostResolver::default();
+        let descriptor = counter.flib_descriptor().unwrap();
+        let restored = flux_hir::ProcMacroResolver::resolve(&resolver, &descriptor).unwrap();
+        assert_eq!(
+            text(restored.expand(input(1, BTreeMap::new())).unwrap()),
             "0"
         );
         let logs = &exports

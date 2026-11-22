@@ -18,7 +18,7 @@
 //! entry. Unreachable blocks are never analyzed, as in rustc.
 
 use rustc_hash::FxHashMap;
-use std::hash::BuildHasher;
+use std::{cmp::Reverse, collections::BinaryHeap, hash::BuildHasher};
 
 use flux_hir::{Diagnostic, ItemTree};
 use flux_syntax::TextRange;
@@ -89,8 +89,17 @@ pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Entry
     let mut state = start;
     let mut queued = BitSet::new_empty(body.blocks.len());
     queued.insert(0);
-    let mut worklist = vec![Body::entry()];
-    while let Some(block) = worklist.pop() {
+    // Process forward edges before a join, so acyclic bodies do not need
+    // to revisit the suffix of every branch. Back edges still requeue a
+    // block whenever its incoming state grows.
+    let order = crate::lint::reverse_postorder(body);
+    let mut rank = vec![0; body.blocks.len()];
+    for (index, block) in order.iter().enumerate() {
+        rank[block.index()] = index;
+    }
+    let mut worklist = BinaryHeap::from([Reverse(0)]);
+    while let Some(Reverse(index)) = worklist.pop() {
+        let block = order[index];
         queued.remove(block.index());
         assert!(
             entry.load(block.index(), &mut state),
@@ -111,7 +120,7 @@ pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Entry
                 }
             }
             if entry.join(successor.index(), &state) && !queued.set(successor.index(), true) {
-                worklist.push(successor);
+                worklist.push(Reverse(rank[successor.index()]));
             }
             for event in terminator_events(&data.terminator.kind) {
                 if matches!(event, Event::Assign(_)) {
@@ -125,7 +134,7 @@ pub(crate) fn analyze(body: &Body, paths: &MovePaths, drop_moves: bool) -> Entry
         }
         for successor in data.terminator.kind.successors() {
             if entry.join(successor.index(), &state) && !queued.set(successor.index(), true) {
-                worklist.push(successor);
+                worklist.push(Reverse(rank[successor.index()]));
             }
         }
     }

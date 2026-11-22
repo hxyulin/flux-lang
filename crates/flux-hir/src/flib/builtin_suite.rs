@@ -46,19 +46,18 @@ fn read_arena<T: Decode>(count: usize, d: &mut Decoder<'_>) -> Result<LayeredAre
     }
     Ok(arena)
 }
+/// Identities of the compiler-owned libraries, in dependency order.
+pub const BUILTIN_CRATE_NAMES: [&str; 4] = ["core", "alloc", "std", "proc_macro"];
+
 fn roles(items: &ItemTree) -> Result<(), Error> {
-    if items.crates.len() != 4
+    if items.crates.len() != BUILTIN_CRATE_NAMES.len()
         || items
             .crates
             .iter()
             .map(|c| (c.name.as_str(), c.is_core))
-            .collect::<Vec<_>>()
-            != [
-                ("core", true),
-                ("alloc", true),
-                ("std", false),
-                ("proc_macro", false),
-            ]
+            .ne(BUILTIN_CRATE_NAMES
+                .into_iter()
+                .zip([true, true, false, false]))
     {
         return Err(Error("expected exact compiler library suite"));
     }
@@ -270,6 +269,12 @@ fn read_records(
         return Err(Error("builtin crate count mismatch"));
     }
     items.modules = read_arena(counts[1], d)?;
+    items.module_children.extend(
+        items
+            .modules
+            .values()
+            .filter_map(|module| Some((module.parent?, module.name))),
+    );
     items.functions = read_arena(counts[2], d)?;
     items.structs = read_arena(counts[3], d)?;
     items.traits = read_arena(counts[4], d)?;

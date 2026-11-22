@@ -443,6 +443,14 @@ impl<T, V> ArenaMap<T, V> {
             .enumerate()
             .filter_map(|(i, v)| Some((Idx::from_raw((i + self.offset) as u32), v.as_ref()?)))
     }
+
+    /// The owned entries, in index order.
+    pub fn into_entries(self) -> impl Iterator<Item = (Idx<T>, V)> {
+        self.data
+            .into_iter()
+            .enumerate()
+            .filter_map(move |(i, v)| Some((Idx::from_raw((i + self.offset) as u32), v?)))
+    }
 }
 
 impl<T, V> Index<Idx<T>> for ArenaMap<T, V> {
@@ -498,6 +506,7 @@ mod tests {
             [(1, "bool"), (3, "u16")]
         );
         assert_eq!(types.remove(ids[1]), Some("bool"));
+        assert_eq!(types.into_entries().collect::<Vec<_>>(), [(ids[3], "u16")]);
     }
 
     #[test]

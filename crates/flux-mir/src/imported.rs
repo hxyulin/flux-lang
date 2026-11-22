@@ -5,6 +5,7 @@ use std::sync::Arc;
 use flux_hir::flib::Error;
 use flux_hir::{ConstId, FunctionId, ItemCounts};
 use flux_ty::{ClosureId, ClosureKind, ClosureOwner};
+use rustc_hash::FxHashSet;
 
 use crate::{Body, FileMir};
 
@@ -258,10 +259,11 @@ impl ImportedMir {
         items: &flux_hir::ItemTree,
         sigs: &flux_ty::Signatures,
     ) -> RequiredRoots {
-        let mut roots = std::collections::BTreeSet::new();
-        for instance in &self.required_instances {
-            roots.extend(flux_ty::call_targets(items, instance.function));
-        }
+        let mut referenced: FxHashSet<_> = self
+            .required_instances
+            .iter()
+            .map(|instance| instance.function)
+            .collect();
         let mut values = Vec::new();
         for body in self
             .mir
@@ -271,15 +273,14 @@ impl ImportedMir {
             .chain(self.mir.consts.iter().map(|(_, body)| body))
             .chain(self.mir.closures.values())
         {
-            for function in body.callees().into_iter().chain(body.object_methods(items)) {
-                roots.extend(flux_ty::call_targets(items, function));
-            }
+            referenced.extend(body.callees());
+            referenced.extend(body.object_methods(items));
             values.extend(body.promoted.iter());
         }
         values.extend(self.mir.const_values.items.iter().map(|(_, value)| value));
         values.extend(self.mir.const_values.instances.values());
+        let mut instances = Vec::new();
         for value in values {
-            let mut instances = Vec::new();
             crate::mono::value_functions(
                 value,
                 &self.mir.const_values,
@@ -287,12 +288,18 @@ impl ImportedMir {
                 sigs,
                 &mut instances,
             );
-            for instance in instances {
-                roots.extend(flux_ty::call_targets(items, instance.function));
-            }
+            referenced.extend(instances.drain(..).map(|instance| instance.function));
         }
+        // Every occurrence of a callee expands to the same possible targets
+        // in this compilation, including the same set of trait impls.
+        let mut roots = FxHashSet::default();
+        for function in referenced {
+            roots.extend(flux_ty::call_targets(items, function));
+        }
+        let mut functions: Vec<_> = roots.into_iter().collect();
+        functions.sort_unstable();
         RequiredRoots {
-            functions: roots.into_iter().collect(),
+            functions,
             instances: self.required_instances.clone(),
         }
     }
@@ -320,16 +327,9 @@ impl ImportedMir {
             self.mir.panic_strategy, source.panic_strategy,
             "checked dependency strategy"
         );
-        fn append<T, V>(
-            base: &mut flux_arena::ArenaMap<T, V>,
-            mut source: flux_arena::ArenaMap<T, V>,
-        ) {
-            let keys: Vec<_> = source.iter().map(|(id, _)| id).collect();
-            for id in keys {
-                base.insert(
-                    id,
-                    source.remove(id).expect("collected source entry exists"),
-                );
+        fn append<T, V>(base: &mut flux_arena::ArenaMap<T, V>, source: flux_arena::ArenaMap<T, V>) {
+            for (id, value) in source.into_entries() {
+                base.insert(id, value);
             }
         }
         let mut mir = self.mir;

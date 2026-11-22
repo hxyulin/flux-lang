@@ -19,6 +19,37 @@ fn encode(items: &ItemTree, krate: CrateId) -> Vec<u8> {
 }
 
 #[test]
+fn decode_mappings_match_the_inverse_and_reject_missing_ids() {
+    use flux_hir::flib::IdKind;
+
+    for functions in [vec![17, 40, 81], vec![81, 17, 81]] {
+        let indices = CrateIndices {
+            functions,
+            ..CrateIndices::default()
+        };
+        for slot in [0, 1, 255] {
+            let mut encoder = IdMap::strict();
+            indices.add_mapping(&mut encoder, CrateId(9), slot).unwrap();
+            let inverse = encoder.inverse().unwrap();
+            let mut decoder = IdMap::strict();
+            indices
+                .add_decode_mapping(&mut decoder, CrateId(9), slot)
+                .unwrap();
+            assert_eq!(decoder.get(IdKind::Crate, slot).unwrap(), 9);
+            for index in 0..3 {
+                let wire = (slot << 24) | index;
+                assert_eq!(
+                    decoder.get(IdKind::Function, wire),
+                    inverse.get(IdKind::Function, wire)
+                );
+            }
+            assert!(decoder.get(IdKind::Function, (slot << 24) | 3).is_err());
+            assert_eq!(decoder.contains_owned(IdKind::Function, 17), slot == 0);
+        }
+    }
+}
+
+#[test]
 fn append_items_and_expand_exported_macro_without_dependency_syntax() {
     let mut original = SourceDb::new();
     let a = original.add(

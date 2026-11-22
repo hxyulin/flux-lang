@@ -267,6 +267,13 @@ impl<T> Vec<T> {
         self.len = len + 1;
     }
 
+    /// Adds `value` at the end and returns a mutable reference to it.
+    pub fn push_mut(&mut self, value: T) -> &mut T {
+        let index = self.len;
+        self.push(value);
+        &mut self[index]
+    }
+
     /// Removes the last element.
     pub fn pop(&mut self) -> Option<T> {
         if self.len == 0 {

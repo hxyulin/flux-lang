@@ -3,7 +3,7 @@
 mod allocations;
 mod archive;
 mod builtin_suite;
-pub use builtin_suite::{read_builtin_suite, write_builtin_suite};
+pub use builtin_suite::{BUILTIN_CRATE_NAMES, read_builtin_suite, write_builtin_suite};
 mod digest;
 mod identity;
 mod items;
@@ -17,6 +17,7 @@ use std::fmt;
 
 use flux_arena::Idx;
 use flux_intern::Symbol;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Maximum element count of one metadata collection.
 pub const MAX_RECORD_LENGTH: usize = 1_000_000;
@@ -47,7 +48,7 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// An independently indexed semantic arena.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IdKind {
     Crate,
     Module,
@@ -65,18 +66,18 @@ pub enum IdKind {
 /// Explicit mappings between process and artifact-local indices.
 #[derive(Debug, Clone, Default)]
 pub struct IdMap {
-    entries: BTreeMap<(IdKind, u32), u32>,
+    entries: FxHashMap<(IdKind, u32), u32>,
     strict: bool,
-    owned: std::collections::BTreeSet<(IdKind, u32)>,
+    owned: FxHashSet<(IdKind, u32)>,
     source_ranges: Vec<(u32, u32, u32)>,
 }
 impl IdMap {
     /// Creates a map that rejects references without an explicit mapping.
     pub fn strict() -> Self {
         Self {
-            entries: BTreeMap::new(),
+            entries: FxHashMap::default(),
             strict: true,
-            owned: std::collections::BTreeSet::new(),
+            owned: FxHashSet::default(),
             source_ranges: Vec::new(),
         }
     }

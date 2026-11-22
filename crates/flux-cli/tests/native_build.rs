@@ -316,6 +316,29 @@ fn diamond_build_reuses_inputs_and_recovers_from_failures() {
                     .is_some_and(|extension| extension == "flib")
         })
         .unwrap();
+    // A settled archive can be reused through its small freshness record.
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(f.success(&[], "second").contains("Fresh shared"));
+    let record = shared.with_extension("flib.fresh");
+    let verified = std::fs::read(&record).unwrap();
+    std::fs::write(&record, b"incomplete record").unwrap();
+    assert!(f.success(&[], "second").contains("Fresh shared"));
+    assert_eq!(std::fs::read(&record).unwrap(), verified);
+    // Changing the archive's content while preserving its size and mtime
+    // must invalidate the record and allow the regular corruption recovery.
+    let modified = std::fs::metadata(&shared).unwrap().modified().unwrap();
+    let mut corrupt = std::fs::read(&shared).unwrap();
+    corrupt[68] ^= 1;
+    std::fs::write(&shared, corrupt).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&shared)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(f.success(&[], "second").contains("Compiling shared"));
+    f.run(b"63 second\n");
     std::fs::remove_file(shared).unwrap();
     let restored = f.success(&[], "second");
     assert!(restored.contains("Compiling shared"), "{restored}");

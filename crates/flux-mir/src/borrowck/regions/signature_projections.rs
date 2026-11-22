@@ -57,7 +57,7 @@ pub(crate) fn check_signature_projection_requirements(
         {
             continue;
         }
-        cx.header_predicates = flux_solve::traits::elaborate(sigs, &memberships);
+        *cx.normalization.memberships_mut() = flux_solve::traits::elaborate(sigs, &memberships);
         cx.header_type_equalities();
         cx.new_universal("'static".into());
         let lifetimes: Vec<_> = (0..regions.names.len())
@@ -293,7 +293,7 @@ fn check_bound_projection_requirements(
     let requirements = Requirements::default();
     let mut cx = Cx::new(&body, items, sigs, &requirements);
     let memberships = flux_solve::traits::predicates_of(items, sigs, function);
-    cx.header_predicates = flux_solve::traits::elaborate(sigs, &memberships);
+    *cx.normalization.memberships_mut() = flux_solve::traits::elaborate(sigs, &memberships);
     cx.new_universal("'static".into());
     let lifetimes: Vec<_> = (0..regions.names.len())
         .map(|i| cx.new_universal(format!("'{i}")))

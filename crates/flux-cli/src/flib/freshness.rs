@@ -3,7 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use flux_hir::flib::{CrateIndices, Decode, Decoder, Encode, Encoder, Error, digest};
+use flux_hir::flib::{CrateIndices, Decode, Decoder, Encode, Encoder, Error};
+
+use crate::flib::digest;
 use flux_hir::{CrateId, ItemTree};
 
 const MAGIC: &[u8; 8] = b"FLUXFRSH";
@@ -29,6 +31,12 @@ pub struct Snapshot {
     environment: Option<BTreeMap<String, String>>,
     inputs: Vec<Input>,
     observed_environment: BTreeMap<String, Option<String>>,
+}
+
+enum RootSource<'a> {
+    Physical,
+    Generated { path: &'a Path, text: &'a str },
+    MacroWrapper,
 }
 
 impl Snapshot {
@@ -58,7 +66,33 @@ impl Snapshot {
         configuration: &[u8],
         dependencies: &[[u8; 32]],
     ) -> Result<Option<Self>, String> {
-        Self::capture_checked_root(items, krate, indices, configuration, dependencies, None)
+        Self::capture_checked_root(
+            items,
+            krate,
+            indices,
+            configuration,
+            dependencies,
+            RootSource::Physical,
+        )
+    }
+
+    /// The wrapper has an empty synthetic source. Its checked request contains
+    /// the verified export descriptors, and its root path names the host binary.
+    pub(crate) fn capture_macro_wrapper(
+        items: &ItemTree,
+        krate: CrateId,
+        indices: &CrateIndices,
+        configuration: &[u8],
+        dependencies: &[[u8; 32]],
+    ) -> Result<Option<Self>, String> {
+        Self::capture_checked_root(
+            items,
+            krate,
+            indices,
+            configuration,
+            dependencies,
+            RootSource::MacroWrapper,
+        )
     }
 
     /// A generated wrapper is reusable only with its exact generated text in
@@ -75,7 +109,10 @@ impl Snapshot {
             &CrateIndices::collect(items, krate),
             configuration,
             &[],
-            original,
+            original.map_or(RootSource::Physical, |(path, text)| RootSource::Generated {
+                path,
+                text,
+            }),
         )
     }
 
@@ -85,19 +122,20 @@ impl Snapshot {
         indices: &CrateIndices,
         configuration: &[u8],
         dependencies: &[[u8; 32]],
-        original: Option<(&Path, &str)>,
+        root_source: RootSource<'_>,
     ) -> Result<Option<Self>, String> {
         let data = items
             .crates
             .get(krate.0 as usize)
             .ok_or("invalid snapshot crate")?;
-        let tracked = data.tracked_inputs();
         // Only actual host invocations have untracked execution effects.
         // Merely importing or reexporting a macro does not execute its code.
         // An empty token result still occupies an outer trace entry.
-        if !tracked.macro_outputs.is_empty() {
+        let Some(tracked) =
+            data.with_tracked_inputs(|trace| trace.macro_outputs.is_empty().then(|| trace.clone()))
+        else {
             return Ok(None);
-        }
+        };
         let current = std::env::current_dir()
             .map_err(|e| format!("cannot snapshot compilation directory: {e}"))?;
         let root = items.modules[data.root].file;
@@ -112,15 +150,15 @@ impl Snapshot {
             let Ok(bytes) = std::fs::read(&path) else {
                 return Ok(None);
             };
-            let expected = if id == root {
-                original
-                    .filter(|(original, _)| absolute(&current, original) == path)
-                    .map(|(_, text)| text.as_bytes())
-                    .unwrap_or_else(|| file.text().as_bytes())
-            } else {
-                file.text().as_bytes()
+            let matches_source = match root_source {
+                RootSource::MacroWrapper if id == root => file.text().is_empty(),
+                RootSource::Generated {
+                    path: original,
+                    text,
+                } if id == root && absolute(&current, original) == path => bytes == text.as_bytes(),
+                _ => bytes == file.text().as_bytes(),
             };
-            if bytes != expected {
+            if !matches_source {
                 return Ok(None);
             }
             let Ok(resolved) = std::fs::canonicalize(&path) else {

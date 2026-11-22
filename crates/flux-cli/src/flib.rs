@@ -2,10 +2,17 @@
 
 use std::fmt;
 
+use sha2::{Digest, Sha256};
+
 const ARCHIVE_MAGIC: &[u8; 8] = b"!<arch>\n";
 const META_MAGIC: &[u8; 8] = b"FLUXMETA";
 const VERSION: u32 = 18;
 const MAX_METADATA: usize = 512 * 1024 * 1024;
+
+/// Computes a SHA-256 content identity compatible with HIR's source digests.
+pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
+    Sha256::digest(bytes).into()
+}
 
 /// Opt-in metadata timings include nested work; phases must not be summed.
 pub(crate) fn time<T>(phase: &str, f: impl FnOnce() -> T) -> T {
@@ -82,7 +89,7 @@ impl Metadata {
         for section in sections {
             out.extend_from_slice(&section.bytes);
         }
-        let checksum = time("metadata checksum write", || flux_hir::flib::digest(&out));
+        let checksum = time("metadata checksum write", || digest(&out));
         out.extend_from_slice(&checksum);
         Ok(out)
     }
@@ -136,10 +143,7 @@ impl MetadataIndex {
             ));
         }
         let payload_end = bytes.len() - 32;
-        if time("metadata checksum", || {
-            flux_hir::flib::digest(&bytes[..payload_end])
-        }) != bytes[payload_end..]
-        {
+        if time("metadata checksum", || digest(&bytes[..payload_end])) != bytes[payload_end..] {
             return Err(Error(
                 "flux metadata checksum mismatch; rebuild the artifact",
             ));
@@ -328,7 +332,7 @@ pub fn compiler_identity() -> Result<[u8; 32], String> {
     let id = time("compiler executable fingerprint", || {
         let bytes = std::fs::read(&path)
             .map_err(|e| format!("cannot fingerprint {}: {e}", path.display()))?;
-        Ok::<_, String>(flux_hir::flib::digest(&bytes))
+        Ok::<_, String>(digest(&bytes))
     })?;
     Ok(*COMPILER_ID.get_or_init(|| id))
 }
@@ -344,6 +348,15 @@ pub mod semantic;
 
 /// Replaces an artifact only after its complete contents have been written.
 pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_file(path, bytes, true)
+}
+
+/// Publishes a disposable record. An interrupted write is a cache miss.
+pub(crate) fn write_cache(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    replace_file(path, bytes, false)
+}
+
+fn replace_file(path: &std::path::Path, bytes: &[u8], durable: bool) -> std::io::Result<()> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -376,10 +389,26 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>
     }
     let guard = Remove(temporary);
     file.write_all(bytes)?;
-    file.sync_all()?;
+    if durable {
+        file.sync_all()?;
+    }
     drop(file);
     std::fs::rename(&guard.0, path)
 }
 
 pub mod executable;
 pub mod freshness;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn content_digests_match_hir_source_digests() {
+        let bytes: Vec<_> = (0..=255).collect();
+        for len in 0..=bytes.len() {
+            assert_eq!(
+                super::digest(&bytes[..len]),
+                flux_hir::flib::digest(&bytes[..len])
+            );
+        }
+    }
+}

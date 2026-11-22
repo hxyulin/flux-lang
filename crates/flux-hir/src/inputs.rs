@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Actual file contents and environment values consumed by macro expansion.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -16,23 +17,57 @@ pub struct TrackedInputs {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct InputTrace(pub(crate) Mutex<TrackedInputs>);
+pub(crate) struct InputTrace(pub(crate) Mutex<TrackedInputs>, AtomicU64);
+
+impl InputTrace {
+    pub(crate) fn from_inputs(inputs: TrackedInputs) -> Self {
+        Self(Mutex::new(inputs), AtomicU64::default())
+    }
+}
 impl Clone for InputTrace {
     fn clone(&self) -> Self {
-        Self(Mutex::new(
-            self.0.lock().expect("input trace lock poisoned").clone(),
-        ))
+        Self(
+            Mutex::new(self.0.lock().expect("input trace lock poisoned").clone()),
+            AtomicU64::new(self.1.load(Ordering::Relaxed)),
+        )
     }
 }
 
 impl crate::CrateData {
-    /// Returns a snapshot of the inputs actually consumed by this crate.
-    pub fn tracked_inputs(&self) -> TrackedInputs {
-        self.input_trace
+    /// Counts external read and host expansion attempts, including repeats.
+    /// Compare within one compilation before and after a lowering phase.
+    pub fn observation_count(&self) -> u64 {
+        self.input_trace.1.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn observe_input(&self) {
+        self.input_trace.1.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Whether lowering executed a host macro, including empty expansions.
+    pub fn expanded_host_macros(&self) -> bool {
+        !self
+            .input_trace
             .0
             .lock()
             .expect("input trace lock poisoned")
-            .clone()
+            .macro_outputs
+            .is_empty()
+    }
+
+    /// Returns a snapshot of the inputs actually consumed by this crate.
+    pub fn tracked_inputs(&self) -> TrackedInputs {
+        self.with_tracked_inputs(TrackedInputs::clone)
+    }
+
+    /// Reads a consistent trace without copying macro tokens.
+    pub fn with_tracked_inputs<R>(&self, read: impl FnOnce(&TrackedInputs) -> R) -> R {
+        let trace = self
+            .input_trace
+            .0
+            .lock()
+            .expect("input trace lock poisoned");
+        read(&trace)
     }
 
     pub(crate) fn record_macro_output(&self, tokens: &[crate::ProcMacroToken]) {

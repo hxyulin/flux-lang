@@ -11,6 +11,26 @@ fn invalid() -> Error {
     Error::new("invalid imported MIR structure")
 }
 
+pub(super) fn variant_layouts(items: &ItemTree, sigs: &Signatures) -> Result<(), Error> {
+    for (id, starts) in sigs.variant_starts.iter() {
+        let all = sigs.structs.get(id).ok_or_else(invalid)?;
+        let count = items
+            .structs
+            .get(id)
+            .and_then(|s| s.variants.as_ref())
+            .ok_or_else(invalid)?
+            .len();
+        if starts.len() != count + 1
+            || starts.first() != Some(&0)
+            || starts.last().copied() != Some(all.len() as u32)
+            || starts.windows(2).any(|w| w[0] > w[1])
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
 fn fields(ty: Ty, variant: Option<u32>, sigs: &Signatures) -> Result<Vec<Ty>, Error> {
     match ty.kind() {
         TyKind::Tuple(fields) => Ok(fields.to_vec()),
@@ -224,24 +244,25 @@ fn constant(
     items: &ItemTree,
     sigs: &Signatures,
     owner: flux_ty::ClosureOwner,
+    validated_types: &mut rustc_hash::FxHashSet<(Ty, u32)>,
 ) -> Result<(), Error> {
     match c {
         Constant::Fn { function, ty, .. } => {
             items.functions.get(*function).ok_or_else(invalid)?;
             sigs.fns.get(*function).ok_or_else(invalid)?;
-            self::ty(*ty, items, sigs, 0)?;
+            ty_at(*ty, items, sigs, 0, validated_types)?;
         }
         Constant::Item { id, ty, .. } | Constant::Static { id, ty } => {
             items.consts.get(*id).ok_or_else(invalid)?;
             sigs.consts.get(*id).ok_or_else(invalid)?;
-            self::ty(*ty, items, sigs, 0)?;
+            ty_at(*ty, items, sigs, 0, validated_types)?;
         }
         Constant::ItemRef { id, args, ty } => {
             let declaration = items.consts.get(*id).ok_or_else(invalid)?;
             let value_ty = *sigs.consts.get(*id).ok_or_else(invalid)?;
-            self::ty(*ty, items, sigs, 0)?;
+            ty_at(*ty, items, sigs, 0, validated_types)?;
             for &arg in *args {
-                self::ty(arg, items, sigs, 0)?;
+                ty_at(arg, items, sigs, 0, validated_types)?;
             }
             let TyKind::Ref(Mutability::Not, pointee) = ty.kind() else {
                 return Err(invalid());
@@ -277,13 +298,13 @@ fn constant(
             }
         }
         Constant::FnItem(ty) => {
-            self::ty(*ty, items, sigs, 0)?;
+            ty_at(*ty, items, sigs, 0, validated_types)?;
             if !matches!(ty.kind(), TyKind::FnDef(_)) {
                 return Err(invalid());
             }
         }
         Constant::Promoted { index, ty } => {
-            self::ty(*ty, items, sigs, 0)?;
+            ty_at(*ty, items, sigs, 0, validated_types)?;
             let TyKind::Ref(_, pointee) = ty.kind() else {
                 return Err(invalid());
             };
@@ -291,7 +312,7 @@ fn constant(
             value_for(v, pointee, items, sigs, 0)?;
         }
         Constant::Inline { index, ty } => {
-            self::ty(*ty, items, sigs, 0)?;
+            ty_at(*ty, items, sigs, 0, validated_types)?;
             let constant = body
                 .inline_constants
                 .get(*index as usize)
@@ -302,8 +323,8 @@ fn constant(
             }
         }
         Constant::TyConst { value, ty } => {
-            self::ty(*value, items, sigs, 0)?;
-            self::ty(*ty, items, sigs, 0)?;
+            ty_at(*value, items, sigs, 0, validated_types)?;
+            ty_at(*ty, items, sigs, 0, validated_types)?;
         }
         Constant::CStr(i) => {
             body.c_strings.get(*i as usize).ok_or_else(invalid)?;
@@ -318,12 +339,13 @@ fn validate_operand(
     items: &ItemTree,
     sigs: &Signatures,
     owner: flux_ty::ClosureOwner,
+    validated_types: &mut rustc_hash::FxHashSet<(Ty, u32)>,
 ) -> Result<(), Error> {
     match o {
         Operand::Copy(p) | Operand::Move(p) => {
             place(p, body, items, sigs)?;
         }
-        Operand::Const(c) => constant(c, body, items, sigs, owner)?,
+        Operand::Const(c) => constant(c, body, items, sigs, owner, validated_types)?,
     };
     Ok(())
 }
@@ -468,6 +490,7 @@ fn operand_type_args(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn body(
     body: &Body,
     items: &ItemTree,
@@ -479,7 +502,14 @@ pub(super) fn body(
         (None, Some(c)) => flux_ty::ClosureOwner::Const(c),
         _ => return Err(invalid()),
     };
-    body_for_owner(body, items, sigs, owner, check_types)
+    body_for_owner(
+        body,
+        items,
+        sigs,
+        owner,
+        check_types,
+        &mut Default::default(),
+    )
 }
 
 /// Closure table keys authenticate generated shims whose Body has no owner.
@@ -489,6 +519,7 @@ pub(super) fn body_for_owner(
     sigs: &Signatures,
     owner: flux_ty::ClosureOwner,
     check_types: bool,
+    validated_types: &mut rustc_hash::FxHashSet<(Ty, u32)>,
 ) -> Result<(), Error> {
     let loc = match owner {
         flux_ty::ClosureOwner::Function(f) => items.functions.get(f).ok_or_else(invalid)?.loc,
@@ -539,25 +570,8 @@ pub(super) fn body_for_owner(
     for capture in &body.capture_uses {
         source_range(capture.range)?;
     }
-    let mut validated_types = rustc_hash::FxHashSet::default();
     for local in body.locals.values() {
-        ty_at(local.ty, items, sigs, 0, &mut validated_types)?;
-    }
-    for (id, starts) in sigs.variant_starts.iter() {
-        let all = sigs.structs.get(id).ok_or_else(invalid)?;
-        let count = items
-            .structs
-            .get(id)
-            .and_then(|s| s.variants.as_ref())
-            .ok_or_else(invalid)?
-            .len();
-        if starts.len() != count + 1
-            || starts.first() != Some(&0)
-            || starts.last().copied() != Some(all.len() as u32)
-            || starts.windows(2).any(|w| w[0] > w[1])
-        {
-            return Err(invalid());
-        }
+        ty_at(local.ty, items, sigs, 0, validated_types)?;
     }
     if let Some(up) = &body.upvars {
         if up.names.len() != up.by_ref.len() || up.names.len() != up.mutable.len() {
@@ -582,7 +596,7 @@ pub(super) fn body_for_owner(
         {
             return Err(invalid());
         }
-        self::body_for_owner(inner, items, sigs, owner, check_types)?;
+        self::body_for_owner(inner, items, sigs, owner, check_types, validated_types)?;
     }
     for v in &body.promoted {
         value(v, items, sigs, 0)?;
@@ -591,7 +605,7 @@ pub(super) fn body_for_owner(
         place(p, body, items, sigs)?;
         place(q, body, items, sigs)?;
     }
-    let operand = |value| validate_operand(value, body, items, sigs, owner);
+    let mut operand = |value| validate_operand(value, body, items, sigs, owner, validated_types);
     for block in body.blocks.values() {
         for statement in &block.statements {
             match &statement.kind {

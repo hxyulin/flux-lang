@@ -175,23 +175,20 @@ fn modes(body: &Body) -> Vec<Mode> {
     modes
 }
 
-fn reverse_postorder(body: &Body) -> Vec<BasicBlock> {
+pub(crate) fn reverse_postorder(body: &Body) -> Vec<BasicBlock> {
+    let entry = Body::entry();
     let mut visited = vec![false; body.blocks.len()];
     let mut order = Vec::new();
-    // Iterative depth-first search; a block is finished after its
-    // successors.
-    let mut stack = vec![(Body::entry(), 0usize)];
-    visited[0] = true;
-    while let Some((block, next)) = stack.pop() {
-        let mut successors = body.blocks[block].terminator.successors();
-        if let Some(successor) = successors.nth(next) {
-            stack.push((block, next + 1));
-            if !visited[successor.index()] {
-                visited[successor.index()] = true;
-                stack.push((successor, 0));
+    let mut stack = vec![(entry, body.blocks[entry].terminator.successors())];
+    visited[entry.index()] = true;
+    while let Some((block, successors)) = stack.last_mut() {
+        if let Some(next) = successors.next() {
+            if !std::mem::replace(&mut visited[next.index()], true) {
+                stack.push((next, body.blocks[next].terminator.successors()));
             }
         } else {
-            order.push(block);
+            order.push(*block);
+            stack.pop();
         }
     }
     order.reverse();

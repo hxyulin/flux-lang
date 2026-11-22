@@ -52,6 +52,67 @@ impl Fixture {
 }
 
 #[test]
+fn two_build_scripts_reuse_their_shared_library() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[workspace]\nmembers=['first','second','helper']\nresolver='3'\n",
+    );
+    fixture.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    fixture.write("helper/src/lib.rs", "pub fn value() -> u32 { 11 }\n");
+    for package in ["first", "second"] {
+        fixture.write(
+            &format!("{package}/Cargo.toml"),
+            &format!("[package]\nname='{package}'\nversion='0.1.0'\nedition='2024'\n[build-dependencies]\nhelper={{path='../helper'}}\n"),
+        );
+        fixture.write(&format!("{package}/src/main.rs"), "fn main() {}\n");
+        fixture.write(
+            &format!("{package}/build.rs"),
+            r#"
+fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(out.join("value.txt"), helper::value().to_string()).unwrap();
+}
+"#,
+        );
+    }
+    fixture.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='first'\nversion='0.1.0'\ndependencies=['helper']\n[[package]]\nname='helper'\nversion='0.1.0'\n[[package]]\nname='second'\nversion='0.1.0'\ndependencies=['helper']\n",
+    );
+
+    let verify_outputs = |expected: &str| {
+        let prepared: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(fixture.path().join("target/flux/native-prepared-plan.json")).unwrap(),
+        )
+        .unwrap();
+        let values: Vec<_> = prepared["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|output| output["script"]["out_dir"].as_str())
+            .map(|dir| std::fs::read_to_string(Path::new(dir).join("value.txt")).unwrap())
+            .collect();
+        assert_eq!(values, [expected, expected]);
+    };
+
+    let first = fixture.prepare("", &["--workspace"]);
+    assert_eq!(first.matches("Compiling helper\n").count(), 1, "{first}");
+    assert_eq!(first.matches("Fresh helper\n").count(), 1, "{first}");
+    verify_outputs("11");
+
+    fixture.write("helper/src/lib.rs", "pub fn value() -> u32 { 13 }\n");
+    let edited = fixture.prepare("", &["--workspace"]);
+    assert_eq!(edited.matches("Compiling helper\n").count(), 1, "{edited}");
+    assert_eq!(edited.matches("Fresh helper\n").count(), 1, "{edited}");
+    verify_outputs("13");
+}
+
+#[test]
 fn script_compilation_reuses_inputs_but_execution_observes_changes() {
     let f = Fixture::new();
     f.write(
@@ -359,7 +420,9 @@ pub fn empty(_:proc_macro::TokenStream)->proc_macro::TokenStream{
     success("1");
     let unused = success("1");
     assert!(
-        unused.contains("Fresh adapter") && unused.contains("Fresh app"),
+        unused.contains("Fresh macros")
+            && unused.contains("Fresh adapter")
+            && unused.contains("Fresh app"),
         "{unused}"
     );
     assert!(!f.path().join("macro-count.txt").exists());
@@ -371,27 +434,85 @@ pub fn empty(_:proc_macro::TokenStream)->proc_macro::TokenStream{
     let before = std::fs::read(f.path().join("macro-count.txt"))
         .unwrap()
         .len();
-    let same = success("1");
+    let same = f.invoke("build", "1", &["--timings"]);
+    support::oracle::success(&same, "unchanged transitive expansion");
+    let same = String::from_utf8_lossy(&same.stderr);
     assert!(
         same.contains("Reused adapter after expansion") && same.contains("Fresh app"),
         "{same}"
     );
+    let adapter = same.split_once("Compiling adapter\n").unwrap().1;
+    let adapter = adapter.split_once("Fresh app").unwrap().0;
+    assert!(!adapter.contains("hir body lowering"), "{adapter}");
+    let same_count = std::fs::read(f.path().join("macro-count.txt"))
+        .unwrap()
+        .len();
+    assert_eq!(same_count, before + 1);
+    let rebuilt = f.invoke("build", "2", &["--timings"]);
+    support::oracle::success(&rebuilt, "changed transitive expansion");
+    let changed = String::from_utf8_lossy(&rebuilt.stderr);
     assert!(
+        changed.contains("Compiling app")
+            && !changed.contains("Fresh app")
+            && changed.contains("deferred dependency IR"),
+        "{changed}"
+    );
+    assert_eq!(
         std::fs::read(f.path().join("macro-count.txt"))
             .unwrap()
-            .len()
-            > before
-    );
-    let changed = success("2");
-    assert!(
-        changed.contains("Compiling app") && !changed.contains("Fresh app"),
-        "{changed}"
+            .len(),
+        same_count + 1,
+        "loading deferred IR must not repeat macro effects"
     );
     let output = Command::new(f.path().join("target/flux/debug/app"))
         .output()
         .unwrap();
     support::oracle::success(&output, "changed transitive expansion");
     assert_eq!(output.stdout, b"2\n");
+
+    // Changing dependency metadata must disable the deferred path even when
+    // the dependency's own semantic identity and source snapshot still match.
+    let directory = f.path().join("target/flux/debug/deps");
+    let wrapper = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("macros-")
+                && path.extension().is_some_and(|ext| ext == "flib")
+        })
+        .unwrap();
+    let saved = std::fs::read(&wrapper).unwrap();
+    let mut archive = flux_cli::flib::Archive::decode(&saved).unwrap();
+    let compiler = flux_hir::flib::digest(&std::fs::read(env!("CARGO_BIN_EXE_fluxc")).unwrap());
+    let mut metadata = flux_cli::flib::Metadata::decode(&archive.metadata, compiler).unwrap();
+    metadata
+        .sections
+        .iter_mut()
+        .find(|part| part.tag == 8)
+        .unwrap()
+        .bytes
+        .clear();
+    archive.metadata = metadata.encode().unwrap();
+    std::fs::write(&wrapper, archive.encode().unwrap()).unwrap();
+    let malformed = f.invoke("build", "2", &["--timings"]);
+    std::fs::write(&wrapper, saved).unwrap();
+    let diagnostics = String::from_utf8_lossy(&malformed.stderr);
+    assert!(
+        !malformed.status.success()
+            && diagnostics.contains("macros-")
+            && diagnostics.contains("truncated metadata"),
+        "{diagnostics}"
+    );
+    assert_eq!(
+        std::fs::read(f.path().join("macro-count.txt"))
+            .unwrap()
+            .len(),
+        same_count + 1
+    );
+
     f.write(
         "app/src/main.rs",
         "adapter::empty!();fn main(){println!(\"{}\",adapter::value());}",
@@ -411,4 +532,20 @@ pub fn empty(_:proc_macro::TokenStream)->proc_macro::TokenStream{
             .len()
             > before
     );
+    f.write(
+        "macros/src/lib.rs",
+        "extern crate proc_macro; use proc_macro::TokenStream;
+         #[proc_macro] pub fn value(_: TokenStream) -> TokenStream { \"3\".parse().unwrap() }
+         #[proc_macro] pub fn empty(_: TokenStream) -> TokenStream { TokenStream::new() }",
+    );
+    let rebuilt = success("2");
+    assert!(
+        rebuilt.contains("Compiling macros") && !rebuilt.contains("Fresh macros"),
+        "{rebuilt}"
+    );
+    let output = Command::new(f.path().join("target/flux/debug/app"))
+        .output()
+        .unwrap();
+    support::oracle::success(&output, "changed macro wrapper");
+    assert_eq!(output.stdout, b"3\n");
 }

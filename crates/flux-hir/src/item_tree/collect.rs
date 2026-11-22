@@ -75,6 +75,7 @@ impl ItemTree {
             has_deferred_macro_scopes: false,
             replaced_assoc_items: rustc_hash::FxHashSet::default(),
             pending_body_macros: Vec::new(),
+            namespace_preview_dirty: true,
             legacy_calls: Vec::new(),
             body_expansion_consts: Vec::new(),
         };
@@ -202,6 +203,8 @@ struct Collector<'a> {
     has_deferred_macro_scopes: bool,
     replaced_assoc_items: rustc_hash::FxHashSet<(FileId, NodeId)>,
     pending_body_macros: Vec<PendingBodyMacro>,
+    /// Whether collecting declarations may have changed the body macro preview.
+    namespace_preview_dirty: bool,
     collected_imports: rustc_hash::FxHashSet<(FileId, NodeId)>,
     macro_paths: Vec<MacroPathCheck>,
     db: &'a mut SourceDb,
@@ -300,7 +303,7 @@ impl Collector<'_> {
             .path
             .parent()
             .map_or_else(PathBuf::new, FsPath::to_path_buf);
-        let module = self.items.modules.alloc(Module {
+        let module = self.items.alloc_module(Module {
             name,
             parent: None,
             krate,
@@ -447,6 +450,7 @@ impl Collector<'_> {
         }
         let start = self.items.diagnostics.len();
         if item_enabled(syntax, &mut self.items.diagnostics) {
+            self.namespace_preview_dirty = true;
             let kind = if self.items.has_pending_macro_scope(self.macro_scope)
                 && has_declaration_macro(syntax)
             {
@@ -646,6 +650,7 @@ impl Collector<'_> {
     }
 
     fn collect_item(&mut self, ctx: Ctx, node: NodeId) {
+        self.namespace_preview_dirty = true;
         let shared = self.db.shared(ctx.file);
         let tree = shared.parse.tree();
         let item = ast::Item::cast(tree.node(node)).expect("items are ITEM nodes");
@@ -990,16 +995,27 @@ impl Collector<'_> {
         let base_map = std::mem::take(&mut self.items.def_map);
         let saved_scope = self.macro_scope;
         let saved_depth = self.expansion_depth;
+        self.namespace_preview_dirty = true;
         while !self.pending_body_macros.is_empty() {
-            // Preview namespaces only: impl registration is performed once by
-            // final resolution. Keep existing errors and consumed macro imports.
-            // Genuine external import metadata loads remain committed.
-            self.items.def_map = base_map.clone();
-            let diagnostics = std::mem::take(&mut self.items.diagnostics);
-            let imports = self.items.macro_imports.clone();
-            crate::def_map::resolve_namespaces(self.items, from);
-            self.items.diagnostics = diagnostics;
-            self.items.macro_imports = imports;
+            if std::mem::take(&mut self.namespace_preview_dirty) {
+                // Keep preview diagnostics and import consumption local to
+                // this pass. External metadata loads remain recorded.
+                self.items.def_map = base_map.clone();
+                let diagnostics = std::mem::take(&mut self.items.diagnostics);
+                let imports = self.items.macro_imports.clone();
+                crate::def_map::resolve_namespaces(self.items, from);
+                self.items.diagnostics = diagnostics;
+                self.items.macro_imports = imports;
+            } else {
+                // New modules created without collecting declarations are
+                // anonymous blocks. They add empty scopes and cannot change
+                // the bindings already resolved by the preview.
+                // Grow only between rounds to keep expansion order intact.
+                self.items
+                    .def_map
+                    .scopes
+                    .resize_with(self.items.modules.len(), Default::default);
+            }
             let pending = std::mem::take(&mut self.pending_body_macros);
             let mut progress = false;
             for call in pending {
@@ -1708,7 +1724,7 @@ impl Collector<'_> {
             }
             None
         };
-        let module = self.items.modules.alloc(Module {
+        let module = self.items.alloc_module(Module {
             name: Symbol::intern(name_text),
             parent: Some(ctx.module),
             krate,
@@ -2920,7 +2936,7 @@ impl Collector<'_> {
             let count = self.block_counts.entry(function).or_default();
             let index = *count;
             *count += 1;
-            let module = self.items.modules.alloc(Module {
+            let module = self.items.alloc_module(Module {
                 name: Symbol::intern(&format!("{outer}.{index}")),
                 parent: Some(ctx.module),
                 krate: parent.krate,

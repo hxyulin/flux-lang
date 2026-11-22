@@ -1,7 +1,7 @@
 //! Value coercions and their noncommitting inference probes.
 use super::{
-    Ctx, Expr, ExprId, FxHashSet, Mutability, OverloadedDeref, Predicate, TextRange, Ty, TyKind,
-    VarValue, plural, solve,
+    Ctx, Deferred, Expr, ExprId, FxHashSet, Mutability, OverloadedDeref, Predicate, TextRange, Ty,
+    TyKind, VarValue, plural, solve,
 };
 
 type TypeEqualities = Vec<(Ty, Ty)>;
@@ -59,6 +59,28 @@ impl Ctx<'_> {
             return;
         }
         let blamed = self.blame(expr);
+        // A recursive call can borrow its opaque result before the body's
+        // return expression determines the hidden type. Let that expression
+        // choose the concrete type before coercing it to the trait object.
+        if let (TyKind::Ref(from, source), TyKind::Ref(to, target)) =
+            (self.shallow(actual).kind(), self.shallow(expected).kind())
+            && (from == to || from == Mutability::Mut)
+            && self.shallow(target).is_dyn()
+        {
+            let source = self.shallow(source);
+            if matches!(source.kind(), TyKind::Infer(_))
+                && (0..self.own_opaques.len())
+                    .any(|index| self.shallow(self.own_opaques[index]) == source)
+            {
+                self.deferred.push(Deferred::OpaqueBorrow {
+                    expr,
+                    actual,
+                    expected,
+                    source,
+                });
+                return;
+            }
+        }
         if let Some((source, target)) = self.pinned_pointees(actual, expected) {
             if let Some(equalities) = self.array_unsize(source, target) {
                 if equalities.into_iter().all(|(a, b)| self.unify(a, b)) {

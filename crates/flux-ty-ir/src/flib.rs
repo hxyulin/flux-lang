@@ -887,6 +887,28 @@ impl Signatures {
     /// Loads remapped semantic records into a signature snapshot.
     /// The caller publishes this snapshot only after every section validates.
     pub fn decode_flib_into(&mut self, d: &mut Decoder<'_>, items: &ItemTree) -> Result<(), Error> {
+        self.decode_flib_rows(d)?;
+        self.impl_index = crate::impl_index::ImplIndex::new(items, self);
+        self.traits_in_scope = crate::in_scope::TraitsInScope::new(items);
+        self.builtins = Builtins::of(items);
+        Ok(())
+    }
+
+    /// Decodes the signatures of an appended HIR archive. The existing item
+    /// tree and signature rows must have been extended only by earlier imports.
+    pub fn decode_appended_flib_into(
+        &mut self,
+        d: &mut Decoder<'_>,
+        items: &ItemTree,
+    ) -> Result<(), Error> {
+        self.decode_flib_rows(d)?;
+        self.impl_index.append(items, &self.impls);
+        self.traits_in_scope.append(items);
+        self.builtins = Builtins::of(items);
+        Ok(())
+    }
+
+    fn decode_flib_rows(&mut self, d: &mut Decoder<'_>) -> Result<(), Error> {
         decode_map(&mut self.fns, d)?;
         decode_map(&mut self.variant_starts, d)?;
         decode_map(&mut self.discriminants, d)?;
@@ -1001,9 +1023,6 @@ impl Signatures {
             }
             self.unions.insert(id);
         }
-        self.impl_index = crate::impl_index::ImplIndex::new(items, self);
-        self.traits_in_scope = crate::in_scope::TraitsInScope::new(items);
-        self.builtins = Builtins::of(items);
         Ok(())
     }
 }

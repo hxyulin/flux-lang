@@ -148,6 +148,8 @@ pub struct ItemTree {
     pub(crate) artifact_builtins: bool,
     pub crates: Vec<CrateData>,
     pub modules: LayeredArena<Module>,
+    /// Child names available before the current crate's scopes are resolved.
+    pub(crate) module_children: rustc_hash::FxHashSet<(ModuleId, Symbol)>,
     /// Source declarations, including modules introduced by macros.
     pub(crate) module_declarations: rustc_hash::FxHashMap<ModuleId, (FileId, NodeId)>,
     /// Free functions, functions in `extern` blocks, and the associated
@@ -1602,6 +1604,13 @@ impl std::fmt::Display for TypeRef {
 }
 
 impl ItemTree {
+    pub(crate) fn alloc_module(&mut self, module: Module) -> ModuleId {
+        if let Some(parent) = module.parent {
+            self.module_children.insert((parent, module.name));
+        }
+        self.modules.alloc(module)
+    }
+
     /// Entry selected by ordinary or compiler-generated test compilation.
     pub fn entry_function_name(&self, krate: CrateId) -> &'static str {
         if self.crates[krate.0 as usize]

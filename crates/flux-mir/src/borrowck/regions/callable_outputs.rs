@@ -161,7 +161,10 @@ impl Cx<'_> {
         let goal = self.impl_region_goal_with_proof(
             *predicate, own, rows, lifetimes, args, arg_vars, None, true,
         )?;
-        let (&self_ty, trait_args) = alias.args.split_first()?;
+        // The goal's arguments were normalized while building their rows.
+        // Compare the alias in that same form, including nested RPITITs.
+        let normalized = alias.map_args(|ty| self.normalize(ty));
+        let (&self_ty, trait_args) = normalized.args.split_first()?;
         let owns = |owner: &ImplRegionGoal| {
             owner.predicate.trait_ref.trait_ == alias.trait_
                 && owner.predicate.self_ty == self_ty

@@ -1146,7 +1146,8 @@ use proc_macro::TokenStream;
             TokenStream::new(),
             TokenStream::new(),
             &invocation,
-            std::time::Duration::from_millis(250),
+            // The shell needs time to start and write the PID we check below.
+            std::time::Duration::from_secs(2),
         )
         .unwrap_err();
         assert!(error.contains("timed out"), "{error}");

@@ -40,7 +40,7 @@ impl Cx<'_> {
         let ty = goal.predicate.self_ty;
         if depth == 0
             && env.is_empty()
-            && self.env.is_empty()
+            && self.normalization.projections().is_empty()
             && flux_solve::traits::is_auto_trait(self.items, goal.predicate.trait_ref.trait_)
             && !ty.has_error()
             && !ty.has_infer()
@@ -154,7 +154,7 @@ impl Cx<'_> {
                             self.items,
                             self.sigs,
                             &predicates,
-                            &self.env,
+                            self.normalization.projections(),
                             &self.unsized_params,
                         )
                         .holds(*requirement, &mut Vec::new())

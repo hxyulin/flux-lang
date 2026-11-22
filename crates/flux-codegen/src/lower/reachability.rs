@@ -14,6 +14,22 @@ pub(super) struct Roots {
 }
 
 pub(super) fn library(hir: &Hir, sigs: &Signatures, mir: &FileMir, krate: CrateId) -> Roots {
+    let items = &hir.items;
+    let is_local = |module: ModuleId| items.modules[module].krate == krate;
+    // A re-export-only library has no native roots of its own. Walking
+    // foreign templates cannot add a function or static to its object.
+    if !items.functions.iter().any(|(_, f)| is_local(f.loc.module))
+        && !items
+            .consts
+            .iter()
+            .any(|(_, c)| c.is_static.is_some() && is_local(c.loc.module))
+    {
+        return Roots {
+            functions: Vec::new(),
+            statics: Vec::new(),
+        };
+    }
+    let has_local_impls = items.impls.iter().any(|(_, imp)| is_local(imp.module));
     let mut reach = Reach::new(hir, sigs, mir, krate);
     for (id, function) in hir.items.functions.iter() {
         if !function.is_extern
@@ -39,11 +55,24 @@ pub(super) fn library(hir: &Hir, sigs: &Signatures, mir: &FileMir, krate: CrateI
             if binding.vis != Visibility::Public {
                 continue;
             }
-            if let Def::Module(module) = binding.def {
-                if hir.items.modules[module].krate == krate {
-                    modules.push(module);
+            let owner = match binding.def {
+                Def::Module(module) => {
+                    if is_local(module) {
+                        modules.push(module);
+                    }
+                    continue;
                 }
-            } else {
+                Def::Function(f) => items.functions[f].loc.module,
+                Def::Const(c) | Def::Static(c) => items.consts[c].loc.module,
+                Def::Struct(s) | Def::Variant(s, _) => items.structs[s].loc.module,
+                Def::Trait(t) => items.traits[t].loc.module,
+                Def::TypeAlias(a) => items.type_aliases[a].loc.module,
+                Def::Macro(_) | Def::Primitive(_) => continue,
+            };
+            // A foreign binding can discover native definitions in this
+            // crate only through impl selection. Leave actual references
+            // from local signatures and bodies to the ordinary traversal.
+            if is_local(owner) || has_local_impls {
                 reach.definition(binding.def);
             }
         }
@@ -78,6 +107,36 @@ pub(super) fn executable(
 
 type Context = (ClosureOwner, flux_ty::GenericArgs);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum CallbackAnchor {
+    Closure(flux_ty::ClosureId),
+    Function(FunctionId),
+}
+
+fn callback_anchors(args: flux_ty::GenericArgs) -> Vec<CallbackAnchor> {
+    let mut pending = args.to_vec();
+    let mut visited = FxHashSet::default();
+    let mut anchors = Vec::new();
+    let mut seen = FxHashSet::default();
+    while let Some(ty) = pending.pop() {
+        if !visited.insert(ty) {
+            continue;
+        }
+        let anchor = match ty.kind() {
+            TyKind::Closure(id, _) => Some(CallbackAnchor::Closure(id)),
+            TyKind::FnDef(def) => Some(CallbackAnchor::Function(def.function)),
+            _ => None,
+        };
+        if let Some(anchor) = anchor
+            && seen.insert(anchor)
+        {
+            anchors.push(anchor);
+        }
+        pending.extend(ty.children());
+    }
+    anchors
+}
+
 struct Template {
     context: Context,
     runtime: bool,
@@ -103,9 +162,10 @@ struct Reach<'a> {
     opaque: FxHashSet<StructId>,
     opaque_traits: FxHashMap<TraitId, Vec<Ty>>,
     callback_bounds: FxHashMap<TraitId, Vec<flux_ty::Predicate>>,
-    callback_contexts: FxHashMap<TraitId, Vec<flux_ty::GenericArgs>>,
-    growing_unknowns: FxHashMap<Ty, Ty>,
-    growing_embeddings: FxHashMap<(Ty, Ty), bool>,
+    callback_subjects: FxHashMap<Ty, Option<usize>>,
+    seen_callback_contexts: FxHashSet<(TraitId, flux_ty::GenericArgs)>,
+    callback_contexts: FxHashMap<(TraitId, Option<CallbackAnchor>), Vec<flux_ty::GenericArgs>>,
+    growth: GrowthCache,
     dropped: FxHashSet<StructId>,
     traits: FxHashSet<TraitId>,
     impls: FxHashSet<flux_hir::ImplId>,
@@ -147,9 +207,10 @@ impl<'a> Reach<'a> {
             opaque: FxHashSet::default(),
             opaque_traits: FxHashMap::default(),
             callback_bounds: FxHashMap::default(),
+            callback_subjects: FxHashMap::default(),
+            seen_callback_contexts: FxHashSet::default(),
             callback_contexts: FxHashMap::default(),
-            growing_unknowns: FxHashMap::default(),
-            growing_embeddings: FxHashMap::default(),
+            growth: GrowthCache::default(),
             dropped: FxHashSet::default(),
             traits: FxHashSet::default(),
             impls: FxHashSet::default(),
@@ -515,15 +576,11 @@ impl<'a> Reach<'a> {
         };
         // Recursive generic templates are legal before instantiation. Stop a
         // growing symbolic cycle; concrete mono still diagnoses invalid uses.
-        if self.current.iter().any(|&(old, previous)| {
-            old == owner
-                && growing_args_cached(
-                    previous,
-                    args,
-                    &mut self.growing_unknowns,
-                    &mut self.growing_embeddings,
-                )
-        }) {
+        if self
+            .current
+            .iter()
+            .any(|&(old, previous)| old == owner && self.growth.grows(previous, args))
+        {
             return;
         }
         // Equivalent parameter renamings describe the same symbolic body.
@@ -663,22 +720,36 @@ impl<'a> Reach<'a> {
             let mut wanted = vec![bound.self_ty];
             wanted.extend_from_slice(bound.trait_ref.args);
             let wanted = Ty::list(&wanted);
-            let contexts = self
-                .callback_contexts
-                .entry(bound.trait_ref.trait_)
-                .or_default();
-            if contexts.iter().any(|&old| {
-                old == wanted
-                    || growing_args_cached(
-                        old,
-                        wanted,
-                        &mut self.growing_unknowns,
-                        &mut self.growing_embeddings,
-                    )
-            }) {
+            // A previous growth rejection also stays valid because contexts
+            // only accumulate. Check both kinds of repeat before scanning.
+            if !self
+                .seen_callback_contexts
+                .insert((bound.trait_ref.trait_, wanted))
+            {
                 continue;
             }
-            contexts.push(wanted);
+            // Embedding can skip nodes of the later type, but it cannot
+            // replace a function or closure identity in the earlier type.
+            // Only visit buckets whose anchor actually appears in this goal.
+            let anchors = callback_anchors(wanted);
+            let trait_ = bound.trait_ref.trait_;
+            if std::iter::once(None)
+                .chain(anchors.iter().copied().map(Some))
+                .filter_map(|anchor| self.callback_contexts.get(&(trait_, anchor)))
+                .flatten()
+                .any(|&old| self.growth.grows(old, wanted))
+            {
+                continue;
+            }
+            let anchor = anchors.into_iter().min_by_key(|&anchor| {
+                self.callback_contexts
+                    .get(&(trait_, Some(anchor)))
+                    .map_or(0, Vec::len)
+            });
+            self.callback_contexts
+                .entry((trait_, anchor))
+                .or_default()
+                .push(wanted);
             self.expose_trait(bound.trait_ref.trait_);
             self.callback_bounds
                 .entry(bound.trait_ref.trait_)
@@ -881,10 +952,25 @@ impl<'a> Reach<'a> {
                 .is_some_and(|types| types.iter().any(|&hidden| flux_ty_ir::overlap(hidden, ty)))
     }
 
-    fn callback_subject(&self, ty: Ty) -> bool {
-        !self.available(ty)
-            || matches!(ty.kind(), TyKind::Alias(_) | TyKind::Opaque(_))
-            || ty.children().any(|child| self.callback_subject(child))
+    fn callback_subject(&mut self, ty: Ty) -> bool {
+        let exposed = self.exposed.len();
+        if let Some(&seen) = self.callback_subjects.get(&ty)
+            && (seen.is_none() || seen == Some(exposed))
+        {
+            return seen.is_some();
+        }
+        // Check availability at each nominal node. Walking the children
+        // also covers the wrappers that `available` recursively checks.
+        let subject = match ty.kind() {
+            TyKind::Alias(_) | TyKind::Opaque(_) => true,
+            TyKind::Adt(..) if !self.available(ty) => true,
+            _ => ty.children().any(|child| self.callback_subject(child)),
+        };
+        // Exposing a local type can invalidate a positive answer. A type
+        // with no such descendants remains available for the whole walk.
+        self.callback_subjects
+            .insert(ty, subject.then_some(exposed));
+        subject
     }
 
     fn available(&self, ty: Ty) -> bool {
@@ -1375,47 +1461,53 @@ fn drop_parameters(
 
 #[cfg(test)]
 fn growing_args(previous: flux_ty::GenericArgs, next: flux_ty::GenericArgs) -> bool {
-    growing_args_cached(
-        previous,
-        next,
-        &mut FxHashMap::default(),
-        &mut FxHashMap::default(),
-    )
+    GrowthCache::default().grows(previous, next)
 }
 
-fn growing_args_cached(
-    previous: flux_ty::GenericArgs,
-    next: flux_ty::GenericArgs,
-    memo: &mut FxHashMap<Ty, Ty>,
-    embeddings: &mut FxHashMap<(Ty, Ty), bool>,
-) -> bool {
-    fn unknowns(ty: Ty, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
-        if let Some(&known) = memo.get(&ty) {
-            return known;
+#[derive(Default)]
+struct GrowthCache {
+    unknowns: FxHashMap<Ty, Ty>,
+    arguments: FxHashMap<flux_ty::GenericArgs, flux_ty::GenericArgs>,
+    embeddings: FxHashMap<(Ty, Ty), bool>,
+}
+
+impl GrowthCache {
+    fn canonical(&mut self, args: flux_ty::GenericArgs) -> flux_ty::GenericArgs {
+        fn unknowns(ty: Ty, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
+            if let Some(&known) = memo.get(&ty) {
+                return known;
+            }
+            let result = if matches!(ty.kind(), TyKind::Param(_)) {
+                Ty::param(u32::MAX, flux_intern::Symbol::intern("_flib"))
+            } else {
+                ty.map_children(|child| unknowns(child, memo))
+            };
+            memo.insert(ty, result);
+            result
         }
-        let result = if matches!(ty.kind(), TyKind::Param(_)) {
-            Ty::param(u32::MAX, flux_intern::Symbol::intern("_flib"))
-        } else {
-            ty.map_children(|child| unknowns(child, memo))
-        };
-        memo.insert(ty, result);
-        result
+        self.arguments.entry(args).or_insert_with(|| {
+            Ty::list(
+                &args
+                    .iter()
+                    .map(|&ty| unknowns(ty, &mut self.unknowns))
+                    .collect::<Vec<_>>(),
+            )
+        })
     }
-    if previous.len() != next.len() {
-        return false;
+
+    fn grows(&mut self, previous: flux_ty::GenericArgs, next: flux_ty::GenericArgs) -> bool {
+        if previous.len() != next.len() {
+            return false;
+        }
+        let previous = self.canonical(previous);
+        let next = self.canonical(next);
+        // Changing equality relationships between parameters is not growth.
+        previous != next
+            && previous
+                .iter()
+                .zip(next)
+                .all(|(&left, &right)| embeds_cached(left, right, &mut self.embeddings))
     }
-    // Callback contexts repeatedly compare the same nested adapter types.
-    // Canonicalization and embedding depend only on interned types. Reuse both
-    // caches within this Reach, including comparisons between different calls.
-    let previous: Vec<_> = previous.iter().map(|&ty| unknowns(ty, memo)).collect();
-    let next: Vec<_> = next.iter().map(|&ty| unknowns(ty, memo)).collect();
-    // Changing equality relationships between parameters is not growth. Such
-    // contexts retain distinct canonical keys and must each be inspected.
-    previous != next
-        && previous
-            .into_iter()
-            .zip(next)
-            .all(|(left, right)| embeds_cached(left, right, embeddings))
 }
 
 // Homeomorphic embedding detects growing template cycles without imposing a
@@ -1432,8 +1524,6 @@ fn embeds_cached(previous: Ty, next: Ty, cache: &mut FxHashMap<(Ty, Ty), bool>) 
         if let Some(&known) = cache.get(&(previous, next)) {
             return known;
         }
-        let left: Vec<_> = previous.children().collect();
-        let right: Vec<_> = next.children().collect();
         let same_head = match (previous.kind(), next.kind()) {
             (TyKind::Tuple(a), TyKind::Tuple(b)) => a.len() == b.len(),
             (TyKind::Adt(a, _), TyKind::Adt(b, _)) => a.strukt == b.strukt,
@@ -1465,10 +1555,13 @@ fn embeds_cached(previous: Ty, next: Ty, cache: &mut FxHashMap<(Ty, Ty), bool>) 
             }
             _ => false,
         };
-        let result = right.iter().any(|&child| visit(previous, child, cache))
-            || same_head
-                && left.len() == right.len()
-                && left.iter().zip(&right).all(|(&a, &b)| visit(a, b, cache));
+        let right = next.children();
+        let result = right.clone().any(|child| visit(previous, child, cache))
+            || same_head && {
+                let left = previous.children();
+                left.clone().count() == right.clone().count()
+                    && left.zip(right).all(|(a, b)| visit(a, b, cache))
+            };
         cache.insert((previous, next), result);
         result
     }
@@ -1478,6 +1571,49 @@ fn embeds_cached(previous: Ty, next: Ty, cache: &mut FxHashMap<(Ty, Ty), bool>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callback_subject_rechecks_types_after_exposure() {
+        let (_, _, hir) = flux_hir::lower_text("callback.rs", "struct Hidden;");
+        let (id, strukt) = hir
+            .items
+            .structs
+            .iter()
+            .find(|(_, strukt)| strukt.name.as_str() == "Hidden")
+            .unwrap();
+        let sigs = Signatures::default();
+        let mir = FileMir::default();
+        let mut reach = Reach::new(&hir, &sigs, &mir, hir.items.main_crate());
+        let mut ty = Ty::adt(id, strukt.name, &[]);
+        for _ in 0..24 {
+            ty = Ty::tuple(&[ty, ty]);
+        }
+        assert!(reach.callback_subject(ty));
+        reach.exposed.insert(id);
+        assert!(!reach.callback_subject(ty));
+        assert!(!reach.callback_subject(ty));
+    }
+
+    #[test]
+    fn callback_growth_keeps_anchors_through_nested_types() {
+        let function = |id| {
+            Ty::new(TyKind::FnDef(flux_ty::FnDefTy {
+                function: FunctionId::from_raw(id),
+                name: flux_intern::Symbol::intern("callback"),
+                args: &[],
+                owner_lifetimes: 0,
+                sig: flux_ty::FnSigTy::new(&[], Ty::UNIT, false),
+            }))
+        };
+        let prior = Ty::list(&[function(1)]);
+        let nested = Ty::list(&[Ty::tuple(&[function(1), function(1)])]);
+        let unrelated = Ty::list(&[Ty::tuple(&[function(2)])]);
+        assert!(growing_args(prior, nested));
+        assert!(!growing_args(prior, unrelated));
+        assert!(callback_anchors(prior) == callback_anchors(nested));
+        assert!(callback_anchors(prior) != callback_anchors(unrelated));
+    }
+
     #[test]
     fn shared_template_subtrees_are_compared_as_a_dag() {
         let parameter = Ty::param(0, flux_intern::Symbol::intern("T"));

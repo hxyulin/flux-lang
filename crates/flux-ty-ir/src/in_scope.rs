@@ -19,6 +19,13 @@ pub struct TraitsInScope {
 impl TraitsInScope {
     /// The traits in scope in each module of `items`.
     pub fn new(items: &ItemTree) -> TraitsInScope {
+        let mut scopes = Self::default();
+        scopes.append(items);
+        scopes
+    }
+
+    /// Updates the table when an import appends modules to the item tree.
+    pub(crate) fn append(&mut self, items: &ItemTree) {
         let def_map = &items.def_map;
         let named = |module: ModuleId| {
             def_map.scopes[module.index()]
@@ -30,14 +37,15 @@ impl TraitsInScope {
                     _ => None,
                 })
         };
-        let start = |traits: &Vec<TraitId>| {
+        let start = |traits: &[TraitId]| {
             u32::try_from(traits.len()).expect("fewer than 2^32 traits in scope")
         };
-        let mut traits = Vec::new();
-        let mut starts = Vec::with_capacity(def_map.scopes.len() + 1);
+        self.starts.pop();
+        self.starts
+            .reserve(def_map.scopes.len() + 1 - self.starts.len());
         let mut module_traits = Vec::new();
-        for index in 0..def_map.scopes.len() {
-            starts.push(start(&traits));
+        for index in self.starts.len()..def_map.scopes.len() {
+            self.starts.push(start(&self.traits));
             // A block's scope, those of the blocks around it, its module's.
             let mut module = Some(ModuleId::from_raw(index as u32));
             while let Some(m) = module {
@@ -52,10 +60,9 @@ impl TraitsInScope {
             }
             module_traits.sort_unstable_by_key(|t| t.index());
             module_traits.dedup();
-            traits.append(&mut module_traits);
+            self.traits.append(&mut module_traits);
         }
-        starts.push(start(&traits));
-        TraitsInScope { traits, starts }
+        self.starts.push(start(&self.traits));
     }
 
     /// The traits in scope in `module`, by index.

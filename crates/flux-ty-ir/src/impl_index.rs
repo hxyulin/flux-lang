@@ -64,7 +64,7 @@ pub struct ImplIndex {
     blanket: FxHashMap<TraitId, Vec<u32>>,
     /// Each trait's [`ItemTree::trait_impls`] entry, for callers without
     /// the items.
-    impls: FxHashMap<TraitId, Box<[ImplId]>>,
+    impls: FxHashMap<TraitId, Vec<ImplId>>,
 }
 
 impl ImplIndex {
@@ -72,17 +72,28 @@ impl ImplIndex {
     /// `sigs` has for them.
     pub fn new(items: &ItemTree, sigs: &Signatures) -> ImplIndex {
         let mut index = ImplIndex::default();
-        for (&t, impls) in &items.trait_impls {
-            for (position, &imp) in impls.iter().enumerate() {
-                let list = match sigs.impls.get(imp).copied().and_then(head) {
-                    Some(head) => index.by_head.entry((t, head)).or_default(),
-                    None => index.blanket.entry(t).or_default(),
-                };
-                list.push(position as u32);
-            }
-            index.impls.insert(t, impls.as_slice().into());
-        }
+        index.append(items, &sigs.impls);
         index
+    }
+
+    /// Updates the index after imports append new impls and their signatures.
+    pub(crate) fn append(
+        &mut self,
+        items: &ItemTree,
+        self_types: &flux_arena::LayeredArenaMap<flux_hir::Impl, Ty>,
+    ) {
+        for (&t, impls) in &items.trait_impls {
+            let indexed = self.impls.entry(t).or_default();
+            let start = indexed.len();
+            for (offset, &imp) in impls[start..].iter().enumerate() {
+                let list = match self_types.get(imp).copied().and_then(head) {
+                    Some(head) => self.by_head.entry((t, head)).or_default(),
+                    None => self.blanket.entry(t).or_default(),
+                };
+                list.push((start + offset) as u32);
+            }
+            indexed.extend_from_slice(&impls[start..]);
+        }
     }
 
     /// The `impl` blocks of `t` whose type may match `ty` with
@@ -98,7 +109,7 @@ impl ImplIndex {
 
     /// [`ImplIndex::matching`], from the items this was made from.
     pub fn matching_of(&self, t: TraitId, ty: Ty) -> ImplsFor<'_> {
-        let impls = self.impls.get(&t).map_or(&[][..], |v| v);
+        let impls = self.impls.get(&t).map_or(&[][..], Vec::as_slice);
         self.matching_in(impls, t, ty)
     }
 

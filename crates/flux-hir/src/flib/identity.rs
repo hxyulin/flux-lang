@@ -4,7 +4,7 @@ use super::{Error, IdKind, IdMap};
 use crate::{CrateId, ItemTree};
 
 /// Process indices of one crate in deterministic per-arena order.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CrateIndices {
     pub modules: Vec<u32>,
     pub functions: Vec<u32>,
@@ -154,11 +154,31 @@ impl CrateIndices {
     }
     /// Adds process-to-wire mappings. Slot zero is the artifact's own crate.
     pub fn add_mapping(&self, map: &mut IdMap, krate: CrateId, slot: u32) -> Result<(), Error> {
+        self.add_mappings(map, krate, slot, self.tables())
+    }
+
+    /// Maps only the crate and file references that token origins can encode.
+    pub fn add_origin_mapping(
+        &self,
+        map: &mut IdMap,
+        krate: CrateId,
+        slot: u32,
+    ) -> Result<(), Error> {
+        self.add_mappings(map, krate, slot, [(IdKind::File, self.files.as_slice())])
+    }
+
+    fn add_mappings<'a>(
+        &self,
+        map: &mut IdMap,
+        krate: CrateId,
+        slot: u32,
+        tables: impl IntoIterator<Item = (IdKind, &'a [u32])>,
+    ) -> Result<(), Error> {
         if slot > 255 {
             return Err(Error("too many artifact dependencies"));
         }
         map.insert(IdKind::Crate, krate.0, slot);
-        for (kind, indices) in self.tables() {
+        for (kind, indices) in tables {
             if indices.len() > 0x0100_0000 {
                 return Err(Error("too many artifact items"));
             }
@@ -181,9 +201,39 @@ impl CrateIndices {
         krate: CrateId,
         slot: u32,
     ) -> Result<(), Error> {
-        let mut encoder = IdMap::strict();
-        self.add_mapping(&mut encoder, krate, slot)?;
-        map.extend(&encoder.inverse()?);
+        if slot > 255 {
+            return Err(Error("too many artifact dependencies"));
+        }
+        let tables = self.tables();
+        if tables
+            .iter()
+            .any(|(_, indices)| indices.len() > 0x0100_0000)
+        {
+            return Err(Error("too many artifact items"));
+        }
+        // Collected and decoded ownership rows are in increasing process
+        // order. Preserve inversion semantics for hand-built rows as well.
+        if tables
+            .iter()
+            .any(|(_, indices)| indices.windows(2).any(|pair| pair[0] >= pair[1]))
+        {
+            let mut encoder = IdMap::strict();
+            self.add_mapping(&mut encoder, krate, slot)?;
+            map.extend(&encoder.inverse()?);
+            return Ok(());
+        }
+        map.insert(IdKind::Crate, slot, krate.0);
+        for (kind, indices) in tables {
+            for (local, &source) in indices.iter().enumerate() {
+                map.insert(kind, (slot << 24) | local as u32, source);
+                if slot == 0 {
+                    map.mark_owned(kind, source);
+                }
+            }
+        }
+        for &(file, start, end) in &self.source_ranges {
+            map.add_source_range(file, start, end);
+        }
         Ok(())
     }
 }

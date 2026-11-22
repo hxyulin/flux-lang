@@ -1115,9 +1115,18 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
         .filter(|&i| items.uses[i].kind != UseKind::Glob)
         .map(|i| (i, 0b111))
         .collect();
-    let globs: Vec<usize> = (from..items.uses.len())
+    let mut globs: Vec<_> = (from..items.uses.len())
         .filter(|&i| items.uses[i].kind == UseKind::Glob)
+        .map(|i| (i, None))
         .collect();
+    // An import can expose more names in a source or destination scope.
+    // Within this resolution, every scope mutation goes through a named
+    // import or a glob, so stable revisions let a glob skip its binding scan.
+    let mut revisions = if globs.is_empty() {
+        Vec::new()
+    } else {
+        vec![0usize; items.modules.len()]
+    };
     let mut private_imports = FxHashMap::default();
     let mut reexports = vec![(false, None); items.uses.len() - from];
     loop {
@@ -1129,7 +1138,7 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 u.kind,
                 UseKind::Module(_) | UseKind::Anonymous { module_only: true }
             );
-            let mut found = Vec::new();
+            let mut found = [None; 3];
             for (bit, ns) in [Ns::Types, Ns::Values, Ns::Macros].into_iter().enumerate() {
                 if remaining & (1 << bit) == 0 {
                     continue;
@@ -1172,16 +1181,19 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
                 };
                 let anonymous_self = matches!(u.kind, UseKind::Anonymous { module_only: true });
                 if !module_only || module_like || (anonymous_self && ns == Ns::Types) {
-                    found.push((ns, def, visibility.unwrap_or_else(|| items.def_vis(def))));
+                    found[bit] = Some((ns, def, visibility.unwrap_or_else(|| items.def_vis(def))));
                     remaining &= !(1 << bit);
                 }
             }
-            if found.is_empty() {
+            if found.iter().all(Option::is_none) {
                 still.push((i, remaining));
                 continue;
             }
             progress = true;
-            for (ns, def, visibility) in found {
+            if let Some(revision) = revisions.get_mut(u.module.index()) {
+                *revision += 1;
+            }
+            for (ns, def, visibility) in found.into_iter().flatten() {
                 let requested = items.uses[i].vis;
                 let vis = restrict_reexport(items, requested, visibility);
                 let (has_visible_namespace, restricted) = &mut reexports[i - from];
@@ -1199,8 +1211,29 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
             }
         }
         pending = still;
-        for &g in &globs {
-            progress |= apply_glob(items, g);
+        for (index, previous) in &mut globs {
+            let u = &items.uses[*index];
+            let module = u.module.index();
+            let source = match items.resolve(u.module, &u.path, Ns::Types) {
+                Ok(Resolved::Def(Def::Module(source))) => GlobSource::Module(source),
+                Ok(Resolved::Def(Def::Struct(e))) if items.structs[e].is_enum() => {
+                    GlobSource::Enum(e)
+                }
+                _ => continue,
+            };
+            let source_revision = match source {
+                GlobSource::Module(source) => revisions[source.index()],
+                GlobSource::Enum(_) => 0,
+            };
+            let state = (source, source_revision, revisions[module]);
+            if *previous == Some(state) {
+                continue;
+            }
+            *previous = Some(state);
+            if apply_glob(items, *index, source) {
+                revisions[module] += 1;
+                progress = true;
+            }
         }
         if !progress {
             break;
@@ -1246,7 +1279,7 @@ fn resolve_imports(items: &mut ItemTree, from: usize) {
             items.def_map.failed_imports.insert((u.module, name));
         }
     }
-    for &g in &globs {
+    for (g, _) in globs {
         let u = &items.uses[g];
         match items.resolve(u.module, &u.path, Ns::Types) {
             Ok(Resolved::Def(Def::Module(_))) => {}
@@ -1517,17 +1550,18 @@ fn item_info(items: &ItemTree, item: AssocItem) -> ItemInfo {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GlobSource {
+    Module(ModuleId),
+    Enum(StructId),
+}
+
 /// Copies the names a glob import brings in; whether any were new.
-fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
+fn apply_glob(items: &mut ItemTree, index: usize, source: GlobSource) -> bool {
     let u = &items.uses[index];
     let (module, vis, u_file, u_range) = (u.module, u.vis, u.file, u.range);
-    let source = match items.resolve(module, &u.path, Ns::Types) {
-        Ok(Resolved::Def(Def::Module(source))) => Ok(source),
-        Ok(Resolved::Def(Def::Struct(e))) if items.structs[e].is_enum() => Err(e),
-        _ => return false,
-    };
     let mut changed = false;
-    if let Ok(source) = source {
+    if let GlobSource::Module(source) = source {
         let anonymous: Vec<_> = items.def_map.scopes[source.index()]
             .anonymous_traits
             .iter()
@@ -1558,7 +1592,7 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
     }
     for ns in [Ns::Types, Ns::Values, Ns::Macros] {
         let names: Vec<(Symbol, Binding)> = match source {
-            Ok(source) => items.def_map.scopes[source.index()]
+            GlobSource::Module(source) => items.def_map.scopes[source.index()]
                 .ns(ns)
                 .iter()
                 .filter(|(_, b)| {
@@ -1568,7 +1602,7 @@ fn apply_glob(items: &mut ItemTree, index: usize) -> bool {
                 })
                 .map(|(n, b)| (*n, *b))
                 .collect(),
-            Err(e) => enum_variants(items, e, ns),
+            GlobSource::Enum(e) => enum_variants(items, e, ns),
         };
         for (name, binding) in names {
             let vis = restrict_reexport(items, vis, binding.vis);

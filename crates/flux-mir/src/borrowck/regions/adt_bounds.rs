@@ -524,11 +524,11 @@ pub(crate) fn check_adt_declarations(
             Region::Param(i) => lifetimes.get(i as usize).copied(),
             _ => None,
         };
-        cx.env = sigs
+        *cx.normalization.projections_mut() = sigs
             .struct_projections
             .get(id)
             .map_or(Vec::new(), |p| p.to_vec());
-        cx.header_predicates = sigs
+        *cx.normalization.memberships_mut() = sigs
             .struct_predicates
             .get(id)
             .map_or(Vec::new(), |p| flux_solve::traits::elaborate(sigs, p));
@@ -595,7 +595,13 @@ pub(crate) fn check_adt_declarations(
                 break;
             }
         }
-        for (projection, table) in cx.env.clone().iter().zip(metadata.projections.iter()) {
+        for (projection, table) in cx
+            .normalization
+            .projections()
+            .to_vec()
+            .iter()
+            .zip(metadata.projections.iter())
+        {
             if let Some(row) = cx.instantiate_sig(projection.ty, table, &mut { map }, &[], &[]) {
                 cx.env_regions.push((projection.alias, row));
             } else {
@@ -604,7 +610,13 @@ pub(crate) fn check_adt_declarations(
         }
         cx.close_known();
         complete &= cx.adt_environment_uses(&env);
-        for (projection, row) in cx.env.clone().iter().zip(cx.env_regions.clone().iter()) {
+        for (projection, row) in cx
+            .normalization
+            .projections()
+            .to_vec()
+            .iter()
+            .zip(cx.env_regions.clone().iter())
+        {
             complete &= cx.adt_declaration_uses(projection.ty, &row.1, &env) == Some(true);
         }
         for (&ty, table) in sigs.structs[id].iter().zip(metadata.fields.iter()) {
@@ -679,7 +691,13 @@ pub(crate) fn check_adt_declarations(
         if !cx.adt_environment_uses(&env) {
             result = Some(false);
         }
-        for (projection, row) in cx.env.clone().iter().zip(cx.env_regions.clone().iter()) {
+        for (projection, row) in cx
+            .normalization
+            .projections()
+            .to_vec()
+            .iter()
+            .zip(cx.env_regions.clone().iter())
+        {
             if cx.adt_declaration_uses(projection.ty, &row.1, &env) != Some(true) {
                 result = Some(false);
             }
@@ -790,7 +808,8 @@ pub(crate) fn check_adt_declarations(
                             .zip(traits)
                             .map(|((predicate, row), traits)| (predicate, row, traits)),
                     );
-                    cx.header_predicates
+                    cx.normalization
+                        .memberships_mut()
                         .extend(flux_solve::traits::elaborate(sigs, declared));
                 } else {
                     complete = false;
@@ -802,7 +821,8 @@ pub(crate) fn check_adt_declarations(
                 lifetimes: (0..metadata.owner).map(Region::Param).collect(),
                 args: vec![Box::default(); predicate.trait_ref.args.len()].into(),
             };
-            cx.header_predicates
+            cx.normalization
+                .memberships_mut()
                 .extend(flux_solve::traits::elaborate(sigs, &[predicate]));
             match cx.impl_region_goal(predicate, &[], &trait_regions, &lifetimes, &[], &[]) {
                 Some(goal) => complete &= cx.impl_super_goals(goal, &mut env, 0),
@@ -815,8 +835,10 @@ pub(crate) fn check_adt_declarations(
             _ => None,
         };
         let own_projections = sigs.fn_projections.get(function).map_or(&[][..], |p| p);
-        cx.env.extend(own_projections.iter().copied());
-        cx.header_predicates.extend(
+        cx.normalization
+            .projections_mut()
+            .extend(own_projections.iter().copied());
+        cx.normalization.memberships_mut().extend(
             sigs.fn_predicates
                 .get(function)
                 .map_or(Vec::new(), |p| flux_solve::traits::elaborate(sigs, p)),
@@ -896,7 +918,13 @@ pub(crate) fn check_adt_declarations(
         cx.family_goals = env.clone();
         cx.close_known();
         complete &= cx.adt_environment_uses(&env);
-        for (projection, row) in cx.env.clone().iter().zip(cx.env_regions.clone().iter()) {
+        for (projection, row) in cx
+            .normalization
+            .projections()
+            .to_vec()
+            .iter()
+            .zip(cx.env_regions.clone().iter())
+        {
             complete &= cx.adt_declaration_uses(projection.ty, &row.1, &env) == Some(true);
         }
         for (&ty, table) in signature

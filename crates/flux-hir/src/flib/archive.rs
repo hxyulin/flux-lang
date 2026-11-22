@@ -386,7 +386,9 @@ pub fn read_items(
             }
         };
     }
-    append!(modules, modules);
+    for module in modules {
+        items.alloc_module(module);
+    }
     append!(functions, functions);
     append!(structs, structs);
     append!(traits, traits);

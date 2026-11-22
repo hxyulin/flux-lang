@@ -2,7 +2,9 @@
 
 use crate::build::SourceInput;
 use crate::flib::semantic::Capability;
-use crate::flib::semantic::{CheckedCrate, crate_hash_with_indices, write_checked_with_indices};
+use crate::flib::semantic::{
+    self, CheckedCrate, DependencyState, crate_hash_with_indices, write_checked_with_indices,
+};
 use crate::{BuildOptions, CrateType, report_all};
 use flux_hir::flib::{Encode, Encoder};
 use std::path::Path;
@@ -40,9 +42,21 @@ pub(crate) fn compile(
         options,
         kind,
         metadata_only,
-        externs,
+        ExternalLibraries {
+            externs,
+            dependency_files: None,
+            cache: None,
+        },
         &Default::default(),
     )
+}
+
+/// Direct import aliases and, for a package build, its complete artifact paths.
+#[derive(Clone, Copy)]
+pub(crate) struct ExternalLibraries<'a> {
+    pub externs: &'a [(String, std::path::PathBuf)],
+    pub dependency_files: Option<&'a [&'a Path]>,
+    pub cache: Option<&'a semantic::FreshArtifacts>,
 }
 
 pub(crate) fn compile_native(
@@ -51,11 +65,11 @@ pub(crate) fn compile_native(
     options: BuildOptions,
     kind: CrateType,
     metadata_only: bool,
-    externs: &[(String, std::path::PathBuf)],
+    libraries: ExternalLibraries<'_>,
     native: &flux_codegen::NativeLink,
 ) -> Result<bool, String> {
     options.validate()?;
-    let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
+    let _strategy = crate::builtins::compilation_scope(options.panic_strategy)?;
     let units = crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?;
     let whole_program = kind == CrateType::Bin && *native != Default::default();
     let mut timings = crate::build::Timings::new(options.timings, "compile scoped elapsed");
@@ -64,14 +78,44 @@ pub(crate) fn compile_native(
     } else {
         Capability::Object
     };
+    let externs = libraries.externs;
     let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
-    let mut state = timings.time("dependency artifact load", || {
-        crate::flib::time(
-            "dependency state initialization",
-            crate::flib::semantic::DependencyState::new,
-        )?
-        .load(&paths)
-    })?;
+    use semantic::Recheck;
+    let (mut state, deferred, mut checked_dependencies, all_linkable, recheck) =
+        timings.time("dependency artifact load", || {
+            let state = crate::flib::time("dependency state initialization", DependencyState::new)?;
+            let dependencies =
+                state.resolve(&paths, libraries.dependency_files, libraries.cache)?;
+            let all_linkable = dependencies.all_linkable();
+            let mut checked_dependencies = Vec::new();
+            if kind == CrateType::Lib
+                && libraries.dependency_files.is_some()
+                && input.host_macros.is_none()
+                && let Ok(root) = std::fs::read(&input.file)
+            {
+                checked_dependencies = dependencies.checksums();
+                if !checked_dependencies.is_empty() {
+                    checked_dependencies.extend_from_slice(&crate::flib::digest(&root));
+                }
+            }
+            let recheck = if checked_dependencies.is_empty() {
+                Recheck::Full
+            } else {
+                semantic::reusable_library(output, &checked_dependencies, libraries.cache)
+                    .ok()
+                    .filter(|(manifest, _)| metadata_only || manifest.linkable)
+                    .map_or(Recheck::Full, |(_, recheck)| recheck)
+            };
+            let defer_ir = recheck != Recheck::Full;
+            let state = state.load_inputs(&dependencies, defer_ir)?;
+            Ok::<_, String>((
+                state,
+                defer_ir.then_some(dependencies),
+                checked_dependencies,
+                all_linkable,
+                recheck,
+            ))
+        })?;
     let mut aliases = Vec::new();
     let mut imports = Vec::new();
     for ((alias, _), &hash) in externs.iter().zip(&state.roots) {
@@ -107,39 +151,15 @@ pub(crate) fn compile_native(
         .filter(|d| d.krate.0 as usize >= builtin_count)
         .map(|d| (d.krate, d.hash))
         .collect();
-    if capability == Capability::Object
-        && !whole_program
-        && state.objects.len() != loaded_hashes.len()
-    {
+    if capability == Capability::Object && !whole_program && !all_linkable {
         return Err("a dependency Fluxlib has no native object".into());
     }
-    let loaded_metadata: Vec<_> = state
-        .dependencies
-        .iter()
-        .filter(|d| {
-            state.items.has_artifact_builtins()
-                || loaded_hashes.iter().any(|&(id, _)| d.krate == id)
-        })
-        .map(|d| flux_ty::flib::LoadedCrate {
-            krate: d.krate,
-            hash: d.hash,
-            indices: &d.indices,
-        })
-        .collect();
-    let loaded =
-        flux_ty::flib::LoadedTypes::from_metadata(&state.items, state.sigs, &loaded_metadata)
-            .map_err(|e| e.to_string())?;
-    let imported = if let Some(suite) = crate::builtins::active() {
-        flux_mir::imported::ImportedMir::with_builtin_prefix(
-            &state.items,
-            state.mir,
-            suite.mir.clone(),
-        )
+    let semantic_inputs = if deferred.is_some() {
+        None
     } else {
-        flux_mir::imported::ImportedMir::new(state.mir, state.items.counts())
-    }
-    .and_then(|provider| provider.with_required_instances(state.required_instances))
-    .map_err(|e| e.to_string())?;
+        Some(prepare_semantics(&mut state)?)
+    };
+    let dependency_counts = state.items.counts();
     let root = if let Some(exports) = &input.host_macros {
         state
             .db
@@ -157,8 +177,8 @@ pub(crate) fn compile_native(
     if let Some(environment) = &input.environment {
         state.db.set_crate_env(root, environment.clone())?;
     }
-    let hir = timings.time("hir (includes module load/parse)", || {
-        flux_hir::lower_source_on(
+    let collected = timings.time("hir (includes module load/parse)", || {
+        flux_hir::collect_source_on(
             &mut state.db,
             state.items,
             root,
@@ -166,16 +186,57 @@ pub(crate) fn compile_native(
             imports,
         )
     });
-    let own = hir.items.main_crate();
+    let own = collected.items.main_crate();
     let configuration = configuration(input, options, kind, capability, &aliases, native)?;
-    let own_indices = flux_hir::flib::CrateIndices::collect(&hir.items, own);
-    let hash = crate_hash_with_indices(
-        &hir.items,
-        own,
-        &own_indices,
-        &state.dependencies,
-        &configuration,
-    )?;
+    let own_indices = flux_hir::flib::CrateIndices::collect(&collected.items, own);
+    let reused_library = |hash, minimum| {
+        semantic::reusable_library(output, &checked_dependencies, libraries.cache).is_ok_and(
+            |(manifest, recheck)| {
+                let mut actual = manifest.dependencies;
+                let mut expected: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
+                actual.sort_unstable();
+                expected.sort_unstable();
+                manifest.hash == hash
+                    && manifest.name == input.name
+                    && (metadata_only || manifest.linkable)
+                    && actual == expected
+                    && recheck >= minimum
+            },
+        )
+    };
+    let observation_count = collected.items.crates[own.0 as usize].observation_count();
+    let pre_lower_hash = if recheck == Recheck::Collect && !collected.has_errors() {
+        let hash = crate_hash_with_indices(
+            &collected.items,
+            own,
+            &own_indices,
+            &state.dependencies,
+            &configuration,
+        )?;
+        if reused_library(hash, Recheck::Collect)
+            && state.db.syntax_errors().is_empty()
+            && crate::identifiers::diagnostics(&state.db).is_empty()
+        {
+            eprintln!("Reused {} after expansion", input.name);
+            return Ok(true);
+        }
+        Some(hash)
+    } else {
+        None
+    };
+    let hir = timings.time("hir body lowering", || collected.lower(&state.db));
+    let body_observed_inputs =
+        hir.items.crates[own.0 as usize].observation_count() != observation_count;
+    let hash = match pre_lower_hash {
+        Some(hash) if !body_observed_inputs => hash,
+        _ => crate_hash_with_indices(
+            &hir.items,
+            own,
+            &own_indices,
+            &state.dependencies,
+            &configuration,
+        )?,
+    };
     let mut effective_native = options.native_link(native);
     for library in &hir.items.native_libraries {
         effective_native.add_library(*library);
@@ -189,25 +250,30 @@ pub(crate) fn compile_native(
         let reusable = if kind == CrateType::Bin {
             crate::artifact_cache::is_semantically_fresh(output, hash, &effective_native)
         } else {
-            std::fs::read(output)
-                .ok()
-                .and_then(|bytes| crate::flib::semantic::manifest(&bytes).ok())
-                .is_some_and(|manifest| {
-                    let mut actual = manifest.dependencies;
-                    let mut expected: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
-                    actual.sort_unstable();
-                    expected.sort_unstable();
-                    manifest.hash == hash
-                        && manifest.name == input.name
-                        && (metadata_only || manifest.linkable)
-                        && actual == expected
-                })
+            reused_library(hash, recheck.min(Recheck::LowerBodies))
         };
         if reusable {
             eprintln!("Reused {} after expansion", input.name);
             return Ok(true);
         }
     }
+    let (loaded, imported) = if let Some(checked) = semantic_inputs {
+        checked
+    } else {
+        // Use the same immutable archives and loading order. Their HIR gets the
+        // same IDs on the fresh built-in prefix. Keep the source HIR and its
+        // already executed macro calls rather than collecting the source again.
+        let mut checked = timings.time("deferred dependency IR", || {
+            DependencyState::new()?.load_inputs(&deferred.expect("IR is loaded or deferred"), false)
+        })?;
+        if checked.items.counts() != dependency_counts || checked.dependencies != state.dependencies
+        {
+            return Err("dependency mappings changed while loading deferred IR".into());
+        }
+        let semantic_inputs = prepare_semantics(&mut checked)?;
+        state.objects = checked.objects;
+        semantic_inputs
+    };
     let hashes: Vec<_> = state
         .dependencies
         .iter()
@@ -215,7 +281,9 @@ pub(crate) fn compile_native(
         .chain(std::iter::once((own, hash)))
         .collect();
     loaded.signatures().type_ids.set_crate_hashes(&hashes);
-    let roots = imported.required_functions(&hir.items, loaded.signatures());
+    let roots = timings.time("imported call targets", || {
+        imported.required_functions(&hir.items, loaded.signatures())
+    });
     let typed = timings.time("types (includes const evaluation)", || {
         flux_mir::check_file_from(&hir, &loaded, &imported, &roots.functions)
     });
@@ -230,10 +298,12 @@ pub(crate) fn compile_native(
         errors.push(error);
     }
     if !errors.is_empty() {
-        errors.extend(flux_mir::check_clean_bodies_from(
-            &hir, &typed, &errors, &imported,
-        ));
-        report_all(&state.db, &mut errors);
+        let mut reported = errors.clone();
+        report_all(&state.db, &mut reported);
+        let mut more = timings.time("mir checks on clean bodies", || {
+            flux_mir::check_clean_bodies_from(&hir, &typed, &errors, &imported)
+        });
+        crate::driver::report_remaining(&state.db, &mut more, &reported);
         return Ok(false);
     }
     let mir = timings.time("mir build + checks", || {
@@ -262,12 +332,20 @@ pub(crate) fn compile_native(
     } else {
         let builtin_object =
             crate::builtins::active().is_some_and(|suite| suite.use_object(options.optimized()));
-        let codegen_roots: Vec<_> = roots
-            .functions
-            .iter()
-            .copied()
-            .filter(|function| !whole_program || function.into_raw() < hir.items.core.functions)
-            .collect();
+        // An intermediate library emits definitions reachable from its own
+        // interface. The final executable loads the complete artifact graph
+        // and supplies the outstanding requirements of every dependency.
+        let (codegen_roots, required_instances) = if kind == CrateType::Bin {
+            let functions: Vec<_> = roots
+                .functions
+                .iter()
+                .copied()
+                .filter(|function| !whole_program || function.into_raw() < hir.items.core.functions)
+                .collect();
+            (functions, roots.instances.as_slice())
+        } else {
+            (Vec::new(), &[][..])
+        };
         let lowered = timings
             .time("mono + keel lowering", || {
                 if whole_program && !builtin_object && units.get() == 1 {
@@ -296,7 +374,7 @@ pub(crate) fn compile_native(
                         crate_hashes: &hashes,
                         imported: &imported_crates,
                         required_functions: &codegen_roots,
-                        required_instances: &roots.instances,
+                        required_instances,
                         builtin_object,
                     },
                 )
@@ -406,13 +484,29 @@ pub(crate) fn compile_native(
         crate::artifact_cache::record(output, freshness.as_ref(), hash, stable_native)?;
     } else {
         let dependency_hashes: Vec<_> = state.dependencies.iter().map(|d| d.hash).collect();
-        let freshness = crate::flib::freshness::Snapshot::capture_with_indices(
+        use crate::flib::freshness::Snapshot;
+        let capture = if input.host_macros.is_some() {
+            Snapshot::capture_macro_wrapper
+        } else {
+            Snapshot::capture_with_indices
+        };
+        let freshness = capture(
             &hir.items,
             own,
             &own_indices,
             &configuration,
             &dependency_hashes,
         )?;
+        // Only archives whose source executed macros need an expansion
+        // recheck. Ordinary edits go directly to the full loader.
+        let checked_dependencies = if !checked_dependencies.is_empty()
+            && hir.items.crates[own.0 as usize].expanded_host_macros()
+        {
+            checked_dependencies.push(u8::from(!body_observed_inputs));
+            checked_dependencies.as_slice()
+        } else {
+            &[]
+        };
         let bytes = write_checked_with_indices(
             CheckedCrate {
                 items: &hir.items,
@@ -429,11 +523,51 @@ pub(crate) fn compile_native(
                 freshness: freshness.as_ref(),
             },
             &own_indices,
+            checked_dependencies,
         )?;
         crate::flib::write_atomic(output, &bytes)
             .map_err(|e| format!("cannot write {}: {e}", output.display()))?;
     }
     Ok(true)
+}
+
+fn prepare_semantics(
+    state: &mut DependencyState,
+) -> Result<(flux_ty::flib::LoadedTypes, flux_mir::imported::ImportedMir), String> {
+    let loaded_metadata: Vec<_> = state
+        .dependencies
+        .iter()
+        .filter(|d| {
+            state.items.has_artifact_builtins()
+                || state.items.crates[d.krate.0 as usize].root.into_raw()
+                    >= state.items.core.modules
+        })
+        .map(|d| flux_ty::flib::LoadedCrate {
+            krate: d.krate,
+            hash: d.hash,
+            indices: &d.indices,
+        })
+        .collect();
+    let loaded = flux_ty::flib::LoadedTypes::from_metadata(
+        &state.items,
+        std::mem::take(&mut state.sigs),
+        &loaded_metadata,
+    )
+    .map_err(|e| e.to_string())?;
+    let imported = if let Some(suite) = crate::builtins::active() {
+        flux_mir::imported::ImportedMir::with_builtin_prefix(
+            &state.items,
+            std::mem::take(&mut state.mir),
+            suite.mir.clone(),
+        )
+    } else {
+        flux_mir::imported::ImportedMir::new(std::mem::take(&mut state.mir), state.items.counts())
+    }
+    .and_then(|provider| {
+        provider.with_required_instances(std::mem::take(&mut state.required_instances))
+    })
+    .map_err(|e| e.to_string())?;
+    Ok((loaded, imported))
 }
 
 fn configuration(
@@ -478,10 +612,7 @@ fn configuration(
         }
     }
 
-    let builtin_object = crate::builtins::active()
-        .filter(|suite| suite.use_object(options.optimized()))
-        .and_then(|suite| suite.object.as_ref())
-        .map(|object| blake3::hash(object).as_bytes().to_vec());
+    let builtin_object = crate::builtins::object_link_hash(options.optimized()).map(<[u8]>::to_vec);
     encode(builtin_object.encode(&mut e))?;
     encode(
         crate::native_link::Request::from(native)
@@ -530,29 +661,41 @@ pub(crate) fn is_fresh(
     options: BuildOptions,
     externs: &[(String, std::path::PathBuf)],
 ) -> Result<bool, String> {
-    is_fresh_with_capability(input, output, options, externs, false)
+    is_fresh_with_capability(
+        input,
+        output,
+        options,
+        ExternalLibraries {
+            externs,
+            dependency_files: None,
+            cache: None,
+        },
+        false,
+        &Default::default(),
+    )
 }
 
 pub(crate) fn is_fresh_with_capability(
     input: &SourceInput,
     output: &Path,
     options: BuildOptions,
-    externs: &[(String, std::path::PathBuf)],
+    libraries: ExternalLibraries<'_>,
     metadata_only: bool,
+    artifacts: &crate::flib::semantic::FreshArtifacts,
 ) -> Result<bool, String> {
-    let Ok(bytes) = std::fs::read(output) else {
+    let Ok(artifact) = artifacts.read(output) else {
         return Ok(false);
     };
     let (config, dependencies) = freshness_configuration(
         input,
         options,
-        externs,
+        libraries,
         CrateType::Lib,
         &Default::default(),
         metadata_only,
+        artifacts,
     )?;
-    crate::flib::semantic::is_fresh(
-        &bytes,
+    artifact.is_fresh(
         &config,
         &dependencies,
         input.environment.as_ref(),
@@ -569,34 +712,43 @@ pub(crate) fn is_binary_fresh(
     input: &SourceInput,
     output: &Path,
     options: BuildOptions,
-    externs: &[(String, std::path::PathBuf)],
+    libraries: ExternalLibraries<'_>,
     native: &flux_codegen::NativeLink,
+    artifacts: &crate::flib::semantic::FreshArtifacts,
 ) -> Result<bool, String> {
-    let (config, dependencies) =
-        freshness_configuration(input, options, externs, CrateType::Bin, native, false)?;
+    let (config, dependencies) = freshness_configuration(
+        input,
+        options,
+        libraries,
+        CrateType::Bin,
+        native,
+        false,
+        artifacts,
+    )?;
     crate::artifact_cache::is_fresh(output, &config, &dependencies, input.environment.as_ref())
 }
 
 fn freshness_configuration(
     input: &SourceInput,
     options: BuildOptions,
-    externs: &[(String, std::path::PathBuf)],
+    libraries: ExternalLibraries<'_>,
     kind: CrateType,
     native: &flux_codegen::NativeLink,
     metadata_only: bool,
+    artifacts: &crate::flib::semantic::FreshArtifacts,
 ) -> Result<(Vec<u8>, Vec<[u8; 32]>), String> {
     options.validate()?;
     let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
-    let known = crate::flib::semantic::DependencyState::new()?.dependencies;
+    let mut dependencies = crate::flib::semantic::embedded_hashes()?;
+    let externs = libraries.externs;
     let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
-    let artifacts = crate::flib::semantic::resolve_paths(&paths, &known)?;
-    let mut dependencies: Vec<_> = known.iter().map(|d| d.hash).collect();
-    dependencies.extend(artifacts.iter().map(|a| a.manifest.hash));
-    let mut aliases = Vec::new();
-    for (alias, path) in externs {
-        let data = std::fs::read(path).map_err(|e| e.to_string())?;
-        aliases.push((alias.clone(), crate::flib::semantic::manifest(&data)?.hash));
-    }
+    let identities = artifacts.dependencies(&paths, &dependencies, libraries.dependency_files)?;
+    dependencies.extend(identities.ordered);
+    let aliases: Vec<_> = externs
+        .iter()
+        .zip(identities.explicit)
+        .map(|((alias, _), hash)| (alias.clone(), hash))
+        .collect();
     let config = configuration(
         input,
         options,

@@ -26,7 +26,7 @@ impl Encode for CrateData {
             .lock()
             .expect("loaded crates lock poisoned")
             .encode(e)?;
-        self.tracked_inputs().encode(e)
+        self.with_tracked_inputs(|tracked| tracked.encode(e))
     }
 }
 impl Decode for CrateData {
@@ -65,7 +65,7 @@ impl Decode for CrateData {
             environment,
             cfg,
             loaded_externs: LoadedCrates(Mutex::new(loaded)),
-            input_trace: crate::inputs::InputTrace(Mutex::new(tracked)),
+            input_trace: crate::inputs::InputTrace::from_inputs(tracked),
         })
     }
 }

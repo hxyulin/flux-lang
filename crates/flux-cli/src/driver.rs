@@ -585,13 +585,26 @@ pub(crate) fn report_warnings(db: &SourceDb, warnings: &[Diagnostic]) {
 /// Reports `diagnostics` in order of file and position; whether there
 /// were none.
 pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool {
+    report_remaining(db, diagnostics, &[]);
+    diagnostics.is_empty()
+}
+
+/// Reports diagnostics while suppressing any that were already printed.
+pub(crate) fn report_remaining(
+    db: &SourceDb,
+    diagnostics: &mut [Diagnostic],
+    already_reported: &[Diagnostic],
+) {
     for d in diagnostics.iter_mut() {
         db.resolve_diagnostic(d);
     }
     Diagnostic::sort(diagnostics);
     // Each expansion of a macro reports what is wrong in its definition
     // again, at the same place: once is enough.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<_> = already_reported
+        .iter()
+        .map(|d| (d.file, d.range, &d.message))
+        .collect();
     for d in diagnostics.iter() {
         if !seen.insert((d.file, d.range, &d.message)) {
             continue;
@@ -599,7 +612,6 @@ pub(crate) fn report_all(db: &SourceDb, diagnostics: &mut [Diagnostic]) -> bool 
         let f = db.file(d.file);
         report(&f.path, f.text(), d.range, &d.message);
     }
-    diagnostics.is_empty()
 }
 
 fn read(file: &PathBuf) -> Result<String, String> {

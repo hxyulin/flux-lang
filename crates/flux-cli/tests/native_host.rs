@@ -386,6 +386,19 @@ dependencies=["shared"]
     ] {
         assert!(stderr.contains(scope), "missing {scope}: {stderr}");
     }
+    let manifest = std::fs::read_to_string(f.root.join("Cargo.toml")).unwrap();
+    f.write(
+        "Cargo.toml",
+        &format!("{manifest}\n[profile.release.build-override]\nopt-level = 2\n"),
+    );
+    let stderr = rerun("optimized-host", b"100\n");
+    for unit in ["shared lib", "macros proc-macro"] {
+        assert!(stderr.contains(&format!("rustc host {unit}")), "{stderr}");
+    }
+    let stderr = rerun("optimized-host-fresh", b"100\n");
+    for unit in ["shared lib", "macros proc-macro"] {
+        assert!(stderr.contains(&format!("fresh host {unit}")), "{stderr}");
+    }
     assert_eq!(std::fs::read(f.root.join("Cargo.lock")).unwrap(), lock);
     assert!(!f.root.join("cargo-was-called").exists());
     for (label, source, error) in [

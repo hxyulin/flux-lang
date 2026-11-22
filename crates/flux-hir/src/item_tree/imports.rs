@@ -14,6 +14,7 @@ pub struct Uses {
     values: Vec<Use>,
     names: FxHashMap<(ModuleId, Symbol), Vec<usize>>,
     globs: FxHashMap<ModuleId, Vec<usize>>,
+    glob_order: Vec<usize>,
 }
 
 impl Uses {
@@ -29,6 +30,7 @@ impl Uses {
                 .push(self.values.len());
         }
         if matches!(import.kind, UseKind::Glob) {
+            self.glob_order.push(self.values.len());
             self.globs
                 .entry(import.module)
                 .or_default()
@@ -43,6 +45,10 @@ impl Uses {
             .into_iter()
             .flatten()
             .map(|&index| (index, &self.values[index]))
+    }
+
+    pub(crate) fn all_globs(&self) -> impl Iterator<Item = &Use> {
+        self.glob_order.iter().map(|&index| &self.values[index])
     }
 
     /// The most recent matching binding not already followed by this lookup.
@@ -152,7 +158,10 @@ mod tests {
         use crate::{CrateId, ItemTree, SourceDb};
 
         let mut db = SourceDb::new();
-        let root = db.add("dep.rs", "pub fn value() {} pub use value as renamed;");
+        let root = db.add(
+            "dep.rs",
+            "pub fn value() {} pub use value as renamed; mod child {}",
+        );
         let original = ItemTree::new(&mut db, root, Symbol::intern("dep"), false);
         assert!(
             original.diagnostics.is_empty(),
@@ -174,5 +183,10 @@ mod tests {
         let binding = &decoded.uses[0];
         assert_eq!(decoded.uses.named(binding.module, name, &[]).unwrap().0, 0);
         assert!(decoded.uses.named(binding.module, name, &[0]).is_none());
+        assert!(
+            decoded
+                .module_children
+                .contains(&(binding.module, Symbol::intern("child")))
+        );
     }
 }

@@ -1003,8 +1003,16 @@ impl Cx<'_> {
         // Preserve its type substitution even when the erased selector could
         // not infer the impl's bounds from generic inputs on its own.
         let ty = value.subst(&args);
-        if ty != Ty::alias(alias) && !self.env.iter().any(|known| known.alias == alias) {
-            self.env.push(flux_ty::Projection { alias, ty });
+        if ty != Ty::alias(alias)
+            && !self
+                .normalization
+                .projections()
+                .iter()
+                .any(|known| known.alias == alias)
+        {
+            self.normalization
+                .projections_mut()
+                .push(flux_ty::Projection { alias, ty });
         }
         Some(result)
     }
@@ -1225,13 +1233,13 @@ pub(super) fn impl_family_values_match(
                     if !cx.impl_super_goals(goal, &mut env, 0) {
                         return None;
                     }
-                    cx.header_predicates.push(predicate);
+                    cx.normalization.memberships_mut().push(predicate);
                 }
                 for (projection, table) in schema.projections.iter().zip(actual.projections.iter())
                 {
                     let row =
                         cx.instantiate_sig(projection.ty, table, &mut { map_impl }, &[], &[])?;
-                    cx.env.push(*projection);
+                    cx.normalization.projections_mut().push(*projection);
                     cx.env_regions.push((projection.alias, row));
                 }
                 cx.family_goals = env.clone();

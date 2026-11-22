@@ -158,14 +158,41 @@ pub fn lower_sources_on(db: &mut SourceDb, mut items: ItemTree, sources: &[Sourc
 /// Dependency IDs refer to existing crates in `items`.
 pub fn lower_source_on(
     db: &mut SourceDb,
-    mut items: ItemTree,
+    items: ItemTree,
     root: FileId,
     name: Symbol,
     dependencies: Vec<(Symbol, CrateId)>,
 ) -> Hir {
+    collect_source_on(db, items, root, name, dependencies).lower(db)
+}
+
+/// A source crate after item collection and before lowering its bodies.
+pub struct CollectedSource {
+    pub items: ItemTree,
+    from: item_tree::ItemCounts,
+}
+
+impl CollectedSource {
+    pub fn has_errors(&self) -> bool {
+        !self.items.diagnostics.is_empty()
+            || !self.items.has_artifact_builtins() && !Core::get().diagnostics.is_empty()
+    }
+
+    pub fn lower(self, db: &SourceDb) -> Hir {
+        lower_items_from(db, self.items, true, self.from)
+    }
+}
+
+pub fn collect_source_on(
+    db: &mut SourceDb,
+    mut items: ItemTree,
+    root: FileId,
+    name: Symbol,
+    dependencies: Vec<(Symbol, CrateId)>,
+) -> CollectedSource {
     let from = items.counts();
     items.add_source_crate(db, root, name, false, dependencies);
-    lower_items_from(db, items, true, from)
+    CollectedSource { items, from }
 }
 
 fn lower_items(db: &SourceDb, items: ItemTree, with_core: bool) -> Hir {
