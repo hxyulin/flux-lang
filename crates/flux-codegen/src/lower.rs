@@ -2441,13 +2441,18 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
                         if dest.projection.is_empty()
                             && is_memory(sigs, body.locals[dest.local].ty) =>
                     {
+                        // Materialize wide elements of long lists as they
+                        // are produced. Delaying all their stores can keep
+                        // many SSA leaves live across each enum's tag switch.
+                        let long_array = matches!(kind, AggregateKind::Array(_)) && ops.len() >= 32;
                         for (i, op) in ops.iter().enumerate() {
                             let (Operand::Copy(src) | Operand::Move(src)) = op else {
                                 continue;
                             };
+                            let ty = body.locals[src.local].ty;
                             if !src.projection.is_empty()
                                 || src.local == dest.local
-                                || !is_memory(sigs, body.locals[src.local].ty)
+                                || !(is_memory(sigs, ty) || long_array && leaf_count(sigs, ty) > 1)
                             {
                                 continue;
                             }
@@ -2647,7 +2652,10 @@ impl Lower<'_, '_, '_> {
             addresses: vec![None; body.locals.len()],
         };
         for (local, decl) in body.locals.iter() {
-            if borrowed[local.index()] || is_memory(sigs, decl.ty) {
+            if storage.placed[local.index()].is_some()
+                || borrowed[local.index()]
+                || is_memory(sigs, decl.ty)
+            {
                 let root = storage.roots[local.index()];
                 let address = self.storage(root, &mut storage);
                 self.slots.push(Some(address));
