@@ -852,13 +852,14 @@ impl Cx<'_> {
             return Some(row.clone());
         }
         let selected = flux_solve::traits::select_definite_impl(self.items, self.sigs, goal);
-        if let Some((imp, _)) = &selected
-            && let Some(element) = self.array_element_projection(*imp, alias)
+        if let Some((imp, args)) = &selected
+            && let Some(element) = self.forwarded_parameter_projection(*imp, alias, args)
             && let [row] = inputs
             && row.len() == self.slots(element) as usize
+            && row.iter().all(|&var| var < self.vars)
             && self.normalize(Ty::alias(alias)) == element
         {
-            // The array element already owns this exact row. An unconditional
+            // The receiver's parameter already owns this exact row. An unconditional
             // impl with this RHS needs no caller assumptions or new binders.
             return Some(row.clone());
         }
@@ -1017,20 +1018,35 @@ impl Cx<'_> {
         Some(result)
     }
 
-    /// Recognize an unconditional `impl<T, const N: usize> Trait for [T; N]`
-    /// whose associated output is exactly `T`.
-    fn array_element_projection(&self, imp: flux_hir::ImplId, alias: AliasTy) -> Option<Ty> {
+    /// Recognize unconditional impls whose output is the entire region row
+    /// of a single receiver parameter.
+    fn forwarded_parameter_projection(
+        &self,
+        imp: flux_hir::ImplId,
+        alias: AliasTy,
+        args: &[Ty],
+    ) -> Option<Ty> {
         let [receiver] = alias.args else { return None };
-        let TyKind::Array(element, _) = receiver.kind() else {
-            return None;
+        let (element, parameter) = match (receiver.kind(), self.sigs.impls[imp].kind()) {
+            (TyKind::Array(element, _), TyKind::Array(parameter, _)) => (element, parameter),
+            (TyKind::Adt(actual, [element]), TyKind::Adt(pattern, [parameter]))
+                if actual.strukt == pattern.strukt
+                    && self.items.structs[actual.strukt]
+                        .generics
+                        .lifetimes
+                        .is_empty() =>
+            {
+                (*element, *parameter)
+            }
+            _ => return None,
         };
-        let TyKind::Array(parameter, _) = self.sigs.impls[imp].kind() else {
+        let TyKind::Param(param) = parameter.kind() else {
             return None;
         };
         let declaration = self.sigs.traits.get(alias.trait_)?;
         let impl_regions = self.sigs.regions.impls.get(imp)?;
         let value = flux_solve::traits::impl_type(self.sigs, imp, alias.name)?;
-        (matches!(parameter.kind(), TyKind::Param(_))
+        (args.get(param.index as usize) == Some(&element)
             && value == parameter
             && alias.owner_lifetimes == 0
             && alias.family_lifetimes == 0

@@ -64,7 +64,7 @@ impl Key {
 struct Frame {
     predicate: flux_ty::Predicate,
     imp: flux_hir::ImplId,
-    size: usize,
+    size: std::cell::OnceCell<usize>,
     parent: Option<usize>,
     lifetimes: Vec<Var>,
     args: Vec<Ty>,
@@ -99,14 +99,16 @@ impl OrdinaryWork {
         if self.frames.len() >= MAX_ORDINARY_FRAMES {
             return Err("trait lifetime obligation limit exceeded");
         }
-        let size = goal_size(predicate);
+        // Only a recurrence through the same impl needs a size comparison.
+        let mut size = None;
         while let Some(index) = parent {
             let frame = &self.frames[index];
             if frame.predicate == predicate {
                 return Err("trait lifetime obligation cycle cannot be proved");
             }
             if frame.imp == imp
-                && size > frame.size
+                && *size.get_or_insert_with(|| goal_size(predicate))
+                    > *frame.size.get_or_init(|| goal_size(frame.predicate))
                 && !strict_subterm(predicate.self_ty, frame.predicate.self_ty)
                 && embeds(frame.predicate.self_ty, predicate.self_ty, 0)
                 && frame.predicate.trait_ref.args.len() == predicate.trait_ref.args.len()
@@ -151,7 +153,7 @@ impl OrdinaryWork {
         self.frames.push(Frame {
             predicate,
             imp,
-            size: goal_size(predicate),
+            size: std::cell::OnceCell::new(),
             parent,
             lifetimes,
             args,

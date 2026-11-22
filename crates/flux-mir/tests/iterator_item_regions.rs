@@ -1,9 +1,26 @@
 //! Tautological erased item types still need their original lifetime relationships.
 #[test]
 fn chained_reference_items_keep_lifetime_constraints() {
-    for (name, bound, accepted) in [("matching", "'a:'b", true), ("escape", "'b:'a", false)] {
+    for (name, expr, item, bound, accepted) in [
+        ("matching", "a.iter().chain(b.iter())", "u8", "'a:'b", true),
+        ("escape", "a.iter().chain(b.iter())", "u8", "'b:'a", false),
+        (
+            "once_matching",
+            "core::iter::once(a).chain(core::iter::once(b))",
+            "[u8]",
+            "'a:'b",
+            true,
+        ),
+        (
+            "once_escape",
+            "core::iter::once(a).chain(core::iter::once(b))",
+            "[u8]",
+            "'b:'a",
+            false,
+        ),
+    ] {
         let source = format!(
-            "fn f<'a,'b>(a:&'a [u8],b:&'b [u8])->impl Iterator<Item=&'b u8> where {bound} {{a.iter().chain(b.iter())}}fn main(){{}}"
+            "fn f<'a,'b>(a:&'a [u8],b:&'b [u8])->impl Iterator<Item=&'b {item}> where {bound} {{{expr}}}fn main(){{}}"
         );
         let root =
             std::env::temp_dir().join(format!("flux-chain-regions-{name}-{}", std::process::id()));
