@@ -37,7 +37,7 @@ pub fn generate() -> String {
         }
         writeln!(
             output,
-            "const {table}: [(u32, u32, u8); {}] = [",
+            "static {table}: [(u32, u32, u8); {}] = [",
             intervals.len()
         )
         .unwrap();

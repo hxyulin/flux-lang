@@ -3,7 +3,7 @@
 
 pub const UNICODE_VERSION: (u8, u8, u8) = (18, 0, 0);
 
-const PROPERTIES: [(u32, u32, u8); 922] = [
+static PROPERTIES: [(u32, u32, u8); 922] = [
     (0x30, 0x39, 18),
     (0x41, 0x5a, 3),
     (0x61, 0x7a, 3),
@@ -947,7 +947,7 @@ pub(crate) fn has_property(c: char, mask: u8) -> bool {
     false
 }
 
-const CASE_PROPERTIES: [(u32, u32, u8); 1374] = [
+static CASE_PROPERTIES: [(u32, u32, u8); 1374] = [
     (0x41, 0x5a, 8),
     (0x61, 0x7a, 4),
     (0xaa, 0xaa, 4),
