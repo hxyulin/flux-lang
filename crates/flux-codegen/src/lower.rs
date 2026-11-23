@@ -1945,6 +1945,7 @@ impl Ctx<'_> {
             slots: Vec::new(),
             sret: None,
             direct_sret: Vec::new(),
+            return_slot_unborrowed: false,
             placed: Vec::new(),
             callees: FxHashMap::default(),
             address_align: FxHashMap::default(),
@@ -2587,6 +2588,8 @@ struct Lower<'a, 'c, 'f> {
     sret: Option<(Value, Layout)>,
     /// Fresh, unborrowed locals whose storage can receive a call result.
     direct_sret: Vec<bool>,
+    /// The return place can have several definitions along different exits.
+    return_slot_unborrowed: bool,
     /// Locals stored in the field of the aggregate they are moved into.
     placed: Vec<bool>,
     callees: FxHashMap<Instance, FuncRef>,
@@ -2870,6 +2873,7 @@ impl Lower<'_, '_, '_> {
             .zip(&borrowed)
             .map(|(&n, &borrowed)| n == 1 && !borrowed)
             .collect();
+        self.return_slot_unborrowed = !borrowed[Body::RETURN.index()];
         self.b.switch_to_block(entry);
         if body.has_unwind() {
             self.exception_slot = Some(self.aligned_slot(8, 8));
@@ -3881,6 +3885,21 @@ impl Lower<'_, '_, '_> {
             }
             (V::Aggregate(elements), TyKind::Array(elem, _)) => {
                 let size = self.ctx.layouts.of(elem).size;
+                if elements.len() >= 128
+                    && size == 1
+                    && elements.iter().all(|value| {
+                        matches!(value, V::Int { .. })
+                            || matches!(value, V::Variant { fields, .. } if fields.is_empty())
+                    })
+                {
+                    // Large lookup tables can share their read-only bytes.
+                    // Copy them into the value's own storage for by-value uses.
+                    let name = self.ctx.promoted(value, ty);
+                    let data = self.b.import_data(&name);
+                    let source = self.b.ins().symbol_addr(keel_ir::Symbol::Data(data));
+                    self.copy(address, source, ty);
+                    return;
+                }
                 for (i, element) in elements.iter().enumerate() {
                     let at = self.offset(address, size * i as u64);
                     self.store_value(at, element, elem);
@@ -5583,16 +5602,36 @@ impl Lower<'_, '_, '_> {
         target: Option<flux_mir::BasicBlock>,
         make: Call,
     ) {
-        let direct = dest.projection.is_empty()
-            && self.direct_sret[dest.local.index()]
+        let can_use_result = dest.projection.is_empty()
             && !args.iter().any(
                 |arg| matches!(arg, Operand::Copy(p) | Operand::Move(p) if p.local == dest.local),
             );
-        let sret = self.sret_for(ret, direct.then_some(dest), convention);
+        let direct = can_use_result && self.direct_sret[dest.local.index()];
+        // Matching Rust conventions and result types use the same slot layout.
+        // The abort restriction excludes unwind continuations.
+        let forward = self.sret.is_some()
+            && (direct
+                || can_use_result && dest.local == Body::RETURN && self.return_slot_unborrowed)
+            && self.convention == convention
+            && !convention.is_c()
+            && self.ctx.panic_strategy == flux_mir::PanicStrategy::Abort
+            && self.body.locals[Body::RETURN].ty == ret
+            && matches!(make, Call::Direct { .. })
+            && target.is_some_and(|target| self.returns_call_result(target, dest.local));
+        let sret = if forward {
+            self.sret.clone()
+        } else {
+            self.sret_for(ret, direct.then_some(dest), convention)
+        };
         let mut values: Values = sret.iter().map(|(pointer, _)| *pointer).collect();
         for arg in args {
             let ty = self.body.operand_ty(arg, self.sigs);
             values.extend(self.argument(arg, ty, convention));
+        }
+        if forward {
+            self.emit_call(make, &values);
+            self.b.ins().return_(&[]);
+            return;
         }
         self.finish_call(
             CallResult {
@@ -5605,6 +5644,40 @@ impl Lower<'_, '_, '_> {
             target,
             make,
         );
+    }
+
+    /// Follows an immediate return that only transfers the whole call result.
+    fn returns_call_result(
+        &self,
+        mut block: flux_mir::BasicBlock,
+        mut result: flux_mir::Local,
+    ) -> bool {
+        // Keep scanning bounded even if several calls share a continuation.
+        for _ in 0..8 {
+            let data = &self.body.blocks[block];
+            for statement in &data.statements {
+                match &statement.kind {
+                    StatementKind::StorageDead(local) if *local != result => {}
+                    StatementKind::Assign(
+                        to,
+                        Rvalue::Use(Operand::Copy(from) | Operand::Move(from)),
+                    ) if to.local == Body::RETURN
+                        && to.projection.is_empty()
+                        && from.local == result
+                        && from.projection.is_empty() =>
+                    {
+                        result = Body::RETURN;
+                    }
+                    _ => return false,
+                }
+            }
+            match data.terminator.kind {
+                TerminatorKind::Goto(target) => block = target,
+                TerminatorKind::Return => return result == Body::RETURN,
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// Marshal a Rust argument using a private temporary for an indirectly
