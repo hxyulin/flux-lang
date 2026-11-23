@@ -175,13 +175,20 @@ impl Request {
 pub(crate) fn worker(path: &Path) -> Result<bool, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    compile_request(&request, &Default::default(), None, None)
+    compile_request(
+        &request,
+        &Default::default(),
+        None,
+        request.backend_jobs,
+        None,
+    )
 }
 
 fn compile_request(
     request: &Request,
     artifacts: &FreshArtifacts,
     dependency_files: Option<&[&Path]>,
+    workers: usize,
     specializations: Option<Specializations>,
 ) -> Result<bool, String> {
     let options = BuildOptions {
@@ -226,7 +233,7 @@ fn compile_request(
         return Ok(true);
     }
     eprintln!("Compiling {}", request.name);
-    crate::backend_workers::with_limit(request.backend_jobs, || {
+    crate::backend_workers::with_limit(workers, || {
         crate::flib_build::compile_with_specializations(
             &source,
             ArtifactOutput {
@@ -461,25 +468,41 @@ fn run_in_directory(
     let mut started = BTreeSet::new();
     let mut done = BTreeSet::new();
     let mut running = 0;
+    let mut reservations = BTreeMap::new();
     let mut failure = None;
     let mut diagnosed = false;
     std::thread::scope(|scope| -> Result<(), String> {
         loop {
             if failure.is_none() && !diagnosed {
+                let ready = |index: usize, started: &BTreeSet<usize>| {
+                    !started.contains(&index)
+                        && sources[index]
+                            .dependencies
+                            .iter()
+                            .all(|(_, id)| done.contains(id))
+                };
                 for (&index, (_, request)) in &requests {
                     if running == jobs {
                         break;
                     }
-                    if started.contains(&index)
-                        || !sources[index]
-                            .dependencies
-                            .iter()
-                            .all(|(_, id)| done.contains(id))
-                    {
+                    if !ready(index, &started) {
                         continue;
                     }
                     started.insert(index);
-                    running += 1;
+                    // When this library is the only runnable job, its borrow checks
+                    // and dependency loading can use slots that would otherwise idle.
+                    let sole_ready_library = jobs > 1
+                        && !shared_outputs
+                        && request.library
+                        && running == 0
+                        && !requests.keys().any(|&other| ready(other, &started));
+                    let workers = if sole_ready_library {
+                        jobs
+                    } else {
+                        request.backend_jobs
+                    };
+                    running += workers;
+                    reservations.insert(index, workers);
                     let specializations = if index == root {
                         prepared_specializations.take()
                     } else {
@@ -511,6 +534,7 @@ fn run_in_directory(
                                     request,
                                     artifacts,
                                     Some(&files),
+                                    workers,
                                     specializations,
                                 )?;
                                 let prepared = (success && specialization_producer == Some(index))
@@ -526,7 +550,9 @@ fn run_in_directory(
                 break;
             }
             let (index, result) = completions.recv().map_err(|e| e.to_string())?;
-            running -= 1;
+            running -= reservations
+                .remove(&index)
+                .expect("finished job has a reservation");
             match result {
                 Ok((true, specializations)) => {
                     if specializations.is_some() {
