@@ -4,10 +4,14 @@ use flux_hir::{
     ConstId, CrateId, FunctionId, Hir, ItemTree, ModuleId, Owner, StructId, TraitId, TypeRef,
     Visibility,
 };
-use flux_mir::{Body, Constant, FileMir, Operand, Rvalue, StatementKind, TerminatorKind};
+use flux_mir::{
+    Body, Constant, FileMir, Operand, Place, PlaceTy, Rvalue, StatementKind, TerminatorKind,
+};
 use flux_ty::{ClosureOwner, Instance, Signatures, Ty, TyKind};
 use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use std::cell::OnceCell;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 pub(super) struct Roots {
     pub functions: Vec<FunctionId>,
@@ -86,9 +90,11 @@ pub(super) fn executable(
     sigs: &Signatures,
     mir: &FileMir,
     required: &[FunctionId],
+    native_leaf: Option<&dyn Fn(flux_mir::mono::Instance) -> bool>,
 ) -> Roots {
     let krate = hir.items.main_crate();
     let mut reach = Reach::new(hir, sigs, mir, krate);
+    reach.native_leaf = native_leaf;
     for (id, f) in hir.items.functions.iter() {
         if (f.name.as_str() == hir.items.entry_function_name(hir.items.main_crate())
             && f.loc.module == hir.items.module_of(krate)
@@ -150,17 +156,94 @@ struct CallbackContext {
     receiver: TypeShape,
 }
 
+/// The operations whose types can change native reachability, in the order
+/// the template walk applies them. The source body provides locals and values.
+struct BodyEffects<'a> {
+    constants: Vec<flux_ty::ConstInstance>,
+    inline_constants: usize,
+    operations: Vec<BodyEffect<'a>>,
+}
+
+enum BodyEffect<'a> {
+    Call(FunctionId, flux_ty::GenericArgs),
+    Drop(&'a Place),
+    Unsize(&'a Operand, Ty),
+    Pointer(FunctionId, flux_ty::GenericArgs),
+}
+
+impl<'a> BodyEffects<'a> {
+    fn collect(body: &'a Body) -> Self {
+        let mut constants: Vec<_> = body
+            .inline_constants
+            .iter()
+            .flat_map(Body::const_items)
+            .collect();
+        let inline_constants = constants.len();
+        let mut operations = Vec::new();
+        for block in body.blocks.values() {
+            match &block.terminator.kind {
+                TerminatorKind::Call {
+                    func, generic_args, ..
+                } => {
+                    operations.push(BodyEffect::Call(*func, generic_args));
+                }
+                TerminatorKind::Drop { place, .. } => operations.push(BodyEffect::Drop(place)),
+                _ => {}
+            }
+            for statement in &block.statements {
+                if let StatementKind::Assign(_, Rvalue::Unsize(op, to)) = &statement.kind {
+                    operations.push(BodyEffect::Unsize(op, *to));
+                }
+            }
+            let operands = block
+                .statements
+                .iter()
+                .filter_map(|s| match &s.kind {
+                    StatementKind::Assign(_, r) => Some(r),
+                    _ => None,
+                })
+                .flat_map(Rvalue::operands)
+                .chain(block.terminator.kind.operands());
+            for op in operands {
+                match op {
+                    Operand::Const(
+                        Constant::Item { id, args, .. } | Constant::ItemRef { id, args, .. },
+                    ) => {
+                        constants.push(flux_ty::ConstInstance { konst: *id, args });
+                    }
+                    Operand::Const(Constant::Static { id, .. }) => {
+                        constants.push(flux_ty::ConstInstance {
+                            konst: *id,
+                            args: &[],
+                        });
+                    }
+                    Operand::Const(Constant::Fn { function, args, .. }) => {
+                        operations.push(BodyEffect::Pointer(*function, args));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Self {
+            constants,
+            inline_constants,
+            operations,
+        }
+    }
+}
+
 struct Reach<'a> {
     hir: &'a Hir,
     items: &'a ItemTree,
     sigs: &'a Signatures,
     mir: &'a FileMir,
     krate: CrateId,
+    native_leaf: Option<&'a dyn Fn(flux_mir::mono::Instance) -> bool>,
     functions: FxHashSet<FunctionId>,
     const_functions: FxHashSet<(FunctionId, flux_ty::GenericArgs)>,
     runtime_functions: FxHashSet<(FunctionId, flux_ty::GenericArgs)>,
     work: Vec<Template>,
-    drop_parameters: FxHashMap<FunctionId, DropParameters>,
+    drop_parameters: OnceCell<FxHashMap<FunctionId, DropParameters>>,
     current: Vec<Context>,
     constants: FxHashSet<(ConstId, flux_ty::GenericArgs)>,
     statics: FxHashSet<ConstId>,
@@ -185,27 +268,27 @@ struct Reach<'a> {
     erased_templates: std::cell::RefCell<FxHashMap<Ty, Ty>>,
     symbolic_calls: FxHashMap<(FunctionId, flux_ty::GenericArgs, bool), Vec<Context>>,
     symbolic_constants: FxHashMap<flux_ty::ConstInstance, Vec<Context>>,
-    closures: FxHashMap<ClosureOwner, Vec<&'a Body>>,
+    closures: OnceCell<FxHashMap<ClosureOwner, Vec<&'a Body>>>,
+    // This walk borrows each body for its lifetime, including lazy imports.
+    body_effects: FxHashMap<*const Body, Rc<BodyEffects<'a>>>,
 }
 
 impl<'a> Reach<'a> {
     fn new(hir: &'a Hir, sigs: &'a Signatures, mir: &'a FileMir, krate: CrateId) -> Self {
-        let mut closures: FxHashMap<_, Vec<_>> = FxHashMap::default();
-        for ((id, _), body) in &mir.closures {
-            closures.entry(id.owner).or_default().push(body);
-        }
         let mut reach = Self {
             hir,
             items: &hir.items,
             sigs,
             mir,
             krate,
-            closures,
+            native_leaf: None,
+            closures: OnceCell::new(),
+            body_effects: FxHashMap::default(),
             functions: FxHashSet::default(),
             const_functions: FxHashSet::default(),
             runtime_functions: FxHashSet::default(),
             work: Vec::new(),
-            drop_parameters: drop_parameters(&hir.items, sigs, mir),
+            drop_parameters: OnceCell::new(),
             current: Vec::new(),
             constants: FxHashSet::default(),
             statics: FxHashSet::default(),
@@ -234,6 +317,26 @@ impl<'a> Reach<'a> {
             }
         }
         reach
+    }
+
+    fn closure_bodies(&self, owner: ClosureOwner) -> Option<Vec<&'a Body>> {
+        self.closures
+            .get_or_init(|| {
+                let mut closures: FxHashMap<_, Vec<_>> = FxHashMap::default();
+                for ((id, _), body) in &self.mir.closures {
+                    closures.entry(id.owner).or_default().push(body);
+                }
+                if let Some(suite) = self.mir.shared_builtin_mir() {
+                    for ((id, _), body) in &suite.closures {
+                        if matches!(id.owner, ClosureOwner::Function(_)) {
+                            closures.entry(id.owner).or_default().push(body);
+                        }
+                    }
+                }
+                closures
+            })
+            .get(&owner)
+            .cloned()
     }
 
     fn own(&self, module: ModuleId) -> bool {
@@ -613,6 +716,13 @@ impl<'a> Reach<'a> {
     }
 
     fn function_args(&mut self, f: FunctionId, args: flux_ty::GenericArgs, runtime: bool) {
+        if runtime
+            && self
+                .native_leaf
+                .is_some_and(|leaf| leaf(flux_mir::mono::Instance { function: f, args }))
+        {
+            return;
+        }
         if runtime && self.own(self.items.functions[f].loc.module) {
             self.functions.insert(f);
         }
@@ -819,7 +929,12 @@ impl<'a> Reach<'a> {
             args,
         );
         if runtime && args.iter().any(|ty| ty.has_params()) {
-            let effects = self.drop_parameters.get(&f).cloned().unwrap_or_default();
+            let effects = self
+                .drop_parameters
+                .get_or_init(|| drop_parameters(self.items, self.sigs, self.mir))
+                .get(&f)
+                .cloned()
+                .unwrap_or_default();
             for index in effects.owned {
                 if let Some(&ty) = args.get(index as usize) {
                     self.drop_type(ty);
@@ -996,9 +1111,33 @@ impl<'a> Reach<'a> {
         }
     }
 
-    fn body(&mut self, body: &Body, runtime: bool) {
+    fn body(&mut self, body: &'a Body, args: flux_ty::GenericArgs, runtime: bool) {
+        let effects = Rc::clone(
+            self.body_effects
+                .entry(body)
+                .or_insert_with(|| Rc::new(BodyEffects::collect(body))),
+        );
+        let items = self.items;
+        let sigs = self.sigs;
+        let symbolic = args.iter().any(|ty| ty.has_params());
+        let subst = |ty: Ty| {
+            if symbolic {
+                ty.subst(args)
+            } else {
+                flux_solve::traits::instance_ty(items, sigs, ty, args)
+            }
+        };
+        let list = |args: flux_ty::GenericArgs| flux_ty_ir::ty::map_list(args, subst);
+        let place_ty = |place: &Place| {
+            let base = PlaceTy::from(subst(body.locals[place.local].ty));
+            place
+                .projection
+                .iter()
+                .fold(base, |ty, &elem| ty.project(elem, sigs))
+                .ty
+        };
         if runtime {
-            let mut types: Vec<_> = body.locals.values().map(|local| local.ty).collect();
+            let mut types: Vec<_> = body.locals.values().map(|local| subst(local.ty)).collect();
             let mut seen = FxHashSet::default();
             while let Some(ty) = types.pop() {
                 if !seen.insert(ty) {
@@ -1010,66 +1149,79 @@ impl<'a> Reach<'a> {
                 types.extend(ty.children());
             }
         }
-        for c in body.const_items() {
-            self.constant_reference(c);
+        for (index, &c) in effects.constants.iter().enumerate() {
+            // With no arguments, the checked inline constant is already closed.
+            let constant_args = if args.is_empty() && index < effects.inline_constants {
+                c.args
+            } else {
+                list(c.args)
+            };
+            self.constant_reference(flux_ty::ConstInstance {
+                args: constant_args,
+                ..c
+            });
         }
-        for block in body.blocks.values() {
-            if let TerminatorKind::Call {
-                func, generic_args, ..
-            } = &block.terminator.kind
-            {
-                self.call(*func, generic_args, runtime);
-                // Polling is introduced only when specializing the saved async
-                // body. Its local non-generic implementations must already be
-                // retained in the library object consumed downstream.
-                if self.items.functions[*func].intrinsic
-                    == Some(flux_hir::Intrinsic::CoroutineAwait)
-                    && let Some(&future) = generic_args.first()
-                    && let Some(&trait_) = self
-                        .items
-                        .lang_traits
-                        .get(&flux_intern::Symbol::intern("future_trait"))
-                    && let Some(poll) = self.items.traits[trait_]
-                        .function(self.items, flux_intern::Symbol::intern("poll"))
-                {
-                    self.call(poll, Ty::list(&[future]), runtime);
+        for operation in &effects.operations {
+            match *operation {
+                BodyEffect::Call(function, raw_args) => {
+                    let call_args = list(raw_args);
+                    self.call(function, call_args, runtime);
+                    // The async helper's poll call only appears after specialization.
+                    if items.functions[function].intrinsic
+                        == Some(flux_hir::Intrinsic::CoroutineAwait)
+                        && let Some(&future) = call_args.first()
+                        && let Some(&trait_) = items
+                            .lang_traits
+                            .get(&flux_intern::Symbol::intern("future_trait"))
+                        && let Some(poll) = items.traits[trait_]
+                            .function(items, flux_intern::Symbol::intern("poll"))
+                    {
+                        self.call(poll, Ty::list(&[future]), runtime);
+                    }
                 }
-            }
-            if runtime && let TerminatorKind::Drop { place, .. } = &block.terminator.kind {
-                self.drop_type(body.place_ty(place, self.sigs));
-            }
-            for statement in &block.statements {
-                if runtime && let StatementKind::Assign(_, Rvalue::Unsize(op, to)) = &statement.kind
-                {
-                    let from = body.operand_ty(op, self.sigs);
+                BodyEffect::Drop(place) if runtime => self.drop_type(place_ty(place)),
+                BodyEffect::Unsize(op, to) if runtime => {
+                    let from = match *op {
+                        Operand::Copy(ref place) | Operand::Move(ref place) => place_ty(place),
+                        Operand::Const(Constant::TyConst { value, ty }) => {
+                            Constant::of_ty_const(subst(value), subst(ty)).ty()
+                        }
+                        Operand::Const(
+                            c @ (Constant::FnItem(_)
+                            | Constant::Promoted { .. }
+                            | Constant::Inline { .. }
+                            | Constant::Item { .. }
+                            | Constant::ItemRef { .. }
+                            | Constant::Fn { .. }),
+                        ) => subst(c.ty()),
+                        Operand::Const(c) => c.ty(),
+                    };
+                    let to = subst(to);
                     let concrete = super::pointee_of(from)
-                        .or_else(|| flux_ty::shared_pointee(self.items, from))
-                        .or_else(|| flux_ty::nonnull_pointee(self.items, from));
-                    let object = super::pointee_of(*to)
-                        .or_else(|| flux_ty::shared_pointee(self.items, *to))
-                        .or_else(|| flux_ty::nonnull_pointee(self.items, *to));
+                        .or_else(|| flux_ty::shared_pointee(items, from))
+                        .or_else(|| flux_ty::nonnull_pointee(items, from));
+                    let object = super::pointee_of(to)
+                        .or_else(|| flux_ty::shared_pointee(items, to))
+                        .or_else(|| flux_ty::nonnull_pointee(items, to));
                     if let (Some(concrete), Some(object)) = (concrete, object) {
                         self.vtable(object, concrete);
                     }
                 }
-            }
-            let operands = block
-                .statements
-                .iter()
-                .filter_map(|s| match &s.kind {
-                    StatementKind::Assign(_, r) => Some(r),
-                    _ => None,
-                })
-                .flat_map(Rvalue::operands)
-                .chain(block.terminator.kind.operands());
-            for op in operands {
-                if let Operand::Const(Constant::Fn { function, args, .. }) = op {
-                    self.call(*function, args, true);
+                BodyEffect::Pointer(function, ptr_args) => {
+                    self.call(function, list(ptr_args), true)
                 }
+                BodyEffect::Drop(_) | BodyEffect::Unsize(..) => {}
             }
         }
         for value in &body.promoted {
-            self.value(value);
+            if args.is_empty() {
+                self.value(value);
+            } else {
+                self.value(&value.map_functions(&|instance| Instance {
+                    args: list(instance.args),
+                    ..instance
+                }));
+            }
         }
     }
 
@@ -1164,33 +1316,25 @@ impl<'a> Reach<'a> {
                 let mir = self.mir;
                 let hir = self.hir;
                 let sigs = self.sigs;
-                let subst = |body: &Body| {
-                    if args.iter().any(|ty| ty.has_params()) {
-                        flux_mir::mono::subst_template(body, args)
-                    } else {
-                        flux_mir::mono::subst_body(hir, sigs, body, args)
-                    }
-                };
                 match owner {
                     ClosureOwner::Function(f) => {
-                        if let Some(body) = mir.bodies.get(f) {
-                            let body = subst(body);
-                            self.body(&body, template.runtime);
+                        if let Ok(Some(body)) = mir.function_body(&hir.items, sigs, f) {
+                            self.body(body, args, template.runtime);
                         }
                     }
                     ClosureOwner::Const(c) => {
-                        if let Some(value) = mir.const_values.get(c, args) {
+                        if let Ok(Some(value)) =
+                            mir.const_values.get_checked(c, args, &hir.items, sigs)
+                        {
                             self.value(value);
                         } else if let Some(body) = mir.consts.get(c) {
-                            let body = subst(body);
-                            self.body(&body, false);
+                            self.body(body, args, false);
                         }
                     }
                 }
-                if let Some(bodies) = self.closures.get(&owner).cloned() {
+                if let Some(bodies) = self.closure_bodies(owner) {
                     for body in bodies {
-                        let body = subst(body);
-                        self.body(&body, template.runtime);
+                        self.body(body, args, template.runtime);
                     }
                 }
             }
@@ -1400,7 +1544,7 @@ fn drop_parameters(
     let mut drops: FxHashMap<FunctionId, DropParameters> = FxHashMap::default();
     let mut edges = Vec::new();
     for (f, function) in items.functions.iter() {
-        if matches!(function.owner, Some(Owner::Trait(_))) && mir.bodies.get(f).is_none() {
+        if matches!(function.owner, Some(Owner::Trait(_))) && !mir.has_function_body(f) {
             let count = flux_ty::generic_names(items, function.owner, &function.generics).len();
             drops
                 .entry(f)
@@ -1409,17 +1553,19 @@ fn drop_parameters(
                 .extend((0..count).map(|i| i as u32));
         }
     }
-    let bodies = mir
-        .bodies
-        .iter()
-        .chain(
-            mir.closures
-                .iter()
-                .filter_map(|((closure, _), body)| match closure.owner {
-                    ClosureOwner::Function(f) => Some((f, body)),
-                    ClosureOwner::Const(_) => None,
-                }),
-        );
+    let bodies =
+        std::iter::once(mir)
+            .chain(mir.shared_builtin_mir())
+            .flat_map(|mir| {
+                mir.bodies
+                    .iter()
+                    .chain(mir.closures.iter().filter_map(
+                        |((closure, _), body)| match closure.owner {
+                            ClosureOwner::Function(f) => Some((f, body)),
+                            ClosureOwner::Const(_) => None,
+                        },
+                    ))
+            });
     for (f, body) in bodies {
         for block in body.blocks.values() {
             match &block.terminator.kind {

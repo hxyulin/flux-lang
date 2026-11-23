@@ -461,6 +461,7 @@ impl<'a> Ctx<'a> {
             reified: ArenaMap::new(),
             calls: ArenaMap::new(),
             overloads: ArenaMap::new(),
+            const_operators: ArenaMap::new(),
             consts: ArenaMap::new(),
             compared_refs: ArenaMap::new(),
             try_conversions: ArenaMap::new(),
@@ -656,6 +657,9 @@ struct Ctx<'a> {
     closure_owner: crate::ClosureOwner,
     /// In a constant or `const fn`: what to call it in E0015.
     const_context: Option<&'static str>,
+    // Const rules apply at the operator's expression, including inline consts
+    // and runtime closure bodies nested inside a constant.
+    const_operators: ArenaMap<Expr, &'static str>,
     body: &'a Body,
     source_map: &'a BodySourceMap,
     /// Each variable's value and where it was created.
@@ -3539,6 +3543,11 @@ impl Ctx<'_> {
                     let slice = Ty::slice(Ty::int(IntTy::U8));
                     self.overloads.insert(*expr, (eq, vec![slice, slice]));
                 }
+                if let Some(context) = self.const_context
+                    && self.overloads.contains(*expr)
+                {
+                    self.const_operators.insert(*expr, context);
+                }
                 if let Expr::Path(_) = body.exprs[*expr] {
                     self.deferred.push(Deferred::ConstPat {
                         expr: *expr,
@@ -3921,6 +3930,14 @@ impl Ctx<'_> {
     // Expressions.
 
     fn infer_expr(&mut self, id: ExprId) -> Ty {
+        if let Some(context) = self.const_context
+            && matches!(
+                self.body.exprs[id],
+                Expr::Unary { .. } | Expr::Binary { .. } | Expr::Index { .. }
+            )
+        {
+            self.const_operators.insert(id, context);
+        }
         let ty = self.infer_expr_inner(id);
         self.expr_types.insert(id, ty);
         ty
@@ -5117,11 +5134,32 @@ impl Ctx<'_> {
                 };
                 self.inferred_item_pointer_regions(sig, def.function, def.args)
             });
-            if let Some(Some(first)) = recipes.next()
-                && first.free == 0
-                && recipes.all(|recipe| recipe == Some(first))
+            let inherent_owner = |ty: Ty| {
+                let TyKind::FnDef(def) = ty.kind() else {
+                    return None;
+                };
+                let Some(flux_hir::Owner::Impl(owner)) = self.items.functions[def.function].owner
+                else {
+                    return None;
+                };
+                (self.items.impls[owner].trait_ref.is_none()
+                    && def.owner_lifetimes != 0
+                    && def
+                        .args
+                        .iter()
+                        .all(|&ty| crate::regions::slots(self.items, ty) == 0))
+                .then_some(owner)
+            };
+            if let Some(Some(recipe)) = recipes.next()
+                && (recipe.free == 0
+                    || inherent_owner(first).is_some_and(|owner| {
+                        found
+                            .iter()
+                            .all(|&(_, ty)| inherent_owner(ty) == Some(owner))
+                    }))
+                && recipes.all(|next| next == Some(recipe))
             {
-                sig.regions = Some(first);
+                sig.regions = Some(recipe);
             }
         }
         let ptr = if from_closures && !sig.inputs_output.iter().any(|ty| ty.has_infer()) {
@@ -5179,8 +5217,8 @@ impl Ctx<'_> {
         Ty::new(TyKind::FnPtr(crate::FnSigTy { regions, ..sig }))
     }
 
-    /// A generic argument's regions are fixed when selecting the function
-    /// item. The declaration's independent signature loans still vary per call.
+    /// Owner lifetimes and generic argument regions are fixed when selecting
+    /// the function item. Independent signature loans still vary per call.
     fn inferred_item_pointer_regions(
         &self,
         sig: crate::FnSigTy,
@@ -5193,7 +5231,8 @@ impl Ctx<'_> {
         let regions = self.sigs.regions.fns.get(function)?;
         let source = self.sigs.fns.get(function)?;
         if regions.callback_binder != CallbackBinder::Independent
-            || regions.owner != 0
+            || regions.owner
+                != crate::regions::function_item_owner_lifetimes(self.items, self.sigs, function)
             || regions.selected_inputs.iter().any(|row| !row.is_empty())
             || source.params.len() != sig.params().len()
             || args
@@ -5204,7 +5243,8 @@ impl Ctx<'_> {
             return None;
         }
 
-        let mut free = 0;
+        let owner = regions.owner;
+        let mut free = owner;
         let arg_rows: Vec<_> = args
             .iter()
             .map(|&ty| {
@@ -5215,10 +5255,12 @@ impl Ctx<'_> {
                     .collect::<Vec<_>>()
             })
             .collect();
-        let bound = regions.names.len() as u32;
+        let total = regions.names.len() as u32;
+        let bound = total.checked_sub(owner)?;
         let mut map = |region| match region {
             Region::Static => Some(FnRegion::Static),
-            Region::Param(i) if i < bound => Some(FnRegion::Bound(i)),
+            Region::Param(i) if i < owner => Some(FnRegion::Free(i)),
+            Region::Param(i) if i < total => Some(FnRegion::Bound(i - owner)),
             _ => None,
         };
         let mut rows = Vec::new();
@@ -8910,23 +8952,21 @@ impl Ctx<'_> {
     /// unstably (E0658, and that the trait is not stable as a const
     /// trait); other types' `impl` blocks are not `const` (E0015).
     fn check_const_operators(&mut self, overloads: &ArenaMap<Expr, Instance>) {
-        let Some(context) = self.const_context else {
-            return;
-        };
-        let mut found: Vec<(ExprId, Option<Symbol>)> = overloads
+        let found: Vec<_> = self
+            .const_operators
             .iter()
-            .map(|(expr, instance)| {
+            .filter_map(|(expr, &context)| {
+                let instance = overloads.get(expr)?;
                 let function = &self.items.functions[instance.function];
                 let trait_name = match function.owner {
                     Some(flux_hir::Owner::Trait(t)) => self.items.traits[t].name,
                     _ => function.name,
                 };
                 let core = instance.args.iter().all(|&ty| self.const_operand(ty));
-                (expr, core.then_some(trait_name))
+                Some((expr, context, core.then_some(trait_name)))
             })
             .collect();
-        found.sort_by_key(|&(expr, _)| expr.into_raw());
-        for (expr, const_trait) in found {
+        for (expr, context, const_trait) in found {
             // rustc points at an index's `[index]`.
             let range = match self.body.exprs[expr] {
                 Expr::Index { base, .. } => {

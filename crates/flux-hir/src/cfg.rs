@@ -2,8 +2,52 @@
 
 use crate::macros::tt::Tok;
 use flux_syntax::{SyntaxKind, T, TextRange};
+use std::cell::Cell;
 
 type Error = (TextRange, String);
+
+/// Profile-dependent values queried during one expansion.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ProfileReads {
+    pub(crate) debug_assertions: bool,
+    pub(crate) panic_strategy: bool,
+}
+
+thread_local! {
+    static PROFILE_READS: Cell<Option<ProfileReads>> = const { Cell::new(None) };
+}
+
+pub(crate) fn track_profile_reads<T>(run: impl FnOnce() -> T) -> (T, ProfileReads) {
+    struct Restore(Option<ProfileReads>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            PROFILE_READS.with(|state| {
+                let current = state.get().unwrap_or_default();
+                state.set(self.0.map(|previous| ProfileReads {
+                    debug_assertions: previous.debug_assertions || current.debug_assertions,
+                    panic_strategy: previous.panic_strategy || current.panic_strategy,
+                }));
+            });
+        }
+    }
+
+    let _restore =
+        Restore(PROFILE_READS.with(|state| state.replace(Some(ProfileReads::default()))));
+    let result = run();
+    (
+        result,
+        PROFILE_READS.with(|state| state.get().unwrap_or_default()),
+    )
+}
+
+fn read_profile_flag(update: impl FnOnce(&mut ProfileReads)) {
+    PROFILE_READS.with(|state| {
+        if let Some(mut reads) = state.get() {
+            update(&mut reads);
+            state.set(Some(reads));
+        }
+    });
+}
 
 /// The value of `cfg!(predicate)`, for flux's target.
 pub(crate) fn eval(
@@ -86,8 +130,12 @@ fn cfg_predicate(
     Ok(match (name, value.as_deref()) {
         // On unless the crate was configured without them, as rustc's
         // `-C debug-assertions`; the embedded libraries keep them on.
-        ("debug_assertions", None) => cfg.is_none_or(|cfg| cfg.debug_assertions),
+        ("debug_assertions", None) => {
+            read_profile_flag(|reads| reads.debug_assertions = true);
+            cfg.is_none_or(|cfg| cfg.debug_assertions)
+        }
         ("panic", Some(v)) => {
+            read_profile_flag(|reads| reads.panic_strategy = true);
             v == cfg
                 .map_or(flux_syntax::PanicStrategy::Abort, |cfg| cfg.panic_strategy)
                 .as_str()

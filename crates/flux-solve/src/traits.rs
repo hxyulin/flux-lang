@@ -1444,7 +1444,7 @@ pub fn instantiate_impl_type(
 /// known: from `env`, the bounds in scope, or from the `impl` block for
 /// its types. The others stay, as types of their own.
 pub fn normalize(items: &ItemTree, sigs: &Signatures, env: &[Projection], ty: Ty) -> Ty {
-    if !ty.has_aliases() && !ty.has_opaques() {
+    if !ty.has_aliases_or_opaques() {
         return ty;
     }
     // A fresh normalizer can still be part of an ongoing selection's proof.
@@ -1810,6 +1810,9 @@ pub fn normalize_revealed(
     env: &[Projection],
     mut ty: Ty,
 ) -> Ty {
+    if !ty.has_aliases_or_opaques() {
+        return ty;
+    }
     for _ in 0..=64 {
         let normalized = normalize(items, sigs, env, ty);
         let revealed = reveal(sigs, normalized);

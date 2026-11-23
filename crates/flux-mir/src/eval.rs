@@ -211,10 +211,7 @@ fn project_static_value(
 impl Value {
     /// Substitute function instances stored in qualified promotion trees.
     /// The builder admits functions only inside immutable aggregates/references.
-    pub(crate) fn map_functions(
-        &self,
-        mapper: &impl Fn(flux_ty::Instance) -> flux_ty::Instance,
-    ) -> Self {
+    pub fn map_functions(&self, mapper: &impl Fn(flux_ty::Instance) -> flux_ty::Instance) -> Self {
         fn fields(
             values: &Arc<[Value]>,
             mapper: &impl Fn(flux_ty::Instance) -> flux_ty::Instance,
@@ -293,9 +290,31 @@ pub struct EvalError {
 pub struct ConstValues {
     pub items: ArenaMap<flux_hir::Const, Value>,
     pub instances: FxHashMap<ConstInstance, Value>,
+    pub(crate) deferred: crate::flib::DeferredValues,
 }
 
 impl ConstValues {
+    pub(crate) fn contains_item(&self, id: ConstId) -> bool {
+        self.items.contains(id) || self.deferred.contains(id)
+    }
+
+    /// Reads a checked value, loading its indexed archive records on first use.
+    pub fn get_checked(
+        &self,
+        id: ConstId,
+        args: GenericArgs,
+        items: &ItemTree,
+        sigs: &Signatures,
+    ) -> Result<Option<&Value>, flux_hir::flib::Error> {
+        if let Some(value) = self.get(id, args) {
+            return Ok(Some(value));
+        }
+        if args.is_empty() {
+            return self.deferred.get(id, items, sigs);
+        }
+        Ok(None)
+    }
+
     /// The value of constant `id` with generic arguments `args`, if it
     /// was evaluated.
     pub fn get(&self, id: ConstId, args: GenericArgs) -> Option<&Value> {
@@ -329,6 +348,7 @@ pub struct Evaluator<'a> {
     pub names: &'a dyn Fn(ConstId) -> String,
     values: FxHashMap<ConstInstance, Result<Value, EvalError>>,
     imported_provider: Option<&'a crate::imported::ImportedMir>,
+    mir_provider: Option<&'a crate::FileMir>,
     imported_values: Option<&'a ConstValues>,
     imported_discriminants: Option<&'a crate::Discriminants>,
     in_progress: Vec<ConstInstance>,
@@ -379,6 +399,7 @@ impl<'a> Evaluator<'a> {
             names,
             values: FxHashMap::default(),
             imported_provider: None,
+            mir_provider: None,
             imported_values: None,
             imported_discriminants: None,
             in_progress: Vec::new(),
@@ -424,6 +445,8 @@ impl<'a> Evaluator<'a> {
         );
         if let Some(provider) = self.imported_provider {
             evaluator = evaluator.with_provider(provider);
+        } else if let Some(mir) = self.mir_provider {
+            evaluator = evaluator.with_file_mir(mir);
         }
         if let (Some(values), Some(discriminants)) =
             (self.imported_values, self.imported_discriminants)
@@ -474,9 +497,10 @@ impl<'a> Evaluator<'a> {
         if let Some(result) = self.values.get(&c) {
             return result.clone();
         }
-        if let Some(value) = self
-            .imported_values
-            .and_then(|values| values.get(c.konst, c.args))
+        if let Some(values) = self.imported_values
+            && let Some(value) = values
+                .get_checked(c.konst, c.args, self.items, self.sigs)
+                .map_err(|err| error(self.items.consts[c.konst].def_range, err.to_string()))?
         {
             return Ok(value.clone());
         }
@@ -3192,11 +3216,19 @@ impl<'a> Evaluator<'a> {
         {
             self.check_field_layout_dependency(ty, range)?;
         }
-        let Some(callee) = self
-            .functions
-            .get(func)
-            .or_else(|| self.imported_provider?.function(func))
-        else {
+        let callee = if let Some(body) = self.functions.get(func) {
+            Some(body)
+        } else if let Some(provider) = self.imported_provider {
+            provider
+                .function(self.items, self.sigs, func)
+                .map_err(|e| error(range, e.to_string()))?
+        } else if let Some(mir) = self.mir_provider {
+            mir.function_body(self.items, self.sigs, func)
+                .map_err(|e| error(range, e.to_string()))?
+        } else {
+            None
+        };
+        let Some(callee) = callee else {
             return Err(error(
                 range,
                 "calling this function in constants is not supported yet".to_owned(),
@@ -5263,6 +5295,12 @@ impl<'a> Evaluator<'a> {
     pub fn with_provider(mut self, imported: &'a crate::imported::ImportedMir) -> Self {
         self.imported_provider = Some(imported);
         self.with_imported(&imported.mir().const_values, &imported.mir().discriminants)
+    }
+
+    /// Uses indexed function bodies during monomorphization and code generation.
+    pub fn with_file_mir(mut self, mir: &'a crate::FileMir) -> Self {
+        self.mir_provider = Some(mir);
+        self.with_imported(&mir.const_values, &mir.discriminants)
     }
 
     /// Reuses checked dependency values before requesting initializer MIR.

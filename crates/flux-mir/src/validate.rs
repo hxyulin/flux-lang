@@ -380,6 +380,8 @@ impl Validator<'_> {
     }
 
     fn terminator(&mut self, kind: &TerminatorKind, bb: usize) {
+        let (items, sigs, env) = (self.items, self.sigs, self.env);
+        let norm = |ty| flux_solve::traits::normalize_revealed(items, sigs, env, ty);
         match kind {
             TerminatorKind::Call {
                 func,
@@ -389,15 +391,11 @@ impl Validator<'_> {
                 target,
             } => {
                 let sig = &self.sigs[*func];
-                let params: Vec<Ty> = sig
-                    .params
-                    .iter()
-                    .map(|p| self.norm(p.subst(generic_args)))
-                    .collect();
+                let params = sig.params.iter().map(|p| norm(p.subst(generic_args)));
                 let ret = self.norm(sig.ret.subst(generic_args));
                 let variadic = self.items.functions[*func].is_variadic;
                 let name = self.items.functions[*func].name;
-                self.call(&params, ret, variadic, args, dest, target.is_some(), || {
+                self.call(params, ret, variadic, args, dest, target.is_some(), || {
                     format!("bb{bb}: call of `{name}`")
                 });
             }
@@ -415,10 +413,10 @@ impl Validator<'_> {
                     }
                     return;
                 };
-                let params: Vec<Ty> = sig.params().iter().map(|&p| self.norm(p)).collect();
+                let params = sig.params().iter().copied().map(norm);
                 let ret = self.norm(sig.ret());
                 self.call(
-                    &params,
+                    params,
                     ret,
                     sig.is_variadic,
                     args,
@@ -449,7 +447,7 @@ impl Validator<'_> {
     #[allow(clippy::too_many_arguments)]
     fn call(
         &mut self,
-        params: &[Ty],
+        params: impl ExactSizeIterator<Item = Ty>,
         ret: Ty,
         variadic: bool,
         args: &[Operand],
@@ -466,7 +464,7 @@ impl Validator<'_> {
             ));
             return;
         }
-        for (i, (&param, arg)) in params.iter().zip(args).enumerate() {
+        for (i, (param, arg)) in params.zip(args).enumerate() {
             let found = self.operand_ty(arg);
             self.check(param, found, || format!("{} (argument {i})", what()));
         }

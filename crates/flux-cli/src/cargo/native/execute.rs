@@ -1,5 +1,6 @@
 //! Flux build-script compilation and native host preparation.
 mod script_cache;
+mod toolchain_cache;
 
 use super::{Domain, Options, Plan, PlannedPackage, Result, Target};
 use crate::build::{CompileRequest, SourceInput};
@@ -9,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::OnceLock;
 
 #[derive(Clone, Default, Serialize)]
 struct ScriptOutput {
@@ -48,6 +50,16 @@ pub(super) fn run(
     build: Option<crate::BuildOptions>,
     start: Option<std::time::Instant>,
 ) -> Result<ExitCode> {
+    std::thread::scope(|scope| run_scoped(scope, plan, options, build, start))
+}
+
+fn run_scoped<'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    plan: Plan,
+    options: &Options,
+    build: Option<crate::BuildOptions>,
+    start: Option<std::time::Instant>,
+) -> Result<ExitCode> {
     let native_macros = matches!(
         options.macro_host_compiler,
         crate::package::MacroHostCompiler::Flux
@@ -58,12 +70,41 @@ pub(super) fn run(
             rustc_dependencies(&plan, id, &mut rustc_units);
         }
     }
-    let mut rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    let version = if !rustc_units.is_empty() {
-        rustc = resolve_host_rustc(&rustc)?;
-        crate::cargo::output(Command::new(&rustc).arg("-vV"), "rustc version")?
-    } else {
-        String::new()
+    let jobs = options.jobs.map_or_else(
+        || std::thread::available_parallelism().map_or(1, |n| n.get()),
+        |n| n as usize,
+    );
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    let prefetch_server = jobs > 1
+        && build.is_some()
+        && !native_macros
+        && plan.units.iter().any(|unit| {
+            unit.domain == Domain::Target
+                && unit
+                    .dependencies
+                    .iter()
+                    .any(|(_, id)| plan.units[*id].target.kind == "proc-macro")
+        });
+    // The profile, output directory and dependency order do not need rustc's
+    // identity. Resolve it while preparing them, then check it before any work.
+    enum Identity<'scope> {
+        Ready(HostToolchain<'scope>),
+        Pending(std::thread::ScopedJoinHandle<'scope, Result<HostToolchain<'scope>>>),
+    }
+    let identity = match (rustc_units.is_empty(), jobs > 1) {
+        (true, _) => Identity::Ready(HostToolchain {
+            rustc,
+            version: String::new(),
+            server: None,
+        }),
+        (false, false) => Identity::Ready(host_rustc_identity(scope, &rustc, None)?),
+        (false, true) => Identity::Pending({
+            let cache = prefetch_server.then(|| {
+                plan.workspace_root
+                    .join("target/flux/native-host/rustc-queries-v1")
+            });
+            scope.spawn(move || host_rustc_identity(scope, &rustc, cache.as_deref()))
+        }),
     };
     // Build scripts and the target graph follow the Cargo profile: `release`
     // with `--release`, `dev` otherwise. An explicit setting overrides it.
@@ -133,11 +174,34 @@ pub(super) fn run(
     let mut done: Vec<bool> = selected.iter().map(|s| !s).collect();
     let mut started = done.clone();
     let mut reservations = vec![0; plan.units.len()];
-    let jobs = options.jobs.map_or_else(
-        || std::thread::available_parallelism().map_or(1, |n| n.get()),
-        |n| n as usize,
-    );
+    let HostToolchain {
+        rustc,
+        version,
+        server,
+    } = match identity {
+        Identity::Ready(toolchain) => toolchain,
+        Identity::Pending(pending) => pending.join().expect("rustc identity worker panicked")?,
+    };
+    let early_root = build.filter(|_| {
+        jobs > 1
+            && !native_macros
+            && selected.iter().any(|&host| host)
+            && plan
+                .root_units
+                .iter()
+                .all(|&root| plan.units[root].target.kind == "lib")
+    });
+    let early_parent = early_root.map(|options| {
+        plan.workspace_root
+            .join("target/flux")
+            .join(options.profile_name())
+    });
+    let mut early_stage = None;
+    let mut early_libraries = BTreeMap::new();
+    let mut early_considered = BTreeSet::new();
+    let early_artifacts = early_parent.as_deref().map(FreshArtifacts::for_outputs);
     let host_artifacts = FreshArtifacts::for_outputs(&root);
+    let host_sdk = OnceLock::new();
     let (finished, completions) = std::sync::mpsc::channel::<(usize, Result<Option<Output>>)>();
     let host = HostSettings {
         version: &version,
@@ -152,12 +216,15 @@ pub(super) fn run(
         timings: start.is_some(),
         shared_dependencies: false,
         artifacts: &host_artifacts,
+        sdk: &host_sdk,
     };
     let plan_ref = &plan;
     let output_root = root.as_path();
+    let macro_server = OnceLock::new();
     std::thread::scope(|scope| -> Result<()> {
         let mut running = 0;
         let mut failure = None;
+        let mut early_failure = None;
         let mut received = None;
         loop {
             for (index, result) in received.take().into_iter().chain(completions.try_iter()) {
@@ -170,7 +237,11 @@ pub(super) fn run(
                         done[index] = true;
                     }
                     Err(error) => {
-                        failure.get_or_insert(error);
+                        if early_considered.contains(&index) {
+                            early_failure.get_or_insert(error);
+                        } else {
+                            failure.get_or_insert(error);
+                        }
                     }
                 }
             }
@@ -282,12 +353,88 @@ pub(super) fn run(
                     }
                 }
             }
+            if failure.is_none()
+                && early_failure.is_none()
+                && running != 0
+                && let Some(options) = early_root
+            {
+                let parent = early_parent.as_deref().expect("early target directory");
+                let artifacts = early_artifacts.as_ref().expect("early target cache");
+                for (index, unit) in plan.units.iter().enumerate() {
+                    if running == jobs {
+                        break;
+                    }
+                    if unit.domain != Domain::Target
+                        || unit.target.kind != "lib"
+                        || !unit.dependencies.is_empty()
+                        || plan.root_units.contains(&index)
+                        || !waits[index].iter().all(|&dependency| done[dependency])
+                        || !early_considered.insert(index)
+                    {
+                        continue;
+                    }
+                    let script = unit.build_script.and_then(|id| outputs[id].script.as_ref());
+                    let cfg = crate::cargo::cfg(
+                        script.map_or(&[], |script| script.cfgs.as_slice()),
+                        &unit.features,
+                    )?;
+                    let source = target_source(
+                        &plan,
+                        index,
+                        script,
+                        cfg,
+                        None,
+                        unit.target.root.clone(),
+                        Vec::new(),
+                    )?;
+                    let work =
+                        super::build::EarlyLibrary::new(&source, options, &parent.join("deps"))?;
+                    if work.destination().exists()
+                        || early_libraries.contains_key(work.destination())
+                    {
+                        continue;
+                    }
+                    if early_stage.is_none() {
+                        early_stage = Some(super::fetch::Temporary::with_prefix(
+                            &parent.join("deps"),
+                            "early-target",
+                        )?);
+                    }
+                    let stage = early_stage
+                        .as_ref()
+                        .expect("early staging directory")
+                        .0
+                        .join(format!("target-{index}.flib"));
+                    early_libraries.insert(work.destination().to_owned(), stage.clone());
+                    let sender = finished.clone();
+                    std::thread::Builder::new()
+                        .stack_size(8 * 1024 * 1024)
+                        .spawn_scoped(scope, move || {
+                            let mut completion = super::build::JobCompletion {
+                                sender,
+                                index,
+                                result: None,
+                            };
+                            completion.result =
+                                Some(work.compile(&stage, artifacts).and_then(|ok| {
+                                    if ok {
+                                        Ok(None)
+                                    } else {
+                                        Err(format!("compilation of {} failed", source.name))
+                                    }
+                                }));
+                        })
+                        .map_err(|error| format!("cannot start target library: {error}"))?;
+                    running += 1;
+                    reservations[index] = 1;
+                }
+            }
             if running == 0 {
                 break;
             }
             received = Some(completions.recv().map_err(|e| e.to_string())?);
         }
-        failure.map_or(Ok(()), Err)
+        failure.or(early_failure).map_or(Ok(()), Err)
     })?;
     if done.iter().any(|d| !d) {
         return Err("native host units depend on each other in a cycle".into());
@@ -320,6 +467,22 @@ pub(super) fn run(
     );
     match build {
         Some(options) => {
+            if let Some(server) = server {
+                // The sysroot query can outlast -vV and run alongside host
+                // jobs. A failed query is reported only if a macro needs it.
+                let result =
+                    crate::proc_macro::rustc_server_with(&prepared.rustc, || match server {
+                        ServerQuery::Cached(path) => Ok(path),
+                        ServerQuery::Pending(query, cache) => {
+                            let path = query.join().expect("rustc sysroot worker panicked")?;
+                            if let Some(cache) = cache {
+                                cache.write(&prepared.rustc, &path);
+                            }
+                            Ok(path)
+                        }
+                    });
+                let _ = macro_server.set(result);
+            }
             if let Some(start) = start {
                 eprintln!(
                     "{:<38}  {:>10.2?}",
@@ -327,10 +490,64 @@ pub(super) fn run(
                     start.elapsed()
                 );
             }
-            compile_plan(&prepared, options, jobs, command_options)
+            compile_plan(
+                &prepared,
+                options,
+                jobs,
+                command_options,
+                &macro_server,
+                &early_libraries,
+            )
         }
         None => Ok(ExitCode::SUCCESS),
     }
+}
+
+struct HostToolchain<'scope> {
+    rustc: OsString,
+    version: String,
+    server: Option<ServerQuery<'scope>>,
+}
+
+enum ServerQuery<'scope> {
+    Cached(PathBuf),
+    Pending(
+        std::thread::ScopedJoinHandle<'scope, Result<PathBuf>>,
+        Option<toolchain_cache::QueryCache>,
+    ),
+}
+
+fn host_rustc_identity<'scope>(
+    scope: &'scope std::thread::Scope<'scope, '_>,
+    requested: &OsStr,
+    cache_path: Option<&Path>,
+) -> Result<HostToolchain<'scope>> {
+    let rustc = resolve_host_rustc(requested)?;
+    let cache = cache_path.and_then(|path| toolchain_cache::QueryCache::capture(path, &rustc));
+    if let Some((version, server)) = cache.as_ref().and_then(toolchain_cache::QueryCache::read) {
+        return Ok(HostToolchain {
+            rustc,
+            version,
+            server: Some(ServerQuery::Cached(server)),
+        });
+    }
+    let server = cache_path.map(|_| {
+        let rustc = rustc.clone();
+        let pending = scope.spawn(move || {
+            crate::flib::time("rustc sysroot query", || {
+                crate::proc_macro::query_rustc_server(&rustc)
+            })
+        });
+        ServerQuery::Pending(pending, cache)
+    });
+    let version = crate::flib::time("rustc version query", || {
+        crate::cargo::output(Command::new(&rustc).arg("-vV"), "rustc version")
+    })?;
+    Ok(HostToolchain {
+        rustc,
+        version,
+        server,
+    })
 }
 
 #[cfg(unix)]
@@ -530,6 +747,7 @@ struct HostSettings<'a> {
     timings: bool,
     shared_dependencies: bool,
     artifacts: &'a FreshArtifacts,
+    sdk: &'a OnceLock<Option<PathBuf>>,
 }
 
 /// Compiles a build script with Flux and runs it, or builds a Flux macro host.
@@ -553,6 +771,7 @@ fn flux_unit(
         timings,
         shared_dependencies,
         artifacts,
+        sdk,
     } = *host;
     let unit = &plan.units[index];
     let package = &plan.packages[unit.package];
@@ -607,14 +826,17 @@ fn flux_unit(
             &native,
         )? == ExitCode::SUCCESS
     } else {
-        crate::build::compile_cached(CompileRequest {
-            file: &unit.target.root,
-            crate_name: &stem,
-            output: &artifact,
-            sources: &sources,
-            native,
-            options,
-        })?
+        crate::build::compile_cached(
+            CompileRequest {
+                file: &unit.target.root,
+                crate_name: &stem,
+                output: &artifact,
+                sources: &sources,
+                native,
+                options,
+            },
+            sdk,
+        )?
     };
     if !compiled {
         return Err(format!(
@@ -1194,11 +1416,11 @@ fn macro_exports(
         &target.root,
         crate::cargo::edition(&target.edition)?,
         cfg,
+        Some(&artifact.with_extension("macro-exports-v1")),
     )
 }
 
 fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<String, String>> {
-    let manifest = super::load(&package.manifest)?;
     let mut env = BTreeMap::from([
         (
             "CARGO_MANIFEST_DIR".into(),
@@ -1236,7 +1458,7 @@ fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<Str
     ] {
         env.insert(
             format!("CARGO_PKG_{key}"),
-            manifest
+            package
                 .fields
                 .get(field)
                 .and_then(toml::Value::as_str)
@@ -1246,7 +1468,7 @@ fn environment(package: &PlannedPackage, target: &Target) -> Result<BTreeMap<Str
     }
     env.insert(
         "CARGO_PKG_AUTHORS".into(),
-        super::strings(manifest.fields.get("authors"))?.join(":"),
+        super::strings(package.fields.get("authors"))?.join(":"),
     );
     if matches!(target.kind.as_str(), "bin" | "test-bin") {
         env.insert("CARGO_BIN_NAME".into(), target.name.clone());
@@ -1442,10 +1664,12 @@ fn compile_plan(
     options: crate::BuildOptions,
     jobs: usize,
     cli: &super::Options,
+    macro_server: &OnceLock<Result<PathBuf>>,
+    early_libraries: &BTreeMap<PathBuf, PathBuf>,
 ) -> Result<ExitCode> {
     let mut failed = false;
     for &root in &prepared.plan.root_units {
-        let status = compile_root(prepared, root, options, jobs)?;
+        let status = compile_root(prepared, root, options, jobs, macro_server, early_libraries)?;
         if status != ExitCode::SUCCESS {
             return Ok(status);
         }
@@ -1477,11 +1701,110 @@ fn compile_plan(
     })
 }
 
+type MacroCatalog = (flux_hir::CrateCfg, Vec<flux_hir::ProcMacro>);
+
+fn target_macro_catalog(
+    prepared: &Prepared,
+    id: usize,
+    macro_server: &OnceLock<Result<PathBuf>>,
+) -> Result<MacroCatalog> {
+    let unit = &prepared.plan.units[id];
+    let script = unit
+        .build_script
+        .and_then(|id| prepared.outputs[id].script.as_ref());
+    let mut cfg = crate::cargo::cfg(script.map_or(&[], |s| s.cfgs.as_slice()), &unit.features)?;
+    cfg.names.push(flux_intern::Symbol::intern("proc_macro"));
+    let output = &prepared.outputs[id];
+    let server = if output.macros.is_none() {
+        Some(
+            macro_server
+                .get_or_init(|| crate::proc_macro::rustc_server(&prepared.rustc))
+                .as_ref()
+                .map_err(Clone::clone)?
+                .as_path(),
+        )
+    } else {
+        None
+    };
+    let exports = macro_exports(&prepared.rustc, output, &unit.target, cfg.clone(), server)?;
+    Ok((cfg, exports))
+}
+
+fn prepare_macro_catalogs(
+    prepared: &Prepared,
+    units: &[usize],
+    jobs: usize,
+    macro_server: &OnceLock<Result<PathBuf>>,
+) -> BTreeMap<usize, Result<MacroCatalog>> {
+    if jobs < 2 || units.len() < 2 {
+        return BTreeMap::new();
+    }
+    let prepare = |batch: &[usize]| -> Vec<_> {
+        batch
+            .iter()
+            .map(|&id| (id, target_macro_catalog(prepared, id, macro_server)))
+            .collect()
+    };
+    std::thread::scope(|scope| {
+        let mut batches = units.chunks(units.len().div_ceil(jobs));
+        let first = batches.next().expect("macro catalog work");
+        let mut workers = Vec::new();
+        let mut catalogs = BTreeMap::new();
+        for batch in batches {
+            match std::thread::Builder::new()
+                .stack_size(8 * 1024 * 1024)
+                .spawn_scoped(scope, move || prepare(batch))
+            {
+                Ok(worker) => workers.push(worker),
+                Err(_) => catalogs.extend(prepare(batch)),
+            }
+        }
+        catalogs.extend(prepare(first));
+        for worker in workers {
+            catalogs.extend(worker.join().expect("macro catalog worker panicked"));
+        }
+        catalogs
+    })
+}
+
+fn target_source(
+    plan: &Plan,
+    id: usize,
+    script: Option<&ScriptOutput>,
+    cfg: flux_hir::CrateCfg,
+    macros: Option<Vec<flux_hir::ProcMacro>>,
+    file: PathBuf,
+    dependencies: Vec<(String, usize)>,
+) -> Result<SourceInput> {
+    let unit = &plan.units[id];
+    let mut env = environment(&plan.packages[unit.package], &unit.target)?;
+    if let Some(script) = script {
+        env.extend(script.environment.clone());
+        env.insert(
+            "OUT_DIR".into(),
+            script.out_dir.to_string_lossy().into_owned(),
+        );
+    }
+    Ok(SourceInput {
+        compilation_dir: Some(plan.workspace_root.clone()),
+        package_identity: None,
+        host_macros: macros,
+        file,
+        name: unit.target.name.replace('-', "_"),
+        edition: crate::cargo::edition(&unit.target.edition)?,
+        dependencies,
+        cfg,
+        environment: Some(env),
+    })
+}
+
 fn compile_root(
     prepared: &Prepared,
     root_unit: usize,
     options: crate::BuildOptions,
     jobs: usize,
+    macro_server: &OnceLock<Result<PathBuf>>,
+    early_libraries: &BTreeMap<PathBuf, PathBuf>,
 ) -> Result<ExitCode> {
     let plan = &prepared.plan;
     if plan.units[root_unit].target.kind == "proc-macro" {
@@ -1494,10 +1817,26 @@ fn compile_root(
             pending.extend(prerequisites(plan, id));
         }
     }
+    let target_imports: BTreeSet<_> = plan
+        .units
+        .iter()
+        .filter(|unit| unit.domain == Domain::Target)
+        .flat_map(|unit| unit.dependencies.iter().map(|(_, id)| *id))
+        .filter(|&id| plan.units[id].target.kind == "proc-macro")
+        .collect();
+    let macros: Vec<_> = needed
+        .iter()
+        .copied()
+        .filter(|&id| {
+            plan.units[id].target.kind == "proc-macro"
+                && (plan.units[id].domain == Domain::Target || target_imports.contains(&id))
+                && prepared.outputs[id].macros.is_none()
+        })
+        .collect();
+    let mut catalogs = prepare_macro_catalogs(prepared, &macros, jobs, macro_server);
     let mut sources = Vec::new();
     let mut indices = BTreeMap::new();
     let mut native = flux_codegen::NativeLink::default();
-    let mut macro_server = None;
     let mut doc_dependencies = None;
     for (id, unit) in plan.units.iter().enumerate() {
         if !needed.contains(&id) {
@@ -1509,45 +1848,25 @@ fn compile_root(
             continue;
         }
         // Only proc macros imported by target units need a Flux host catalog.
-        if unit.domain == Domain::Host
-            && !plan
-                .units
-                .iter()
-                .any(|u| u.domain == Domain::Target && u.dependencies.iter().any(|(_, d)| *d == id))
-        {
+        if unit.domain == Domain::Host && !target_imports.contains(&id) {
             continue;
         }
         let script = unit
             .build_script
             .and_then(|i| prepared.outputs[i].script.as_ref());
-        let mut cfg = crate::cargo::cfg(script.map_or(&[], |s| s.cfgs.as_slice()), &unit.features)?;
-        let macros = if unit.target.kind == "proc-macro" {
-            cfg.names.push(flux_intern::Symbol::intern("proc_macro"));
-            if prepared.outputs[id].macros.is_none() && macro_server.is_none() {
-                macro_server = Some(crate::proc_macro::rustc_server(&prepared.rustc)?);
-            }
-            Some(macro_exports(
-                &prepared.rustc,
-                &prepared.outputs[id],
-                &unit.target,
-                cfg.clone(),
-                macro_server.as_deref(),
-            )?)
+        let (cfg, macros) = if unit.target.kind == "proc-macro" {
+            let (cfg, exports) = catalogs
+                .remove(&id)
+                .unwrap_or_else(|| target_macro_catalog(prepared, id, macro_server))?;
+            (cfg, Some(exports))
         } else {
-            None
+            let cfg = crate::cargo::cfg(script.map_or(&[], |s| s.cfgs.as_slice()), &unit.features)?;
+            (cfg, None)
         };
         if macros.is_none()
             && let Some(script) = script
         {
             link_directives(plan, id, script, &mut native)?;
-        }
-        let mut env = environment(&plan.packages[unit.package], &unit.target)?;
-        if let Some(script) = script {
-            env.extend(script.environment.clone());
-            env.insert(
-                "OUT_DIR".into(),
-                script.out_dir.to_string_lossy().into_owned(),
-            );
         }
         let dependencies = if macros.is_some() {
             Vec::new()
@@ -1576,17 +1895,15 @@ fn compile_root(
             unit.target.root.clone()
         };
         indices.insert(id, sources.len());
-        sources.push(SourceInput {
-            compilation_dir: Some(plan.workspace_root.clone()),
-            package_identity: None,
-            host_macros: macros,
-            file,
-            name: unit.target.name.replace('-', "_"),
-            edition: crate::cargo::edition(&unit.target.edition)?,
-            dependencies,
+        sources.push(target_source(
+            plan,
+            id,
+            script,
             cfg,
-            environment: Some(env),
-        });
+            macros,
+            file,
+            dependencies,
+        )?);
     }
     if let Some(dependencies) = doc_dependencies {
         let binary = &plan.units[root_unit];
@@ -1662,5 +1979,14 @@ fn compile_root(
         });
     std::fs::create_dir_all(output.parent().ok_or("build output has no parent")?)
         .map_err(|e| e.to_string())?;
-    super::build::run(&sources, root, &output, options, jobs, library, &native)
+    super::build::run_with_early_libraries(
+        &sources,
+        root,
+        &output,
+        options,
+        jobs,
+        library,
+        &native,
+        early_libraries,
+    )
 }

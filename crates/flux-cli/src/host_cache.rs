@@ -1,5 +1,6 @@
 //! Reuse of compiled host executables, without reusing their execution effects.
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use flux_hir::flib::{Encode, Encoder};
 use serde::{Deserialize, Serialize};
@@ -38,6 +39,7 @@ impl HostCache {
     pub(crate) fn new(
         request: &CompileRequest<'_>,
         generated: Option<(&str, &str)>,
+        sdk: Option<&OnceLock<Option<PathBuf>>>,
     ) -> Result<Option<Self>, String> {
         // Arbitrary host expansion effects and native link resolution do not
         // have an input contract here. Keep those compilations conservative.
@@ -65,8 +67,15 @@ impl HostCache {
         {
             return Ok(None);
         }
-        let native = match crate::native_link::Snapshot::capture(
+        let sdk = sdk
+            .filter(|_| cfg!(all(target_os = "macos", target_arch = "aarch64")))
+            .and_then(|sdk| {
+                sdk.get_or_init(|| flux_codegen::macos_sdk().ok())
+                    .as_deref()
+            });
+        let native = match crate::native_link::Snapshot::capture_in_sdk(
             &request.options.native_link(&request.native),
+            sdk,
         ) {
             Ok(snapshot) => snapshot,
             Err(_) => return Ok(None),
@@ -141,7 +150,10 @@ impl HostCache {
                 return Ok(false);
             }
         }
-        Ok(self.native.is_fresh())
+        // The matching key already includes the native inputs this request
+        // resolved in HostCache::new. Recording a newly linked executable
+        // still checks its inputs again after linking.
+        Ok(true)
     }
 
     pub(crate) fn record(

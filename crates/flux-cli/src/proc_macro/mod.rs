@@ -73,15 +73,37 @@ pub fn exports(
     cfg: flux_hir::CrateCfg,
 ) -> Result<Vec<ProcMacro>, String> {
     let server = rustc_server(rustc)?;
-    exports_from_server(&server, dylib, source, flux_syntax::Edition::E2024, cfg)
+    exports_from_server(
+        &server,
+        dylib,
+        source,
+        flux_syntax::Edition::E2024,
+        cfg,
+        None,
+    )
 }
 
 /// Discover once for the matching toolchain, then share across one preparation.
 pub(crate) fn rustc_server(rustc: &str) -> Result<PathBuf, String> {
+    rustc_server_with(rustc, || {
+        query_rustc_server(&std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+    })
+}
+
+/// Checks the protocol before using a server path, including one queried
+/// concurrently with the compiler version.
+pub(crate) fn rustc_server_with(
+    rustc: &str,
+    query: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
     if !reviewed_rustc(rustc) {
         return Err("proc-macro server protocol is not supported for this rustc commit".into());
     }
-    let output = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
+    query()
+}
+
+pub(crate) fn query_rustc_server(program: &std::ffi::OsStr) -> Result<PathBuf, String> {
+    let output = Command::new(program)
         .args(["--print", "sysroot"])
         .output()
         .map_err(|e| format!("cannot find proc-macro server: {e}"))?;
@@ -98,6 +120,7 @@ pub(crate) fn exports_from_server(
     source: &Path,
     edition: flux_syntax::Edition,
     cfg: flux_hir::CrateCfg,
+    export_cache: Option<&Path>,
 ) -> Result<Vec<ProcMacro>, String> {
     let identity = flib::HostIdentity::rustc(server, dylib)?;
     let (server, dylib) = identity.rustc_paths();
@@ -110,7 +133,7 @@ pub(crate) fn exports_from_server(
             crates: Default::default(),
         }),
     });
-    let names = flib::rustc_exports(&identity, &catalog)?;
+    let names = flib::rustc_exports(&identity, &catalog, export_cache)?;
     let mut db = flux_hir::SourceDb::empty();
     let root = db.load_with_edition(source, edition)?;
     db.set_crate_cfg(root, cfg)?;

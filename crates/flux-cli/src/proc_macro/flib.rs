@@ -210,25 +210,67 @@ type ExportList = [(String, super::protocol::ProcMacroKind)];
 type ExportSlot = Arc<Mutex<Option<Arc<ExportList>>>>;
 static RUSTC_EXPORTS: Mutex<BTreeMap<Vec<u8>, ExportSlot>> = Mutex::new(BTreeMap::new());
 
+const MAX_EXPORT_RECORD: usize = 1024 * 1024;
+
+fn read_exports(path: &Path, identity: &[u8; 32]) -> Option<Arc<ExportList>> {
+    let mut record = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_EXPORT_RECORD as u64 + 1)
+        .read_to_end(&mut record)
+        .ok()?;
+    if record.len() > MAX_EXPORT_RECORD || record.get(..32)? != identity {
+        return None;
+    }
+    let payload = record.get(64..)?;
+    if record.get(32..64)? != digest(payload) {
+        return None;
+    }
+    serde_json::from_slice::<Vec<_>>(payload)
+        .ok()
+        .map(Arc::from)
+}
+
+fn record_exports(path: &Path, identity: &[u8; 32], exports: &ExportList) {
+    if let Ok(payload) = serde_json::to_vec(exports)
+        && payload.len() <= MAX_EXPORT_RECORD - 64
+    {
+        let mut record = Vec::with_capacity(64 + payload.len());
+        record.extend_from_slice(identity);
+        record.extend_from_slice(&digest(&payload));
+        record.extend_from_slice(&payload);
+        let _ = crate::flib::write_cache(path, &record);
+    }
+}
+
 /// Reuse the checked export list for identical host files in this driver
 /// process. Each resolver still owns its own expansion processes.
 pub(super) fn rustc_exports(
     identity: &HostIdentity,
     catalog: &Catalog,
+    disk_cache: Option<&Path>,
 ) -> Result<Arc<ExportList>, String> {
     let (server, dylib) = identity.rustc_paths();
     let mut key = Encoder::new();
     identity.encode_identity(&mut key)?;
+    let key = key.into_bytes();
+    let disk_key = disk_cache.map(|_| digest(&key));
     let slot = RUSTC_EXPORTS
         .lock()
         .expect("proc-macro export cache poisoned")
-        .entry(key.into_bytes())
+        .entry(key)
         .or_default()
         .clone();
     let mut cached = slot.lock().expect("proc-macro export list poisoned");
     identity.verify()?;
     if let Some(exports) = &*cached {
         return Ok(exports.clone());
+    }
+    if let Some((path, key)) = disk_cache.zip(disk_key.as_ref())
+        && let Some(exports) = read_exports(path, key)
+    {
+        *cached = Some(exports.clone());
+        return Ok(exports);
     }
     // The first invocation in this graph can adopt the process used to
     // discover the exports. No other graph shares that process.
@@ -246,6 +288,9 @@ pub(super) fn rustc_exports(
         _ => return Err("unexpected proc-macro export list".into()),
     };
     identity.verify()?;
+    if let Some((path, key)) = disk_cache.zip(disk_key.as_ref()) {
+        record_exports(path, key, &exports);
+    }
     *cached = Some(Arc::clone(&exports));
     Ok(exports)
 }
@@ -281,7 +326,7 @@ impl ProcMacroResolver for FlibHostResolver {
             }
         };
         drop(catalogs);
-        let exports = rustc_exports(&identity, &catalog)?;
+        let exports = rustc_exports(&identity, &catalog, None)?;
         if !exports.iter().any(|(export, _)| export == &name) {
             return Err(format!(
                 "procedural macro export `{name}` is not present in host"
@@ -299,6 +344,28 @@ impl ProcMacroResolver for FlibHostResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn export_records_require_matching_identity_and_contents() {
+        use super::super::protocol::ProcMacroKind;
+
+        let directory =
+            std::env::temp_dir().join(format!("flux-export-record-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("exports");
+        let key = digest(b"server and dylib identity");
+        let exports = [("test_macro".to_owned(), ProcMacroKind::Bang)];
+        record_exports(&path, &key, &exports);
+        assert_eq!(&*read_exports(&path, &key).unwrap(), &exports);
+        assert!(read_exports(&path, &digest(b"different dylib identity")).is_none());
+
+        let mut record = std::fs::read(&path).unwrap();
+        let byte = record[64..].iter_mut().find(|b| **b == b't').unwrap();
+        *byte = b'b';
+        std::fs::write(&path, &record).unwrap();
+        assert!(read_exports(&path, &key).is_none());
+        std::fs::remove_dir_all(&directory).unwrap();
+    }
 
     #[test]
     fn original_rustc_schema_descriptor_remains_readable() {

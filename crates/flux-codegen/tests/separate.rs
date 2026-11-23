@@ -195,6 +195,33 @@ fn separate_objects_link_with_generics_statics_and_function_pointers() {
 // Names, sources, direct edges and explicit crate fingerprints for one stage.
 type TestCrate<'a> = (&'a str, &'a str, &'a [(&'a str, usize)], u8);
 
+#[test]
+fn library_declares_referenced_imports_without_losing_requirements() {
+    let graph = [
+        (
+            "upstream",
+            "fn transitive() -> u64 { 42 } pub fn direct() -> u64 { transitive() }",
+            &[][..],
+            21,
+        ),
+        (
+            "facade",
+            "pub fn answer() -> u64 { upstream::direct() }",
+            &[("upstream", 0)][..],
+            22,
+        ),
+    ];
+    let lowered = staged_lowered(&graph, Some(1), &[]);
+    let declarations = &lowered.module.decls;
+    assert!(declarations.iter().any(|decl| decl.name.contains("direct")));
+    assert!(
+        !declarations
+            .iter()
+            .any(|decl| decl.name.contains("transitive"))
+    );
+    assert!(lowered.required_instances.len() >= 2);
+}
+
 fn staged_module(sources: &[TestCrate<'_>], library: Option<usize>) -> keel_ir::Module {
     staged_lowered(sources, library, &[]).module
 }

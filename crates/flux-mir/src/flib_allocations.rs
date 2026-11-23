@@ -1,5 +1,6 @@
 //! Constant allocation identities and bounded, shared value graphs.
 
+use super::integers;
 use crate::eval::Value;
 use flux_hir::flib::{
     Decode, Decoder, Encode, Encoder, Error, MAX_NESTING_DEPTH, MAX_RECORD_LENGTH,
@@ -104,7 +105,17 @@ pub(super) fn encode_fields(fields: &Arc<[Value]>, e: &mut Encoder) -> Result<()
     }
     let depth = fields_height(fields, e, 0)?;
     let wire = e.reserve_allocation(FIELDS, raw, fields.clone())?;
-    if fields.len() > MAX_RECORD_LENGTH {
+    let integer = |value: &Value| match value {
+        Value::Int { bits, ty } => Some((*bits, *ty)),
+        _ => None,
+    };
+    if let Some(ty) = integers::table_type(fields, integer)
+        && integers::reserve(e, fields)
+    {
+        3u8.encode(e)?;
+        wire.encode(e)?;
+        integers::encode(fields, ty, integer, e)?;
+    } else if fields.len() > MAX_RECORD_LENGTH {
         // Large generated data often comes from byte literals. Keep their
         // element type and allocation identity without one record per byte.
         e.charge_allocation_expansion(fields.len(), std::mem::size_of::<Value>())?;
@@ -130,10 +141,9 @@ pub(super) fn encode_fields(fields: &Arc<[Value]>, e: &mut Encoder) -> Result<()
     e.complete_allocation(FIELDS, raw, depth)
 }
 
+// The value is a freshly decoded record; only its children can refer to
+// allocations already registered in the decoder.
 pub(super) fn decoded_height(value: &Value, d: &Decoder<'_>) -> Result<u32, Error> {
-    if let Some(depth) = d.allocation_depth(VALUE, value as *const Value as usize) {
-        return height(0, depth);
-    }
     let extra = match value {
         Value::Ref(value)
         | Value::Union { value, .. }
@@ -212,6 +222,10 @@ pub(super) fn decode_fields(d: &mut Decoder<'_>) -> Result<Arc<[Value]>, Error> 
                 })
                 .collect();
             (fields, 2)
+        }
+        3 => {
+            let (_, fields) = integers::decode(d, |bits, ty| Value::Int { bits, ty })?;
+            (fields.into(), 2)
         }
         _ => return Err(Error::new("invalid constant fields tag")),
     };

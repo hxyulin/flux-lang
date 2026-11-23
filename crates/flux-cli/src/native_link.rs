@@ -1,5 +1,5 @@
 //! Native link requests and the resolved inputs of a reusable executable.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use flux_hir::{NativeKind, NativeLibrary};
 use flux_intern::Symbol;
@@ -84,9 +84,19 @@ pub(crate) struct Snapshot {
 
 impl Snapshot {
     pub(crate) fn capture(link: &flux_codegen::NativeLink) -> Result<Self, String> {
+        Self::capture_in_sdk(link, None)
+    }
+
+    pub(crate) fn capture_in_sdk(
+        link: &flux_codegen::NativeLink,
+        sdk: Option<&Path>,
+    ) -> Result<Self, String> {
         let target = flux_codegen::Target::host().ok_or("unsupported native link target")?;
-        let resolved =
-            flux_codegen::native_link_inputs(target, link).map_err(|error| error.to_string())?;
+        let resolved = match sdk {
+            Some(path) => flux_codegen::macos_link_inputs(link, path),
+            None => flux_codegen::native_link_inputs(target, link),
+        }
+        .map_err(|error| error.to_string())?;
         let inputs = resolved
             .files
             .into_iter()

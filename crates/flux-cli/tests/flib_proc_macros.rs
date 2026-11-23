@@ -45,6 +45,7 @@ impl Fixture {
 fn empty_mir() -> flux_mir::FileMir {
     flux_mir::FileMir {
         panic_strategy: flux_mir::PanicStrategy::Abort,
+        deferred_functions: Default::default(),
         bodies: Default::default(),
         closures: Default::default(),
         consts: Default::default(),

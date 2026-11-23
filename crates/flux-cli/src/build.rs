@@ -1,8 +1,9 @@
 //! `flux build` and `flux run`: the whole pipeline, from source to an
 //! executable.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use flux_codegen::Target;
@@ -54,6 +55,24 @@ impl Timings {
         if let Some(start) = start {
             self.phases.push((phase, start.elapsed()));
         }
+        result
+    }
+
+    pub(crate) fn time_lowering<T>(
+        &mut self,
+        f: impl FnOnce(&mut flux_codegen::LoweringTimings) -> T,
+    ) -> T {
+        let mut parts = flux_codegen::LoweringTimings::default();
+        let result = self.time("mono + keel lowering (inclusive)", || f(&mut parts));
+        let inclusive = self.phases.last().map_or(Duration::ZERO, |p| p.1);
+        let measured = parts.roots + parts.collect + parts.substitute + parts.validate;
+        self.phases.extend([
+            ("  native root discovery", parts.roots),
+            ("  mono collection", parts.collect),
+            ("  body substitution", parts.substitute),
+            ("  mir validation", parts.validate),
+            ("  keel lowering", inclusive.saturating_sub(measured)),
+        ]);
         result
     }
 }
@@ -137,8 +156,11 @@ pub(crate) fn compile(request: CompileRequest<'_>) -> Result<bool, String> {
 }
 
 /// Reuses a host executable only; callers must still run it or invoke its macros.
-pub(crate) fn compile_cached(request: CompileRequest<'_>) -> Result<bool, String> {
-    compile_host_cached(request, None)
+pub(crate) fn compile_cached(
+    request: CompileRequest<'_>,
+    sdk: &OnceLock<Option<PathBuf>>,
+) -> Result<bool, String> {
+    compile_host_cached(request, None, Some(sdk))
 }
 
 /// Preserves source-relative loading for a wrapper generated from checked physical text.
@@ -147,16 +169,17 @@ pub(crate) fn compile_generated_cached(
     text: &str,
     original: &str,
 ) -> Result<bool, String> {
-    compile_host_cached(request, Some((text, original)))
+    compile_host_cached(request, Some((text, original)), None)
 }
 
 fn compile_host_cached(
     request: CompileRequest<'_>,
     generated: Option<(&str, &str)>,
+    sdk: Option<&OnceLock<Option<PathBuf>>>,
 ) -> Result<bool, String> {
     request.options.validate()?;
     let _strategy = crate::builtins::strategy_scope(request.options.panic_strategy)?;
-    let cache = crate::host_cache::HostCache::new(&request, generated)?;
+    let cache = crate::host_cache::HostCache::new(&request, generated, sdk)?;
     if let Some(cache) = &cache
         && cache.is_fresh(&request)?
     {
@@ -349,21 +372,9 @@ fn compile_inner(
                     .map(|lowered| lowered.module)
                 })
             } else if options.timings {
-                let mut parts = flux_codegen::LoweringTimings::default();
-                let lowered = timings.time("mono + keel lowering (inclusive)", || {
-                    flux_codegen::lower_with_timings(&hir, &typed, &mir, compilation, &mut parts)
-                });
-                let inclusive = timings.phases.last().map_or(Duration::ZERO, |p| p.1);
-                let measured = parts.collect + parts.substitute + parts.validate;
-                for (name, duration) in [
-                    ("  mono collection", parts.collect),
-                    ("  body substitution", parts.substitute),
-                    ("  mir validation", parts.validate),
-                    ("  keel lowering", inclusive.saturating_sub(measured)),
-                ] {
-                    timings.phases.push((name, duration));
-                }
-                lowered
+                timings.time_lowering(|parts| {
+                    flux_codegen::lower_with_timings(&hir, &typed, &mir, compilation, parts)
+                })
             } else if let Some(compilation) = compilation {
                 flux_codegen::lower_crate(&hir, &typed, &mir, compilation)
             } else {

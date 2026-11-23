@@ -7,7 +7,7 @@
 
 use crate::clone::Clone;
 use crate::cmp::{Eq, PartialEq};
-use crate::marker::Copy;
+use crate::marker::{Copy, FnPtr};
 use crate::mem::{ManuallyDrop, align_of, size_of};
 use crate::option::Option::{self, None, Some};
 
@@ -82,6 +82,15 @@ pub fn eq<T: ?Sized>(a: *const T, b: *const T) -> bool {
 /// Compares data addresses, ignoring slice lengths or vtables.
 pub fn addr_eq<T: ?Sized, U: ?Sized>(a: *const T, b: *const U) -> bool {
     a as *const () == b as *const ()
+}
+
+/// Compares the addresses of two function pointers, which may have different signatures.
+///
+/// Code generation can merge distinct functions or emit multiple copies of one
+/// function, so the result does not establish function identity.
+#[must_use]
+pub fn fn_addr_eq<F: FnPtr, G: FnPtr>(a: F, b: G) -> bool {
+    a.addr() == b.addr()
 }
 
 /// Hashes a pointer's address and, for a wide pointer, its metadata.

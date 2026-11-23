@@ -2,6 +2,7 @@
 use super::{CrateIndices, Decode, Decoder, Encode, Encoder, Error, IdKind};
 use crate::{CrateId, FileId, ItemTree, SourceDb};
 use flux_arena::Idx;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 /// Writes one crate's names, items, scopes, macro tokens and diagnostic sources.
@@ -12,6 +13,18 @@ pub fn write_items(items: &ItemTree, krate: CrateId, e: &mut Encoder) -> Result<
 
 /// Writes items using ownership already collected for this unchanged item tree.
 pub fn write_items_with_indices(
+    items: &ItemTree,
+    krate: CrateId,
+    indices: &CrateIndices,
+    e: &mut Encoder,
+) -> Result<(), Error> {
+    e.symbols = Some(Default::default());
+    let result = write_item_records(items, krate, indices, e);
+    e.symbols = None;
+    result
+}
+
+fn write_item_records(
     items: &ItemTree,
     krate: CrateId,
     indices: &CrateIndices,
@@ -154,310 +167,449 @@ pub fn read_items(
     db: &mut SourceDb,
     d: &mut Decoder<'_>,
 ) -> Result<(CrateId, CrateIndices), Error> {
-    if !d.ids.is_strict() {
-        return Err(Error("item loading requires checked reference mappings"));
+    ItemArchiveLayout::new(items)
+        .prepare(db, d)?
+        .decode(d)?
+        .append(items, db, &d.ids)
+}
+
+/// Coordinates of the next crate to append to a staging item tree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct ItemArchiveLayout {
+    crates: usize,
+    arenas: [usize; 9],
+}
+
+impl ItemArchiveLayout {
+    pub fn new(items: &ItemTree) -> Self {
+        Self {
+            crates: items.crates.len(),
+            arenas: [
+                items.modules.len(),
+                items.functions.len(),
+                items.structs.len(),
+                items.traits.len(),
+                items.impls.len(),
+                items.consts.len(),
+                items.type_aliases.len(),
+                items.macros.len(),
+                items.macro_scopes.len(),
+            ],
+        }
     }
-    let mut counts = Vec::new();
-    for _ in 0..10 {
-        counts.push(d.length()?);
-    }
-    let krate = CrateId(u32::try_from(items.crates.len()).map_err(|_| Error("too many crates"))?);
-    let mut indices = CrateIndices::default();
-    macro_rules! reserve {
-        ($field:ident,$n:expr) => {{
-            let start = items.$field.len();
+
+    /// Reserves item identifiers and diagnostic source slots in archive order.
+    pub fn prepare(
+        &mut self,
+        db: &mut SourceDb,
+        d: &mut Decoder<'_>,
+    ) -> Result<PreparedItems, Error> {
+        if !d.ids.is_strict() {
+            return Err(Error("item loading requires checked reference mappings"));
+        }
+        let mut counts = [0; 10];
+        for count in &mut counts {
+            *count = d.length()?;
+        }
+        let starts = *self;
+        let krate = CrateId(u32::try_from(self.crates).map_err(|_| Error("too many crates"))?);
+        let next_crate = self.crates.checked_add(1).ok_or(Error("too many crates"))?;
+        let mut indices = CrateIndices::default();
+        for (n, table) in [
+            &mut indices.modules,
+            &mut indices.functions,
+            &mut indices.structs,
+            &mut indices.traits,
+            &mut indices.impls,
+            &mut indices.consts,
+            &mut indices.type_aliases,
+            &mut indices.macros,
+            &mut indices.macro_scopes,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let start = self.arenas[n];
             let end = start
-                .checked_add(counts[$n])
+                .checked_add(counts[n])
+                .filter(|&end| end <= u32::MAX as usize)
                 .ok_or(Error("item index overflow"))?;
-            if end > u32::MAX as usize {
-                return Err(Error("item index overflow"));
+            *table = (start..end).map(|x| x as u32).collect();
+            self.arenas[n] = end;
+        }
+        self.crates = next_crate;
+        struct Source {
+            path: std::path::PathBuf,
+            text: Arc<str>,
+            edition: flux_syntax::Edition,
+            included: bool,
+            expansion: Option<u32>,
+        }
+        let mut sources = Vec::new();
+        for _ in 0..counts[9] {
+            sources.push(Source {
+                path: Decode::decode(d)?,
+                text: Decode::decode(d)?,
+                edition: Decode::decode(d)?,
+                included: Decode::decode(d)?,
+                expansion: Decode::decode(d)?,
+            });
+        }
+        // File slots are reserved by appending diagnostic-only records. They cannot
+        // become semantic inputs if a later record rejects the artifact.
+        for source in &mut sources {
+            let len = source.text.len() as u32;
+            let file = db.add_metadata_source(
+                std::mem::take(&mut source.path),
+                std::mem::take(&mut source.text),
+                source.edition,
+            );
+            if source.included {
+                let base = db.allocate_metadata_include(file)?;
+                indices.source_ranges.push((file.0, base, base + len));
             }
-            indices.$field = (start..end).map(|x| x as u32).collect();
-        }};
-    }
-    reserve!(modules, 0);
-    reserve!(functions, 1);
-    reserve!(structs, 2);
-    reserve!(traits, 3);
-    reserve!(impls, 4);
-    reserve!(consts, 5);
-    reserve!(type_aliases, 6);
-    reserve!(macros, 7);
-    reserve!(macro_scopes, 8);
-    struct Source {
-        path: std::path::PathBuf,
-        text: String,
-        edition: flux_syntax::Edition,
-        included: bool,
-        expansion: Option<u32>,
-    }
-    let mut sources = Vec::new();
-    for _ in 0..counts[9] {
-        sources.push(Source {
-            path: Decode::decode(d)?,
-            text: Decode::decode(d)?,
-            edition: Decode::decode(d)?,
-            included: Decode::decode(d)?,
-            expansion: Decode::decode(d)?,
-        });
-    }
-    // File slots are reserved by appending diagnostic-only records. They cannot
-    // become semantic inputs if a later record rejects the artifact.
-    for source in &mut sources {
-        let len = source.text.len() as u32;
-        let file = db.add_metadata_source(
-            std::mem::take(&mut source.path),
-            std::mem::take(&mut source.text),
-            source.edition,
-        );
-        if source.included {
-            let base = db.allocate_metadata_include(file)?;
-            indices.source_ranges.push((file.0, base, base + len));
+            indices.files.push(file.0);
         }
-        indices.files.push(file.0);
-    }
-    indices.add_decode_mapping(&mut d.ids, krate, 0)?;
-    let data = crate::item_tree::CrateData::decode(d)?;
-    let modules: Vec<crate::Module> = read_records(counts[0], d)?;
-    let functions: Vec<crate::Function> = read_records(counts[1], d)?;
-    let structs: Vec<crate::Struct> = read_records(counts[2], d)?;
-    let traits: Vec<crate::Trait> = read_records(counts[3], d)?;
-    let impls: Vec<crate::Impl> = read_records(counts[4], d)?;
-    let consts: Vec<crate::Const> = read_records(counts[5], d)?;
-    let aliases: Vec<crate::TypeAlias> = read_records(counts[6], d)?;
-    let macros: Vec<crate::MacroDef> = read_records(counts[7], d)?;
-    let scopes: Vec<crate::MacroScope> = read_records(counts[8], d)?;
-    let def_scopes = read_records(counts[0], d)?;
-    let uses: Vec<crate::item_tree::Use> = Decode::decode(d)?;
-    let sized: rustc_hash::FxHashMap<crate::FunctionId, crate::SizedDispatch> = Decode::decode(d)?;
-    let associated: rustc_hash::FxHashMap<
-        (crate::ImplTarget, flux_intern::Symbol),
-        Vec<crate::AssocItem>,
-    > = Decode::decode(d)?;
-    let trait_impls: rustc_hash::FxHashMap<crate::TraitId, Vec<crate::ImplId>> = Decode::decode(d)?;
-    let constructors: rustc_hash::FxHashMap<(crate::StructId, u32), crate::FunctionId> =
-        Decode::decode(d)?;
-    let defaults: rustc_hash::FxHashMap<crate::StructId, u32> = Decode::decode(d)?;
-    let exported: rustc_hash::FxHashMap<(CrateId, flux_intern::Symbol), crate::MacroId> =
-        Decode::decode(d)?;
-    let blocks: rustc_hash::FxHashMap<(FileId, flux_syntax::NodeId), crate::ModuleId> =
-        Decode::decode(d)?;
-    let anonymous: rustc_hash::FxHashMap<(FileId, flux_syntax::NodeId), crate::ConstId> =
-        Decode::decode(d)?;
-    let native: Vec<crate::NativeLibrary> = Decode::decode(d)?;
-    let own_module = |id: crate::ModuleId| d.ids.contains_owned(IdKind::Module, id.into_raw());
-    if !own_module(data.root) {
-        return Err(Error("crate root is not owned by artifact"));
-    }
-    let root_index = indices
-        .modules
-        .iter()
-        .position(|&id| id == data.root.into_raw())
-        .ok_or(Error("missing artifact root module"))?;
-    let root_module = &modules[root_index];
-    if root_index != 0
-        || root_module.parent.is_some()
-        || root_module.name != data.name
-        || !d.ids.contains_owned(IdKind::File, root_module.file.0)
-    {
-        return Err(Error("invalid artifact root ownership"));
-    }
-    for (&index, module) in indices.modules.iter().zip(&modules) {
-        if module.krate != krate
-            || module
-                .parent
-                .is_some_and(|p| !own_module(p) || p.into_raw() >= index)
-        {
-            return Err(Error("invalid artifact module ownership"));
-        }
-    }
-    if functions.iter().any(|x| !own_module(x.loc.module))
-        || structs.iter().any(|x| !own_module(x.loc.module))
-        || traits.iter().any(|x| !own_module(x.loc.module))
-        || impls.iter().any(|x| !own_module(x.module))
-        || consts.iter().any(|x| !own_module(x.loc.module))
-        || aliases.iter().any(|x| !own_module(x.loc.module))
-        || macros.iter().any(|x| x.krate != krate)
-        || uses.iter().any(|x| !own_module(x.module))
-    {
-        return Err(Error("item is not owned by artifact"));
-    }
-    if functions.iter().any(|x| {
-        x.intrinsic.is_some()
-            || x.inherits_overflow_checks
-            || x.do_not_const_check
-            || x.const_unstable
-            || x.precise_live_drops
-    }) || traits.iter().any(|x| x.lang.is_some())
-        || consts.iter().any(|x| x.specialization)
-    {
-        return Err(Error("untrusted artifact contains privileged declarations"));
-    }
-    let own_function =
-        |id: crate::FunctionId| d.ids.contains_owned(IdKind::Function, id.into_raw());
-    let own_const = |id: crate::ConstId| d.ids.contains_owned(IdKind::Const, id.into_raw());
-    let own_struct = |id: crate::StructId| d.ids.contains_owned(IdKind::Struct, id.into_raw());
-    if !sized.is_empty()
-        || constructors
-            .iter()
-            .any(|(&(id, _), &function)| !own_struct(id) || !own_function(function))
-        || defaults.keys().any(|&id| !own_struct(id))
-        || exported.iter().any(|(&(owner, _), &id)| {
-            owner != krate || !d.ids.contains_owned(IdKind::Macro, id.into_raw())
+        indices.add_decode_mapping(&mut d.ids, krate, 0)?;
+        let source_expansions = sources.into_iter().map(|source| source.expansion).collect();
+        Ok(PreparedItems {
+            starts,
+            krate,
+            indices,
+            source_expansions,
         })
-        || blocks
+    }
+}
+
+/// An archive with reserved identifiers and sources, ready for independent decoding.
+pub struct PreparedItems {
+    starts: ItemArchiveLayout,
+    krate: CrateId,
+    indices: CrateIndices,
+    source_expansions: Vec<Option<u32>>,
+}
+
+impl PreparedItems {
+    pub fn identity(&self) -> (CrateId, &CrateIndices) {
+        (self.krate, &self.indices)
+    }
+
+    /// Decodes the item records without accessing the staging item tree.
+    pub fn decode(self, d: &mut Decoder<'_>) -> Result<DecodedItems, Error> {
+        d.symbols = Some(Vec::new());
+        let result: Result<_, Error> = (|| {
+            Ok(DecodedItems {
+                data: Decode::decode(d)?,
+                modules: read_records(self.indices.modules.len(), d)?,
+                functions: read_records(self.indices.functions.len(), d)?,
+                structs: read_records(self.indices.structs.len(), d)?,
+                traits: read_records(self.indices.traits.len(), d)?,
+                impls: read_records(self.indices.impls.len(), d)?,
+                consts: read_records(self.indices.consts.len(), d)?,
+                aliases: read_records(self.indices.type_aliases.len(), d)?,
+                macros: read_records(self.indices.macros.len(), d)?,
+                scopes: read_records(self.indices.macro_scopes.len(), d)?,
+                def_scopes: read_records(self.indices.modules.len(), d)?,
+                uses: Decode::decode(d)?,
+                sized: Decode::decode(d)?,
+                associated: Decode::decode(d)?,
+                trait_impls: Decode::decode(d)?,
+                constructors: Decode::decode(d)?,
+                defaults: Decode::decode(d)?,
+                exported: Decode::decode(d)?,
+                blocks: Decode::decode(d)?,
+                anonymous: Decode::decode(d)?,
+                native: Decode::decode(d)?,
+                prepared: self,
+            })
+        })();
+        d.symbols = None;
+        result
+    }
+}
+
+impl DecodedItems {
+    /// Checks and appends these records to the staging state that reserved them.
+    pub fn append(
+        self,
+        items: &mut ItemTree,
+        db: &mut SourceDb,
+        ids: &super::IdMap,
+    ) -> Result<(CrateId, CrateIndices), Error> {
+        if self.prepared.starts != ItemArchiveLayout::new(items) {
+            return Err(Error("artifact item allocation order changed"));
+        }
+        let PreparedItems {
+            krate,
+            indices,
+            source_expansions,
+            ..
+        } = self.prepared;
+        let DecodedItems {
+            data,
+            modules,
+            functions,
+            structs,
+            traits,
+            impls,
+            consts,
+            aliases,
+            macros,
+            scopes,
+            def_scopes,
+            uses,
+            sized,
+            associated,
+            trait_impls,
+            constructors,
+            defaults,
+            exported,
+            blocks,
+            anonymous,
+            native,
+            ..
+        } = self;
+        let own_module = |id: crate::ModuleId| ids.contains_owned(IdKind::Module, id.into_raw());
+        if !own_module(data.root) {
+            return Err(Error("crate root is not owned by artifact"));
+        }
+        let root_index = indices
+            .modules
             .iter()
-            .any(|(&(file, _), &id)| !d.ids.contains_owned(IdKind::File, file.0) || !own_module(id))
-        || anonymous
-            .iter()
-            .any(|(&(file, _), &id)| !d.ids.contains_owned(IdKind::File, file.0) || !own_const(id))
-        || associated.iter().any(|((target, _), values)| {
-            matches!(target, crate::ImplTarget::Primitive(_))
-                || values.iter().any(|value| match value {
-                    crate::AssocItem::Function(id) => !own_function(*id),
-                    crate::AssocItem::Const(id) => !own_const(*id),
-                })
-        })
-        || trait_impls
-            .values()
-            .flatten()
-            .any(|id| !d.ids.contains_owned(IdKind::Impl, id.into_raw()))
-    {
-        return Err(Error("artifact index contains nonowned declarations"));
-    }
-    // Reject all fallible invariants before appending semantic records.
-    for (&index, scope) in indices.macro_scopes.iter().zip(&scopes) {
-        if scope.parent.is_some_and(|p| p.into_raw() >= index)
-            || scope.jump.is_some_and(|p| p.into_raw() >= index)
+            .position(|&id| id == data.root.into_raw())
+            .ok_or(Error("missing artifact root module"))?;
+        let root_module = &modules[root_index];
+        if root_index != 0
+            || root_module.parent.is_some()
+            || root_module.name != data.name
+            || !ids.contains_owned(IdKind::File, root_module.file.0)
         {
-            return Err(Error("invalid macro scope ancestry"));
+            return Err(Error("invalid artifact root ownership"));
         }
-    }
-    let valid_file =
-        |id: FileId| items.files.contains_key(&id) || d.ids.contains_owned(IdKind::File, id.0);
-    if modules.iter().any(|x| !valid_file(x.file)) {
-        return Err(Error("invalid module diagnostic file"));
-    }
-    if functions.iter().any(|x| !valid_file(x.loc.file)) {
-        return Err(Error("invalid function diagnostic file"));
-    }
-    if structs.iter().any(|x| !valid_file(x.loc.file)) {
-        return Err(Error("invalid struct diagnostic file"));
-    }
-    if traits.iter().any(|x| !valid_file(x.loc.file)) {
-        return Err(Error("invalid trait diagnostic file"));
-    }
-    if impls.iter().any(|x| !valid_file(x.file)) {
-        return Err(Error("invalid impl diagnostic file"));
-    }
-    if consts.iter().any(|x| !valid_file(x.loc.file)) {
-        return Err(Error("invalid constant diagnostic file"));
-    }
-    if aliases.iter().any(|x| !valid_file(x.loc.file)) {
-        return Err(Error("invalid alias diagnostic file"));
-    }
-    if macros.iter().any(|x| !valid_file(x.file)) {
-        return Err(Error("invalid macro diagnostic file"));
-    }
-    let mut expansions = rustc_hash::FxHashMap::default();
-    for (&index, source) in indices.files.iter().zip(&sources) {
-        if let Some(wire) = source.expansion {
-            expansions.insert(FileId(index), FileId(d.ids.get(IdKind::File, wire)?));
+        for (&index, module) in indices.modules.iter().zip(&modules) {
+            if module.krate != krate
+                || module
+                    .parent
+                    .is_some_and(|p| !own_module(p) || p.into_raw() >= index)
+            {
+                return Err(Error("invalid artifact module ownership"));
+            }
         }
-    }
-    for &index in &indices.files {
-        let mut file = FileId(index);
-        let mut seen = std::collections::BTreeSet::new();
-        while let Some(&parent) = expansions
-            .get(&file)
-            .or_else(|| items.expansion_files.get(&file))
+        if functions.iter().any(|x| !own_module(x.loc.module))
+            || structs.iter().any(|x| !own_module(x.loc.module))
+            || traits.iter().any(|x| !own_module(x.loc.module))
+            || impls.iter().any(|x| !own_module(x.module))
+            || consts.iter().any(|x| !own_module(x.loc.module))
+            || aliases.iter().any(|x| !own_module(x.loc.module))
+            || macros.iter().any(|x| x.krate != krate)
+            || uses.iter().any(|x| !own_module(x.module))
         {
-            if !valid_file(parent) || !seen.insert(file) {
-                return Err(Error("invalid expansion source ancestry"));
-            }
-            file = parent;
+            return Err(Error("item is not owned by artifact"));
         }
-    }
-    items.crates.push(data);
-    macro_rules! append {
-        ($field:ident,$values:ident) => {
-            for value in $values {
-                items.$field.alloc(value);
+        if functions.iter().any(|x| {
+            x.intrinsic.is_some()
+                || x.inherits_overflow_checks
+                || x.do_not_const_check
+                || x.const_unstable
+                || x.precise_live_drops
+        }) || traits.iter().any(|x| x.lang.is_some())
+            || consts.iter().any(|x| x.specialization)
+        {
+            return Err(Error("untrusted artifact contains privileged declarations"));
+        }
+        let own_function =
+            |id: crate::FunctionId| ids.contains_owned(IdKind::Function, id.into_raw());
+        let own_const = |id: crate::ConstId| ids.contains_owned(IdKind::Const, id.into_raw());
+        let own_struct = |id: crate::StructId| ids.contains_owned(IdKind::Struct, id.into_raw());
+        if !sized.is_empty()
+            || constructors
+                .iter()
+                .any(|(&(id, _), &function)| !own_struct(id) || !own_function(function))
+            || defaults.keys().any(|&id| !own_struct(id))
+            || exported.iter().any(|(&(owner, _), &id)| {
+                owner != krate || !ids.contains_owned(IdKind::Macro, id.into_raw())
+            })
+            || blocks.iter().any(|(&(file, _), &id)| {
+                !ids.contains_owned(IdKind::File, file.0) || !own_module(id)
+            })
+            || anonymous.iter().any(|(&(file, _), &id)| {
+                !ids.contains_owned(IdKind::File, file.0) || !own_const(id)
+            })
+            || associated.iter().any(|((target, _), values)| {
+                matches!(target, crate::ImplTarget::Primitive(_))
+                    || values.iter().any(|value| match value {
+                        crate::AssocItem::Function(id) => !own_function(*id),
+                        crate::AssocItem::Const(id) => !own_const(*id),
+                    })
+            })
+            || trait_impls
+                .values()
+                .flatten()
+                .any(|id| !ids.contains_owned(IdKind::Impl, id.into_raw()))
+        {
+            return Err(Error("artifact index contains nonowned declarations"));
+        }
+        // Reject all fallible invariants before appending semantic records.
+        for (&index, scope) in indices.macro_scopes.iter().zip(&scopes) {
+            if scope.parent.is_some_and(|p| p.into_raw() >= index)
+                || scope.jump.is_some_and(|p| p.into_raw() >= index)
+            {
+                return Err(Error("invalid macro scope ancestry"));
             }
-        };
-    }
-    for module in modules {
-        items.alloc_module(module);
-    }
-    append!(functions, functions);
-    append!(structs, structs);
-    append!(traits, traits);
-    append!(impls, impls);
-    append!(consts, consts);
-    append!(type_aliases, aliases);
-    append!(macros, macros);
-    append!(macro_scopes, scopes);
-    items.def_map.scopes.extend(def_scopes);
-    items.uses.extend(uses);
-    items.sized_dispatch.extend(sized);
-    for (key, values) in associated {
-        items.assoc.entry(key).or_default().extend(values);
-    }
-    for (key, values) in trait_impls {
-        items.trait_impls.entry(key).or_default().extend(values);
-    }
-    items.ctor_fns.extend(constructors);
-    items.default_variants.extend(defaults);
-    items.exported_macros.extend(exported);
-    items.block_modules.extend(blocks);
-    items.anon_consts.extend(anonymous);
-    items.native_libraries.extend(native);
-    for &index in &indices.traits {
-        let id = Idx::from_raw(index);
-        for &function in &items.traits[id].functions {
+        }
+        let valid_file =
+            |id: FileId| items.files.contains_key(&id) || ids.contains_owned(IdKind::File, id.0);
+        if modules.iter().any(|x| !valid_file(x.file)) {
+            return Err(Error("invalid module diagnostic file"));
+        }
+        if functions.iter().any(|x| !valid_file(x.loc.file)) {
+            return Err(Error("invalid function diagnostic file"));
+        }
+        if structs.iter().any(|x| !valid_file(x.loc.file)) {
+            return Err(Error("invalid struct diagnostic file"));
+        }
+        if traits.iter().any(|x| !valid_file(x.loc.file)) {
+            return Err(Error("invalid trait diagnostic file"));
+        }
+        if impls.iter().any(|x| !valid_file(x.file)) {
+            return Err(Error("invalid impl diagnostic file"));
+        }
+        if consts.iter().any(|x| !valid_file(x.loc.file)) {
+            return Err(Error("invalid constant diagnostic file"));
+        }
+        if aliases.iter().any(|x| !valid_file(x.loc.file)) {
+            return Err(Error("invalid alias diagnostic file"));
+        }
+        if macros.iter().any(|x| !valid_file(x.file)) {
+            return Err(Error("invalid macro diagnostic file"));
+        }
+        let mut expansions = rustc_hash::FxHashMap::default();
+        for (&index, source) in indices.files.iter().zip(source_expansions) {
+            if let Some(wire) = source {
+                expansions.insert(FileId(index), FileId(ids.get(IdKind::File, wire)?));
+            }
+        }
+        for &index in &indices.files {
+            let mut file = FileId(index);
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(&parent) = expansions
+                .get(&file)
+                .or_else(|| items.expansion_files.get(&file))
+            {
+                if !valid_file(parent) || !seen.insert(file) {
+                    return Err(Error("invalid expansion source ancestry"));
+                }
+                file = parent;
+            }
+        }
+        items.crates.push(data);
+        macro_rules! append {
+            ($field:ident,$values:ident) => {
+                for value in $values {
+                    items.$field.alloc(value);
+                }
+            };
+        }
+        for module in modules {
+            items.alloc_module(module);
+        }
+        append!(functions, functions);
+        append!(structs, structs);
+        append!(traits, traits);
+        append!(impls, impls);
+        append!(consts, consts);
+        append!(type_aliases, aliases);
+        append!(macros, macros);
+        append!(macro_scopes, scopes);
+        items.def_map.scopes.extend(def_scopes);
+        items.uses.extend(uses);
+        items.sized_dispatch.extend(sized);
+        for (key, values) in associated {
+            items.assoc.entry(key).or_default().extend(values);
+        }
+        for (key, values) in trait_impls {
+            items.trait_impls.entry(key).or_default().extend(values);
+        }
+        items.ctor_fns.extend(constructors);
+        items.default_variants.extend(defaults);
+        items.exported_macros.extend(exported);
+        items.block_modules.extend(blocks);
+        items.anon_consts.extend(anonymous);
+        items.native_libraries.extend(native);
+        for &index in &indices.traits {
+            let id = Idx::from_raw(index);
+            for &function in &items.traits[id].functions {
+                items
+                    .trait_fns
+                    .entry(items.functions[function].name)
+                    .or_default()
+                    .push(id);
+            }
+            for &constant in &items.traits[id].consts {
+                if let Some(name) = items.consts[constant].name {
+                    items.trait_fns.entry(name).or_default().push(id);
+                }
+            }
+        }
+        for &index in &indices.macro_scopes {
+            let id = Idx::from_raw(index);
             items
-                .trait_fns
-                .entry(items.functions[function].name)
+                .macro_names
+                .entry(items.macro_scopes[id].name)
                 .or_default()
                 .push(id);
         }
-        for &constant in &items.traits[id].consts {
-            if let Some(name) = items.consts[constant].name {
-                items.trait_fns.entry(name).or_default().push(id);
+        for &index in &indices.files {
+            let file = FileId(index);
+            let expansion = expansions.get(&file).copied();
+            let base = db.file(file).range_base;
+            db.set_metadata_origin(file, base, expansion);
+            if let Some(origin) = expansion {
+                items.expansion_files.insert(file, origin);
             }
+            items.insert_file(file, Arc::new(db.file(file).clone()));
         }
-    }
-    for &index in &indices.macro_scopes {
-        let id = Idx::from_raw(index);
         items
-            .macro_names
-            .entry(items.macro_scopes[id].name)
-            .or_default()
-            .push(id);
-    }
-    for &index in &indices.files {
-        let file = FileId(index);
-        let expansion = expansions.get(&file).copied();
-        let base = db.file(file).range_base;
-        db.set_metadata_origin(file, base, expansion);
-        if let Some(origin) = expansion {
-            items.expansion_files.insert(file, origin);
+            .artifact_files
+            .insert(krate, indices.files.iter().copied().map(FileId).collect());
+        if indices.macros.iter().any(|&id| {
+            matches!(
+                items.macros[Idx::from_raw(id)].kind,
+                crate::MacroKind::ProcMacro(_)
+            )
+        }) {
+            db.note_metadata_proc_macros();
         }
-        items.insert_file(file, Arc::new(db.file(file).clone()));
+        Ok((krate, indices))
     }
-    items
-        .artifact_files
-        .insert(krate, indices.files.iter().copied().map(FileId).collect());
-    if indices.macros.iter().any(|&id| {
-        matches!(
-            items.macros[Idx::from_raw(id)].kind,
-            crate::MacroKind::ProcMacro(_)
-        )
-    }) {
-        db.note_metadata_proc_macros();
-    }
-    Ok((krate, indices))
 }
+
+/// Independently decoded semantic records, awaiting ordered validation and insertion.
+pub struct DecodedItems {
+    prepared: PreparedItems,
+    data: crate::item_tree::CrateData,
+    modules: Vec<crate::Module>,
+    functions: Vec<crate::Function>,
+    structs: Vec<crate::Struct>,
+    traits: Vec<crate::Trait>,
+    impls: Vec<crate::Impl>,
+    consts: Vec<crate::Const>,
+    aliases: Vec<crate::TypeAlias>,
+    macros: Vec<crate::MacroDef>,
+    scopes: Vec<crate::MacroScope>,
+    def_scopes: Vec<crate::def_map::Scope>,
+    uses: Vec<crate::item_tree::Use>,
+    sized: FxHashMap<crate::FunctionId, crate::SizedDispatch>,
+    associated: FxHashMap<(crate::ImplTarget, flux_intern::Symbol), Vec<crate::AssocItem>>,
+    trait_impls: FxHashMap<crate::TraitId, Vec<crate::ImplId>>,
+    constructors: FxHashMap<(crate::StructId, u32), crate::FunctionId>,
+    defaults: FxHashMap<crate::StructId, u32>,
+    exported: FxHashMap<(CrateId, flux_intern::Symbol), crate::MacroId>,
+    blocks: FxHashMap<(FileId, flux_syntax::NodeId), crate::ModuleId>,
+    anonymous: FxHashMap<(FileId, flux_syntax::NodeId), crate::ConstId>,
+    native: Vec<crate::NativeLibrary>,
+}
+
 fn read_records<T: Decode>(count: usize, d: &mut Decoder<'_>) -> Result<Vec<T>, Error> {
     (0..count).map(|_| T::decode(d)).collect()
 }

@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 
 const ARCHIVE_MAGIC: &[u8; 8] = b"!<arch>\n";
 const META_MAGIC: &[u8; 8] = b"FLUXMETA";
-const VERSION: u32 = 18;
+const VERSION: u32 = 23;
 const MAX_METADATA: usize = 512 * 1024 * 1024;
 
 /// Computes a SHA-256 content identity compatible with HIR's source digests.
@@ -247,17 +247,59 @@ impl ArchiveIndex {
     pub(crate) fn object<'a>(&self, bytes: &'a [u8]) -> Option<&'a [u8]> {
         self.object.as_ref().map(|range| &bytes[range.clone()])
     }
+
+    fn has_object(&self) -> bool {
+        self.object.is_some()
+    }
+
     pub(crate) fn decode(bytes: &[u8]) -> Result<Self, Error> {
-        if bytes.get(..8) != Some(ARCHIVE_MAGIC.as_slice()) {
+        Self::read_framing(bytes.len(), |offset, out| {
+            let end = offset
+                .checked_add(out.len())
+                .ok_or(Error("invalid archive offset"))?;
+            out.copy_from_slice(bytes.get(offset..end).ok_or(Error("truncated archive"))?);
+            Ok(())
+        })
+    }
+
+    /// Reads only archive framing and the metadata member from a file.
+    fn read_metadata(file: &mut std::fs::File, length: u64) -> Result<(Self, Vec<u8>), Error> {
+        use std::io::{Read, Seek, SeekFrom};
+        let length = usize::try_from(length).map_err(|_| Error("invalid archive size"))?;
+        let archive = Self::read_framing(length, |offset, out| {
+            file.seek(SeekFrom::Start(offset as u64))
+                .and_then(|_| file.read_exact(out))
+                .map_err(|_| Error("cannot read fluxlib archive framing"))
+        })?;
+        let mut metadata = vec![0; archive.metadata.len()];
+        file.seek(SeekFrom::Start(archive.metadata.start as u64))
+            .and_then(|_| file.read_exact(&mut metadata))
+            .map_err(|_| Error("cannot read fluxlib metadata"))?;
+        Ok((archive, metadata))
+    }
+
+    fn read_framing(
+        length: usize,
+        mut read: impl FnMut(usize, &mut [u8]) -> Result<(), Error>,
+    ) -> Result<Self, Error> {
+        let mut magic = [0; 8];
+        if length < magic.len() {
+            return Err(Error("invalid fluxlib archive"));
+        }
+        read(0, &mut magic)?;
+        if &magic != ARCHIVE_MAGIC {
             return Err(Error("invalid fluxlib archive"));
         }
         let mut at: usize = 8;
         let mut metadata = None;
         let mut object = None;
-        while at < bytes.len() {
-            let header = bytes
-                .get(at..at.checked_add(60).ok_or(Error("invalid archive offset"))?)
+        while at < length {
+            let mut header = [0; 60];
+            let start = at
+                .checked_add(header.len())
+                .filter(|&start| start <= length)
                 .ok_or(Error("truncated archive header"))?;
+            read(at, &mut header)?;
             if &header[58..] != b"`\n" {
                 return Err(Error("invalid archive header"));
             }
@@ -269,24 +311,30 @@ impl ArchiveIndex {
                 .trim()
                 .parse()
                 .map_err(|_| Error("invalid archive size"))?;
-            at += 60;
-            let end = at.checked_add(size).ok_or(Error("invalid archive size"))?;
-            bytes
-                .get(at..end)
-                .ok_or(Error("truncated archive member"))?;
+            let end = start
+                .checked_add(size)
+                .ok_or(Error("invalid archive size"))?;
+            if end > length {
+                return Err(Error("truncated archive member"));
+            }
             match name {
                 "flux.meta/" if metadata.is_none() => {
                     if size > MAX_METADATA {
                         return Err(Error("metadata is too large"));
                     }
-                    metadata = Some(at..end);
+                    metadata = Some(start..end);
                 }
-                "flux.o/" if object.is_none() => object = Some(at..end),
+                "flux.o/" if object.is_none() => object = Some(start..end),
                 _ => return Err(Error("unsupported or duplicate fluxlib member")),
             }
             at = end;
             if !size.is_multiple_of(2) {
-                if bytes.get(at) != Some(&b'\n') {
+                let mut padding = [0];
+                if at == length {
+                    return Err(Error("invalid archive padding"));
+                }
+                read(at, &mut padding)?;
+                if padding[0] != b'\n' {
                     return Err(Error("invalid archive padding"));
                 }
                 at += 1;

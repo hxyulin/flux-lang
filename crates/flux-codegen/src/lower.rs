@@ -85,7 +85,9 @@ pub fn lower_module(
 /// over all instances; lowering MIR to keel IR is the rest of the call.
 #[derive(Default, Debug)]
 pub struct LoweringTimings {
-    /// Reachability and monomorphization: finding every instance to emit.
+    /// Discovering native roots from interfaces and their MIR templates.
+    pub roots: std::time::Duration,
+    /// Finding every concrete instance reachable from the roots.
     pub collect: std::time::Duration,
     /// Substituting each instance's generic arguments into its MIR body.
     pub substitute: std::time::Duration,
@@ -105,6 +107,21 @@ pub fn lower_with_timings(
     compilation: Option<Compilation<'_>>,
     timings: &mut LoweringTimings,
 ) -> Result<Module, Vec<Diagnostic>> {
+    lower_with_requirements_and_timings(hir, typed, mir, compilation, timings)
+        .map(|lowered| lowered.module)
+}
+
+/// Lower one artifact with its dependencies and record the lowering phases.
+///
+/// # Errors
+/// Returns the same diagnostics as the untimed entry points.
+pub fn lower_with_requirements_and_timings(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Option<Compilation<'_>>,
+    timings: &mut LoweringTimings,
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
     lower_inner(
         hir,
         typed,
@@ -114,7 +131,6 @@ pub fn lower_with_timings(
         SymbolIdentity::Artifact,
         None,
     )
-    .map(|lowered| lowered.module)
 }
 
 /// Which crate an object defines. Dependencies supply their own non-generic code.
@@ -126,7 +142,7 @@ pub enum OutputKind {
     Library(flux_hir::CrateId),
     /// Emits every monomorphic function and static in the trusted built-in prefix.
     BuiltinSuite,
-    /// Owns concrete code reached from checked dependency requirements.
+    /// Owns concrete code reached from checked dependency instance requirements.
     DependencySpecializations,
 }
 
@@ -364,7 +380,7 @@ fn lower_inner(
         };
         (!generic_instance(&hir.items, instance)
             && !function.is_extern
-            && mir.bodies.get(id).is_some())
+            && mir.has_function_body(id))
         .then_some(instance)
     };
     let items = &hir.items;
@@ -376,85 +392,14 @@ fn lower_inner(
             compilation.expect("query symbols require object ownership"),
         )
     });
-    let mut query_functions = FxHashSet::default();
-    let names: FxHashMap<FunctionId, String> = items
-        .functions
-        .iter()
-        .map(|(id, f)| {
-            let name = if f.is_extern || f.link_name.is_some() {
-                f.link_name.unwrap_or(f.name).to_string()
-            } else {
-                // The function's path: its crate, its modules, and its
-                // type for an associated function, `krate::m::S::new`,
-                // where `S` is in `m` wherever the `impl` block is.
-                let target = items.impl_of(id).and_then(|i| items.impls[i].target);
-                let module = match target {
-                    Some(ImplTarget::Struct(s)) => items.structs[s].loc.module,
-                    _ => f.loc.module,
-                };
-                let mut path = Vec::new();
-                let mut m = Some(module);
-                while let Some(id) = m {
-                    path.push(items.modules[id].name.as_str());
-                    m = items.modules[id].parent;
-                }
-                path.reverse();
-                match (target, f.owner) {
-                    (Some(ImplTarget::Struct(s)), _) => path.push(items.structs[s].name.as_str()),
-                    (Some(ImplTarget::Primitive(name)), _) => path.push(name.as_str()),
-                    (Some(ImplTarget::Object(t)), _) => path.push(items.traits[t].name.as_str()),
-                    (None, Some(Owner::Trait(t))) => path.push(items.traits[t].name.as_str()),
-                    (None, Some(Owner::Impl(imp))) => {
-                        if let Some(t) = items.impls[imp].trait_ {
-                            path.push(items.traits[t].name.as_str());
-                        }
-                    }
-                    (None, None) => {}
-                }
-                if let Some((strukt, _)) = f.ctor
-                    && items.structs[strukt].is_enum()
-                {
-                    path.push(items.structs[strukt].name.as_str());
-                }
-                path.push(f.name.as_str());
-                // An impl may live in a different crate from its target.
-                // Separate objects use the definition owner's crate identity;
-                // the whole-program path retains its process-local suffix.
-                let identity;
-                if compilation.is_some() || id.index() >= items.core.functions as usize {
-                    identity = if compilation.is_some() {
-                        if let Some(key) = queries.as_ref().and_then(|queries| {
-                            queries.definition(
-                                items,
-                                flux_hir::flib::IdKind::Function,
-                                id.into_raw(),
-                            )
-                        }) {
-                            query_functions.insert(id);
-                            content_symbol("query_definition", key)
-                        } else {
-                            definition_symbol(
-                                &mut definitions.borrow_mut(),
-                                flux_hir::flib::IdKind::Function,
-                                id.into_raw(),
-                            )
-                        }
-                    } else {
-                        format!("__flux_f{}", id.index())
-                    };
-                    path.push(&identity);
-                }
-                mangle(&path)
-            };
-            (id, name)
-        })
-        .collect();
     let symbols = Symbols {
-        names,
+        items,
+        functions: (0..items.functions.len())
+            .map(|_| std::cell::OnceCell::new())
+            .collect(),
         separate: compilation.is_some(),
         definitions,
         queries,
-        query_functions,
         query_all_instances: identity == SymbolIdentity::Query
             && compilation.is_some_and(|c| {
                 matches!(c.kind, OutputKind::Executable)
@@ -492,7 +437,9 @@ fn lower_inner(
         }
         let present = ordinary
             && if instance.args.is_empty() {
-                provided.dependencies.contains(&symbols[&instance.function])
+                provided
+                    .dependencies
+                    .contains(&symbols.function(instance.function).name)
             } else {
                 provided
                     .dependencies
@@ -560,17 +507,19 @@ fn lower_inner(
             let own = match c.kind {
                 OutputKind::Library(krate) => reachability::library(hir, &typed.sigs, mir, krate),
                 OutputKind::Executable => {
-                    reachability::executable(hir, &typed.sigs, mir, &source_required)
+                    reachability::executable(hir, &typed.sigs, mir, &source_required, native_leaf)
                 }
                 OutputKind::BuiltinSuite | OutputKind::DependencySpecializations => unreachable!(),
             };
             retained_functions.extend(own.functions);
             retained_statics.extend(own.statics);
             if matches!(c.kind, OutputKind::Executable) {
-                for &krate in c.imported.iter().filter(|_| provided_symbols.is_none()) {
-                    let imported = reachability::library(hir, &typed.sigs, mir, krate);
-                    retained_functions.extend(imported.functions);
-                    retained_statics.extend(imported.statics);
+                if provided_symbols.is_none() {
+                    for &krate in c.imported {
+                        let imported = reachability::library(hir, &typed.sigs, mir, krate);
+                        retained_functions.extend(imported.functions);
+                        retained_statics.extend(imported.statics);
+                    }
                 }
                 // Embedded definitions still belong to the executable. Their
                 // compiler-owned static roots retain the existing runtime policy.
@@ -586,6 +535,9 @@ fn lower_inner(
                 }
             }
         }
+    }
+    if let Some(error) = mir.deferred_error() {
+        return Err(vec![Diagnostic::new(Default::default(), error.to_string())]);
     }
     let mut roots: Vec<_> = retained_functions
         .into_iter()
@@ -618,7 +570,7 @@ fn lower_inner(
                     .iter()
                     .copied()
                     .filter(|&instance| {
-                        let base = symbols[&instance.function].as_str();
+                        let base = symbols.function(instance.function).name.as_str();
                         if !bases.contains(base)
                             && base
                                 .strip_suffix('E')
@@ -637,56 +589,60 @@ fn lower_inner(
     roots.sort_unstable_by_key(|i| i.function);
     let mut static_roots: Vec<_> = retained_statics.iter().copied().collect();
     static_roots.sort_unstable();
-    let collected = if let Some(native_leaf) = native_leaf {
-        if compilation.is_some_and(|c| matches!(c.kind, OutputKind::Executable)) {
-            flux_mir::mono::collect_linked_executable(
+    let collection = if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
+        let now = std::time::Instant::now();
+        timings.roots = now.duration_since(start);
+        Some(now)
+    } else {
+        None
+    };
+    let collected = match compilation.map(|c| c.kind) {
+        Some(OutputKind::Library(_) | OutputKind::BuiltinSuite) => {
+            flux_mir::mono::collect_from_roots_and_statics(
                 hir,
                 &typed.sigs,
                 mir,
                 &roots,
                 &static_roots,
-                Some(native_leaf),
             )
-        } else if specialization_roots.is_some() {
-            // A native definition still refers to any specializations used
-            // by its body. Record it as supplied, then visit its checked MIR.
-            let native_without_mir = |instance: Instance| {
-                native_leaf(instance) && mir.instance_body(items, instance).is_none()
-            };
-            flux_mir::mono::collect_linked_roots(
-                hir,
-                &typed.sigs,
-                mir,
-                &roots,
-                Some(&native_without_mir),
-            )
-        } else {
-            flux_mir::mono::collect_linked_roots(hir, &typed.sigs, mir, &roots, Some(native_leaf))
         }
-    } else {
-        match compilation.map(|c| c.kind) {
-            Some(OutputKind::Library(_) | OutputKind::BuiltinSuite) => {
-                flux_mir::mono::collect_from_roots_and_statics(
+        Some(OutputKind::DependencySpecializations) => {
+            if specialization_roots.is_some()
+                && let Some(native_leaf) = native_leaf
+            {
+                // A native definition still refers to any specializations used
+                // by its body. Record it as supplied, then visit its checked MIR.
+                let native_without_mir = |instance: Instance| {
+                    native_leaf(instance)
+                        && mir
+                            .function_body(items, &typed.sigs, instance.function)
+                            .ok()
+                            .flatten()
+                            .is_none()
+                };
+                flux_mir::mono::collect_linked_roots(
                     hir,
                     &typed.sigs,
                     mir,
                     &roots,
-                    &static_roots,
+                    Some(&native_without_mir),
                 )
+            } else {
+                flux_mir::mono::collect_linked_roots(hir, &typed.sigs, mir, &roots, native_leaf)
             }
-            Some(OutputKind::Executable) => flux_mir::mono::collect_all_with_roots_and_statics(
-                hir,
-                &typed.sigs,
-                mir,
-                &roots,
-                &static_roots,
-            ),
-            Some(OutputKind::DependencySpecializations) => unreachable!(),
-            None => flux_mir::mono::collect_all(hir, &typed.sigs, mir),
         }
+        Some(OutputKind::Executable) => flux_mir::mono::collect_linked_executable(
+            hir,
+            &typed.sigs,
+            mir,
+            &roots,
+            &static_roots,
+            native_leaf,
+        ),
+        None => flux_mir::mono::collect_all(hir, &typed.sigs, mir),
     }
     .map_err(|d| vec![d])?;
-    if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
+    if let (Some(timings), Some(start)) = (timings.as_deref_mut(), collection) {
         timings.collect = start.elapsed();
     }
     let admitted = admitted.into_inner();
@@ -701,12 +657,10 @@ fn lower_inner(
         instances
             .iter()
             .copied()
-            .filter(|&instance| {
-                !owns_instance(&hir.items, instance, compilation) || admitted.contains(&instance)
-            })
+            .filter(|&instance| !owns_instance(&hir.items, instance, compilation))
             .collect()
     });
-    let errors = check_c_abi(hir, typed, mir, &instances);
+    let errors = check_c_abi(hir, typed, mir, &instances, &admitted);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -719,16 +673,16 @@ fn lower_inner(
                 && items.functions[instance.function].link_name.is_some()
                 && compilation.is_none_or(|c| owns_instance(items, instance, c))
         })
-        .map(|instance| symbols[&instance.function].clone())
+        .map(|instance| symbols.function(instance.function).name.clone())
         .collect();
     let layouts = Layouts::new(items, &typed.sigs, &mir.discriminants);
     for (id, function) in hir.items.functions.iter() {
         // The same C function may be declared in several modules.
-        if function.is_extern && declared.insert(symbols[&id].clone()) {
+        if function.is_extern && declared.insert(symbols.function(id).name.clone()) {
             declared_abort |= function.name.as_str() == "abort";
             module.decls.push(FuncDecl {
                 attrs: attrs(&typed.sigs[id], mir.panic_strategy, function.abi),
-                name: symbols[&id].clone(),
+                name: symbols.function(id).name.clone(),
                 sig: if function.abi.is_c() {
                     c_signature(&typed.sigs, &layouts, &typed.sigs[id], function.is_variadic)
                 } else {
@@ -818,7 +772,7 @@ fn lower_inner(
             &mir.consts,
             &names,
         )
-        .with_imported(&mir.const_values, &mir.discriminants),
+        .with_file_mir(mir),
         instance_values: collected.const_values,
         resolved_instances: FxHashMap::default(),
         normalized_signatures: FxHashMap::default(),
@@ -837,40 +791,13 @@ fn lower_inner(
         data_errors: Vec::new(),
         layouts,
     };
+    let defer_imports = compilation.is_some_and(|c| matches!(c.kind, OutputKind::Library(_)));
     for instance in instances {
-        if compilation.is_some_and(|c| !owns_instance(items, instance, c))
-            || admitted.contains(&instance)
+        if admitted.contains(&instance)
+            || compilation.is_some_and(|c| !owns_instance(items, instance, c))
         {
-            let sig = flux_solve::traits::instance_sig(
-                items,
-                &typed.sigs,
-                instance.function,
-                instance.args,
-            );
-            let name = instance_symbol(hir, &symbols, instance);
-            // A core extern bridge can name the same definition supplied by
-            // the separately compiled builtin object. Keep one declaration.
-            if declared.insert(name.clone()) {
-                module.decls.push(FuncDecl {
-                    name,
-                    sig: ctx.instance_signature(instance, &sig, false),
-                    attrs: attrs(
-                        &sig,
-                        mir.panic_strategy,
-                        items.functions[instance.function].abi,
-                    ),
-                });
-            }
-            if items.functions[instance.function].track_caller {
-                module.decls.push(FuncDecl {
-                    name: ctx.pointer_symbol(instance),
-                    sig: ctx.instance_signature(instance, &sig, true),
-                    attrs: attrs(
-                        &sig,
-                        mir.panic_strategy,
-                        items.functions[instance.function].abi,
-                    ),
-                });
+            if !defer_imports {
+                ctx.declare_instance(instance, &mut declared, &mut module.decls);
             }
             continue;
         }
@@ -967,6 +894,17 @@ fn lower_inner(
         return Err(ctx.data_errors);
     }
     ctx.data.sort_by(|a, b| a.name.cmp(&b.name));
+    if defer_imports {
+        // Downstream instantiations still need the full requirements list.
+        // This object's declarations only need symbols requested while lowering
+        // its functions and data, plus names that assembly can refer to directly.
+        for &instance in &required_instances {
+            let function = &items.functions[instance.function];
+            if function.link_name.is_some() || symbols.instances.borrow().contains_key(&instance) {
+                ctx.declare_instance(instance, &mut declared, &mut module.decls);
+            }
+        }
+    }
     module.data = ctx.data;
     if ctx.uses_abort && !declared_abort {
         module.decls.push(FuncDecl {
@@ -1004,7 +942,7 @@ fn lower_inner(
         let flush = items
             .lang_fns
             .get(&flux_intern::Symbol::intern("flush_stdout"))
-            .filter(|&&f| mir.bodies.get(f).is_some())
+            .filter(|&&f| mir.has_function_body(f))
             .map(|&f| {
                 let instance = Instance {
                     function: f,
@@ -1021,7 +959,7 @@ fn lower_inner(
         let init = items
             .lang_fns
             .get(&flux_intern::Symbol::intern("args_init"))
-            .filter(|&&f| mir.bodies.get(f).is_some())
+            .filter(|&&f| mir.has_function_body(f))
             .map(|&f| {
                 let instance = Instance {
                     function: f,
@@ -1054,7 +992,7 @@ fn lower_inner(
             None
         };
         let entry = entry_point(
-            &symbols[&id],
+            &symbols.function(id).name,
             &main_sig,
             sig.ret == Ty::NEVER,
             flush,
@@ -1068,6 +1006,9 @@ fn lower_inner(
     module.functions.append(&mut ctx.generated_functions);
     unwind::declare_personality(&mut module);
     module.sync_function_attrs();
+    if let Some(error) = mir.deferred_error() {
+        return Err(vec![Diagnostic::new(Default::default(), error.to_string())]);
+    }
     Ok(LoweredCrate {
         module,
         required_instances,
@@ -1211,13 +1152,18 @@ impl QuerySymbols {
     }
 }
 
+struct FunctionSymbol {
+    name: String,
+    query_identity: bool,
+}
+
 struct Symbols<'a> {
-    names: FxHashMap<FunctionId, String>,
+    items: &'a flux_hir::ItemTree,
+    functions: Vec<std::cell::OnceCell<FunctionSymbol>>,
     separate: bool,
     /// The keys of definitions, under the compilation's crate identities.
     definitions: std::cell::RefCell<DefinitionKeys<'a>>,
     queries: Option<QuerySymbols>,
-    query_functions: FxHashSet<FunctionId>,
     query_all_instances: bool,
     query_type_keys: std::cell::RefCell<FxHashMap<Ty, Vec<u8>>>,
     type_keys: std::cell::RefCell<FxHashMap<Ty, Vec<u8>>>,
@@ -1225,10 +1171,80 @@ struct Symbols<'a> {
     instances: std::cell::RefCell<FxHashMap<Instance, String>>,
 }
 
-impl std::ops::Index<&FunctionId> for Symbols<'_> {
-    type Output = String;
-    fn index(&self, id: &FunctionId) -> &String {
-        &self.names[id]
+impl Symbols<'_> {
+    fn function(&self, id: FunctionId) -> &FunctionSymbol {
+        self.functions[id.index()].get_or_init(|| self.make_function_symbol(id))
+    }
+
+    fn make_function_symbol(&self, id: FunctionId) -> FunctionSymbol {
+        let items = self.items;
+        let f = &items.functions[id];
+        let mut query_identity = false;
+        let name = if f.is_extern || f.link_name.is_some() {
+            f.link_name.unwrap_or(f.name).to_string()
+        } else {
+            // The function's path: its crate, its modules, and its
+            // type for an associated function, `krate::m::S::new`,
+            // where `S` is in `m` wherever the `impl` block is.
+            let target = items.impl_of(id).and_then(|i| items.impls[i].target);
+            let module = match target {
+                Some(ImplTarget::Struct(s)) => items.structs[s].loc.module,
+                _ => f.loc.module,
+            };
+            let mut path = Vec::new();
+            let mut m = Some(module);
+            while let Some(id) = m {
+                path.push(items.modules[id].name.as_str());
+                m = items.modules[id].parent;
+            }
+            path.reverse();
+            match (target, f.owner) {
+                (Some(ImplTarget::Struct(s)), _) => path.push(items.structs[s].name.as_str()),
+                (Some(ImplTarget::Primitive(name)), _) => path.push(name.as_str()),
+                (Some(ImplTarget::Object(t)), _) => path.push(items.traits[t].name.as_str()),
+                (None, Some(Owner::Trait(t))) => path.push(items.traits[t].name.as_str()),
+                (None, Some(Owner::Impl(imp))) => {
+                    if let Some(t) = items.impls[imp].trait_ {
+                        path.push(items.traits[t].name.as_str());
+                    }
+                }
+                (None, None) => {}
+            }
+            if let Some((strukt, _)) = f.ctor
+                && items.structs[strukt].is_enum()
+            {
+                path.push(items.structs[strukt].name.as_str());
+            }
+            path.push(f.name.as_str());
+            // An impl may live in a different crate from its target.
+            // Separate objects use the definition owner's crate identity;
+            // the whole-program path retains its process-local suffix.
+            let identity;
+            if self.separate || id.index() >= items.core.functions as usize {
+                identity = if self.separate {
+                    if let Some(key) = self.queries.as_ref().and_then(|queries| {
+                        queries.definition(items, flux_hir::flib::IdKind::Function, id.into_raw())
+                    }) {
+                        query_identity = true;
+                        content_symbol("query_definition", key)
+                    } else {
+                        definition_symbol(
+                            &mut self.definitions.borrow_mut(),
+                            flux_hir::flib::IdKind::Function,
+                            id.into_raw(),
+                        )
+                    }
+                } else {
+                    format!("__flux_f{}", id.index())
+                };
+                path.push(&identity);
+            }
+            mangle(&path)
+        };
+        FunctionSymbol {
+            name,
+            query_identity,
+        }
     }
 }
 
@@ -1320,7 +1336,8 @@ fn instance_symbol(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> Stri
 }
 
 fn instance_symbol_uncached(hir: &Hir, symbols: &Symbols<'_>, instance: Instance) -> String {
-    let base = &symbols[&instance.function];
+    let function_symbol = symbols.function(instance.function);
+    let base = &function_symbol.name;
     let items = &hir.items;
     // A trait's blocks for different types each have its methods.
     let block = items.impl_of(instance.function).filter(|&owner| {
@@ -1345,7 +1362,7 @@ fn instance_symbol_uncached(hir: &Hir, symbols: &Symbols<'_>, instance: Instance
     let mut feed = |bytes: &[u8]| key.extend_from_slice(bytes);
     feed(base.as_bytes());
     for &arg in instance.args {
-        if symbols.query_all_instances || symbols.query_functions.contains(&instance.function) {
+        if symbols.query_all_instances || function_symbol.query_identity {
             encode_query_type(arg, symbols, &mut feed);
         } else {
             // Imported and built-in instances must retain exactly the names
@@ -1954,6 +1971,40 @@ impl Ctx<'_> {
             Convention::RustReified
         } else {
             Convention::RustFast
+        }
+    }
+
+    fn declare_instance(
+        &self,
+        instance: Instance,
+        declared: &mut FxHashSet<String>,
+        declarations: &mut Vec<FuncDecl>,
+    ) {
+        let items = &self.hir.items;
+        let sig = flux_solve::traits::instance_sig(
+            items,
+            &self.typed.sigs,
+            instance.function,
+            instance.args,
+        );
+        let function = &items.functions[instance.function];
+        let name = instance_symbol(self.hir, self.symbols, instance);
+        let attrs = || attrs(&sig, self.panic_strategy, function.abi);
+        // A core extern bridge can name the same definition supplied by
+        // the separately compiled builtin object. Keep one declaration.
+        if declared.insert(name.clone()) {
+            declarations.push(FuncDecl {
+                name,
+                sig: self.instance_signature(instance, &sig, false),
+                attrs: attrs(),
+            });
+        }
+        if function.track_caller {
+            declarations.push(FuncDecl {
+                name: self.pointer_symbol(instance),
+                sig: self.instance_signature(instance, &sig, true),
+                attrs: attrs(),
+            });
         }
     }
 

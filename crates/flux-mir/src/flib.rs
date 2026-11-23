@@ -6,6 +6,17 @@ use flux_hir::flib::{Decode, Decoder, Encode, Encoder, Error, FlibItem, IdKind};
 mod allocations;
 #[path = "flib_validate.rs"]
 mod boundary;
+#[path = "flib_chunks.rs"]
+mod chunks;
+#[path = "flib_closures.rs"]
+mod closures;
+#[path = "flib_integers.rs"]
+mod integers;
+#[path = "flib_values.rs"]
+mod values;
+pub(crate) use chunks::MIN_INDEXED_FUNCTIONS;
+pub use chunks::{DeferredFunctionSource, DeferredFunctions};
+pub(crate) use values::DeferredValues;
 
 impl FlibItem for LocalDecl {
     const KIND: IdKind = IdKind::Function;
@@ -250,6 +261,18 @@ impl Encode for Rvalue {
                 Ok(())
             }
             Self::Aggregate(v0, v1) => {
+                let literal = |operand: &Operand| match operand {
+                    Operand::Const(Constant::Int { bits, ty }) => Some((*bits, *ty)),
+                    _ => None,
+                };
+                if let AggregateKind::Array(element) = v0
+                    && let Some(ty) = integers::table_type(v1, literal)
+                    && *element == Ty::int(ty)
+                    && integers::reserve(e, v1)
+                {
+                    15u8.encode(e)?;
+                    return integers::encode(v1, ty, literal, e);
+                }
                 5u8.encode(e)?;
                 v0.encode(e)?;
                 v1.encode(e)?;
@@ -309,6 +332,11 @@ impl Encode for Rvalue {
 impl Decode for Rvalue {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
         d.nested(|d| match u8::decode(d)? {
+            15 => {
+                let (ty, operands) =
+                    integers::decode(d, |bits, ty| Operand::Const(Constant::Int { bits, ty }))?;
+                Ok(Self::Aggregate(AggregateKind::Array(Ty::int(ty)), operands))
+            }
             14 => Ok(Self::WithAddr(Decode::decode(d)?, Decode::decode(d)?)),
             13 => Ok(Self::OffsetOf(Decode::decode(d)?, Decode::decode(d)?)),
             0 => Ok(Self::Use(Decode::decode(d)?)),
@@ -1189,6 +1217,13 @@ fn encode_map<K: FlibItem, V: Encode>(map: &ArenaMap<K, V>, e: &mut Encoder) -> 
 }
 fn decode_map<K: FlibItem, V: Decode>(d: &mut Decoder<'_>) -> Result<ArenaMap<K, V>, Error> {
     let n = d.length()?;
+    decode_map_entries(d, n)
+}
+
+fn decode_map_entries<K: FlibItem, V: Decode>(
+    d: &mut Decoder<'_>,
+    n: usize,
+) -> Result<ArenaMap<K, V>, Error> {
     let mut map = ArenaMap::new();
     for _ in 0..n {
         let key = decode_map_key::<K>(d)?;
@@ -1456,6 +1491,62 @@ fn validate_body_indices(body: &Body) -> Result<(), Error> {
 impl FileMir {
     /// Stores checked bodies and constants owned by the artifact's crate.
     pub fn encode_flib(&self, e: &mut Encoder) -> Result<(), Error> {
+        self.encode_flib_records(e, false, None)
+    }
+
+    /// Stores large function tables in independently decodable chunks.
+    pub fn encode_indexed_flib(&self, e: &mut Encoder) -> Result<(), Error> {
+        self.encode_flib_records(e, true, None)
+    }
+
+    /// Stores crate MIR, using values in place of evaluated data initializers.
+    pub fn encode_crate_flib(
+        &self,
+        e: &mut Encoder,
+        indexed: bool,
+        items: &flux_hir::ItemTree,
+        sigs: &Signatures,
+    ) -> Result<(), Error> {
+        self.encode_flib_records(e, indexed, Some((items, sigs)))
+    }
+
+    /// Reports whether an evaluated data value can stand in for its initializer.
+    pub fn has_exported_data_value(
+        &self,
+        items: &flux_hir::ItemTree,
+        sigs: &Signatures,
+        id: flux_hir::ConstId,
+    ) -> bool {
+        let data = &items.consts[id];
+        // These items need no per-instance evaluation. The consumer uses the
+        // checked value for constant evaluation and for emitting static data.
+        if data.owner.is_some() || data.name.is_none() || !self.const_values.contains_item(id) {
+            return false;
+        }
+        let Some(&ty) = sigs.consts.get(id) else {
+            return false;
+        };
+        if ty.has_params() || ty.has_aliases() {
+            return false;
+        }
+        match ty.kind() {
+            TyKind::Array(..) => true,
+            TyKind::Ref(_, referent) => {
+                matches!(
+                    referent.kind(),
+                    TyKind::Array(..) | TyKind::Slice(_) | TyKind::Str
+                )
+            }
+            _ => false,
+        }
+    }
+
+    fn encode_flib_records(
+        &self,
+        e: &mut Encoder,
+        indexed: bool,
+        crate_context: Option<(&flux_hir::ItemTree, &Signatures)>,
+    ) -> Result<(), Error> {
         if !self.diagnostics.is_empty() || !self.bugs.is_empty() {
             return Err(Error::new("cannot serialize erroneous MIR"));
         }
@@ -1464,16 +1555,25 @@ impl FileMir {
             .iter()
             .filter(|(id, _)| e.ids.contains_owned(IdKind::Function, id.into_raw()))
             .collect();
-        if self.panic_strategy == PanicStrategy::Unwind {
+        let index_values = indexed && crate_context.is_some();
+        let indexed = indexed && bodies.len() >= chunks::MIN_INDEXED_FUNCTIONS;
+        if indexed {
+            chunks::HEADER.encode(e)?;
+            self.panic_strategy.encode(e)?;
+        } else if self.panic_strategy == PanicStrategy::Unwind {
             // A reserved count introduces strategy-tagged MIR. Abort keeps its
             // original byte stream; legacy decoders reject the reserved count.
             u32::MAX.encode(e)?;
             self.panic_strategy.encode(e)?;
         }
         bodies.len().encode(e)?;
-        for (id, body) in bodies {
-            id.encode(e)?;
-            body.encode(e)?;
+        if indexed {
+            chunks::encode(&bodies, e)?;
+        } else {
+            for (id, body) in bodies {
+                id.encode(e)?;
+                body.encode(e)?;
+            }
         }
         let mut closures: Vec<_> = self
             .closures
@@ -1501,31 +1601,50 @@ impl FileMir {
                 },
             )
         });
-        closures.len().encode(e)?;
-        for (key, body) in closures {
-            key.encode(e)?;
-            body.encode(e)?;
+        if index_values && closures.len() >= closures::MIN_INDEXED_CLOSURES {
+            closures::encode(e, &closures)?;
+        } else {
+            closures.len().encode(e)?;
+            for (key, body) in closures {
+                key.encode(e)?;
+                body.encode(e)?;
+            }
         }
         let consts: Vec<_> = self
             .consts
             .iter()
-            .filter(|(id, _)| e.ids.contains_owned(IdKind::Const, id.into_raw()))
+            .filter(|(id, _)| {
+                e.ids.contains_owned(IdKind::Const, id.into_raw())
+                    && !crate_context
+                        .is_some_and(|(items, sigs)| self.has_exported_data_value(items, sigs, *id))
+            })
             .collect();
         consts.len().encode(e)?;
         for (id, body) in consts {
             id.encode(e)?;
             body.encode(e)?;
         }
-        let values: Vec<_> = self
+        let mut values: Vec<_> = self
             .const_values
             .items
             .iter()
             .filter(|(id, _)| e.ids.contains_owned(IdKind::Const, id.into_raw()))
             .collect();
+        let tables = if let Some((items, _)) = crate_context.filter(|_| index_values) {
+            values::partition(&mut values, items)
+        } else {
+            Vec::new()
+        };
+        if !tables.is_empty() {
+            values::HEADER.encode(e)?;
+        }
         values.len().encode(e)?;
         for (id, value) in values {
             id.encode(e)?;
             value.encode(e)?;
+        }
+        if !tables.is_empty() {
+            values::encode(&tables, e)?;
         }
         // Instance caches are recomputed from serialized constant MIR, not persisted.
         let discriminants: Vec<_> = self
@@ -1548,9 +1667,35 @@ impl FileMir {
         items: &flux_hir::ItemTree,
         sigs: &Signatures,
     ) -> Result<(), Error> {
+        self.decode_flib_with_workers(d, items, sigs, 1)
+    }
+
+    /// Loads checked MIR using up to the caller's reserved worker capacity.
+    pub fn decode_flib_with_workers(
+        &mut self,
+        d: &mut Decoder<'_>,
+        items: &flux_hir::ItemTree,
+        sigs: &Signatures,
+        workers: usize,
+    ) -> Result<(), Error> {
+        self.decode_flib_for_import(d, items, sigs, workers, None)
+    }
+
+    /// Loads checked MIR and retains the index for package-managed functions.
+    pub fn decode_flib_for_import(
+        &mut self,
+        d: &mut Decoder<'_>,
+        items: &flux_hir::ItemTree,
+        sigs: &Signatures,
+        workers: usize,
+        source: Option<DeferredFunctionSource<'_>>,
+    ) -> Result<(), Error> {
         let check_types = !d.mir_typing_staged();
         let prefix = u32::decode(d)?;
-        let (strategy, count) = if prefix == u32::MAX {
+        let indexed = prefix == chunks::HEADER;
+        let (strategy, count) = if indexed {
+            (PanicStrategy::decode(d)?, d.length()?)
+        } else if prefix == u32::MAX {
             let strategy = PanicStrategy::decode(d)?;
             if strategy != PanicStrategy::Unwind {
                 return Err(Error::new("noncanonical MIR strategy header"));
@@ -1573,80 +1718,37 @@ impl FileMir {
         // Local and operand types can repeat across all bodies in this
         // section. Successful type checks only depend on items and sigs.
         let mut validated_types = rustc_hash::FxHashSet::default();
-        for _ in 0..count {
-            let id = decode_map_key::<flux_hir::Function>(d)?;
-            if self.bodies.get(id).is_some() {
-                return Err(Error::new("duplicate imported MIR body"));
-            }
-            // Check each body as it is decoded, while its allocations are
-            // hot, then append it to the compilation's arena.
-            let body = Body::decode(d)?;
-            if body.owner != Some(id) || body.constant_owner.is_some() {
-                return Err(Error::new("MIR function owner mismatch"));
-            }
-            if sigs
-                .fns
-                .get(id)
-                .is_none_or(|sig| sig.params.len() != body.param_count)
-            {
-                return Err(Error::new("MIR function parameter count mismatch"));
-            }
-            boundary::body_for_owner(
-                &body,
+        if indexed {
+            chunks::decode_into(
+                self,
+                d,
                 items,
                 sigs,
-                flux_ty::ClosureOwner::Function(id),
-                check_types,
+                count,
+                workers,
                 &mut validated_types,
+                source.as_ref(),
             )?;
-            self.bodies.insert(id, body);
-        }
-        let n = d.length()?;
-        for _ in 0..n {
-            let key = <(ClosureId, ClosureKind)>::decode(d)?;
-            let body = Body::decode(d)?;
-            let (kind, raw, owner, constant) = match key.0.owner {
-                flux_ty::ClosureOwner::Function(f) => {
-                    (IdKind::Function, f.into_raw(), Some(f), None)
+        } else {
+            for _ in 0..count {
+                let id = decode_map_key::<flux_hir::Function>(d)?;
+                if self.bodies.get(id).is_some() {
+                    return Err(Error::new("duplicate imported MIR body"));
                 }
-                flux_ty::ClosureOwner::Const(c) => (IdKind::Const, c.into_raw(), None, Some(c)),
-            };
-            if d.ids.is_strict() && !d.ids.contains_owned(kind, raw) {
-                return Err(Error::new("closure belongs to another crate"));
+                let body =
+                    decode_function_body(d, items, sigs, id, check_types, &mut validated_types)?;
+                self.bodies.insert(id, body);
             }
-            if (body.owner.is_some() && body.owner != owner)
-                || (body.constant_owner.is_some() && body.constant_owner != constant)
-                || body.param_count != 2
-            {
-                return Err(Error::new("MIR closure owner mismatch"));
+        }
+        let prefix = u32::decode(d)?;
+        if prefix == closures::HEADER {
+            closures::decode(self, d, items, sigs, workers)?;
+        } else {
+            let n = prefix as usize;
+            if n > flux_hir::flib::MAX_RECORD_LENGTH || n > d.remaining() {
+                return Err(Error::new("metadata allocation limit exceeded"));
             }
-            // Generated Fn-family shims deliberately have no body owner. Their
-            // self parameter still records the exact enclosing closure identity.
-            let receiver = body
-                .locals
-                .get(Local::from_raw(1))
-                .ok_or_else(|| Error::new("missing closure receiver"))?
-                .ty;
-            let closure = match (key.1, receiver.kind()) {
-                (ClosureKind::Fn, TyKind::Ref(flux_ty::Mutability::Not, ty))
-                | (ClosureKind::FnMut, TyKind::Ref(flux_ty::Mutability::Mut, ty)) => ty,
-                (ClosureKind::FnOnce, TyKind::Closure(..)) => receiver,
-                _ => return Err(Error::new("invalid closure receiver kind")),
-            };
-            if !matches!(closure.kind(),TyKind::Closure(id,_) if id==key.0) {
-                return Err(Error::new("MIR closure receiver identity mismatch"));
-            }
-            boundary::body_for_owner(
-                &body,
-                items,
-                sigs,
-                key.0.owner,
-                check_types,
-                &mut validated_types,
-            )?;
-            if self.closures.insert(key, body).is_some() {
-                return Err(Error::new("duplicate imported closure"));
-            }
+            self.decode_serial_closures(d, items, sigs, n, workers, &mut validated_types)?;
         }
         let consts = decode_map::<flux_hir::Const, Body>(d)?;
         for (id, body) in consts.into_entries() {
@@ -1669,7 +1771,18 @@ impl FileMir {
             }
             self.consts.insert(id, body);
         }
-        let values = decode_map::<flux_hir::Const, Value>(d)?;
+        let prefix = u32::decode(d)?;
+        let indexed_values = prefix == values::HEADER;
+        let count = if indexed_values {
+            d.length()?
+        } else {
+            let count = prefix as usize;
+            if count > flux_hir::flib::MAX_RECORD_LENGTH || count > d.remaining() {
+                return Err(Error::new("metadata allocation limit exceeded"));
+            }
+            count
+        };
+        let values = decode_map_entries::<flux_hir::Const, Value>(d, count)?;
         for (id, value) in values.into_entries() {
             boundary::value_for(
                 &value,
@@ -1681,10 +1794,13 @@ impl FileMir {
                 sigs,
                 0,
             )?;
-            if self.const_values.items.get(id).is_some() {
+            if self.const_values.contains_item(id) {
                 return Err(Error::new("duplicate imported constant value"));
             }
             self.const_values.items.insert(id, value);
+        }
+        if indexed_values {
+            values::decode(&mut self.const_values, d, items, sigs, source)?;
         }
         let discriminants = decode_map::<flux_hir::Struct, Box<[u128]>>(d)?;
         for (id, values) in discriminants.into_entries() {
@@ -1703,6 +1819,74 @@ impl FileMir {
             self.discriminants.insert(id, values);
         }
         self.validate_imported_closures(&d.ids, sigs)?;
+        Ok(())
+    }
+
+    fn decode_serial_closures(
+        &mut self,
+        d: &mut Decoder<'_>,
+        items: &flux_hir::ItemTree,
+        sigs: &Signatures,
+        n: usize,
+        workers: usize,
+        validated_types: &mut rustc_hash::FxHashSet<(Ty, u32)>,
+    ) -> Result<(), Error> {
+        let check_types = !d.mir_typing_staged();
+        let workers = workers.min(n / 256);
+        if workers > 1 {
+            let mut rows = Vec::new();
+            let decoded = (|| {
+                for _ in 0..n {
+                    rows.push((<(ClosureId, ClosureKind)>::decode(d)?, Body::decode(d)?));
+                }
+                Ok::<_, Error>(())
+            })();
+            let validate = |row: &ClosureRow, validated_types: &mut _| {
+                validate_closure_body(
+                    row.0,
+                    &row.1,
+                    &d.ids,
+                    items,
+                    sigs,
+                    check_types,
+                    validated_types,
+                )
+            };
+            let checks = validate_closures_in_parallel(
+                &rows,
+                workers,
+                items,
+                sigs,
+                validated_types,
+                validate,
+            );
+            // An invalid decoded record at the end of the batch must not
+            // hide an earlier validation or duplicate-key error.
+            for ((key, body), check) in rows.into_iter().zip(checks) {
+                check?;
+                if self.closures.insert(key, body).is_some() {
+                    return Err(Error::new("duplicate imported closure"));
+                }
+            }
+            decoded?;
+        } else {
+            for _ in 0..n {
+                let key = <(ClosureId, ClosureKind)>::decode(d)?;
+                let body = Body::decode(d)?;
+                validate_closure_body(
+                    key,
+                    &body,
+                    &d.ids,
+                    items,
+                    sigs,
+                    check_types,
+                    validated_types,
+                )?;
+                if self.closures.insert(key, body).is_some() {
+                    return Err(Error::new("duplicate imported closure"));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1738,6 +1922,20 @@ impl FileMir {
                 pending.push(hidden);
             }
         }
+        self.validate_imported_closure_types(ids, pending)
+    }
+
+    fn validate_imported_closure_types(
+        &self,
+        ids: &flux_hir::flib::IdMap,
+        mut pending: Vec<Ty>,
+    ) -> Result<(), Error> {
+        let owns = |id: ClosureId| match id.owner {
+            flux_ty::ClosureOwner::Function(f) => {
+                ids.contains_owned(IdKind::Function, f.into_raw())
+            }
+            flux_ty::ClosureOwner::Const(c) => ids.contains_owned(IdKind::Const, c.into_raw()),
+        };
         let mut seen = rustc_hash::FxHashSet::default();
         while let Some(ty) = pending.pop() {
             if !seen.insert(ty) {
@@ -1769,9 +1967,165 @@ impl FileMir {
     }
 }
 
+fn validate_closure_body(
+    key: (ClosureId, ClosureKind),
+    body: &Body,
+    ids: &flux_hir::flib::IdMap,
+    items: &flux_hir::ItemTree,
+    sigs: &Signatures,
+    check_types: bool,
+    validated_types: &mut rustc_hash::FxHashSet<(Ty, u32)>,
+) -> Result<(), Error> {
+    let (kind, raw, owner, constant) = match key.0.owner {
+        flux_ty::ClosureOwner::Function(f) => (IdKind::Function, f.into_raw(), Some(f), None),
+        flux_ty::ClosureOwner::Const(c) => (IdKind::Const, c.into_raw(), None, Some(c)),
+    };
+    if ids.is_strict() && !ids.contains_owned(kind, raw) {
+        return Err(Error::new("closure belongs to another crate"));
+    }
+    if (body.owner.is_some() && body.owner != owner)
+        || (body.constant_owner.is_some() && body.constant_owner != constant)
+        || body.param_count != 2
+    {
+        return Err(Error::new("MIR closure owner mismatch"));
+    }
+    // Generated Fn-family shims deliberately have no body owner. Their
+    // self parameter still records the exact enclosing closure identity.
+    let receiver = body
+        .locals
+        .get(Local::from_raw(1))
+        .ok_or_else(|| Error::new("missing closure receiver"))?
+        .ty;
+    let closure = match (key.1, receiver.kind()) {
+        (ClosureKind::Fn, TyKind::Ref(flux_ty::Mutability::Not, ty))
+        | (ClosureKind::FnMut, TyKind::Ref(flux_ty::Mutability::Mut, ty)) => ty,
+        (ClosureKind::FnOnce, TyKind::Closure(..)) => receiver,
+        _ => return Err(Error::new("invalid closure receiver kind")),
+    };
+    if !matches!(closure.kind(),TyKind::Closure(id,_) if id==key.0) {
+        return Err(Error::new("MIR closure receiver identity mismatch"));
+    }
+    boundary::body_for_owner(body, items, sigs, key.0.owner, check_types, validated_types)?;
+    Ok(())
+}
+
+type ClosureRow = ((ClosureId, ClosureKind), Body);
+
+fn validate_closures_in_parallel(
+    rows: &[ClosureRow],
+    workers: usize,
+    items: &flux_hir::ItemTree,
+    sigs: &Signatures,
+    validated_types: &mut rustc_hash::FxHashSet<(Ty, u32)>,
+    validate: impl Fn(&ClosureRow, &mut rustc_hash::FxHashSet<(Ty, u32)>) -> Result<(), Error> + Sync,
+) -> Vec<Result<(), Error>> {
+    // A corruption error can leave fewer decoded rows than the declared count.
+    let mut groups = rows.chunks(rows.len().div_ceil(workers).max(1));
+    let first = groups.next().unwrap_or_default();
+    std::thread::scope(|scope| {
+        let validate = &validate;
+        let mut helpers = Vec::new();
+        for group in groups {
+            helpers.push(
+                std::thread::Builder::new()
+                    .stack_size(8 * 1024 * 1024)
+                    .spawn_scoped(scope, move || {
+                        let _fields = flux_solve::remember_field_types(sigs);
+                        let _queries = flux_solve::remember_solver_queries(items, sigs);
+                        let mut types = rustc_hash::FxHashSet::default();
+                        group
+                            .iter()
+                            .map(|row| validate(row, &mut types))
+                            .collect::<Vec<_>>()
+                    })
+                    .map_err(|_| group),
+            );
+        }
+        let mut results: Vec<_> = first
+            .iter()
+            .map(|row| validate(row, validated_types))
+            .collect();
+        for helper in helpers {
+            match helper {
+                Ok(worker) => results.extend(worker.join().expect("closure validator panicked")),
+                Err(group) => {
+                    results.extend(group.iter().map(|row| validate(row, validated_types)))
+                }
+            }
+        }
+        results
+    })
+}
+
+fn decode_function_body(
+    d: &mut Decoder<'_>,
+    items: &flux_hir::ItemTree,
+    sigs: &Signatures,
+    id: flux_hir::FunctionId,
+    check_types: bool,
+    validated_types: &mut rustc_hash::FxHashSet<(Ty, u32)>,
+) -> Result<Body, Error> {
+    let body = Body::decode(d)?;
+    if body.owner != Some(id) || body.constant_owner.is_some() {
+        return Err(Error::new("MIR function owner mismatch"));
+    }
+    if sigs
+        .fns
+        .get(id)
+        .is_none_or(|sig| sig.params.len() != body.param_count)
+    {
+        return Err(Error::new("MIR function parameter count mismatch"));
+    }
+    boundary::body_for_owner(
+        &body,
+        items,
+        sigs,
+        flux_ty::ClosureOwner::Function(id),
+        check_types,
+        validated_types,
+    )?;
+    Ok(body)
+}
+
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
+
+    #[test]
+    fn parallel_closure_validation_keeps_the_first_archive_error() {
+        let (_, _, hir) =
+            flux_hir::lower_text("closure-import.rs", "fn f(x: u32) -> u32 { (|| x)() }");
+        let typed = crate::check_file(&hir);
+        assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+        let mir = crate::build_file(&hir, &typed);
+        assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+        let (&key, body) = mir
+            .closures
+            .iter()
+            .find(|(key, _)| matches!(key.0.owner, flux_ty::ClosureOwner::Function(f) if hir.is_program(f)))
+            .unwrap();
+        let mut body = body.clone();
+        body.param_count = 0;
+        let mut encoder = Encoder::new();
+        0u32.encode(&mut encoder).unwrap();
+        512u32.encode(&mut encoder).unwrap();
+        key.encode(&mut encoder).unwrap();
+        body.encode(&mut encoder).unwrap();
+        encoder.write(&[0xff; 512]);
+        let bytes = encoder.into_bytes();
+
+        for workers in [1, 4] {
+            assert_eq!(
+                FileMir::default().decode_flib_with_workers(
+                    &mut Decoder::new(&bytes),
+                    &hir.items,
+                    &typed.sigs,
+                    workers,
+                ),
+                Err(Error::new("MIR closure owner mismatch"))
+            );
+        }
+    }
 
     #[test]
     fn mir_section_rejects_invalid_enum_layout_without_bodies() {

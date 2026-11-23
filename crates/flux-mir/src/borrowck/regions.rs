@@ -10688,12 +10688,15 @@ impl<'a> Cx<'a> {
                     if active.contains(&ty) {
                         return;
                     }
-                    // Exact type cycles terminate above. Growing generic
-                    // instantiations also need a bound; preserve all obligations
-                    // conservatively when declaration expansion does not stop.
-                    let growing = active.iter().rev().find(|previous| {
+                    // A single repetition can be finite, such as
+                    // Option<Selection> containing an Option<&str>. Permit
+                    // that field walk before bounding repeated growth.
+                    let mut same_declaration = active.iter().rev().filter(|previous| {
                         matches!(previous.kind(), TyKind::Adt(previous, _) if previous.strukt == adt.strukt)
-                    }).is_some_and(|&previous| size(ty) >= size(previous));
+                    });
+                    let growing = same_declaration.next().is_some_and(|&previous| {
+                        same_declaration.next().is_some() && size(ty) >= size(previous)
+                    });
                     if growing || active.len() >= 64 {
                         out.extend(vars.iter().copied());
                         return;

@@ -83,10 +83,11 @@ pub(crate) fn compile_native(
     libraries: ExternalLibraries<'_>,
     native: &flux_codegen::NativeLink,
 ) -> Result<bool, String> {
-    compile_with_specializations(
+    compile_native_pipelined(
         input,
         ArtifactOutput {
             path: output,
+            pipeline: None,
             specializations: None,
         },
         options,
@@ -97,15 +98,27 @@ pub(crate) fn compile_native(
     )
 }
 
+pub(crate) type PublishMetadata<'a> = dyn Fn(&[u8]) -> Result<(), String> + 'a;
+
 pub(crate) struct ArtifactOutput<'a> {
     pub path: &'a Path,
+    pub pipeline: Option<PipelinedLibrary<'a>>,
     pub specializations: Option<specialization_object::Specializations>,
 }
 
-pub(crate) fn compile_with_specializations(
+/// The build owns this staging directory and publishes its archives only
+/// after the remaining native compilation succeeds.
+pub(crate) struct PipelinedLibrary<'a> {
+    pub directory: &'a Path,
+    pub output: &'a Path,
+    pub publish: Option<&'a PublishMetadata<'a>>,
+}
+
+pub(crate) fn compile_native_pipelined(
     input: &SourceInput,
     ArtifactOutput {
         path: output,
+        pipeline,
         specializations,
     }: ArtifactOutput<'_>,
     options: BuildOptions,
@@ -114,11 +127,11 @@ pub(crate) fn compile_with_specializations(
     libraries: ExternalLibraries<'_>,
     native: &flux_codegen::NativeLink,
 ) -> Result<bool, String> {
+    debug_assert!(pipeline.is_none() || (kind == CrateType::Lib && !metadata_only));
     options.validate()?;
     let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
-    let units = crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?;
     let whole_program = kind == CrateType::Bin && whole_program_native(native);
-    let mut timings = crate::build::Timings::new(options.timings, "compile scoped elapsed");
+    let link_dependency_objects = kind == CrateType::Bin && !whole_program;
     let capability = if metadata_only {
         Capability::Metadata
     } else {
@@ -126,23 +139,34 @@ pub(crate) fn compile_with_specializations(
     };
     let externs = libraries.externs;
     let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
-    use semantic::Recheck;
-    let cache_specializations = !whole_program && cache_specializations(options, kind, libraries);
-    let workers = crate::backend_workers::limit().get();
-    let overlap = !cfg!(debug_assertions)
-        && kind == CrateType::Bin
+    // Standalone inputs keep eager verification. Managed graphs only defer
+    // function records from complete, separately compiled dependency objects.
+    let defer_functions = !cfg!(debug_assertions)
         && !whole_program
         && libraries.dependency_files.is_some()
-        && libraries.cache.is_some()
-        && !paths.is_empty()
-        && workers > 1
-        && crate::builtins::needs_activation();
+        && libraries.cache.is_some();
+    use semantic::{ArchiveRead, Recheck};
+    let archive_read = if kind == CrateType::Lib && defer_functions {
+        ArchiveRead::Metadata
+    } else {
+        ArchiveRead::Full
+    };
+    let workers = crate::backend_workers::limit().get();
+    let overlap =
+        defer_functions && !paths.is_empty() && workers > 1 && crate::builtins::needs_activation();
     let dependency_phase = if overlap {
         "built-ins and dependency artifact load"
     } else {
         crate::builtins::activate_selected()?;
         "dependency artifact load"
     };
+    let units = crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?;
+    let cache_specializations = cache_specializations(options, kind, libraries)
+        && !metadata_only
+        && link_dependency_objects
+        && units.get() == 1
+        && native_cutoff_enabled();
+    let mut timings = crate::build::Timings::new(options.timings, "compile scoped elapsed");
     let (
         mut state,
         deferred,
@@ -153,9 +177,8 @@ pub(crate) fn compile_with_specializations(
         demand_inputs,
     ) = timings.time(dependency_phase, || {
         let load = |state: DependencyState, dependencies: semantic::DependencyInputs| {
-            let all_linkable = dependencies.all_linkable();
-            let specialization_checksums =
-                (cache_specializations && all_linkable).then(|| dependencies.checksums());
+            let all_linkable =
+                dependencies.all_linkable(pipeline.as_ref().map(|stage| stage.directory));
             let mut checked_dependencies = Vec::new();
             if kind == CrateType::Lib
                 && libraries.dependency_files.is_some()
@@ -175,8 +198,15 @@ pub(crate) fn compile_with_specializations(
                     .filter(|(manifest, _)| metadata_only || manifest.linkable)
                     .map_or(Recheck::Full, |(_, recheck)| recheck)
             };
+            let specialization_checksums =
+                (cache_specializations && all_linkable).then(|| dependencies.checksums());
             let defer_ir = recheck != Recheck::Full;
-            let state = state.load_inputs(&dependencies, defer_ir)?;
+            let state = state.load_inputs(
+                &dependencies,
+                defer_ir,
+                defer_functions,
+                link_dependency_objects,
+            )?;
             let (deferred, demand_inputs) = if defer_ir {
                 (Some(dependencies), None)
             } else {
@@ -194,52 +224,58 @@ pub(crate) fn compile_with_specializations(
                 demand_inputs,
             ))
         };
-        let resolve = |state: &DependencyState| {
-            state.resolve(&paths, libraries.dependency_files, libraries.cache)
-        };
-        if overlap {
-            let known = semantic::embedded_hashes()?;
-            return std::thread::scope(|scope| {
-                // Discover archives while built-in HIR and signatures decode.
-                let mut pending = std::thread::Builder::new()
-                    .spawn_scoped(scope, || {
+        std::thread::scope(|scope| {
+            // Discovery only needs identities, which are known before
+            // decoding the compiler-owned prefix.
+            let mut pending = if overlap {
+                let known = semantic::embedded_hashes()?;
+                let paths = &paths;
+                let files = libraries.dependency_files;
+                let cache = libraries.cache;
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || {
                         crate::backend_workers::with_limit(workers - 1, || {
                             semantic::DependencyInputs::resolve(
-                                &paths,
+                                paths,
                                 &known,
-                                libraries.dependency_files,
-                                libraries.cache,
+                                files,
+                                cache,
+                                archive_read,
                             )
                         })
                     })
-                    .ok();
-                let mut finish = |state: DependencyState| {
-                    let dependencies = match pending.take() {
-                        Some(worker) => worker.join().expect("dependency discovery panicked"),
-                        None => resolve(&state),
-                    }?;
-                    load(state, dependencies)
-                };
+                    .ok()
+            } else {
+                None
+            };
+            let mut resolve = |state: &DependencyState| match pending.take() {
+                Some(worker) => worker.join().expect("dependency discovery panicked"),
+                None => state.resolve(
+                    &paths,
+                    libraries.dependency_files,
+                    libraries.cache,
+                    archive_read,
+                ),
+            };
+            if overlap {
                 let mut loaded = None;
                 crate::builtins::activate_selected_while(&mut |db, items, sigs| {
                     loaded = Some(crate::backend_workers::with_limit(workers - 1, || {
                         let state = crate::flib::time("dependency state initialization", || {
                             DependencyState::from_interface(db, items, sigs)
                         })?;
-                        finish(state)
+                        let dependencies = resolve(&state)?;
+                        load(state, dependencies)
                     }));
                 })?;
                 if let Some(loaded) = loaded {
                     return loaded;
                 }
-                let state =
-                    crate::flib::time("dependency state initialization", DependencyState::new)?;
-                finish(state)
-            });
-        }
-        let state = crate::flib::time("dependency state initialization", DependencyState::new)?;
-        let dependencies = resolve(&state)?;
-        load(state, dependencies)
+            }
+            let state = crate::flib::time("dependency state initialization", DependencyState::new)?;
+            let dependencies = resolve(&state)?;
+            load(state, dependencies)
+        })
     })?;
     let mut aliases = Vec::new();
     let mut imports = Vec::new();
@@ -407,14 +443,19 @@ pub(crate) fn compile_with_specializations(
             return Ok(true);
         }
     }
-    let (loaded, mut imported) = if let Some(checked) = semantic_inputs {
+    let (loaded, imported) = if let Some(checked) = semantic_inputs {
         checked
     } else {
         // Use the same immutable archives and loading order. Their HIR gets the
         // same IDs on the fresh built-in prefix. Keep the source HIR and its
         // already executed macro calls rather than collecting the source again.
         let mut checked = timings.time("deferred dependency IR", || {
-            DependencyState::new()?.load_inputs(&deferred.expect("IR is loaded or deferred"), false)
+            DependencyState::new()?.load_inputs(
+                &deferred.expect("IR is loaded or deferred"),
+                false,
+                defer_functions,
+                link_dependency_objects,
+            )
         })?;
         if checked.items.counts() != dependency_counts || checked.dependencies != state.dependencies
         {
@@ -431,12 +472,23 @@ pub(crate) fn compile_with_specializations(
         .chain(std::iter::once((own, hash)))
         .collect();
     loaded.signatures().type_ids.set_crate_hashes(&hashes);
+    let mut imported = if kind == CrateType::Lib
+        && defer_functions
+        && crate::builtins::active().is_some_and(|suite| suite.use_object(options.optimized()))
+    {
+        imported.share_builtin_templates()
+    } else {
+        imported
+    };
     let roots = timings.time("imported call targets", || {
         imported.required_functions(&hir.items, loaded.signatures())
     });
     let typed = timings.time("types (includes const evaluation)", || {
         flux_mir::check_file_from(&hir, &loaded, &imported, &roots.functions)
     });
+    if let Some(error) = imported.mir().deferred_error() {
+        return Err(error.to_string());
+    }
     let mut errors = state.db.syntax_errors();
     errors.extend(crate::identifiers::diagnostics(&state.db));
     errors.extend(hir.diagnostics.iter().cloned());
@@ -454,6 +506,28 @@ pub(crate) fn compile_with_specializations(
             flux_mir::check_clean_bodies_from(&hir, &typed, &errors, &imported)
         });
         crate::driver::report_remaining(&state.db, &mut more, &reported);
+        return Ok(false);
+    }
+    let local_mir = timings.time("mir build + checks", || {
+        flux_mir::build_local_file_from_with_workers(
+            &hir,
+            &typed,
+            &imported,
+            &roots.functions,
+            options.panic_strategy,
+            crate::backend_workers::limit().get(),
+        )
+    });
+    if let Some(error) = imported
+        .mir()
+        .deferred_error()
+        .or_else(|| local_mir.deferred_error())
+    {
+        return Err(error.to_string());
+    }
+    errors.extend(local_mir.diagnostics.iter().cloned());
+    if !errors.is_empty() {
+        report_all(&state.db, &mut errors);
         return Ok(false);
     }
     let target = flux_codegen::Target::host().ok_or("unsupported host target")?;
@@ -495,21 +569,12 @@ pub(crate) fn compile_with_specializations(
             let object = demand_cache.as_mut()?.take_object()?;
             Some((native_function_symbols(&state.objects).ok()?, object))
         });
-    let mir = timings.time("mir build + checks", || {
-        flux_mir::build_file_from_owned_with_panic_strategy(
-            &hir,
-            &typed,
-            imported,
-            &roots.functions,
-            options.panic_strategy,
-        )
-    });
-    errors.extend(mir.diagnostics.iter().cloned());
-    if !errors.is_empty() {
-        report_all(&state.db, &mut errors);
-        return Ok(false);
+    if let Some(error) = imported.mir().deferred_error() {
+        return Err(error.to_string());
     }
+    let mir = imported.finish(local_mir);
     let mut object_requirements = Vec::new();
+    let function_summary = std::cell::OnceCell::new();
     let mut linked = None;
     let object = if metadata_only {
         None
@@ -563,10 +628,13 @@ pub(crate) fn compile_with_specializations(
                         parts,
                     )
                 };
-                let mut module = timings
-                    .time("mono + keel lowering", || lower(None))
-                    .ok()?
-                    .module;
+                let mut module = if options.timings {
+                    timings.time_lowering(|parts| lower(Some(parts)))
+                } else {
+                    lower(None)
+                }
+                .ok()?
+                .module;
                 let output_object =
                     compile_object(&mut module, target, options, &mut timings).ok()?;
                 link_executable(
@@ -616,50 +684,91 @@ pub(crate) fn compile_with_specializations(
             .ok();
         }
         if linked.is_some() {
-            Some(Vec::new())
+            None
         } else {
-            let lowered = timings
-                .time("mono + keel lowering", || {
-                    if let Some(compilation) = compilation {
-                        if units.get() > 1 {
-                            flux_codegen::lower_partitioned_crate(&hir, &typed, &mir, compilation)
-                        } else if kind == CrateType::Bin
-                            && !whole_program
-                            && native_cutoff_enabled()
-                            && let Ok(symbols) = native_function_symbols(&state.objects)
-                        {
-                            let mut parts = flux_codegen::LoweringTimings::default();
-                            flux_codegen::lower_linked_executable(
-                                &hir,
-                                &typed,
-                                &mir,
-                                compilation,
-                                &symbols,
-                                options.timings.then_some(&mut parts),
-                            )
-                        } else {
-                            flux_codegen::lower_crate_with_requirements(
-                                &hir,
-                                &typed,
-                                &mir,
-                                compilation,
-                            )
-                        }
-                    } else {
-                        flux_codegen::lower_module(&hir, &typed, &mir).map(|module| {
-                            flux_codegen::LoweredCrate {
-                                module,
-                                required_instances: Vec::new(),
-                            }
-                        })
-                    }
-                })
-                .map_err(|mut errors| {
-                    report_all(&state.db, &mut errors);
-                    "cannot lower crate".to_owned()
+            let lowered = if units.get() == 1
+                && link_dependency_objects
+                && !state.objects.is_empty()
+                && native_cutoff_enabled()
+            {
+                let defined = timings.time("native dependency symbols", || {
+                    native_function_symbols(&state.objects)
                 })?;
+                let compilation = compilation.expect("separate executable has native requirements");
+                if options.timings {
+                    timings.time_lowering(|parts| {
+                        flux_codegen::lower_linked_executable(
+                            &hir,
+                            &typed,
+                            &mir,
+                            compilation,
+                            &defined,
+                            Some(parts),
+                        )
+                    })
+                } else {
+                    flux_codegen::lower_linked_executable(
+                        &hir,
+                        &typed,
+                        &mir,
+                        compilation,
+                        &defined,
+                        None,
+                    )
+                }
+            } else if units.get() == 1 && options.timings {
+                timings.time_lowering(|parts| {
+                    flux_codegen::lower_with_requirements_and_timings(
+                        &hir,
+                        &typed,
+                        &mir,
+                        compilation,
+                        parts,
+                    )
+                })
+            } else {
+                timings.time("mono + keel lowering", || match compilation {
+                    Some(compilation) if units.get() > 1 => {
+                        flux_codegen::lower_partitioned_crate(&hir, &typed, &mir, compilation)
+                    }
+                    Some(compilation) => {
+                        flux_codegen::lower_crate_with_requirements(&hir, &typed, &mir, compilation)
+                    }
+                    None => flux_codegen::lower_module(&hir, &typed, &mir).map(|module| {
+                        flux_codegen::LoweredCrate {
+                            module,
+                            required_instances: Vec::new(),
+                        }
+                    }),
+                })
+            }
+            .map_err(|mut errors| {
+                report_all(&state.db, &mut errors);
+                "cannot lower crate".to_owned()
+            })?;
             let mut module = lowered.module;
             object_requirements = lowered.required_instances;
+            if let Some(publish) = pipeline.as_ref().and_then(|stage| stage.publish) {
+                let metadata = timings.time("pipeline metadata", || {
+                    write_checked_with_indices(
+                        CheckedCrate {
+                            items: &hir.items,
+                            sigs: &typed.sigs,
+                            mir: &mir,
+                            krate: own,
+                            hash,
+                            dependencies: &state.dependencies,
+                            object: None,
+                            required_instances: &object_requirements,
+                            freshness: None,
+                        },
+                        &own_indices,
+                        &[],
+                        &function_summary,
+                    )
+                })?;
+                publish(&metadata)?;
+            }
             let object = if units.get() > 1 {
                 timings.time("backend units (parallel inclusive)", || {
                     crate::backend_units::compile(
@@ -671,55 +780,27 @@ pub(crate) fn compile_with_specializations(
                     )
                 })?
             } else {
-                let object = if options.timings {
-                    let (result, backend) = timings.time("backend (inclusive)", || {
-                        flux_codegen::compile_object_with_options_and_timings(
-                            &mut module,
-                            target,
-                            options.object_options(),
-                        )
-                    });
-                    for (name, duration) in [
-                        ("  backend verify", backend.verify),
-                        ("  backend optimize", backend.optimize),
-                        ("  backend native codegen", backend.codegen),
-                        ("  backend assemble", backend.assemble),
-                    ] {
-                        if let Some(duration) = duration {
-                            timings.record(name, duration);
-                        }
-                    }
-                    result
-                } else {
-                    flux_codegen::compile_object_with_options(
-                        &mut module,
-                        target,
-                        options.object_options(),
-                    )
-                };
-                vec![object.map_err(|e| e.to_string())?]
+                vec![compile_object(&mut module, target, options, &mut timings)?]
             };
             Some(object)
         }
     };
     if kind == CrateType::Bin {
-        let (warnings, consumed_native, native_before) = if let Some(result) = linked {
-            result
-        } else {
-            let objects = object.expect("executable compilation emits an object");
-            link_executable(
+        let (warnings, consumed_native, native_before) = match linked {
+            Some(result) => result,
+            None => link_executable(
                 ExecutableLink {
                     output,
                     target,
                     name: &input.name,
                     options,
                     native: &effective_native,
-                    dependencies: if whole_program { &[] } else { &state.objects },
-                    objects: &objects,
+                    dependencies: &state.objects,
+                    objects: &object.expect("executable compilation emits an object"),
                     specialization: None,
                 },
                 &mut timings,
-            )?
+            )?,
         };
         for warning in warnings {
             eprintln!("warning: {warning}");
@@ -792,9 +873,27 @@ pub(crate) fn compile_with_specializations(
             },
             &own_indices,
             checked_dependencies,
+            &function_summary,
         )?;
-        crate::flib::write_atomic(output, &bytes)
-            .map_err(|e| format!("cannot write {}: {e}", output.display()))?;
+        let destination = pipeline.as_ref().map_or(output, |stage| stage.output);
+        crate::flib::write_atomic(destination, &bytes)
+            .map_err(|e| format!("cannot write {}: {e}", destination.display()))?;
+    }
+    if options.timings {
+        let (read, indexed) = mir.deferred_functions.chunk_counts();
+        if indexed != 0 {
+            eprintln!("dependency function chunks read {read}/{indexed}");
+        }
+    }
+    // Large dependency graphs leave independent HIR, MIR and type tables to
+    // release. Use a reserved slot once the output no longer borrows them.
+    if workers > 1 && state.dependencies.len() >= 32 {
+        std::thread::scope(|scope| {
+            let _ = std::thread::Builder::new().spawn_scoped(scope, move || {
+                drop((mir, typed, loaded));
+            });
+            drop((hir, state.db));
+        });
     }
     Ok(true)
 }
@@ -839,16 +938,21 @@ pub(crate) fn prepare_library_specializations(
     if !crate::builtins::has_staged_libraries() {
         return None;
     }
-    let _compiled = crate::builtins::compilation_scope(options.panic_strategy).ok()?;
+    crate::builtins::activate_selected().ok()?;
     let mut timings =
         crate::build::Timings::new(options.timings, "library specializations elapsed");
-    let state = DependencyState::new().ok()?;
     let dependencies = timings.time("specialization dependency artifacts", || {
-        state
-            .resolve(&[library.to_owned()], Some(files), Some(artifacts))
-            .ok()
+        let known = semantic::embedded_hashes().ok()?;
+        semantic::DependencyInputs::resolve(
+            &[library.to_owned()],
+            &known,
+            Some(files),
+            Some(artifacts),
+            semantic::ArchiveRead::Full,
+        )
+        .ok()
     })?;
-    if !dependencies.all_linkable() {
+    if !dependencies.all_linkable(None) {
         return None;
     }
     let checksums = dependencies.checksums();
@@ -865,7 +969,12 @@ pub(crate) fn prepare_library_specializations(
         }
         let mut state = timings
             .time("specialization dependency IR", || {
-                state.load_inputs(&dependencies, false)
+                semantic::DependencyState::new()?.load_inputs(
+                    &dependencies,
+                    false,
+                    !cfg!(debug_assertions),
+                    true,
+                )
             })
             .ok()?;
         if executable.is_some() && large_specialization_graph(&state) {
@@ -1026,7 +1135,12 @@ fn specialize_on_demand(
         return link_executable(probe_link, timings);
     }
     let mut state = timings.time("demand specialization dependency IR", || {
-        DependencyState::new()?.load_inputs(demand.dependencies, false)
+        DependencyState::new()?.load_inputs(
+            demand.dependencies,
+            false,
+            !cfg!(debug_assertions),
+            false,
+        )
     })?;
     let (loaded, mut imported) = prepare_semantics(&mut state)?;
     let hashes = demand.compilation.crate_hashes;
@@ -1204,6 +1318,7 @@ fn prepare_semantics(
     .and_then(|provider| {
         provider.with_required_instances(std::mem::take(&mut state.required_instances))
     })
+    .map(|provider| provider.with_function_summaries(std::mem::take(&mut state.function_summaries)))
     .map_err(|e| e.to_string())?;
     Ok((loaded, imported))
 }
@@ -1296,7 +1411,7 @@ fn configuration(
         }
     }
 
-    let builtin_object = crate::builtins::object_link_hash(options.optimized()).map(<[u8]>::to_vec);
+    let builtin_object = crate::builtins::object_hash(options.optimized()).map(<[u8]>::to_vec);
     encode(builtin_object.encode(&mut e))?;
     encode(
         crate::native_link::Request::from(native)
@@ -1344,7 +1459,6 @@ fn configuration(
     {
         encode("native-cutoff-v1".encode(&mut e))?;
     }
-
     Ok(e.into_bytes())
 }
 

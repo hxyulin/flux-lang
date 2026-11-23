@@ -7,7 +7,6 @@ pub mod flib;
 
 mod artifact_cache;
 mod backend_units;
-mod backend_workers;
 mod build;
 mod cargo;
 mod doctest;
@@ -20,6 +19,7 @@ mod proc_macro_native;
 
 use driver::{BuildOptions, CrateType, report_all};
 pub use driver::{compiler_main, package_main};
+use flux_codegen::workers as backend_workers;
 
 mod target;
 

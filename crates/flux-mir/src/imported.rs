@@ -1,12 +1,13 @@
 //! Checked dependency bodies supplied without dependency HIR or inference.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use flux_hir::flib::Error;
-use flux_hir::{ConstId, FunctionId, ItemCounts};
+use flux_hir::flib::{Decode, Decoder, Encode, Encoder, Error, IdKind};
+use flux_hir::{ConstId, FunctionId, ItemCounts, ItemTree};
 use flux_ty::{ClosureId, ClosureKind, ClosureOwner};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
+use crate::mono::{ValueReference, visit_value_references};
 use crate::{Body, FileMir};
 
 /// One provider contribution shared by source checking and code generation.
@@ -16,13 +17,139 @@ pub struct RequiredRoots {
     pub instances: Vec<flux_ty::Instance>,
 }
 
+/// Body facts that do not depend on the consuming crate's trait impls.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct FunctionSummary {
+    callees: Vec<FunctionId>,
+    promotions: Vec<FunctionId>,
+    coroutines: Vec<FunctionId>,
+}
+
+impl FunctionSummary {
+    /// Summarizes the same large function tables that use indexed MIR.
+    pub fn collect(mir: &FileMir, items: &ItemTree, functions: &[u32]) -> Option<Self> {
+        if functions.len() < crate::flib::MIN_INDEXED_FUNCTIONS {
+            return None;
+        }
+        let bodies: Vec<_> = functions
+            .iter()
+            .copied()
+            .map(FunctionId::from_raw)
+            .filter_map(|id| mir.bodies.get(id).map(|body| (id, body)))
+            .collect();
+        if bodies.len() < crate::flib::MIN_INDEXED_FUNCTIONS {
+            return None;
+        }
+        let mut summary = Self::default();
+        let mut callees = FxHashSet::default();
+        for (id, body) in bodies {
+            callees.extend(body.callees());
+            callees.extend(body.object_methods(items));
+            let mut has_vtable = false;
+            visit_value_references(&body.promoted, None, |reference| match reference {
+                ValueReference::Function(instance) => {
+                    callees.insert(instance.function);
+                }
+                ValueReference::Vtable(..) => has_vtable = true,
+            });
+            // The consumer processes every stored static value already. Only
+            // vtable promotions still need the original value and its types.
+            if has_vtable {
+                summary.promotions.push(id);
+            }
+            if crate::auto_traits::constructs_coroutine(items, body) {
+                summary.coroutines.push(id);
+            }
+        }
+        summary.callees.extend(callees);
+        summary.callees.sort_unstable();
+        Some(summary)
+    }
+
+    /// Writes crate-local references with the artifact's item mapping.
+    pub fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        self.callees.encode(e)?;
+        self.promotions.encode(e)?;
+        self.coroutines.encode(e)
+    }
+
+    /// Rejects references without a declaration or outside the summary's crate.
+    pub fn decode(
+        d: &mut Decoder<'_>,
+        items: &ItemTree,
+        mir: &FileMir,
+        sigs: &flux_ty::Signatures,
+        functions: &[u32],
+    ) -> Result<Self, Error> {
+        let callees = Vec::<FunctionId>::decode(d)?;
+        let promotions = Vec::<FunctionId>::decode(d)?;
+        let coroutines = Vec::<FunctionId>::decode(d)?;
+        if callees.iter().any(|&id| items.functions.get(id).is_none()) {
+            return Err(Error::new("invalid imported function summary"));
+        }
+        for &id in promotions.iter().chain(&coroutines) {
+            if !d.ids.contains_owned(IdKind::Function, id.into_raw()) {
+                return Err(Error::new("invalid imported function summary owner"));
+            }
+            // The summary is read after closure and constant records, so a
+            // demanded function can check its closure shims here.
+            let Some(body) = mir.function_body(items, sigs, id)? else {
+                return Err(Error::new("invalid imported function summary owner"));
+            };
+            if (promotions.contains(&id) && body.promoted.is_empty())
+                || (coroutines.contains(&id)
+                    && !crate::auto_traits::constructs_coroutine(items, body))
+            {
+                return Err(Error::new("invalid imported function summary"));
+            }
+        }
+        let mut summary = Self {
+            callees,
+            promotions,
+            coroutines,
+        };
+        if cfg!(debug_assertions) {
+            // A dependency slot can be assigned different process IDs when
+            // the artifact is read as part of another graph.
+            summary.callees.sort_unstable();
+            if Self::collect(mir, items, functions).as_ref() != Some(&summary) {
+                return Err(Error::new("inconsistent imported function summary"));
+            }
+        }
+        Ok(summary)
+    }
+}
+
+/// Summaries and the functions that still need to be inspected in legacy archives.
+#[derive(Debug, Default)]
+pub struct ImportedFunctionSummaries {
+    summarized: FunctionSummary,
+    legacy: Vec<FunctionId>,
+}
+
+impl ImportedFunctionSummaries {
+    /// Records one archive in the same order as its function bodies.
+    pub fn append(&mut self, summary: Option<FunctionSummary>, functions: &[u32]) {
+        if let Some(summary) = summary {
+            self.summarized.callees.extend(summary.callees);
+            self.summarized.promotions.extend(summary.promotions);
+            self.summarized.coroutines.extend(summary.coroutines);
+        } else {
+            self.legacy
+                .extend(functions.iter().copied().map(FunctionId::from_raw));
+        }
+    }
+}
+
 /// A checked MIR snapshot loaded before the source crate is collected.
 #[derive(Debug)]
 pub struct ImportedMir {
     mir: FileMir,
     builtins: Option<Arc<FileMir>>,
+    closure_keys: OnceLock<FxHashMap<ClosureOwner, Vec<(ClosureId, ClosureKind)>>>,
     source_counts: ItemCounts,
     required_instances: Vec<flux_ty::Instance>,
+    function_summaries: Option<ImportedFunctionSummaries>,
 }
 
 impl ImportedMir {
@@ -39,6 +166,11 @@ impl ImportedMir {
                 .consts
                 .iter()
                 .any(|(id, _)| id.into_raw() >= source_counts.consts)
+            || mir
+                .const_values
+                .deferred
+                .keys()
+                .any(|id| id.into_raw() >= source_counts.consts)
             || mir.closures.keys().any(|(id, _)| match id.owner {
                 ClosureOwner::Function(f) => f.into_raw() >= source_counts.functions,
                 ClosureOwner::Const(c) => c.into_raw() >= source_counts.consts,
@@ -49,8 +181,10 @@ impl ImportedMir {
         Ok(Self {
             mir,
             builtins: None,
+            closure_keys: OnceLock::new(),
             source_counts,
             required_instances: Vec::new(),
+            function_summaries: None,
         })
     }
 
@@ -180,37 +314,63 @@ impl ImportedMir {
         Ok(self)
     }
 
+    /// Uses the per-archive summaries when collecting dependency roots.
+    pub fn with_function_summaries(mut self, summaries: ImportedFunctionSummaries) -> Self {
+        self.function_summaries = Some(summaries);
+        self
+    }
+
+    /// Keeps the checked builtin templates accessible to separate code
+    /// generation without cloning them into the consumer's MIR.
+    pub fn share_builtin_templates(mut self) -> Self {
+        self.mir.deferred_functions.builtin_prefix = self.builtins.clone();
+        self
+    }
+
+    /// Supplies checked dependency MIR and explicit object requirements for codegen.
+    pub fn with_codegen_inputs<T>(
+        &mut self,
+        f: impl FnOnce(&FileMir, &[flux_ty::Instance]) -> T,
+    ) -> T {
+        let previous = std::mem::replace(
+            &mut self.mir.deferred_functions.builtin_prefix,
+            self.builtins.clone(),
+        );
+        let output = f(&self.mir, &self.required_instances);
+        self.mir.deferred_functions.builtin_prefix = previous;
+        output
+    }
+
+    fn unsummarized_functions(&self) -> impl Iterator<Item = (FunctionId, &Body)> {
+        self.function_summaries
+            .iter()
+            .flat_map(|summaries| &summaries.legacy)
+            .filter_map(|&id| self.mir.bodies.get(id).map(|body| (id, body)))
+            .chain(
+                self.function_summaries
+                    .is_none()
+                    .then(|| self.mir.bodies.iter())
+                    .into_iter()
+                    .flatten(),
+            )
+    }
+
     /// The boundary captured before adding the source crate.
     pub fn source_counts(&self) -> ItemCounts {
         self.source_counts
     }
 
-    /// Supplies checked dependency MIR and explicit object requirements for codegen.
-    pub fn with_codegen_inputs<T>(&self, f: impl FnOnce(&FileMir, &[flux_ty::Instance]) -> T) -> T {
-        let mut mir = FileMir {
-            panic_strategy: self.mir.panic_strategy,
-            discriminants: self.mir.discriminants.clone(),
-            ..Default::default()
-        };
-        if let Some(suite) = &self.builtins {
-            for (id, body) in suite.bodies.iter() {
-                mir.bodies.insert(id, body.clone());
-            }
-            for (&key, body) in &suite.closures {
-                mir.closures.insert(key, body.clone());
-            }
-        }
-        self.copy_bodies_into(&mut mir);
-        mir.const_values = self.mir.const_values.clone();
-        f(&mir, &self.required_instances)
-    }
-
     /// A dependency function's already checked generic template.
-    pub fn function(&self, id: FunctionId) -> Option<&Body> {
-        self.mir
-            .bodies
-            .get(id)
-            .or_else(|| self.builtins.as_ref()?.bodies.get(id))
+    pub fn function(
+        &self,
+        items: &ItemTree,
+        sigs: &flux_ty::Signatures,
+        id: FunctionId,
+    ) -> Result<Option<&Body>, Error> {
+        Ok(self
+            .mir
+            .function_body(items, sigs, id)?
+            .or_else(|| self.builtins.as_ref()?.bodies.get(id)))
     }
 
     /// A dependency constant's checked initializer.
@@ -226,32 +386,54 @@ impl ImportedMir {
         &self,
         owner: ClosureOwner,
     ) -> impl Iterator<Item = ((ClosureId, ClosureKind), &Body)> {
-        self.mir
-            .closures
-            .iter()
-            .chain(
-                self.builtins
-                    .iter()
-                    .flat_map(|suite| suite.closures.iter())
-                    .filter(|((id, _), _)| matches!(id.owner, ClosureOwner::Function(_))),
-            )
-            .filter(move |((id, _), _)| id.owner == owner)
-            .map(|(&key, body)| (key, body))
+        let keys = self.closure_keys.get_or_init(|| {
+            let mut by_owner = FxHashMap::<_, Vec<_>>::default();
+            let builtin_functions = self
+                .builtins
+                .iter()
+                .flat_map(|suite| suite.closures.keys())
+                .filter(|(id, _)| matches!(id.owner, ClosureOwner::Function(_)));
+            for &key in self.mir.closures.keys().chain(builtin_functions) {
+                by_owner.entry(key.0.owner).or_default().push(key);
+            }
+            by_owner
+        });
+        keys.get(&owner).into_iter().flatten().map(|&key| {
+            let body = self
+                .mir
+                .closures
+                .get(&key)
+                .or_else(|| self.builtins.as_ref()?.closures.get(&key))
+                .expect("indexed closure body exists");
+            (key, body)
+        })
     }
 
     /// Owners whose checked templates construct a private source coroutine.
-    /// This scans borrowed records once; unrelated bodies are never cloned.
     pub(crate) fn coroutine_owners(
         &self,
         items: &flux_hir::ItemTree,
     ) -> rustc_hash::FxHashSet<ClosureOwner> {
         let mut owners = rustc_hash::FxHashSet::default();
-        for mir in std::iter::once(&self.mir).chain(self.builtins.iter().map(|mir| mir.as_ref())) {
-            for (id, body) in mir.bodies.iter() {
-                if crate::auto_traits::constructs_coroutine(items, body) {
-                    owners.insert(ClosureOwner::Function(id));
-                }
+        if let Some(summaries) = &self.function_summaries {
+            owners.extend(
+                summaries
+                    .summarized
+                    .coroutines
+                    .iter()
+                    .copied()
+                    .map(ClosureOwner::Function),
+            );
+        }
+        for (id, body) in self
+            .unsummarized_functions()
+            .chain(self.builtins.iter().flat_map(|suite| suite.bodies.iter()))
+        {
+            if crate::auto_traits::constructs_coroutine(items, body) {
+                owners.insert(ClosureOwner::Function(id));
             }
+        }
+        for mir in std::iter::once(&self.mir).chain(self.builtins.iter().map(|mir| mir.as_ref())) {
             for (id, body) in mir.consts.iter() {
                 if crate::auto_traits::constructs_coroutine(items, body) {
                     owners.insert(ClosureOwner::Const(id));
@@ -285,10 +467,16 @@ impl ImportedMir {
             .map(|instance| instance.function)
             .collect();
         let mut values = Vec::new();
+        if let Some(summaries) = &self.function_summaries {
+            referenced.extend(summaries.summarized.callees.iter().copied());
+            for &id in &summaries.summarized.promotions {
+                if let Ok(Some(body)) = self.mir.function_body(items, sigs, id) {
+                    values.extend(body.promoted.iter());
+                }
+            }
+        }
         for body in self
-            .mir
-            .bodies
-            .iter()
+            .unsummarized_functions()
             .map(|(_, body)| body)
             .chain(self.mir.consts.iter().map(|(_, body)| body))
             .chain(self.mir.closures.values())
@@ -330,6 +518,10 @@ impl ImportedMir {
             self.mir.panic_strategy, target.panic_strategy,
             "checked dependency strategy"
         );
+        target
+            .deferred_functions
+            .builtin_prefix
+            .clone_from(&self.mir.deferred_functions.builtin_prefix);
         for (id, body) in self.mir.bodies.iter() {
             target.bodies.insert(id, body.clone());
         }
@@ -342,7 +534,7 @@ impl ImportedMir {
     }
 
     /// Code generation needs the full graph; moving it here avoids copies while checking.
-    pub(crate) fn finish(self, source: FileMir) -> FileMir {
+    pub fn finish(self, source: FileMir) -> FileMir {
         assert_eq!(
             self.mir.panic_strategy, source.panic_strategy,
             "checked dependency strategy"
@@ -394,7 +586,9 @@ impl ImportedMir {
                 .const_values
                 .items
                 .iter()
-                .any(|(id, _)| target.const_values.items.get(id).is_some())
+                .map(|(id, _)| id)
+                .chain(self.mir.const_values.deferred.keys())
+                .any(|id| target.const_values.contains_item(id))
             || self
                 .mir
                 .const_values
@@ -421,6 +615,10 @@ impl ImportedMir {
         for (id, value) in self.mir.const_values.items.iter() {
             target.const_values.items.insert(id, value.clone());
         }
+        target
+            .const_values
+            .deferred
+            .extend(&self.mir.const_values.deferred);
         for (&key, value) in &self.mir.const_values.instances {
             target.const_values.instances.insert(key, value.clone());
         }
@@ -455,9 +653,14 @@ impl ImportedMir {
         }
     }
 
-    pub(crate) fn built(&self, owner: ClosureOwner) -> Option<crate::build::Built> {
+    pub(crate) fn built(
+        &self,
+        items: &ItemTree,
+        sigs: &flux_ty::Signatures,
+        owner: ClosureOwner,
+    ) -> Option<crate::build::Built> {
         let body = match owner {
-            ClosureOwner::Function(id) => self.function(id),
+            ClosureOwner::Function(id) => self.function(items, sigs, id).ok().flatten(),
             ClosureOwner::Const(id) => self.konst(id),
         }?;
         Some(crate::build::Built {
@@ -514,13 +717,18 @@ impl<'a> SharedMir<'a> {
         }
     }
 
-    pub(crate) fn built(&self, owner: ClosureOwner) -> Option<crate::build::Built> {
+    pub(crate) fn built(
+        &self,
+        items: &ItemTree,
+        sigs: &flux_ty::Signatures,
+        owner: ClosureOwner,
+    ) -> Option<crate::build::Built> {
         match self {
             Self::Library(library) => match owner {
                 ClosureOwner::Function(id) => library.function(id).cloned(),
                 ClosureOwner::Const(id) => Some(library.konst(id).clone()),
             },
-            Self::Imported(imported) => imported.built(owner),
+            Self::Imported(imported) => imported.built(items, sigs, owner),
         }
     }
 }

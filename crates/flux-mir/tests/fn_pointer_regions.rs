@@ -28,6 +28,11 @@ fn function_pointer_regions_match_rustc() {
             false,
         ),
         (
+            "inferred_method_pointer_cannot_generalize_owner_lifetime",
+            "struct Label<'a>(&'a str);impl<'a> Label<'a>{fn first(&self)->&'a str{self.0}fn second(&self)->&'a str{self.0}fn invalid(&self,b:bool)->&'static str{let pick=if b{Self::first}else{Self::second};pick(self)}}fn main(){}",
+            false,
+        ),
+        (
             "fixed_principal_in_pointer_binder",
             include_str!("../../../tests/run/fn_pointer_principal_lifetime.rs"),
             true,

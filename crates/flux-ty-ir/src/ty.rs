@@ -1032,6 +1032,12 @@ impl Ty {
         self.flags() & HAS_OPAQUE != 0
     }
 
+    /// Whether the type contains an associated or opaque type.
+    #[inline]
+    pub fn has_aliases_or_opaques(self) -> bool {
+        self.flags() & (HAS_ALIAS | HAS_OPAQUE) != 0
+    }
+
     /// Whether the type is or contains [`Ty::ERROR`].
     #[inline]
     pub fn has_error(self) -> bool {

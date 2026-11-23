@@ -6,11 +6,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use keel_ir::Module;
 use keel_opt::{OptimizationReport, OptimizationTier, Pipeline};
 
-use crate::{Error, Stage};
+use crate::{Error, Stage, workers};
 
 pub(crate) fn optimize(module: &mut Module, tier: OptimizationTier) -> Result<(), Error> {
     let Some(directory) = std::env::var_os("FLUX_KEEL_PROFILE") else {
-        return keel_opt::run_passes(module, &passes(tier)).map_err(Error::optimize);
+        return Pipeline::named(&passes(tier))
+            .map_err(Error::optimize)?
+            .workers(workers::limit())
+            .run(module)
+            .map_err(Error::optimize);
     };
     record(module, tier, Path::new(&directory))
 }

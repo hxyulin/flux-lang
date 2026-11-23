@@ -446,6 +446,7 @@ pub(crate) fn execute(command: &Command) -> Result<ExitCode, String> {
                 &host.source,
                 edition(&host.edition)?,
                 host_cfg,
+                None,
             )
         })?;
         hosts.insert(host.package_id.as_str(), sources.len());

@@ -82,6 +82,58 @@ impl Fixture {
 }
 
 #[test]
+fn build_scripts_without_directives_track_package_files() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    f.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='app'\nversion='0.1.0'\n",
+    );
+    f.write(
+        "build.rs",
+        r#"fn main() {
+            let base = std::fs::read_to_string("input.txt").unwrap();
+            let extra = std::fs::read_to_string("extra.txt").unwrap_or_default();
+            println!("cargo::rustc-env=PACKAGE_INPUT={base}{extra}");
+        }"#,
+    );
+    f.write(
+        "src/main.rs",
+        r#"fn main() { println!("{}", env!("PACKAGE_INPUT")); }"#,
+    );
+    f.write("input.txt", "first");
+    let transcripts = f.path().join("target");
+    std::fs::create_dir_all(&transcripts).unwrap();
+    let build = || {
+        let output = support::process::run(
+            &mut f.command(&[], ""),
+            &transcripts,
+            "build",
+            Duration::from_secs(120),
+        )
+        .completed();
+        support::oracle::success(&output, "native Flux crate build");
+        String::from_utf8(output.stderr).unwrap()
+    };
+    build();
+    f.run(b"first\n");
+    f.write("target/irrelevant.txt", "generated outside package inputs");
+    assert!(build().contains("fresh build script app"));
+    f.write("input.txt", "second");
+    build();
+    f.run(b"second\n");
+    f.write("extra.txt", " added");
+    build();
+    f.run(b"second added\n");
+    std::fs::remove_file(f.path().join("extra.txt")).unwrap();
+    build();
+    f.run(b"second\n");
+}
+
+#[test]
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn panic_profiles_rebuild_dependencies_and_preserve_target_cfg() {
     let f = Fixture::new();
@@ -390,11 +442,11 @@ fn default_flux_macro_host_with_dependency_rebuilds_consumers() {
 #[test]
 fn workspace_defaults_build_libraries_and_all_enabled_binaries_in_separate_profiles() {
     let f = Fixture::new();
-    f.write("Cargo.toml", "[workspace]\nmembers=['app','helper','excluded']\ndefault-members=['app','helper']\nresolver='3'\n");
-    f.write("app/Cargo.toml", "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\ndefault-run='primary'\n[[bin]]\nname='primary'\npath='src/main.rs'\n[features]\nextra=[]\n[[bin]]\nname='gated'\npath='gated.rs'\nrequired-features=['extra']\n");
+    f.write("Cargo.toml", "[workspace]\nmembers=['app','helper','excluded']\ndefault-members=['app','helper']\nresolver='3'\n[workspace.package]\ndescription='workspace description'\n");
+    f.write("app/Cargo.toml", "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\ndescription.workspace=true\ndefault-run='primary'\n[[bin]]\nname='primary'\npath='src/main.rs'\n[features]\nextra=[]\n[[bin]]\nname='gated'\npath='gated.rs'\nrequired-features=['extra']\n");
     f.write("app/src/lib.rs", "pub fn value()->u32{42}\n");
-    f.write("app/build.rs", "fn main(){println!(\"cargo::rustc-env=TARGET_PROFILE={}:{}:{}\",std::env::var(\"PROFILE\").unwrap(),std::env::var(\"OPT_LEVEL\").unwrap(),std::env::var(\"DEBUG\").unwrap());}\n");
-    f.write("app/src/main.rs", "fn main(){println!(\"{} {} {}\",app::value(),cfg!(debug_assertions),env!(\"TARGET_PROFILE\"));}\n");
+    f.write("app/build.rs", "fn main(){assert_eq!(env!(\"CARGO_PKG_DESCRIPTION\"),\"workspace description\");println!(\"cargo::rustc-env=TARGET_PROFILE={}:{}:{}\",std::env::var(\"PROFILE\").unwrap(),std::env::var(\"OPT_LEVEL\").unwrap(),std::env::var(\"DEBUG\").unwrap());}\n");
+    f.write("app/src/main.rs", "fn main(){assert_eq!(env!(\"CARGO_PKG_DESCRIPTION\"),\"workspace description\");println!(\"{} {} {}\",app::value(),cfg!(debug_assertions),env!(\"TARGET_PROFILE\"));}\n");
     f.write(
         "app/src/bin/second.rs",
         "fn main(){println!(\"second\");}\n",
@@ -444,6 +496,152 @@ fn workspace_defaults_build_libraries_and_all_enabled_binaries_in_separate_profi
     assert!(!f.build(&["--workspace"], "").status.success());
     let explicit = f.success(&["-p", "helper", "--lib"], "");
     assert!(!explicit.contains("Compiling app"));
+}
+
+#[test]
+fn parallel_library_build_preserves_the_last_graph_on_backend_failure() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[workspace]\nmembers=['middle','leaf']\n[dependencies]\nmiddle={path='middle'}\n",
+    );
+    f.write(
+        "middle/Cargo.toml",
+        "[package]\nname='middle'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nleaf={path='../leaf'}\n",
+    );
+    f.write(
+        "leaf/Cargo.toml",
+        "[package]\nname='leaf'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    f.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['middle']\n[[package]]\nname='leaf'\nversion='0.1.0'\n[[package]]\nname='middle'\nversion='0.1.0'\ndependencies=['leaf']\n",
+    );
+    f.write("src/lib.rs", "pub fn answer() -> u32 { middle::answer() }");
+    f.write(
+        "middle/src/lib.rs",
+        "pub fn answer() -> u32 { leaf::identity(leaf::value()) }",
+    );
+    let leaf = "#[inline(never)] pub fn value() -> u32 { 42 }\npub fn identity<T>(value: T) -> T { value }";
+    f.write("leaf/src/lib.rs", leaf);
+    let args = ["--lib", "--timings", "-j4"];
+    let first = f.success(&args, "");
+    assert!(first.contains("Metadata ready leaf"), "{first}");
+    let warm = f.success(&args, "");
+    for name in ["leaf", "middle", "app"] {
+        assert!(warm.contains(&format!("Fresh {name}")), "{warm}");
+    }
+
+    let profile = f.path().join("target/flux/debug");
+    let deps = profile.join("deps");
+    let archive = profile.join("libapp.flib");
+    let saved = || {
+        std::fs::read_dir(&deps)
+            .unwrap()
+            .filter_map(|entry| {
+                let path = entry.unwrap().path();
+                path.extension().is_some_and(|ext| ext == "flib").then(|| {
+                    let bytes = std::fs::read(&path).unwrap();
+                    (path, bytes)
+                })
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let old_graph = saved();
+    let old_output = std::fs::read(&archive).unwrap();
+    f.write(
+        "leaf/src/lib.rs",
+        &format!(
+            "{leaf}\npub fn native_error() {{ unsafe {{ core::arch::asm!(\"flux_invalid_instruction\") }} }}"
+        ),
+    );
+    let failed = f.build(&args, "");
+    assert!(!failed.status.success());
+    let message = String::from_utf8(failed.stderr).unwrap();
+    assert!(message.contains("Metadata ready leaf"), "{message}");
+    assert!(message.contains("flux_invalid_instruction"), "{message}");
+    assert_eq!(saved(), old_graph);
+    assert_eq!(std::fs::read(&archive).unwrap(), old_output);
+    assert!(std::fs::read_dir(&deps).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".flux-pipeline-")
+    }));
+
+    f.write("leaf/src/lib.rs", &leaf.replace("42", "43"));
+    f.success(&args, "");
+    f.write("main.rs", "fn main() { println!(\"{}\", app::answer()); }");
+    let app = saved()
+        .into_keys()
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("app-")
+        })
+        .unwrap();
+    let bin = f.path().join("use-library");
+    let output = Command::new(env!("CARGO_BIN_EXE_fluxc"))
+        .current_dir(f.path())
+        .args(["build", "main.rs", "--extern"])
+        .arg(format!("app={}", app.display()))
+        .arg("-o")
+        .arg(&bin)
+        .output()
+        .unwrap();
+    support::oracle::success(&output, "link the rebuilt archive graph");
+    let output = Command::new(bin).output().unwrap();
+    support::oracle::success(&output, "run the rebuilt archive graph");
+    assert_eq!(output.stdout, b"43\n");
+}
+
+#[test]
+fn early_target_libraries_are_published_only_after_host_success() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[workspace]\nexclude=['leaf']\n[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n[dependencies]\nleaf={path='leaf'}\n",
+    );
+    f.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['leaf']\n[[package]]\nname='leaf'\nversion='0.1.0'\n",
+    );
+    f.write(
+        "leaf/Cargo.toml",
+        "[package]\nname='leaf'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    f.write("leaf/src/lib.rs", "pub fn answer() -> u32 { 42 }");
+    f.write("src/lib.rs", "pub fn answer() -> u32 { leaf::answer() }");
+    f.write(
+        "build.rs",
+        r#"fn main() {
+    println!("cargo:rerun-if-env-changed=BUILD_VALUE");
+    assert!(std::env::var("BUILD_VALUE").unwrap() != "fail", "host failure");
+}"#,
+    );
+    let args = ["--lib", "--macro-host-compiler", "rustc", "-j4"];
+    let failed = f.build(&args, "fail");
+    assert!(!failed.status.success());
+    let stderr = String::from_utf8(failed.stderr).unwrap();
+    assert!(stderr.contains("Compiling leaf"), "{stderr}");
+    assert!(stderr.contains("host failure"), "{stderr}");
+    let output = f.path().join("target/flux/debug");
+    assert!(!output.join("libapp.flib").exists());
+    assert!(
+        std::fs::read_dir(output.join("deps"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+
+    let clean = f.success(&args, "ok");
+    assert_eq!(clean.matches("Compiling leaf").count(), 1, "{clean}");
+    assert!(output.join("libapp.flib").is_file());
+    let warm = f.success(&args, "ok");
+    assert!(warm.contains("Fresh leaf"), "{warm}");
+    assert!(warm.contains("Fresh app"), "{warm}");
 }
 
 #[test]

@@ -124,6 +124,29 @@ fn supported_object_formats_and_unimplemented_linux_target() {
 }
 
 #[test]
+fn reserved_workers_preserve_large_darwin_objects() {
+    use std::fmt::Write as _;
+
+    let mut source = String::new();
+    for index in 0..1024 {
+        writeln!(
+            source,
+            "func @f{index}() -> i64 {{\nblock0:\n v0 = iconst.i64 {index}\n return v0\n}}"
+        )
+        .unwrap();
+    }
+    let module = keel_ir::parse(&source).unwrap();
+    let target = Target::Aarch64AppleDarwin;
+    let serial =
+        flux_codegen::compile_object(&mut module.clone(), target, OptimizationTier::None).unwrap();
+    let parallel = flux_codegen::workers::with_limit(4, || {
+        flux_codegen::compile_object(&mut module.clone(), target, OptimizationTier::None)
+    })
+    .unwrap();
+    assert_eq!(parallel, serial);
+}
+
+#[test]
 fn opt_in_timings_preserve_objects_and_partial_verification_failure() {
     let (_, _, hir) = flux_hir::lower_text("main.rs", "fn main() { println!(\"timed\"); }");
     let typed = flux_mir::check_file(&hir);

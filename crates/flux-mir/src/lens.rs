@@ -86,7 +86,7 @@ fn eval_lens_from(
                 let body = match shared(ClosureOwner::Const(id)) {
                     Some(provider) => {
                         provider
-                            .built(ClosureOwner::Const(id))
+                            .built(&hir.items, &typed.sigs, ClosureOwner::Const(id))
                             .expect("inferred constant has checked provider MIR")
                             .body
                     }
@@ -101,7 +101,7 @@ fn eval_lens_from(
                 let body = match shared(ClosureOwner::Function(id)) {
                     Some(provider) => {
                         provider
-                            .built(ClosureOwner::Function(id))
+                            .built(&hir.items, &typed.sigs, ClosureOwner::Function(id))
                             .expect("inferred function has checked provider MIR")
                             .body
                     }

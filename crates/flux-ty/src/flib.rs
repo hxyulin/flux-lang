@@ -6,6 +6,8 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{ArrayLens, Diagnostic, Signatures};
 
+pub use flux_ty_ir::flib::DecodedSignatureRows;
+
 /// A checked dependency identity and the ownership lists produced by its loader.
 #[derive(Debug, Clone, Copy)]
 pub struct LoadedCrate<'a> {

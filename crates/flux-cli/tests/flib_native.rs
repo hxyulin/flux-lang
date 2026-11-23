@@ -12,6 +12,7 @@ use flux_intern::Symbol;
 fn empty_mir() -> flux_mir::FileMir {
     flux_mir::FileMir {
         panic_strategy: flux_mir::PanicStrategy::Abort,
+        deferred_functions: Default::default(),
         bodies: Default::default(),
         closures: Default::default(),
         consts: Default::default(),
@@ -27,7 +28,17 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
     let sources = scratch::Scratch::new("out/flib-native/sources");
     let source_dir = sources.path();
     let included = source_dir.join("api.rs");
-    std::fs::write(&included,"pub fn double(x:u32)->u32 { x * 2 } pub fn id<T>(x:T)->T { x }\n#[track_caller] pub fn location()->u32 { std::panic::Location::caller().line() }\npub fn generic_location<T>(_:T)->u32 { location() }\n").unwrap();
+    std::fs::write(
+        &included,
+        "pub fn double(x:u32)->u32 { x * 2 } pub fn id<T>(x:T)->T { x }\n\
+         #[track_caller] pub fn location()->u32 { std::panic::Location::caller().line() }\n\
+         pub fn generic_location<T>(_:T)->u32 { location() }\n\
+         pub const TABLE: [u32; 4] = [3, 5, 7, 11];\n\
+         pub static STORAGE: &[u32] = &TABLE;\n\
+         pub struct Table<T>(T);\n\
+         impl<T> Table<T> { pub const WIDTHS: [usize; 2] = [size_of::<T>(), 1]; }\n",
+    )
+    .unwrap();
     let (_db, _, a) = flux_hir::lower_text(
         source_dir.join("removed-dependency.rs"),
         "include!(\"api.rs\");",
@@ -114,10 +125,32 @@ fn decoded_generic_mir_and_library_object_link_into_downstream_program() {
         .unwrap();
         let counts = items.counts();
         let a_id = loaded.dependency.krate;
+        for (name, has_initializer) in [("TABLE", false), ("STORAGE", false), ("WIDTHS", true)] {
+            let (id, _) = items
+                .consts
+                .iter()
+                .find(|(_, data)| {
+                    items.modules[data.loc.module].krate == a_id
+                        && data.name.is_some_and(|symbol| symbol.as_str() == name)
+                })
+                .unwrap();
+            assert_eq!(imported_mir.consts.contains(id), has_initializer);
+            assert_eq!(
+                imported_mir.const_values.items.contains(id),
+                !has_initializer
+            );
+        }
         let loaded_types =
             flux_ty::flib::LoadedTypes::new(&items, base_types.sigs, &[(a_id, a_hash)]).unwrap();
         let provider = flux_mir::imported::ImportedMir::new(imported_mir, counts).unwrap();
-        let root=db.add("downstream.rs","fn main() { assert!(a::id(a::double(21)) == 42); assert!(a::location() == 1); assert!(a::generic_location(0u8) == 3); }");
+        let root = db.add(
+            "downstream.rs",
+            "fn main() { assert!(a::id(a::double(21)) == 42); assert!(a::location() == 1); assert!(a::generic_location(0u8) == 3);\n\
+             const N: usize = a::TABLE[2] as usize;\n\
+             assert!(N == 7);\n\
+             assert!(a::STORAGE[N - 4] == 11);\n\
+             assert!(a::Table::<u32>::WIDTHS[0] == 4); }",
+        );
         let hir = flux_hir::lower_source_on(
             &mut db,
             items,

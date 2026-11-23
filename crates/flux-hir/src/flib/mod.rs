@@ -5,11 +5,16 @@ mod archive;
 mod builtin_suite;
 pub use builtin_suite::{BUILTIN_CRATE_NAMES, read_builtin_suite, write_builtin_suite};
 mod digest;
+mod id_map;
 mod identity;
 mod items;
 mod macros;
-pub use archive::{read_items, write_items, write_items_with_indices};
+pub use archive::{
+    DecodedItems, ItemArchiveLayout, PreparedItems, read_items, write_items,
+    write_items_with_indices,
+};
 pub use digest::digest;
+pub use id_map::IdMap;
 pub use identity::CrateIndices;
 
 use std::collections::BTreeMap;
@@ -17,7 +22,6 @@ use std::fmt;
 
 use flux_arena::Idx;
 use flux_intern::Symbol;
-use rustc_hash::{FxHashMap, FxHashSet};
 
 /// Maximum element count of one metadata collection.
 pub const MAX_RECORD_LENGTH: usize = 1_000_000;
@@ -63,80 +67,6 @@ pub enum IdKind {
     File,
 }
 
-/// Explicit mappings between process and artifact-local indices.
-#[derive(Debug, Clone, Default)]
-pub struct IdMap {
-    entries: FxHashMap<(IdKind, u32), u32>,
-    strict: bool,
-    owned: FxHashSet<(IdKind, u32)>,
-    source_ranges: Vec<(u32, u32, u32)>,
-}
-impl IdMap {
-    /// Creates a map that rejects references without an explicit mapping.
-    pub fn strict() -> Self {
-        Self {
-            entries: FxHashMap::default(),
-            strict: true,
-            owned: FxHashSet::default(),
-            source_ranges: Vec::new(),
-        }
-    }
-    /// Records one reference mapping.
-    pub fn insert(&mut self, kind: IdKind, from: u32, to: u32) {
-        self.entries.insert((kind, from), to);
-    }
-    /// Registers the process coordinates of an included diagnostic source.
-    pub fn add_source_range(&mut self, file: u32, start: u32, end: u32) {
-        self.source_ranges.push((file, start, end));
-    }
-    fn source_range(&self, range: flux_syntax::TextRange) -> Option<(u32, u32)> {
-        self.source_ranges.iter().find_map(|&(file, start, end)| {
-            (range.start() >= start && range.end() <= end).then_some((file, start))
-        })
-    }
-    fn source_bounds(&self, file: u32) -> Option<(u32, u32)> {
-        self.source_ranges
-            .iter()
-            .find_map(|&(found, start, end)| (found == file).then_some((start, end)))
-    }
-    pub fn is_strict(&self) -> bool {
-        self.strict
-    }
-    pub fn mark_owned(&mut self, kind: IdKind, index: u32) {
-        self.owned.insert((kind, index));
-    }
-    pub fn contains_owned(&self, kind: IdKind, index: u32) -> bool {
-        self.owned.contains(&(kind, index))
-    }
-    pub fn extend(&mut self, other: &Self) {
-        self.entries
-            .extend(other.entries.iter().map(|(&k, &v)| (k, v)));
-        self.owned.extend(other.owned.iter().copied());
-        self.source_ranges
-            .extend(other.source_ranges.iter().copied());
-    }
-    /// Resolves a reference, rejecting missing mappings in a strict map.
-    pub fn get(&self, kind: IdKind, from: u32) -> Result<u32, Error> {
-        match self.entries.get(&(kind, from)) {
-            Some(&to) => Ok(to),
-            None if self.strict => Err(Error("unmapped item reference")),
-            None => Ok(from),
-        }
-    }
-    /// Returns the inverse mapping, rejecting ambiguous destination indices.
-    pub fn inverse(&self) -> Result<Self, Error> {
-        let mut result = Self::strict();
-        for (&(kind, from), &to) in &self.entries {
-            if result.entries.insert((kind, to), from).is_some() {
-                return Err(Error("duplicate item reference"));
-            }
-        }
-        result.owned.extend(self.owned.iter().copied());
-        result.source_ranges = self.source_ranges.clone();
-        Ok(result)
-    }
-}
-
 /// A binary metadata writer with explicit item identity mappings.
 #[derive(Debug, Default)]
 pub struct Encoder {
@@ -144,13 +74,14 @@ pub struct Encoder {
     bytes: Vec<u8>,
     depth: u32,
     pub ids: IdMap,
+    symbols: Option<rustc_hash::FxHashMap<Symbol, u32>>,
     contexts: BTreeMap<u32, u32>,
     groups: BTreeMap<u32, u32>,
     types: BTreeMap<u32, (u32, Option<u32>)>,
     type_depths: BTreeMap<u32, u32>,
     allocations: BTreeMap<allocations::AllocationKey, allocations::AllocationMemo>,
     next_allocation: u32,
-    expanded_allocation_bytes: usize,
+    expanded_allocation_bytes: [usize; 2],
 }
 impl Encoder {
     pub fn new() -> Self {
@@ -162,14 +93,37 @@ impl Encoder {
             bytes: Vec::new(),
             depth: 0,
             ids,
+            symbols: None,
             contexts: BTreeMap::new(),
             groups: BTreeMap::new(),
             types: BTreeMap::new(),
             type_depths: BTreeMap::new(),
             allocations: BTreeMap::new(),
             next_allocation: 0,
-            expanded_allocation_bytes: 0,
+            expanded_allocation_bytes: [0; 2],
         }
+    }
+    /// Writes a length-prefixed group with fresh reference tables and the
+    /// parent's cumulative allocation limit.
+    pub fn independent_records(
+        &mut self,
+        encode: impl FnOnce(&mut Encoder) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let mut child = Self::with_ids(std::mem::take(&mut self.ids));
+        child.trusted_builtin_suite = self.trusted_builtin_suite;
+        child.expanded_allocation_bytes = self.expanded_allocation_bytes;
+        child.bytes = std::mem::take(&mut self.bytes);
+        let offset = child.bytes.len();
+        child.write(&[0; 4]);
+        let result = encode(&mut child);
+        self.ids = std::mem::take(&mut child.ids);
+        self.expanded_allocation_bytes = child.expanded_allocation_bytes;
+        self.bytes = child.into_bytes();
+        result?;
+        let size = u32::try_from(self.bytes.len() - offset - 4)
+            .map_err(|_| Error("metadata record group is too large"))?;
+        self.bytes[offset..offset + 4].copy_from_slice(&size.to_le_bytes());
+        Ok(())
     }
     /// Returns a memoized semantic depth without requiring a wire definition.
     pub fn type_depth(&self, raw: u32) -> Option<u32> {
@@ -263,14 +217,21 @@ pub struct Decoder<'a> {
     position: usize,
     depth: u32,
     pub ids: IdMap,
+    symbols: Option<Vec<Symbol>>,
     contexts: BTreeMap<u32, u32>,
     groups: BTreeMap<u32, u32>,
     types: Vec<Option<(u32, u32)>>,
     type_depths: BTreeMap<u32, u32>,
     allocations: Vec<allocations::DecodedAllocation>,
     allocation_memo: BTreeMap<allocations::AllocationKey, allocations::AllocationMemo>,
-    expanded_allocation_bytes: usize,
+    expanded_allocation_bytes: [usize; 2],
+    shared_allocation_budget: Option<AllocationBudget>,
 }
+
+/// A cumulative expansion limit shared by independently decoded records.
+#[derive(Debug, Clone)]
+pub struct AllocationBudget(std::sync::Arc<[std::sync::atomic::AtomicUsize; 2]>);
+
 impl<'a> Decoder<'a> {
     pub fn new(bytes: &'a [u8]) -> Self {
         Self::with_ids(bytes, IdMap::default())
@@ -294,14 +255,32 @@ impl<'a> Decoder<'a> {
             proc_macro_resolver: None,
             proc_macro_error: None,
             ids,
+            symbols: None,
             contexts: BTreeMap::new(),
             groups: BTreeMap::new(),
             types: Vec::new(),
             type_depths: BTreeMap::new(),
             allocations: Vec::new(),
             allocation_memo: BTreeMap::new(),
-            expanded_allocation_bytes: 0,
+            expanded_allocation_bytes: [0; 2],
+            shared_allocation_budget: None,
         }
+    }
+    /// Shares this stream's expansion limit with readers of its child records.
+    pub fn share_allocation_budget(&mut self) -> AllocationBudget {
+        self.shared_allocation_budget
+            .get_or_insert_with(|| {
+                AllocationBudget(std::sync::Arc::new(
+                    self.expanded_allocation_bytes
+                        .map(std::sync::atomic::AtomicUsize::new),
+                ))
+            })
+            .clone()
+    }
+    /// Attaches the parent stream's limit before reading an independent record.
+    pub fn with_allocation_budget(mut self, budget: AllocationBudget) -> Self {
+        self.shared_allocation_budget = Some(budget);
+        self
     }
     /// Installs the driver-owned host resolver shared by one compilation graph.
     pub fn set_proc_macro_resolver(
@@ -504,6 +483,12 @@ impl Decode for String {
         Ok(text.to_owned())
     }
 }
+impl Decode for std::sync::Arc<str> {
+    fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        let text = std::str::from_utf8(d.blob()?).map_err(|_| Error("invalid metadata utf-8"))?;
+        Ok(text.into())
+    }
+}
 impl<T: Encode + ?Sized> Encode for &T {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         (**self).encode(e)
@@ -597,14 +582,73 @@ tuple!(A:0,B:1,C:2,D:3);
 
 impl Encode for Symbol {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
+        if let Some(symbols) = &mut e.symbols {
+            if let Some(&index) = symbols.get(self) {
+                return (SYMBOL_REFERENCE | index).encode(e);
+            }
+            if symbols.len() < MAX_RECORD_LENGTH {
+                symbols.insert(*self, symbols.len() as u32);
+            }
+        }
         self.as_str().encode(e)
     }
 }
+// Inline symbol lengths fit below this bit. In a crate's HIR stream the other
+// values refer to the order in which the inline names appeared.
+const SYMBOL_REFERENCE: u32 = 1 << 31;
+
 impl Decode for Symbol {
     fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
-        Ok(Symbol::intern(&String::decode(d)?))
+        let code = u32::decode(d)?;
+        if code & SYMBOL_REFERENCE != 0
+            && let Some(symbols) = &d.symbols
+        {
+            return symbols
+                .get((code & !SYMBOL_REFERENCE) as usize)
+                .copied()
+                .ok_or(Error("invalid metadata symbol reference"));
+        }
+        let length = code as usize;
+        if length > MAX_BYTE_LENGTH || length > d.remaining() {
+            return Err(Error("metadata allocation limit exceeded"));
+        }
+        let text =
+            std::str::from_utf8(d.read(length)?).map_err(|_| Error("invalid metadata utf-8"))?;
+        let symbol = Symbol::intern(text);
+        if let Some(symbols) = &mut d.symbols
+            && symbols.len() < MAX_RECORD_LENGTH
+        {
+            symbols.push(symbol);
+        }
+        Ok(symbol)
     }
 }
+
+#[test]
+fn archive_symbols_reuse_only_preceding_names() {
+    let name = Symbol::intern("État");
+    let mut encoder = Encoder::new();
+    encoder.symbols = Some(Default::default());
+    name.encode(&mut encoder).unwrap();
+    name.encode(&mut encoder).unwrap();
+    let bytes = encoder.into_bytes();
+    let inline_length = 4 + name.as_str().len();
+    assert_eq!(&bytes[inline_length..], &SYMBOL_REFERENCE.to_le_bytes());
+
+    let mut decoder = Decoder::new(&bytes);
+    decoder.symbols = Some(Vec::new());
+    assert_eq!(Symbol::decode(&mut decoder), Ok(name));
+    assert_eq!(Symbol::decode(&mut decoder), Ok(name));
+    decoder.finish().unwrap();
+
+    let mut decoder = Decoder::new(&bytes[inline_length..]);
+    decoder.symbols = Some(Vec::new());
+    assert_eq!(
+        Symbol::decode(&mut decoder),
+        Err(Error("invalid metadata symbol reference"))
+    );
+}
+
 impl Encode for flux_syntax::TextRange {
     fn encode(&self, e: &mut Encoder) -> Result<(), Error> {
         if let Some((file, base)) = e.ids.source_range(*self) {

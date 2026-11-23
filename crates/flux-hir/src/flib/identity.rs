@@ -1,7 +1,21 @@
 //! Ownership scans and reference-table construction.
 
+use super::id_map::{SLOT_SHIFT, SLOT_SIZE};
 use super::{Error, IdKind, IdMap};
 use crate::{CrateId, ItemTree};
+
+pub(super) const ITEM_KINDS: [IdKind; 10] = [
+    IdKind::Module,
+    IdKind::Function,
+    IdKind::Struct,
+    IdKind::Trait,
+    IdKind::Impl,
+    IdKind::Const,
+    IdKind::TypeAlias,
+    IdKind::Macro,
+    IdKind::MacroScope,
+    IdKind::File,
+];
 
 /// Process indices of one crate in deterministic per-arena order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -139,17 +153,22 @@ impl CrateIndices {
     }
     /// Visits each independently indexed ownership table.
     pub fn tables(&self) -> [(IdKind, &[u32]); 10] {
+        let rows = self.rows();
+        std::array::from_fn(|index| (ITEM_KINDS[index], rows[index]))
+    }
+
+    fn rows(&self) -> [&[u32]; 10] {
         [
-            (IdKind::Module, &self.modules),
-            (IdKind::Function, &self.functions),
-            (IdKind::Struct, &self.structs),
-            (IdKind::Trait, &self.traits),
-            (IdKind::Impl, &self.impls),
-            (IdKind::Const, &self.consts),
-            (IdKind::TypeAlias, &self.type_aliases),
-            (IdKind::Macro, &self.macros),
-            (IdKind::MacroScope, &self.macro_scopes),
-            (IdKind::File, &self.files),
+            &self.modules,
+            &self.functions,
+            &self.structs,
+            &self.traits,
+            &self.impls,
+            &self.consts,
+            &self.type_aliases,
+            &self.macros,
+            &self.macro_scopes,
+            &self.files,
         ]
     }
     /// Adds process-to-wire mappings. Slot zero is the artifact's own crate.
@@ -179,11 +198,11 @@ impl CrateIndices {
         }
         map.insert(IdKind::Crate, krate.0, slot);
         for (kind, indices) in tables {
-            if indices.len() > 0x0100_0000 {
+            if indices.len() > SLOT_SIZE as usize {
                 return Err(Error("too many artifact items"));
             }
             for (local, &source) in indices.iter().enumerate() {
-                map.insert(kind, source, (slot << 24) | local as u32);
+                map.insert(kind, source, (slot << SLOT_SHIFT) | local as u32);
                 if slot == 0 {
                     map.mark_owned(kind, source);
                 }
@@ -204,32 +223,24 @@ impl CrateIndices {
         if slot > 255 {
             return Err(Error("too many artifact dependencies"));
         }
-        let tables = self.tables();
-        if tables
+        let rows = self.rows();
+        if rows
             .iter()
-            .any(|(_, indices)| indices.len() > 0x0100_0000)
+            .any(|indices| indices.len() > SLOT_SIZE as usize)
         {
             return Err(Error("too many artifact items"));
         }
         // Collected and decoded ownership rows are in increasing process
         // order. Preserve inversion semantics for hand-built rows as well.
-        if tables
+        if rows
             .iter()
-            .any(|(_, indices)| indices.windows(2).any(|pair| pair[0] >= pair[1]))
+            .any(|indices| indices.windows(2).any(|pair| pair[0] >= pair[1]))
+            || !map.add_decode_slot(slot, krate.0, rows)
         {
             let mut encoder = IdMap::strict();
             self.add_mapping(&mut encoder, krate, slot)?;
             map.extend(&encoder.inverse()?);
             return Ok(());
-        }
-        map.insert(IdKind::Crate, slot, krate.0);
-        for (kind, indices) in tables {
-            for (local, &source) in indices.iter().enumerate() {
-                map.insert(kind, (slot << 24) | local as u32, source);
-                if slot == 0 {
-                    map.mark_owned(kind, source);
-                }
-            }
         }
         for &(file, start, end) in &self.source_ranges {
             map.add_source_range(file, start, end);

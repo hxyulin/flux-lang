@@ -314,6 +314,9 @@ fn exact_git_checkout_and_stale_lock_rejection() {
         r#"
 [workspace]
 resolver="3"
+members=["companion"]
+[workspace.package]
+version="0.1.0"
 [package]
 name="cached-git"
 version="0.1.0"
@@ -321,6 +324,11 @@ edition="2024"
 "#,
     );
     f.write(&format!("{checkout}/src/lib.rs"), "\n");
+    f.write(
+        &format!("{checkout}/companion/Cargo.toml"),
+        "[package]\nname=\"cached-companion\"\nversion.workspace=true\nedition=\"2024\"\n",
+    );
+    f.write(&format!("{checkout}/companion/src/lib.rs"), "\n");
     let path = f.0.join(checkout);
     for args in [
         vec!["init", "-q"],
@@ -376,6 +384,7 @@ version="0.1.0"
 edition="2024"
 [dependencies]
 cached-git={{git="https://example.invalid/offline", rev="{commit}"}}
+cached-companion={{git="https://example.invalid/offline", rev="{commit}"}}
 "#
         ),
     );
@@ -386,7 +395,11 @@ version=4
 [[package]]
 name="app"
 version="0.1.0"
-dependencies=["cached-git"]
+dependencies=["cached-companion", "cached-git"]
+[[package]]
+name="cached-companion"
+version="0.1.0"
+source="git+https://example.invalid/offline?rev={commit}#{commit}"
 [[package]]
 name="cached-git"
 version="0.1.0"
@@ -395,7 +408,9 @@ source="git+https://example.invalid/offline?rev={commit}#{commit}"
     );
     f.write("Cargo.lock", &lock);
     let plan = f.plan(&[]);
-    assert_eq!(plan["packages"].as_array().unwrap().len(), 2);
+    assert_eq!(plan["packages"].as_array().unwrap().len(), 3);
+    unit(&plan, "cached_companion", "target", "lib");
+    unit(&plan, "cached_git", "target", "lib");
     f.write(
         "Cargo.lock",
         &lock.replace(&format!("#{commit}"), &format!("#{}", "0".repeat(40))),

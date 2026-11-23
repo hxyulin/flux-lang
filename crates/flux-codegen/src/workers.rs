@@ -1,4 +1,4 @@
-//! Backend worker capacity reserved by the crate graph scheduler.
+//! Worker capacity reserved by the crate graph scheduler.
 
 use std::cell::Cell;
 use std::num::NonZeroUsize;
@@ -7,13 +7,15 @@ thread_local! {
     static LIMIT: Cell<NonZeroUsize> = const { Cell::new(NonZeroUsize::MIN) };
 }
 
-/// Standalone and dependency jobs use one worker. The ready binary root may
-/// reserve the graph budget after every reachable dependency has finished.
-pub(crate) fn limit() -> NonZeroUsize {
+/// Standalone jobs use one worker. The ready root can reserve the graph
+/// budget, and the last dependency of a pipelined library can use idle slots.
+pub fn limit() -> NonZeroUsize {
     LIMIT.with(Cell::get)
 }
 
-pub(crate) fn with_limit<T>(jobs: usize, work: impl FnOnce() -> T) -> T {
+/// Runs a compile job with reserved capacity, including the calling thread.
+/// The reservation is scoped to this thread and restored when the job exits.
+pub fn with_limit<T>(jobs: usize, work: impl FnOnce() -> T) -> T {
     struct Restore(NonZeroUsize);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -23,6 +25,11 @@ pub(crate) fn with_limit<T>(jobs: usize, work: impl FnOnce() -> T) -> T {
     let jobs = NonZeroUsize::new(jobs).unwrap_or(NonZeroUsize::MIN);
     let _restore = Restore(LIMIT.with(|limit| limit.replace(jobs)));
     work()
+}
+
+/// Gives back the helper slots for the rest of the current compile job.
+pub fn release_helpers() {
+    LIMIT.set(NonZeroUsize::MIN);
 }
 
 #[cfg(test)]
@@ -39,6 +46,11 @@ mod tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| assert_eq!(limit().get(), 1));
             });
+            with_limit(4, || {
+                release_helpers();
+                assert_eq!(limit().get(), 1);
+            });
+            assert_eq!(limit().get(), 8);
         });
         assert_eq!(limit().get(), 1);
     }

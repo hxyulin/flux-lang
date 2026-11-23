@@ -337,6 +337,7 @@ pub(super) fn check_c_abi(
     typed: &TypedFile,
     mir: &FileMir,
     instances: &[Instance],
+    native: &rustc_hash::FxHashSet<Instance>,
 ) -> Vec<Diagnostic> {
     let layouts = Layouts::new(&hir.items, &typed.sigs, &mir.discriminants);
     let supported = |sig: &FnSig| {
@@ -373,6 +374,9 @@ pub(super) fn check_c_abi(
             ))
         {
             add(data.loc.file, data.def_range);
+        }
+        if native.contains(&instance) {
+            continue;
         }
         let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
         let file = hir.items.functions[body.owner.unwrap_or(instance.function)]

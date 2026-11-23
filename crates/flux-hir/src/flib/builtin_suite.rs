@@ -3,36 +3,12 @@
 //! Resolved semantic tables survive loading. Source-only body expansion caches
 //! and unresolved sized-dispatch declarations are omitted: this prefix must use
 //! decoded checked MIR, and its HIR bodies cannot be lowered again.
-use super::{Decode, Decoder, Encode, Encoder, Error, IdKind, IdMap};
+use super::{Decode, Decoder, Encode, Encoder, Error, IdMap};
 use crate::{FileId, ItemTree, SourceDb};
 use flux_arena::LayeredArena;
 
 const MAGIC: &str = "FLUX-BUILTIN-HIR-4";
-const KINDS: [IdKind; 11] = [
-    IdKind::Crate,
-    IdKind::Module,
-    IdKind::Function,
-    IdKind::Struct,
-    IdKind::Trait,
-    IdKind::Impl,
-    IdKind::Const,
-    IdKind::TypeAlias,
-    IdKind::Macro,
-    IdKind::MacroScope,
-    IdKind::File,
-];
 
-fn identity(counts: &[usize; 11]) -> IdMap {
-    let mut ids = IdMap::strict();
-    for (&kind, &count) in KINDS.iter().zip(counts) {
-        for raw in 0..count as u32 {
-            ids.insert(kind, raw, raw);
-            ids.mark_owned(kind, raw);
-        }
-    }
-    ids.insert(IdKind::File, u32::MAX, u32::MAX);
-    ids
-}
 fn write_arena<T: Encode>(arena: &LayeredArena<T>, e: &mut Encoder) -> Result<(), Error> {
     for (_, value) in arena.iter() {
         value.encode(e)?;
@@ -123,7 +99,7 @@ pub fn write_builtin_suite(items: &ItemTree, db: &SourceDb, e: &mut Encoder) -> 
         }
         count.encode(e)?;
     }
-    e.ids = identity(&counts);
+    e.ids = IdMap::builtin_identity(&counts);
     for (id, file) in db.files() {
         if file.range_base != 0 {
             e.ids.add_source_range(
@@ -210,11 +186,11 @@ pub fn read_builtin_suite(d: &mut Decoder<'_>) -> Result<(SourceDb, ItemTree), E
     if counts[0] != 4 {
         return Err(Error("invalid builtin crate count"));
     }
-    d.ids = identity(&counts);
+    d.ids = IdMap::builtin_identity(&counts);
     let mut db = SourceDb::empty();
     for raw in 0..counts[10] {
         let path = Decode::decode(d)?;
-        let text: String = Decode::decode(d)?;
+        let text: std::sync::Arc<str> = Decode::decode(d)?;
         let edition = Decode::decode(d)?;
         let base = u32::decode(d)?;
         let origin = Option::<FileId>::decode(d)?;

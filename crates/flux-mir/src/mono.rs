@@ -313,7 +313,7 @@ fn collect_roots(
         // Runtime hooks invoked around the user main function.
         for hook in ["args_init", "flush_stdout"] {
             if let Some(&function) = items.lang_fns.get(&Symbol::intern(hook))
-                && mir.bodies.get(function).is_some()
+                && mir.has_function_body(function)
             {
                 let instance = Instance {
                     function,
@@ -326,7 +326,7 @@ fn collect_roots(
     }
     if roots.is_none() {
         for (function, data) in items.functions.iter() {
-            if !data.is_extern && data.link_name.is_some() && mir.bodies.get(function).is_some() {
+            if !data.is_extern && data.link_name.is_some() && mir.has_function_body(function) {
                 let instance = Instance {
                     function,
                     args: &[],
@@ -351,15 +351,13 @@ fn collect_roots(
     // when reachable code uses it. Otherwise an unused pointer could trigger
     // unbounded monomorphization of a function that is never called.
     for (id, value) in mir.const_values.items.iter() {
-        if items.consts[id].is_static.is_none()
-            || match statics {
-                StaticRoots::All => false,
-                StaticRoots::Crates(crates) => {
-                    !crates.contains(&items.modules[items.consts[id].loc.module].krate)
-                }
-                StaticRoots::Items(items) => !items.contains(&id),
-            }
-        {
+        let item = &items.consts[id];
+        let selected = match statics {
+            StaticRoots::All => true,
+            StaticRoots::Crates(crates) => crates.contains(&items.modules[item.loc.module].krate),
+            StaticRoots::Items(statics) => statics.contains(&id),
+        };
+        if item.is_static.is_none() || !selected {
             continue;
         }
         let mut found = Vec::new();
@@ -367,7 +365,7 @@ fn collect_roots(
         static_functions.insert(id, found.clone());
         for instance in found {
             reified.insert(instance);
-            if (mir.instance_body(items, instance).is_some() || is_builtin_shim(items, instance))
+            if (mir.has_instance_body(items, instance) || is_builtin_shim(items, instance))
                 && !depths.contains_key(&instance)
             {
                 depths.insert(instance, 0);
@@ -377,7 +375,7 @@ fn collect_roots(
     }
     let names = |id| items.const_name(id);
     let mut evaluator = crate::eval::Evaluator::new(items, sigs, &mir.bodies, &mir.consts, &names)
-        .with_imported(&mir.const_values, &mir.discriminants);
+        .with_file_mir(mir);
     // Rustc evaluates inline constants in all monomorphic functions during
     // code generation, including unused ones. Generic function bodies defer
     // their expressions until an instance is requested.
@@ -404,7 +402,7 @@ fn collect_roots(
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
         next += 1;
-        if native_leaf.is_some_and(|supplies| supplies(caller)) {
+        if native_leaf.is_some_and(|leaf| leaf(caller)) {
             continue;
         }
         if let Some(message) = neon_immediate_error(items, caller) {
@@ -420,7 +418,14 @@ fn collect_roots(
                 shim = generated;
                 (&shim, &[][..])
             } else {
-                match mir.instance_body(&hir.items, caller) {
+                mir.function_body(items, sigs, caller.function)
+                    .map_err(|error| {
+                        let data = &items.functions[caller.function];
+                        let mut diagnostic = Diagnostic::new(data.def_range, error.to_string());
+                        diagnostic.file = data.loc.file;
+                        diagnostic
+                    })?;
+                match mir.instance_body(items, caller) {
                     Some(found) => found,
                     None => {
                         shim = builtin_shim(&hir.items, sigs, caller, mir.panic_strategy)
@@ -485,9 +490,8 @@ fn collect_roots(
                             match entry {
                                 crate::vtable::Entry::Method(instance) => {
                                     reified.insert(instance);
-                                    let has_body =
-                                        mir.instance_body(&hir.items, instance).is_some()
-                                            || is_builtin_shim(&hir.items, instance);
+                                    let has_body = mir.has_instance_body(items, instance)
+                                        || is_builtin_shim(&hir.items, instance);
                                     if has_body && !depths.contains_key(&instance) {
                                         depths.insert(instance, depth + 1);
                                         instances.push(instance);
@@ -541,7 +545,17 @@ fn collect_roots(
                             args: instance_args(items, sigs, args, caller_args),
                         };
                         let c = flux_solve::traits::resolve_const(items, sigs, c);
-                        let value = if let Some(value) = mir.const_values.get(c.konst, c.args) {
+                        let checked = mir
+                            .const_values
+                            .get_checked(c.konst, c.args, items, sigs)
+                            .map_err(|error| {
+                                let def = &items.consts[c.konst];
+                                let mut diagnostic =
+                                    Diagnostic::new(def.def_range, error.to_string());
+                                diagnostic.file = def.loc.file;
+                                diagnostic
+                            })?;
+                        let value = if let Some(value) = checked {
                             value
                         } else {
                             if let std::collections::hash_map::Entry::Vacant(entry) =
@@ -599,8 +613,8 @@ fn collect_roots(
                 }
                 for instance in found {
                     reified.insert(instance);
-                    let has_body = mir.instance_body(items, instance).is_some()
-                        || is_builtin_shim(items, instance);
+                    let has_body =
+                        mir.has_instance_body(items, instance) || is_builtin_shim(items, instance);
                     if has_body && !depths.contains_key(&instance) {
                         if depth + 1 > RECURSION_LIMIT {
                             let mut d = Diagnostic::new(
@@ -865,9 +879,7 @@ fn collect_roots(
                     }
                     continue;
                 }
-                if mir.instance_body(&hir.items, callee).is_none()
-                    && !is_builtin_shim(&hir.items, callee)
-                {
+                if !mir.has_instance_body(items, callee) && !is_builtin_shim(&hir.items, callee) {
                     continue;
                 }
                 if depths.contains_key(&callee) {
@@ -960,38 +972,40 @@ pub(crate) fn value_functions<'a>(
     sigs: &Signatures,
     out: &mut Vec<Instance>,
 ) {
+    visit_value_references([value], Some(constants), |reference| match reference {
+        ValueReference::Function(instance) => out.push(instance),
+        ValueReference::Vtable(concrete, object) => {
+            vtable_functions(items, sigs, concrete, object, out)
+        }
+    });
+}
+
+pub(crate) enum ValueReference {
+    Function(Instance),
+    Vtable(Ty, Ty),
+}
+
+/// Visits references in already evaluated values. Without a constant table,
+/// static references are left for the consumer to examine.
+pub(crate) fn visit_value_references<'a>(
+    roots: impl IntoIterator<Item = &'a crate::eval::Value>,
+    constants: Option<&'a crate::eval::ConstValues>,
+    mut visit: impl FnMut(ValueReference),
+) {
     use crate::eval::Value;
-    let mut values = vec![value];
+    let mut values: Vec<_> = roots.into_iter().collect();
     let mut globals = FxHashSet::default();
     let mut allocations = FxHashSet::default();
     while let Some(value) = values.pop() {
         match value {
-            Value::Function(instance) => out.push(*instance),
+            Value::Function(instance) => visit(ValueReference::Function(*instance)),
             Value::DynPointer {
                 pointer,
                 concrete,
                 object,
                 ..
             } => {
-                let (concrete, object) = flux_solve::object_unsize(sigs, *concrete, *object)
-                    .unwrap_or((*concrete, *object));
-                let mut pending = vec![object];
-                let mut seen = FxHashSet::default();
-                while let Some(object) = pending.pop() {
-                    if !seen.insert(object) {
-                        continue;
-                    }
-                    if let Some(drop) = crate::vtable::drop_entry(items, sigs, concrete) {
-                        out.push(drop);
-                    }
-                    for entry in crate::vtable::entries(items, sigs, object, concrete) {
-                        match entry {
-                            crate::vtable::Entry::Method(instance) => out.push(instance),
-                            crate::vtable::Entry::Super(object) => pending.push(object),
-                            crate::vtable::Entry::Null => {}
-                        }
-                    }
-                }
+                visit(ValueReference::Vtable(*concrete, *object));
                 if allocations.insert((0, std::sync::Arc::as_ptr(pointer) as usize)) {
                     values.push(pointer);
                 }
@@ -1016,11 +1030,39 @@ pub(crate) fn value_functions<'a>(
                 values.push(pointer);
             }
             Value::Static(id) | Value::StaticPart { id, .. } if globals.insert(*id) => {
-                if let Some(value) = constants.items.get(*id) {
+                if let Some(value) = constants.and_then(|constants| constants.items.get(*id)) {
                     values.push(value);
                 }
             }
             _ => {}
+        }
+    }
+}
+
+fn vtable_functions(
+    items: &ItemTree,
+    sigs: &Signatures,
+    concrete: Ty,
+    object: Ty,
+    out: &mut Vec<Instance>,
+) {
+    let (concrete, object) =
+        flux_solve::object_unsize(sigs, concrete, object).unwrap_or((concrete, object));
+    let mut pending = vec![object];
+    let mut seen = FxHashSet::default();
+    while let Some(object) = pending.pop() {
+        if !seen.insert(object) {
+            continue;
+        }
+        if let Some(drop) = crate::vtable::drop_entry(items, sigs, concrete) {
+            out.push(drop);
+        }
+        for entry in crate::vtable::entries(items, sigs, object, concrete) {
+            match entry {
+                crate::vtable::Entry::Method(instance) => out.push(instance),
+                crate::vtable::Entry::Super(object) => pending.push(object),
+                crate::vtable::Entry::Null => {}
+            }
         }
     }
 }

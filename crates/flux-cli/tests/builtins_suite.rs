@@ -577,6 +577,75 @@ fn fresh_package_build_defers_builtin_decoding() {
 }
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(debug_assertions)))]
+fn managed_library_uses_shared_builtin_templates() {
+    let staged = Staged::new(true);
+    let manifest = staged.write(
+        "Cargo.toml",
+        "[workspace]\nexclude=['helper']\n[package]\nname='shared-templates'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='lib.rs'\n[[bin]]\nname='shared-templates'\npath='main.rs'\n[dependencies]\nhelper={path='helper'}\n",
+    );
+    staged.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='helper'\nversion='0.1.0'\n[[package]]\nname='shared-templates'\nversion='0.1.0'\ndependencies=['helper']\n",
+    );
+    std::fs::create_dir(staged.scratch.path().join("helper")).unwrap();
+    staged.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n[lib]\npath='lib.rs'\n",
+    );
+    staged.write(
+        "helper/lib.rs",
+        "pub fn identity<T>(value: T) -> T { value }\n",
+    );
+    let library = |bias| {
+        staged.write(
+            "lib.rs",
+            &format!(
+                "const BIAS: u32 = {bias}u32.rotate_left(8).rotate_right(8);\npub fn sum(values: &[u32]) -> u32 {{ values.iter().map(|&x| helper::identity(x) + BIAS).sum() }}\n"
+            ),
+        );
+    };
+    library(3);
+    staged.write(
+        "main.rs",
+        "fn main() { println!(\"{}\", shared_templates::sum(&[1, 2, 3])); }\n",
+    );
+    let build = |args: &[&str], label| {
+        let mut command = staged.command();
+        command
+            .args(["package-driver", "build", "--offline", "--manifest-path"])
+            .arg(&manifest)
+            .args(args);
+        let output = flib_support::run(&mut command, label);
+        success(&output);
+        output
+    };
+    build(&[], "build-with-shared-builtin-templates");
+    let binary = staged
+        .scratch
+        .path()
+        .join("target/flux/debug/shared-templates");
+    let run = |expected: &[u8]| {
+        let output = flib_support::run(
+            &mut Command::new(&binary),
+            "run-with-shared-builtin-templates",
+        );
+        success(&output);
+        assert_eq!(output.stdout, expected);
+    };
+    run(b"15\n");
+
+    library(4);
+    let edited = build(
+        &["--lib", "--timings", "-j4"],
+        "overlap-builtin-mir-and-imports",
+    );
+    trace(&edited, "built-ins and dependency artifact load");
+    build(&[], "relink-with-shared-builtin-templates");
+    run(b"18\n");
+}
+
+#[test]
 fn suite_checksum_stat_cache_rechecks_a_replaced_file() {
     let staged = Staged::new(false);
     let file = staged.write("main.rs", "fn main() {}\n");

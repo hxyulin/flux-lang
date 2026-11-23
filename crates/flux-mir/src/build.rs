@@ -17,6 +17,8 @@ use crate::{
     Statement, StatementKind, Terminator, TerminatorKind, UnOp,
 };
 
+const MIN_BODY_CHECKS_PER_WORKER: usize = 64;
+
 fn record_variant(target: RecordTarget, ty: Ty) -> Option<(StructId, u32)> {
     match target {
         RecordTarget::Nominal(strukt, variant) => Some((strukt, variant)),
@@ -33,7 +35,7 @@ fn record_variant(target: RecordTarget, ty: Ty) -> Option<(StructId, u32)> {
 /// The embedded libraries' bodies are built and checked once per
 /// process (`crate::library`); a compilation copies those it reaches.
 pub fn build_file(hir: &Hir, typed: &TypedFile) -> FileMir {
-    build_file_inner(hir, typed, None, &[], crate::PanicStrategy::Abort)
+    build_file_inner(hir, typed, None, &[], crate::PanicStrategy::Abort, 1)
 }
 
 /// Builds source and embedded-library MIR consistently for one panic strategy.
@@ -44,7 +46,7 @@ pub fn build_file_with_panic_strategy(
     typed: &TypedFile,
     strategy: crate::PanicStrategy,
 ) -> FileMir {
-    build_file_inner(hir, typed, None, &[], strategy)
+    build_file_inner(hir, typed, None, &[], strategy, 1)
 }
 
 /// Builds and checks additional function roots, including otherwise unused library code.
@@ -59,7 +61,7 @@ pub fn build_file_with_roots_and_panic_strategy(
     roots: &[FunctionId],
     strategy: crate::PanicStrategy,
 ) -> FileMir {
-    build_file_inner(hir, typed, None, roots, strategy)
+    build_file_inner(hir, typed, None, roots, strategy, 1)
 }
 
 /// Builds source MIR using already checked dependency templates and values.
@@ -86,7 +88,7 @@ pub fn build_file_from_with_panic_strategy(
     required_functions: &[FunctionId],
     strategy: crate::PanicStrategy,
 ) -> FileMir {
-    let mut mir = build_file_inner(hir, typed, Some(imported), required_functions, strategy);
+    let mut mir = build_file_inner(hir, typed, Some(imported), required_functions, strategy, 1);
     if imported.mir().panic_strategy == strategy {
         imported.copy_bodies_into(&mut mir);
     }
@@ -117,12 +119,50 @@ pub fn build_file_from_owned_with_panic_strategy(
     required_functions: &[FunctionId],
     strategy: crate::PanicStrategy,
 ) -> FileMir {
-    let mir = build_file_inner(hir, typed, Some(&imported), required_functions, strategy);
+    build_file_from_owned_with_workers(hir, typed, imported, required_functions, strategy, 1)
+}
+
+/// Builds local MIR using at most the reserved number of body-checking workers.
+pub fn build_file_from_owned_with_workers(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: crate::imported::ImportedMir,
+    required_functions: &[FunctionId],
+    strategy: crate::PanicStrategy,
+    workers: usize,
+) -> FileMir {
+    let mir = build_local_file_from_with_workers(
+        hir,
+        typed,
+        &imported,
+        required_functions,
+        strategy,
+        workers,
+    );
     if imported.mir().panic_strategy == strategy {
         imported.finish(mir)
     } else {
         mir
     }
+}
+
+/// Checks local MIR while borrowing the checked dependency templates.
+pub fn build_local_file_from_with_workers(
+    hir: &Hir,
+    typed: &TypedFile,
+    imported: &crate::imported::ImportedMir,
+    required_functions: &[FunctionId],
+    strategy: crate::PanicStrategy,
+    workers: usize,
+) -> FileMir {
+    build_file_inner(
+        hir,
+        typed,
+        Some(imported),
+        required_functions,
+        strategy,
+        workers,
+    )
 }
 
 fn build_file_inner(
@@ -131,9 +171,10 @@ fn build_file_inner(
     imported: Option<&crate::imported::ImportedMir>,
     required_functions: &[FunctionId],
     strategy: crate::PanicStrategy,
+    workers: usize,
 ) -> FileMir {
     flux_ty::regions::with_projection_outlives_cache(&hir.items, &typed.sigs, || {
-        build_and_check_file(hir, typed, imported, required_functions, strategy)
+        build_and_check_file(hir, typed, imported, required_functions, strategy, workers)
     })
 }
 
@@ -143,6 +184,7 @@ fn build_and_check_file(
     imported: Option<&crate::imported::ImportedMir>,
     required_functions: &[FunctionId],
     strategy: crate::PanicStrategy,
+    workers: usize,
 ) -> FileMir {
     if imported.is_some_and(|imported| imported.mir().panic_strategy != strategy) {
         return FileMir {
@@ -215,7 +257,7 @@ fn build_and_check_file(
     for (id, _) in hir.const_bodies() {
         let built = match shared(ClosureOwner::Const(id)) {
             Some(provider) => provider
-                .built(ClosureOwner::Const(id))
+                .built(&hir.items, &typed.sigs, ClosureOwner::Const(id))
                 .expect("checked constant has MIR"),
             None => {
                 let mut built = Built::konst(hir, typed, id, strategy);
@@ -260,7 +302,7 @@ fn build_and_check_file(
     let mut expanded = rustc_hash::FxHashSet::default();
     while let Some(id) = queue.pop() {
         // Their callees were collected by required_functions before source checking.
-        if imported.is_some_and(|i| i.mir().bodies.get(id).is_some()) {
+        if imported.is_some_and(|i| i.mir().has_function_body(id)) {
             continue;
         }
         let provider = shared(ClosureOwner::Function(id));
@@ -275,7 +317,9 @@ fn build_and_check_file(
         // Checked below, after the patterns, unless it is shared.
         let built = match provider {
             Some(provider) => {
-                let Some(built) = provider.built(ClosureOwner::Function(id)) else {
+                let Some(built) =
+                    provider.built(&hir.items, &typed.sigs, ClosureOwner::Function(id))
+                else {
                     continue;
                 };
                 built
@@ -347,41 +391,55 @@ fn build_and_check_file(
             closures_of.entry(owner).or_default().push(entry);
         }
     }
-    for (id, body) in bodies.iter() {
-        let data = &hir.items.functions[id];
+    let check_function = |id: FunctionId, body: &Body| {
+        if failed.contains(&id) {
+            return Vec::new();
+        }
         if let Some(provider) = shared(ClosureOwner::Function(id)) {
-            if !failed.contains(&id) {
-                let built = provider
-                    .built(ClosureOwner::Function(id))
-                    .expect("built above");
-                diagnostics.extend(built.errors.iter().cloned());
-                diagnostics.extend(built.closure_errors.iter().cloned());
-            }
-        } else if !failed.contains(&id) {
-            // Its closures' own bodies first, innermost first, for what
-            // they require of the bodies that make them; shims need no
-            // checks.
-            let mut own: Vec<_> = closures_of
-                .remove(&id)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|((c, kind), _)| typed.bodies[id].closures[c.expr].kind == *kind)
-                .collect();
-            own.sort_by_key(|((c, _), _)| c.expr.into_raw());
-            let mut requirements = crate::borrowck::Requirements::default();
-            let mut found = Vec::new();
-            for ((c, _), closure) in own {
-                let (errors, required) = check(closure, data.loc.file, false, &requirements);
-                found.extend(errors);
-                requirements.insert(*c, required);
-            }
-            // Interfaces retain even uncallable constructor MIR. TY rejects
-            // taking unsized by-value constructors; their synthetic bodies are
-            // not executable const functions.
-            let executable_const = data.is_const
-                && !(data.ctor.is_some() && typed.sigs.is_unsized(typed.sigs.fns[id].ret));
-            diagnostics.extend(check(body, data.loc.file, executable_const, &requirements).0);
-            diagnostics.extend(found);
+            let built = provider
+                .built(&hir.items, &typed.sigs, ClosureOwner::Function(id))
+                .expect("built above");
+            let mut diagnostics = built.errors;
+            diagnostics.extend(built.closure_errors);
+            return diagnostics;
+        }
+        let data = &hir.items.functions[id];
+        // Check each function with its closures. A nested closure contributes
+        // requirements to the closure or function that creates it.
+        let mut own: Vec<_> = closures_of
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|((c, kind), _)| typed.bodies[id].closures[c.expr].kind == *kind)
+            .collect();
+        own.sort_by_key(|((c, _), _)| c.expr.into_raw());
+        let mut requirements = crate::borrowck::Requirements::default();
+        let mut closure_errors = Vec::new();
+        for ((c, _), closure) in own {
+            let (errors, required) = check(closure, data.loc.file, false, &requirements);
+            closure_errors.extend(errors);
+            requirements.insert(*c, required);
+        }
+        // The archive retains synthetic constructors for unsized types.
+        let executable_const = data.is_const
+            && !(data.ctor.is_some() && typed.sigs.is_unsized(typed.sigs.fns[id].ret));
+        let mut diagnostics = check(body, data.loc.file, executable_const, &requirements).0;
+        diagnostics.extend(closure_errors);
+        diagnostics
+    };
+    let parallel_threshold = 2 * MIN_BODY_CHECKS_PER_WORKER;
+    if workers > 1 && bodies.iter().take(parallel_threshold).count() == parallel_threshold {
+        diagnostics.extend(check_functions_in_parallel(
+            hir,
+            typed,
+            &bodies,
+            workers,
+            check_function,
+        ));
+    } else {
+        for (id, body) in bodies.iter() {
+            diagnostics.extend(check_function(id, body));
         }
     }
     let mut const_values = imported
@@ -454,6 +512,7 @@ fn build_and_check_file(
     flux_hir::Diagnostic::sort(&mut diagnostics);
     let mir = FileMir {
         panic_strategy: strategy,
+        deferred_functions: Default::default(),
         bodies,
         closures,
         consts,
@@ -475,6 +534,97 @@ fn build_and_check_file(
         );
     }
     mir
+}
+
+/// Checks functions in parallel and returns their diagnostics in arena order.
+fn check_functions_in_parallel(
+    hir: &Hir,
+    typed: &TypedFile,
+    bodies: &ArenaMap<flux_hir::Function, Body>,
+    workers: usize,
+    check: impl Fn(FunctionId, &Body) -> Vec<flux_hir::Diagnostic> + Sync,
+) -> Vec<flux_hir::Diagnostic> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut queue: Vec<_> = bodies.iter().collect();
+    let workers = workers.min(queue.len() / MIN_BODY_CHECKS_PER_WORKER);
+    // Start large bodies early so one worker does not inherit them all near
+    // the end. Merge diagnostics independently of the work queue order.
+    queue.sort_unstable_by_key(|(_, body)| std::cmp::Reverse(body.locals.len()));
+    let next = AtomicUsize::new(0);
+    let drain = || {
+        let mut failed = Vec::new();
+        while let Some(&(id, body)) = queue.get(next.fetch_add(1, Ordering::Relaxed)) {
+            let diagnostics = check(id, body);
+            if !diagnostics.is_empty() {
+                failed.push((id, diagnostics));
+            }
+        }
+        failed
+    };
+    let mut failed = std::thread::scope(|scope| {
+        let mut helpers = Vec::new();
+        for _ in 1..workers {
+            let helper = std::thread::Builder::new()
+                .stack_size(8 * 1024 * 1024)
+                .spawn_scoped(scope, || {
+                    let _queries = flux_solve::remember_solver_queries(&hir.items, &typed.sigs);
+                    let _fields = flux_solve::remember_field_types(&typed.sigs);
+                    let _headers = flux_solve::remember_impl_headers(&hir.items, &typed.sigs);
+                    flux_ty::regions::with_projection_outlives_cache(&hir.items, &typed.sigs, drain)
+                });
+            if let Ok(helper) = helper {
+                helpers.push(helper);
+            } else {
+                // The calling worker can finish all remaining jobs.
+                break;
+            }
+        }
+        let mut failed = drain();
+        for helper in helpers {
+            failed.extend(helper.join().expect("MIR body checker panicked"));
+        }
+        failed
+    });
+    failed.sort_unstable_by_key(|(id, _)| id.into_raw());
+    failed
+        .into_iter()
+        .flat_map(|(_, diagnostics)| diagnostics)
+        .collect()
+}
+
+#[test]
+fn parallel_body_checks_preserve_closure_diagnostics() {
+    use std::fmt::Write;
+
+    let mut source = String::new();
+    for index in 0..2 * MIN_BODY_CHECKS_PER_WORKER {
+        writeln!(
+            source,
+            "fn f_{index}(value: String) -> usize {{
+                let length = || {{ let inner = || value.len(); inner() }};
+                drop(value);
+                length()
+            }}"
+        )
+        .unwrap();
+    }
+    let (_, _, hir) = flux_hir::lower_text("parallel-checks.rs", &source);
+    let typed = crate::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let check = |workers| {
+        build_file_inner(
+            &hir,
+            &typed,
+            None,
+            &[],
+            crate::PanicStrategy::Abort,
+            workers,
+        )
+    };
+    let serial = check(1);
+    assert_eq!(serial.diagnostics.len(), 2 * MIN_BODY_CHECKS_PER_WORKER);
+    assert_eq!(check(4).diagnostics, serial.diagnostics);
 }
 
 /// What building `bodies`, `closures` and `consts` lowered to
@@ -611,7 +761,7 @@ fn check_clean_patterns(
             let body = match shared(ClosureOwner::Const(id)) {
                 Some(provider) => {
                     provider
-                        .built(ClosureOwner::Const(id))
+                        .built(&hir.items, &typed.sigs, ClosureOwner::Const(id))
                         .expect("checked constant has MIR")
                         .body
                 }
@@ -631,7 +781,7 @@ fn check_clean_patterns(
         let body = match shared(ClosureOwner::Function(id)) {
             Some(provider) => {
                 provider
-                    .built(ClosureOwner::Function(id))
+                    .built(&hir.items, &typed.sigs, ClosureOwner::Function(id))
                     .expect("it has a body")
                     .body
             }
@@ -3511,6 +3661,18 @@ impl Builder<'_> {
                     }
                     Expr::Repeat { value, .. } => {
                         expressions.push(*value);
+                        continue;
+                    }
+                    // Constructing a capture-free closure is harmless in a
+                    // const call. MIR still reifies its pointer when needed.
+                    Expr::Closure {
+                        is_async: false, ..
+                    } if self
+                        .types
+                        .closures
+                        .get(expr)
+                        .is_some_and(|info| info.captures.is_empty()) =>
+                    {
                         continue;
                     }
                     Expr::Unary { operand, .. } if self.types.overloads.get(expr).is_none() => {

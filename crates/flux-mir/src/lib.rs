@@ -101,10 +101,11 @@ pub fn discriminant_bits(
 
 pub use build::{
     build, build_closure_with_panic_strategy, build_file, build_file_from, build_file_from_owned,
-    build_file_from_owned_with_panic_strategy, build_file_from_with_panic_strategy,
-    build_file_with_panic_strategy, build_file_with_roots,
-    build_file_with_roots_and_panic_strategy, build_with_panic_strategy, check_clean_bodies,
-    check_clean_bodies_from, closure_shims_with_panic_strategy,
+    build_file_from_owned_with_panic_strategy, build_file_from_owned_with_workers,
+    build_file_from_with_panic_strategy, build_file_with_panic_strategy, build_file_with_roots,
+    build_file_with_roots_and_panic_strategy, build_local_file_from_with_workers,
+    build_with_panic_strategy, check_clean_bodies, check_clean_bodies_from,
+    closure_shims_with_panic_strategy,
 };
 pub use lens::{check_file, check_file_from};
 
@@ -1042,6 +1043,8 @@ pub struct FileMir {
     /// Semantic build mode, including generated bodies that have no source calls.
     pub panic_strategy: PanicStrategy,
     pub bodies: flux_arena::ArenaMap<flux_hir::Function, Body>,
+    /// Indexed templates from already built dependency objects.
+    pub deferred_functions: flib::DeferredFunctions,
     /// Each closure's body, as the method of each `Fn`-family trait it
     /// implements: its own kind's, built from its expression and
     /// checked, and *shims* for the others, which call it (`call_once`
@@ -1064,6 +1067,41 @@ pub struct FileMir {
 }
 
 impl FileMir {
+    /// Templates borrowed from a separately compiled built-in suite.
+    pub fn shared_builtin_mir(&self) -> Option<&FileMir> {
+        self.deferred_functions.builtin_prefix.as_deref()
+    }
+
+    pub fn has_function_body(&self, id: FunctionId) -> bool {
+        self.bodies.contains(id)
+            || self.deferred_functions.contains(id)
+            || self
+                .shared_builtin_mir()
+                .is_some_and(|suite| suite.bodies.contains(id))
+    }
+
+    pub fn function_body(
+        &self,
+        items: &flux_hir::ItemTree,
+        sigs: &flux_ty::Signatures,
+        id: FunctionId,
+    ) -> Result<Option<&Body>, flux_hir::flib::Error> {
+        if let Some(body) = self
+            .bodies
+            .get(id)
+            .or_else(|| self.shared_builtin_mir()?.bodies.get(id))
+        {
+            return Ok(Some(body));
+        }
+        self.deferred_functions.get(self, items, sigs, id)
+    }
+
+    pub fn deferred_error(&self) -> Option<&flux_hir::flib::Error> {
+        self.deferred_functions
+            .error()
+            .or_else(|| self.const_values.deferred.error())
+    }
+
     /// Every body in a textual form like rustc's `-Zdump-mir`. Used by
     /// snapshot tests and `flux mir`.
     pub fn debug_dump(&self, hir: &flux_hir::Hir) -> String {
@@ -1078,7 +1116,12 @@ impl FileMir {
         items: &flux_hir::ItemTree,
         instance: flux_ty::Instance,
     ) -> Option<(&Body, GenericArgs)> {
-        if let Some(body) = self.bodies.get(instance.function) {
+        if let Some(body) = self
+            .bodies
+            .get(instance.function)
+            .or_else(|| self.shared_builtin_mir()?.bodies.get(instance.function))
+            .or_else(|| self.deferred_functions.cached(instance.function))
+        {
             return Some((body, instance.args));
         }
         let (id, args) = match instance.args.first()?.kind() {
@@ -1086,8 +1129,21 @@ impl FileMir {
             _ => return None,
         };
         let mode = fn_method_kind(items, instance.function)?;
-        let body = self.closures.get(&(id, mode))?;
+        let key = (id, mode);
+        let body = self
+            .closures
+            .get(&key)
+            .or_else(|| self.shared_builtin_mir()?.closures.get(&key))?;
         Some((body, flux_ty::ClosureArgs::split(args).parent))
+    }
+
+    pub fn has_instance_body(
+        &self,
+        items: &flux_hir::ItemTree,
+        instance: flux_ty::Instance,
+    ) -> bool {
+        self.deferred_functions.contains(instance.function)
+            || self.instance_body(items, instance).is_some()
     }
 }
 

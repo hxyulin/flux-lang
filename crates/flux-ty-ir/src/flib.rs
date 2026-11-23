@@ -765,6 +765,61 @@ fn decode_map<T: flux_hir::flib::FlibItem + Clone, V: Decode + Clone>(
     Ok(())
 }
 
+/// Remapped signature records before building indexes over the item tree.
+pub struct DecodedSignatureRows(Box<Signatures>);
+
+impl DecodedSignatureRows {
+    pub fn decode(d: &mut Decoder<'_>) -> Result<Self, Error> {
+        let mut rows = Box::<Signatures>::default();
+        rows.decode_flib_rows(d)?;
+        d.finish()?;
+        Ok(Self(rows))
+    }
+
+    /// Publishes records in dependency order, after their HIR is available.
+    pub fn append(self, sigs: &mut Signatures, items: &ItemTree) {
+        let rows = *self.0;
+        macro_rules! append {
+            ($($($field:ident).+),+ $(,)?) => {
+                $(sigs.$($field).+.append_unfrozen(rows.$($field).+);)+
+            };
+        }
+        append!(
+            fns,
+            variant_starts,
+            discriminants,
+            impls,
+            consts,
+            traits,
+            impl_traits,
+            impl_predicates,
+            struct_predicates,
+            trait_predicates,
+            fn_predicates,
+            impl_projections,
+            struct_projections,
+            trait_projections,
+            fn_projections,
+            impl_types,
+            impl_families,
+            opaques,
+            trait_defaults,
+            structs,
+            regions.traits,
+            regions.fns,
+            regions.structs,
+            regions.impls,
+            regions.consts,
+        );
+        sigs.sized_dispatch.extend(rows.sized_dispatch);
+        sigs.hidden.extend(rows.hidden);
+        sigs.array_lens.extend(rows.array_lens);
+        sigs.arg_tys.extend(rows.arg_tys);
+        sigs.unions.extend(rows.unions);
+        sigs.append_flib_indexes(items);
+    }
+}
+
 impl Signatures {
     /// Writes semantic records owned by the encoder's crate selection.
     /// Lookup indexes and process-local runtime type IDs are rebuilt on load.
@@ -902,10 +957,14 @@ impl Signatures {
         items: &ItemTree,
     ) -> Result<(), Error> {
         self.decode_flib_rows(d)?;
+        self.append_flib_indexes(items);
+        Ok(())
+    }
+
+    fn append_flib_indexes(&mut self, items: &ItemTree) {
         self.impl_index.append(items, &self.impls);
         self.traits_in_scope.append(items);
         self.builtins = Builtins::of(items);
-        Ok(())
     }
 
     fn decode_flib_rows(&mut self, d: &mut Decoder<'_>) -> Result<(), Error> {
@@ -1210,7 +1269,7 @@ mod tests {
         let mut map = IdMap::strict();
         map.insert(IdKind::Function, 0, 11);
         map.mark_owned(IdKind::Function, 11);
-        let mut d = Decoder::with_ids(&bytes, map);
+        let mut d = Decoder::with_ids(&bytes, map.clone());
         let mut decoded = Signatures::default();
         decoded
             .decode_flib_into(&mut d, &ItemTree::default())
@@ -1220,6 +1279,18 @@ mod tests {
         assert_eq!(decoded.fns[loaded], signature);
         assert_eq!(decoded.regions.fns[loaded], regions);
         assert_eq!(decoded.hidden[&(loaded, 0)], Ty::int(IntTy::U8));
+
+        let mut staged = Signatures::default();
+        staged.fns.insert(excluded, signature.clone());
+        staged.fns.freeze();
+        let mut d = Decoder::with_ids(&bytes, map);
+        DecodedSignatureRows::decode(&mut d)
+            .unwrap()
+            .append(&mut staged, &ItemTree::default());
+        assert_eq!(staged.fns[excluded], signature);
+        assert_eq!(staged.fns[loaded], signature);
+        assert_eq!(staged.regions.fns[loaded], regions);
+        assert_eq!(staged.hidden[&(loaded, 0)], Ty::int(IntTy::U8));
     }
 
     #[test]

@@ -345,12 +345,16 @@ fn validate_manifest(path: &Path, package: &Locked) -> Result<()> {
 pub(super) struct Temporary(pub(super) PathBuf);
 impl Temporary {
     pub(super) fn new(parent: &Path) -> Result<Self> {
+        Self::with_prefix(parent, "fetch")
+    }
+
+    pub(super) fn with_prefix(parent: &Path, prefix: &str) -> Result<Self> {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         let id = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
-        let path = parent.join(format!(".flux-fetch-{}-{id}", std::process::id()));
+        let path = parent.join(format!(".flux-{prefix}-{}-{id}", std::process::id()));
         std::fs::create_dir(&path).map_err(|e| e.to_string())?;
         Ok(Self(path))
     }

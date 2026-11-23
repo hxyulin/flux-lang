@@ -2,10 +2,14 @@
 
 mod fresh_record;
 
-use flux_hir::flib::{CrateIndices, Decode, Decoder, Encode, Encoder, IdMap};
+use flux_hir::flib::{
+    CrateIndices, Decode, DecodedItems, Decoder, Encode, Encoder, IdMap, ItemArchiveLayout,
+    PreparedItems,
+};
 use flux_hir::{CrateId, ItemTree, SourceDb};
 use flux_mir::FileMir;
 use flux_ty::Signatures;
+use flux_ty::flib::DecodedSignatureRows;
 
 use super::{Archive, ArchiveIndex, Metadata, MetadataIndex, Section, compiler_identity};
 
@@ -14,20 +18,50 @@ use super::{Archive, ArchiveIndex, Metadata, MetadataIndex, Section, compiler_id
 struct ArtifactIndex {
     archive: ArchiveIndex,
     metadata: MetadataIndex,
+    read: ArchiveRead,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ArchiveRead {
+    Full,
+    Metadata,
 }
 
 impl ArtifactIndex {
     fn decode(bytes: &[u8]) -> Result<Self, String> {
         let archive = super::time("archive decode", || ArchiveIndex::decode(bytes))
             .map_err(|e| e.to_string())?;
+        Self::from_framing(archive, bytes, ArchiveRead::Full)
+    }
+
+    fn from_framing(
+        archive: ArchiveIndex,
+        bytes: &[u8],
+        read: ArchiveRead,
+    ) -> Result<Self, String> {
         let compiler = compiler_identity()?;
+        let metadata_bytes = match read {
+            ArchiveRead::Full => archive.metadata(bytes),
+            ArchiveRead::Metadata => bytes,
+        };
         let metadata = super::time("metadata envelope", || {
-            MetadataIndex::decode(archive.metadata(bytes), compiler)
+            MetadataIndex::decode(metadata_bytes, compiler)
         })
         .map_err(|e| e.to_string())?;
-        let index = Self { archive, metadata };
+        let index = Self {
+            archive,
+            metadata,
+            read,
+        };
         super::time("linkage validation", || validate_linkage(index.view(bytes)))?;
         Ok(index)
+    }
+
+    fn metadata_start(&self) -> usize {
+        match self.read {
+            ArchiveRead::Full => self.archive.metadata.start,
+            ArchiveRead::Metadata => 0,
+        }
     }
 
     fn view<'a>(&'a self, bytes: &'a [u8]) -> ArtifactView<'a> {
@@ -42,15 +76,28 @@ struct ArtifactView<'a> {
 }
 
 impl<'a> ArtifactView<'a> {
+    fn metadata_bytes(self) -> &'a [u8] {
+        match self.index.read {
+            ArchiveRead::Full => self.index.archive.metadata(self.bytes),
+            ArchiveRead::Metadata => self.bytes,
+        }
+    }
+
     fn section(self, tag: u32) -> Result<&'a [u8], String> {
         self.index
             .metadata
-            .section(self.index.archive.metadata(self.bytes), tag)
+            .section(self.metadata_bytes(), tag)
             .ok_or_else(|| format!("missing flux metadata section {tag}"))
     }
 
     fn object(self) -> Option<&'a [u8]> {
-        self.index.archive.object(self.bytes)
+        (self.index.read == ArchiveRead::Full)
+            .then(|| self.index.archive.object(self.bytes))
+            .flatten()
+    }
+
+    fn has_object(self) -> bool {
+        self.index.archive.has_object()
     }
 }
 
@@ -233,13 +280,14 @@ pub struct CheckedCrate<'a> {
 /// Writes already checked metadata. This function never checks or lowers source.
 pub fn write_checked(checked: CheckedCrate<'_>) -> Result<Vec<u8>, String> {
     let indices = CrateIndices::collect(checked.items, checked.krate);
-    write_checked_with_indices(checked, &indices, &[])
+    write_checked_with_indices(checked, &indices, &[], &std::cell::OnceCell::new())
 }
 
 pub(crate) fn write_checked_with_indices(
     checked: CheckedCrate<'_>,
     indices: &CrateIndices,
     checked_dependencies: &[u8],
+    function_summary: &std::cell::OnceCell<Option<flux_mir::imported::FunctionSummary>>,
 ) -> Result<Vec<u8>, String> {
     let CheckedCrate {
         items,
@@ -284,7 +332,31 @@ pub(crate) fn write_checked_with_indices(
         .encode(&mut requirements)
         .map_err(|e| e.to_string())?;
     let mut bodies = Encoder::with_ids(std::mem::take(&mut requirements.ids));
-    super::time("MIR encode", || mir.encode_flib(&mut bodies)).map_err(|e| e.to_string())?;
+    super::time("MIR encode", || {
+        if mir
+            .encode_crate_flib(&mut bodies, true, items, sigs)
+            .is_err()
+        {
+            // Restarted allocation tables can require more space than a
+            // single stream when functions share a large constant.
+            bodies = Encoder::with_ids(std::mem::take(&mut bodies.ids));
+            mir.encode_crate_flib(&mut bodies, false, items, sigs)?;
+        }
+        Ok::<_, flux_hir::flib::Error>(())
+    })
+    .map_err(|e| e.to_string())?;
+    let summary = super::time("function summary encode", || {
+        let mut encoder = Encoder::with_ids(std::mem::take(&mut bodies.ids));
+        if let Some(summary) = function_summary.get_or_init(|| {
+            flux_mir::imported::FunctionSummary::collect(mir, items, &indices.functions)
+        }) && summary.encode(&mut encoder).is_ok()
+        {
+            encoder.into_bytes()
+        } else {
+            Vec::new()
+        }
+    });
+    let mut summary = Some(summary);
     let mut linkage = Encoder::new();
     let target = artifact_target()?;
     (
@@ -311,6 +383,7 @@ pub(crate) fn write_checked_with_indices(
                 3 => identity_bytes(&mut names),
                 4 => checked_dependencies.to_vec(),
                 5 => identity_bytes(&mut types),
+                6 => summary.take().unwrap_or_default(),
                 8 => identity_bytes(&mut bodies),
                 9 => identity_bytes(&mut linkage),
                 _ => Vec::new(),
@@ -365,11 +438,26 @@ fn load_checked_with_resolver(
     append_indexes: bool,
 ) -> Result<Loaded, String> {
     let (dependency, ids) = load_hir(artifact, db, items, dependencies, resolver)?;
-    let required_instances = load_ir(artifact, items, sigs, mir, &dependency, ids, append_indexes)?;
+    let ir = load_ir(
+        artifact,
+        items,
+        sigs,
+        mir,
+        &dependency,
+        ids,
+        (
+            if append_indexes {
+                SignatureInput::Append(None)
+            } else {
+                SignatureInput::Standalone
+            },
+            None,
+        ),
+    )?;
     Ok(Loaded {
         dependency,
         object: artifact.object().map(<[u8]>::to_vec),
-        required_instances,
+        required_instances: ir.required_instances,
     })
 }
 
@@ -380,6 +468,32 @@ fn load_hir(
     dependencies: &[Dependency],
     resolver: std::sync::Arc<dyn flux_hir::ProcMacroResolver>,
 ) -> Result<(Dependency, IdMap), String> {
+    let dependency = |hash: &[u8; 32]| {
+        dependencies
+            .iter()
+            .find(|dep| &dep.hash == hash)
+            .map(|dep| (dep.krate, &dep.indices))
+    };
+    super::time("HIR decode and append", || {
+        prepare_hir(
+            artifact,
+            dependency,
+            resolver,
+            &mut ItemArchiveLayout::new(items),
+            db,
+        )?
+        .decode()?
+        .append(items, db)
+    })
+}
+
+fn prepare_hir<'a, 'dep>(
+    artifact: ArtifactView<'a>,
+    dependency: impl Fn(&[u8; 32]) -> Option<(CrateId, &'dep CrateIndices)>,
+    resolver: std::sync::Arc<dyn flux_hir::ProcMacroResolver>,
+    layout: &mut ItemArchiveLayout,
+    db: &mut SourceDb,
+) -> Result<PreparedHir<'a>, String> {
     let section = |tag| artifact.section(tag);
     let mut identity = Decoder::new(section(1)?);
     let name = flux_intern::Symbol::decode(&mut identity).map_err(|e| e.to_string())?;
@@ -392,36 +506,85 @@ fn load_hir(
             .as_slice()
             .try_into()
             .map_err(|_| "invalid dependency hash")?;
-        let dep = dependencies
-            .iter()
-            .find(|d| d.hash == hash)
-            .ok_or("flux dependency identity mismatch; rebuild the artifact")?;
-        dep.indices
-            .add_decode_mapping(&mut ids, dep.krate, (i + 1) as u32)
+        let (krate, indices) =
+            dependency(&hash).ok_or("flux dependency identity mismatch; rebuild the artifact")?;
+        indices
+            .add_decode_mapping(&mut ids, krate, (i + 1) as u32)
             .map_err(|e| e.to_string())?;
     }
     let mut names = Decoder::with_ids(section(3)?, ids);
     names.set_proc_macro_resolver(resolver);
-    let (krate, indices) = super::time("HIR decode and append", || {
-        flux_hir::flib::read_items(items, db, &mut names)
+    let prepared = layout.prepare(db, &mut names).map_err(|e| e.to_string())?;
+    Ok(PreparedHir {
+        name,
+        hash,
+        names,
+        prepared,
     })
-    .map_err(|e| {
-        names
-            .proc_macro_error()
-            .map_or_else(|| e.to_string(), str::to_owned)
-    })?;
-    names.finish().map_err(|e| e.to_string())?;
-    if items.crates[krate.0 as usize].name != name {
-        return Err("inconsistent flux crate identity".into());
+}
+
+struct PreparedHir<'a> {
+    name: flux_intern::Symbol,
+    hash: [u8; 32],
+    names: Decoder<'a>,
+    prepared: PreparedItems,
+}
+
+struct DecodedHir<'a> {
+    header: (flux_intern::Symbol, [u8; 32]),
+    names: Decoder<'a>,
+    records: DecodedItems,
+}
+
+impl<'a> PreparedHir<'a> {
+    fn decode(mut self) -> Result<DecodedHir<'a>, String> {
+        let records = self.prepared.decode(&mut self.names).map_err(|e| {
+            self.names
+                .proc_macro_error()
+                .map_or_else(|| e.to_string(), str::to_owned)
+        })?;
+        Ok(DecodedHir {
+            header: (self.name, self.hash),
+            names: self.names,
+            records,
+        })
     }
-    Ok((
-        Dependency {
-            krate,
-            hash,
-            indices,
-        },
-        names.ids,
-    ))
+}
+
+impl DecodedHir<'_> {
+    fn append(
+        self,
+        items: &mut ItemTree,
+        db: &mut SourceDb,
+    ) -> Result<(Dependency, IdMap), String> {
+        let (krate, indices) = self
+            .records
+            .append(items, db, &self.names.ids)
+            .map_err(|e| e.to_string())?;
+        self.names.finish().map_err(|e| e.to_string())?;
+        let (name, hash) = self.header;
+        if items.crates[krate.0 as usize].name != name {
+            return Err("inconsistent flux crate identity".into());
+        }
+        Ok((
+            Dependency {
+                krate,
+                hash,
+                indices,
+            },
+            self.names.ids,
+        ))
+    }
+}
+
+struct LoadedIr {
+    required_instances: Vec<flux_ty::Instance>,
+    function_summary: Option<flux_mir::imported::FunctionSummary>,
+}
+
+enum SignatureInput {
+    Standalone,
+    Append(Option<Result<DecodedSignatureRows, String>>),
 }
 
 fn load_ir(
@@ -431,42 +594,118 @@ fn load_ir(
     mir: &mut FileMir,
     dependency: &Dependency,
     ids: IdMap,
-    append_indexes: bool,
-) -> Result<Vec<flux_ty::Instance>, String> {
-    let mut types = Decoder::with_ids(artifact.section(5)?, ids);
-    super::time("signature decode", || {
-        if append_indexes {
-            sigs.decode_appended_flib_into(&mut types, items)
-        } else {
-            sigs.decode_flib_into(&mut types, items)
+    (signature_input, defer): (SignatureInput, Option<&Resolved>),
+) -> Result<LoadedIr, String> {
+    let ids = match signature_input {
+        SignatureInput::Append(Some(rows)) => {
+            super::time("signature append", || {
+                rows.map(|rows| rows.append(sigs, items))
+            })?;
+            ids
         }
-    })
-    .map_err(|e| e.to_string())?;
-    types.finish().map_err(|e| e.to_string())?;
-    let mut requirements = Decoder::with_ids(link_requirements(artifact)?, types.ids);
+        source => {
+            let mut types = Decoder::with_ids(artifact.section(5)?, ids);
+            super::time("signature decode", || match source {
+                SignatureInput::Standalone => sigs.decode_flib_into(&mut types, items),
+                SignatureInput::Append(_) => sigs.decode_appended_flib_into(&mut types, items),
+            })
+            .map_err(|e| e.to_string())?;
+            types.finish().map_err(|e| e.to_string())?;
+            types.ids
+        }
+    };
+    let mut requirements = Decoder::with_ids(link_requirements(artifact)?, ids);
     let required_instances =
         Vec::<flux_ty::Instance>::decode(&mut requirements).map_err(|e| e.to_string())?;
     requirements.finish().map_err(|e| e.to_string())?;
     validate_required_instances(items, &required_instances)?;
+    let records = artifact.section(6)?;
+    let source = defer
+        .filter(|_| !records.is_empty() && artifact.has_object())
+        .map(|source| {
+            let section = artifact
+                .index
+                .metadata
+                .sections
+                .iter()
+                .find(|section| section.tag == 8)
+                .expect("validated metadata has a MIR section");
+            flux_mir::flib::DeferredFunctionSource {
+                bytes: source.bytes.clone(),
+                section_end: artifact.index.metadata_start() + section.bytes.end,
+                functions: &dependency.indices.functions,
+            }
+        });
     let mut bodies = Decoder::with_ids(artifact.section(8)?, requirements.ids);
     super::time("MIR decode and validation", || {
-        mir.decode_flib_into(&mut bodies, items, sigs)
+        mir.decode_flib_for_import(
+            &mut bodies,
+            items,
+            sigs,
+            crate::backend_workers::limit().get(),
+            source,
+        )
     })
     .map_err(|e| e.to_string())?;
     bodies.finish().map_err(|e| e.to_string())?;
     for &raw in &dependency.indices.functions {
         let id = flux_hir::FunctionId::from_raw(raw);
-        if items.functions[id].has_body && mir.bodies.get(id).is_none() {
+        if items.functions[id].has_body && !mir.has_function_body(id) {
             return Err("missing imported function MIR".into());
         }
     }
     for &raw in &dependency.indices.consts {
         let id = flux_hir::ConstId::from_raw(raw);
-        if items.consts[id].has_body && mir.consts.get(id).is_none() {
+        if items.consts[id].has_body
+            && mir.consts.get(id).is_none()
+            && !mir.has_exported_data_value(items, sigs, id)
+        {
             return Err("missing imported constant MIR".into());
         }
     }
-    Ok(required_instances)
+    let function_summary = if records.is_empty() {
+        None
+    } else {
+        let mut summary = Decoder::with_ids(records, bodies.ids);
+        let facts = flux_mir::imported::FunctionSummary::decode(
+            &mut summary,
+            items,
+            mir,
+            sigs,
+            &dependency.indices.functions,
+        )
+        .map_err(|e| e.to_string())?;
+        summary.finish().map_err(|e| e.to_string())?;
+        Some(facts)
+    };
+    Ok(LoadedIr {
+        required_instances,
+        function_summary,
+    })
+}
+
+struct DependencyWork<'a> {
+    index: usize,
+    weight: usize,
+    hir: PreparedHir<'a>,
+    signature_bytes: Option<Result<&'a [u8], String>>,
+}
+
+impl<'a> DependencyWork<'a> {
+    fn decode(self) -> Result<DecodedDependency<'a>, String> {
+        self.hir.decode().map(|hir| {
+            let signatures = self.signature_bytes.map(|bytes| {
+                let mut types = Decoder::with_ids(bytes?, hir.names.ids.clone());
+                DecodedSignatureRows::decode(&mut types).map_err(|error| error.to_string())
+            });
+            DecodedDependency { hir, signatures }
+        })
+    }
+}
+
+struct DecodedDependency<'a> {
+    hir: DecodedHir<'a>,
+    signatures: Option<Result<DecodedSignatureRows, String>>,
 }
 
 fn decode_hash(d: &mut Decoder<'_>) -> Result<[u8; 32], String> {
@@ -492,7 +731,7 @@ pub fn manifest(bytes: &[u8]) -> Result<Manifest, String> {
 }
 
 fn manifest_from_view(artifact: ArtifactView<'_>) -> Result<Manifest, String> {
-    decode_manifest(artifact.section(1)?, artifact.object().is_some())
+    decode_manifest(artifact.section(1)?, artifact.has_object())
 }
 
 fn decode_manifest(bytes: &[u8], linkable: bool) -> Result<Manifest, String> {
@@ -520,7 +759,7 @@ fn decode_manifest(bytes: &[u8], linkable: bool) -> Result<Manifest, String> {
 #[derive(Debug)]
 pub struct Resolved {
     pub path: std::path::PathBuf,
-    bytes: Vec<u8>,
+    bytes: std::sync::Arc<Vec<u8>>,
     index: std::sync::Arc<ArtifactIndex>,
     pub manifest: Manifest,
 }
@@ -531,7 +770,7 @@ impl Resolved {
         let manifest = manifest_from_view(index.view(&bytes))?;
         Ok(Self {
             path,
-            bytes,
+            bytes: std::sync::Arc::new(bytes),
             index,
             manifest,
         })
@@ -549,7 +788,8 @@ pub fn resolve_paths(
     known: &[Dependency],
 ) -> Result<Vec<Resolved>, String> {
     let hashes: Vec<_> = known.iter().map(|dependency| dependency.hash).collect();
-    resolve_paths_with_roots(paths, &hashes, None, None).map(|(artifacts, _)| artifacts)
+    resolve_paths_with_roots(paths, &hashes, None, None, ArchiveRead::Full)
+        .map(|(artifacts, _)| artifacts)
 }
 
 pub(crate) fn resolve_paths_with_roots(
@@ -557,14 +797,22 @@ pub(crate) fn resolve_paths_with_roots(
     known: &[[u8; 32]],
     dependency_files: Option<&[&std::path::Path]>,
     cache: Option<&FreshArtifacts>,
+    read: ArchiveRead,
 ) -> Result<(Vec<Resolved>, Vec<[u8; 32]>), String> {
+    let mut prefetched = match (cache, dependency_files) {
+        (Some(cache), Some(files)) => cache.prefetch(paths, files, read),
+        _ => Default::default(),
+    };
     resolve_with(
         paths,
         known,
         dependency_files,
         |path| {
+            if let Some(result) = prefetched.remove(path) {
+                return result;
+            }
             if let Some(cache) = cache {
-                return cache.read_resolved(path);
+                return cache.read_resolved(path, read);
             }
             let bytes =
                 std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -727,6 +975,31 @@ mod dependency_tests {
         );
     }
 
+    #[test]
+    fn parallel_archive_reads_report_the_first_requested_error() {
+        let scratch = super::scratch::Scratch::new(std::env::temp_dir().join("flux-read-tests"));
+        let paths: Vec<_> = (0..8)
+            .rev()
+            .map(|index| scratch.path().join(format!("{index}.flib")))
+            .collect();
+        std::fs::write(&paths[0], b"invalid archive").unwrap();
+        let files: Vec<_> = paths.iter().map(PathBuf::as_path).collect();
+        let cache = FreshArtifacts::for_outputs(scratch.path());
+        let resolve = || {
+            resolve_paths_with_roots(
+                &paths[..1],
+                &[],
+                Some(&files),
+                Some(&cache),
+                ArchiveRead::Full,
+            )
+            .unwrap_err()
+        };
+        let serial = resolve();
+        assert!(serial.contains("invalid fluxlib archive"), "{serial}");
+        assert_eq!(crate::backend_workers::with_limit(4, resolve), serial);
+    }
+
     #[cfg(unix)]
     #[test]
     fn verified_archive_index_is_reused_and_invalidated_on_write() {
@@ -736,8 +1009,13 @@ mod dependency_tests {
         "dep".encode(&mut identity).unwrap();
         vec![0u8; 32].encode(&mut identity).unwrap();
         Vec::<Vec<u8>>::new().encode(&mut identity).unwrap();
+        let object = vec![17, 42, 50];
         let mut linkage = Encoder::new();
-        (2u32, artifact_target().unwrap(), None::<Vec<u8>>)
+        (
+            2u32,
+            artifact_target().unwrap(),
+            Some(super::super::digest(&object).to_vec()),
+        )
             .encode(&mut linkage)
             .unwrap();
         linkage.blob(&[]).unwrap();
@@ -758,18 +1036,39 @@ mod dependency_tests {
             }
             .encode()
             .unwrap(),
-            object: None,
+            object: Some(object),
         };
         std::fs::write(&path, archive.encode().unwrap()).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(2));
         let cache = FreshArtifacts::for_outputs(scratch.path());
-        let first = cache.read_resolved(&path).unwrap();
-        let second = cache.read_resolved(&path).unwrap();
+        let first = cache.read_resolved(&path, ArchiveRead::Full).unwrap();
+        let second = cache.read_resolved(&path, ArchiveRead::Full).unwrap();
         assert!(std::sync::Arc::ptr_eq(&first.index, &second.index));
+
+        let partial = cache.read_resolved(&path, ArchiveRead::Metadata).unwrap();
+        assert!(partial.manifest.linkable);
+        assert!(partial.index.view(partial.bytes()).object().is_none());
+        assert_eq!(partial.bytes(), archive.metadata);
+
+        // A metadata-only read must never satisfy a later full-object read.
+        archive.object.as_mut().unwrap()[0] ^= 1;
+        std::fs::write(&path, archive.encode().unwrap()).unwrap();
+        assert!(cache.read_resolved(&path, ArchiveRead::Metadata).is_ok());
+        let error = cache.read_resolved(&path, ArchiveRead::Full).unwrap_err();
+        assert!(error.contains("object checksum"), "{error}");
+
+        let mut bad_padding = archive.encode().unwrap();
+        *bad_padding.last_mut().unwrap() = 0;
+        std::fs::write(&path, bad_padding).unwrap();
+        let error = cache
+            .read_resolved(&path, ArchiveRead::Metadata)
+            .unwrap_err();
+        assert!(error.contains("archive padding"), "{error}");
 
         archive.metadata[0] ^= 1;
         std::fs::write(&path, archive.encode().unwrap()).unwrap();
-        assert!(cache.read_resolved(&path).is_err());
+        assert!(cache.read_resolved(&path, ArchiveRead::Full).is_err());
+        assert!(cache.read_resolved(&path, ArchiveRead::Metadata).is_err());
     }
 }
 
@@ -783,6 +1082,7 @@ pub struct DependencyState {
     pub dependencies: Vec<Dependency>,
     pub objects: Vec<(std::path::PathBuf, Vec<u8>)>,
     pub required_instances: Vec<flux_ty::Instance>,
+    pub function_summaries: flux_mir::imported::ImportedFunctionSummaries,
     /// Exact identities in the order of the explicit paths passed to `load`.
     pub roots: Vec<[u8; 32]>,
 }
@@ -822,10 +1122,11 @@ impl DependencyInputs {
         known: &[[u8; 32]],
         dependency_files: Option<&[&std::path::Path]>,
         cache: Option<&FreshArtifacts>,
+        read: ArchiveRead,
     ) -> Result<Self, String> {
         super::time("dependency discovery", || {
             let (artifacts, roots) =
-                resolve_paths_with_roots(paths, known, dependency_files, cache)?;
+                resolve_paths_with_roots(paths, known, dependency_files, cache, read)?;
             Ok(Self { artifacts, roots })
         })
     }
@@ -844,16 +1145,17 @@ impl DependencyInputs {
             result.push(0);
         }
         for artifact in &self.artifacts {
-            let metadata = artifact.index.archive.metadata(&artifact.bytes);
+            let metadata = artifact.index.view(&artifact.bytes).metadata_bytes();
             result.extend_from_slice(&metadata[metadata.len() - 32..]);
         }
         result
     }
 
-    pub(crate) fn all_linkable(&self) -> bool {
-        self.artifacts
-            .iter()
-            .all(|artifact| artifact.manifest.linkable)
+    pub(crate) fn all_linkable(&self, staging: Option<&std::path::Path>) -> bool {
+        self.artifacts.iter().all(|artifact| {
+            artifact.manifest.linkable
+                || staging.is_some_and(|staging| artifact.path.parent() == Some(staging))
+        })
     }
 }
 
@@ -871,7 +1173,7 @@ pub(crate) fn reusable_library(
     cache: Option<&FreshArtifacts>,
 ) -> Result<(Manifest, Recheck), String> {
     let artifact = if let Some(cache) = cache {
-        cache.read_resolved(output)?
+        cache.read_resolved(output, ArchiveRead::Full)?
     } else {
         let bytes = std::fs::read(output).map_err(|e| e.to_string())?;
         Resolved::new(output.to_owned(), bytes)?
@@ -932,6 +1234,7 @@ impl DependencyState {
             sigs,
             mir: FileMir {
                 panic_strategy: crate::builtins::selected_strategy(),
+                deferred_functions: Default::default(),
                 bodies: Default::default(),
                 closures: Default::default(),
                 consts: Default::default(),
@@ -943,6 +1246,7 @@ impl DependencyState {
             dependencies,
             objects: Vec::new(),
             required_instances: Vec::new(),
+            function_summaries: Default::default(),
             roots: Vec::new(),
         })
     }
@@ -957,8 +1261,8 @@ impl DependencyState {
         paths: &[std::path::PathBuf],
         dependency_files: Option<&[&std::path::Path]>,
     ) -> Result<Self, String> {
-        let inputs = self.resolve(paths, dependency_files, None)?;
-        self.load_inputs(&inputs, false)
+        let inputs = self.resolve(paths, dependency_files, None, ArchiveRead::Full)?;
+        self.load_inputs(&inputs, false, false, true)
     }
 
     pub(crate) fn resolve(
@@ -966,22 +1270,189 @@ impl DependencyState {
         paths: &[std::path::PathBuf],
         dependency_files: Option<&[&std::path::Path]>,
         cache: Option<&FreshArtifacts>,
+        read: ArchiveRead,
     ) -> Result<DependencyInputs, String> {
         let known: Vec<_> = self.dependencies.iter().map(|dep| dep.hash).collect();
-        DependencyInputs::resolve(paths, &known, dependency_files, cache)
+        DependencyInputs::resolve(paths, &known, dependency_files, cache, read)
+    }
+
+    fn prepare_dependency_batch<'a>(
+        &mut self,
+        artifacts: &'a [Resolved],
+        resolver: &std::sync::Arc<dyn flux_hir::ProcMacroResolver>,
+        decode_signatures: bool,
+    ) -> (Vec<DependencyWork<'a>>, Option<String>) {
+        let mut layout = ItemArchiveLayout::new(&self.items);
+        let mut prepared: Vec<DependencyWork<'a>> = Vec::new();
+        let mut first_error = None;
+        for (index, artifact) in artifacts.iter().enumerate() {
+            let view = artifact.index.view(&artifact.bytes);
+            let result = prepare_hir(
+                view,
+                |hash| {
+                    self.dependencies
+                        .iter()
+                        .find(|dep| &dep.hash == hash)
+                        .map(|dep| (dep.krate, &dep.indices))
+                        .or_else(|| {
+                            prepared
+                                .iter()
+                                .find(|work| &work.hir.hash == hash)
+                                .map(|work| work.hir.prepared.identity())
+                        })
+                },
+                resolver.clone(),
+                &mut layout,
+                &mut self.db,
+            );
+            match result {
+                Ok(row) => {
+                    let signature_bytes = decode_signatures.then(|| view.section(5));
+                    let weight = row.names.remaining()
+                        + signature_bytes
+                            .as_ref()
+                            .and_then(|bytes| bytes.as_ref().ok())
+                            .map_or(0, |bytes| bytes.len());
+                    prepared.push(DependencyWork {
+                        index,
+                        weight,
+                        hir: row,
+                        signature_bytes,
+                    });
+                }
+                Err(error) => {
+                    first_error = Some(error);
+                    break;
+                }
+            }
+        }
+        (prepared, first_error)
     }
 
     pub(crate) fn load_inputs(
         mut self,
         inputs: &DependencyInputs,
         hir_only: bool,
+        defer_functions: bool,
+        link_dependency_objects: bool,
     ) -> Result<Self, String> {
-        let resolver = std::sync::Arc::new(crate::proc_macro::FlibHostResolver::default());
+        let resolver: std::sync::Arc<dyn flux_hir::ProcMacroResolver> =
+            std::sync::Arc::new(crate::proc_macro::FlibHostResolver::default());
         self.roots.clone_from(&inputs.roots);
-        for artifact in &inputs.artifacts {
-            let context = |error| format!("{}: {error}", artifact.path.display());
-            let view = artifact.index.view(&artifact.bytes);
-            let (dependency, ids) = load_hir(
+        let total = crate::backend_workers::limit().get();
+        let workers = total.min(inputs.artifacts.len() / 4);
+        let flags = (hir_only, defer_functions, link_dependency_objects);
+        if workers <= 1 {
+            for artifact in &inputs.artifacts {
+                self.append_dependency(artifact, None, &resolver, flags)?;
+            }
+            return Ok(self);
+        }
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (mut work, first_error) = super::time("prepare dependency layouts", || {
+            self.prepare_dependency_batch(&inputs.artifacts, &resolver, !hir_only)
+        });
+        let mut decoded = (0..inputs.artifacts.len())
+            .map(|_| None)
+            .collect::<Vec<_>>();
+        if let Some(error) = first_error {
+            decoded[work.len()] = Some(Err(error));
+        }
+        // Small batches finish quickly with all slots decoding. With a
+        // larger batch, leave a slot for ordered append and prioritize its
+        // first inputs while giving larger archives a head start.
+        let streaming = workers >= 4;
+        let helpers = if streaming {
+            workers.min(total - 1)
+        } else {
+            workers - 1
+        };
+        work.sort_unstable_by_key(|row| {
+            (
+                streaming && row.index >= helpers * 2,
+                std::cmp::Reverse(row.weight),
+            )
+        });
+        let pending = std::sync::Mutex::new(work.into_iter());
+        let running = AtomicUsize::new(0);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let drain = |sender: std::sync::mpsc::Sender<_>| {
+            loop {
+                let next = pending
+                    .lock()
+                    .expect("dependency HIR queue poisoned")
+                    .next();
+                let Some(work) = next else { break };
+                let index = work.index;
+                if sender.send((index, work.decode())).is_err() {
+                    break;
+                }
+            }
+            running.fetch_sub(1, Ordering::Release);
+        };
+        std::thread::scope(|scope| {
+            for _ in 0..helpers {
+                let tx = sender.clone();
+                running.fetch_add(1, Ordering::Relaxed);
+                if std::thread::Builder::new()
+                    .stack_size(8 * 1024 * 1024)
+                    .spawn_scoped(scope, move || drain(tx))
+                    .is_err()
+                {
+                    running.fetch_sub(1, Ordering::Relaxed);
+                    break;
+                }
+            }
+            if !streaming || running.load(Ordering::Acquire) == 0 {
+                running.fetch_add(1, Ordering::Relaxed);
+                drain(sender);
+            } else {
+                drop(sender);
+            }
+            if !streaming {
+                for (index, result) in &receiver {
+                    decoded[index] = Some(result);
+                }
+            }
+            for (index, artifact) in inputs.artifacts.iter().enumerate() {
+                while decoded[index].is_none() {
+                    let (ready, result): (usize, _) =
+                        receiver.recv().expect("dependency decoder stopped");
+                    decoded[ready] = Some(result);
+                }
+                let result = decoded[index].take().expect("dependency decoded");
+                let result =
+                    result.map_err(|error| format!("{}: {error}", artifact.path.display()))?;
+                // A decoder that has exited can lend its slot to the append
+                // stage, which also parallelizes large MIR sections.
+                let idle = total - running.load(Ordering::Acquire);
+                crate::backend_workers::with_limit(idle, || {
+                    self.append_dependency(artifact, Some(result), &resolver, flags)
+                })?;
+            }
+            Ok::<_, String>(())
+        })?;
+        Ok(self)
+    }
+
+    fn append_dependency(
+        &mut self,
+        artifact: &Resolved,
+        decoded: Option<DecodedDependency<'_>>,
+        resolver: &std::sync::Arc<dyn flux_hir::ProcMacroResolver>,
+        (hir_only, defer_functions, link_dependency_objects): (bool, bool, bool),
+    ) -> Result<(), String> {
+        let context = |error| format!("{}: {error}", artifact.path.display());
+        let view = artifact.index.view(&artifact.bytes);
+        let ((dependency, ids), signatures) = if let Some(decoded) = decoded {
+            let hir = super::time("HIR append", || {
+                decoded.hir.append(&mut self.items, &mut self.db)
+            })
+            .map_err(context)?;
+            (hir, decoded.signatures)
+        } else {
+            let hir = load_hir(
                 view,
                 &mut self.db,
                 &mut self.items,
@@ -989,29 +1460,37 @@ impl DependencyState {
                 resolver.clone(),
             )
             .map_err(context)?;
-            if dependency.hash != artifact.manifest.hash {
-                return Err(context("inconsistent artifact identity".into()));
-            }
-            if !hir_only {
-                self.required_instances.extend(
-                    load_ir(
-                        view,
-                        &self.items,
-                        &mut self.sigs,
-                        &mut self.mir,
-                        &dependency,
-                        ids,
-                        true,
-                    )
-                    .map_err(context)?,
-                );
-                if let Some(object) = view.object() {
-                    self.objects.push((artifact.path.clone(), object.to_vec()));
-                }
-            }
-            self.dependencies.push(dependency);
+            (hir, None)
+        };
+        if dependency.hash != artifact.manifest.hash {
+            return Err(context("inconsistent artifact identity".into()));
         }
-        Ok(self)
+        if !hir_only {
+            let ir = load_ir(
+                view,
+                &self.items,
+                &mut self.sigs,
+                &mut self.mir,
+                &dependency,
+                ids,
+                (
+                    SignatureInput::Append(signatures),
+                    defer_functions.then_some(artifact),
+                ),
+            )
+            .map_err(context)?;
+            self.required_instances.extend(ir.required_instances);
+            self.function_summaries
+                .append(ir.function_summary, &dependency.indices.functions);
+            if link_dependency_objects && view.has_object() {
+                let object = view
+                    .object()
+                    .ok_or_else(|| context("dependency object was not read for linking".into()))?;
+                self.objects.push((artifact.path.clone(), object.to_vec()));
+            }
+        }
+        self.dependencies.push(dependency);
+        Ok(())
     }
 }
 
@@ -1106,21 +1585,93 @@ impl FreshArtifacts {
         }
     }
 
+    /// Reads explicitly enumerated package inputs within the scheduler's worker
+    /// budget. The resolver consumes each result in its original input order.
+    fn prefetch<'a>(
+        &self,
+        paths: &'a [std::path::PathBuf],
+        files: &[&'a std::path::Path],
+        read: ArchiveRead,
+    ) -> std::collections::BTreeMap<&'a std::path::Path, Result<Resolved, String>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const MIN_FILES_PER_WORKER: usize = 4;
+        let budget = crate::backend_workers::limit().get();
+        if budget < 2 || paths.len() + files.len() < 2 * MIN_FILES_PER_WORKER {
+            return Default::default();
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut queue: Vec<_> = paths
+            .iter()
+            .map(std::path::PathBuf::as_path)
+            .chain(files.iter().copied())
+            .filter(|path| seen.insert(*path))
+            .collect();
+        let workers = budget.min(queue.len() / MIN_FILES_PER_WORKER);
+        if workers < 2 {
+            return Default::default();
+        }
+        // Larger archives take longer to read and verify. Start them first
+        // so one large archive does not outlast the other workers at the end.
+        queue.sort_by_cached_key(|path| {
+            std::cmp::Reverse(std::fs::metadata(path).map_or(0, |metadata| metadata.len()))
+        });
+
+        let next = AtomicUsize::new(0);
+        let drain = || {
+            std::iter::from_fn(|| queue.get(next.fetch_add(1, Ordering::Relaxed)).copied())
+                .map(|path| (path, self.read_resolved(path, read)))
+                .collect::<Vec<_>>()
+        };
+        std::thread::scope(|scope| {
+            let mut helpers = Vec::new();
+            for _ in 1..workers {
+                let Ok(helper) = std::thread::Builder::new().spawn_scoped(scope, drain) else {
+                    break;
+                };
+                helpers.push(helper);
+            }
+            let mut results: std::collections::BTreeMap<_, _> = drain().into_iter().collect();
+            for helper in helpers {
+                results.extend(helper.join().expect("dependency artifact reader panicked"));
+            }
+            results
+        })
+    }
+
     /// Reads a new byte buffer, reusing a verified index only while the
     /// settled file stamp is unchanged. Neither the archive bytes nor its
     /// decoded HIR are retained by the package cache.
-    fn read_resolved(&self, path: &std::path::Path) -> Result<Resolved, String> {
+    fn read_resolved(&self, path: &std::path::Path, read: ArchiveRead) -> Result<Resolved, String> {
         use super::executable::Stamp;
         use std::io::Read;
 
         let io_error = |error| format!("cannot read {}: {error}", path.display());
         let mut file = std::fs::File::open(path).map_err(io_error)?;
-        let before = Stamp::of(&file.metadata().map_err(io_error)?);
-        let cacheable = before.settled()
-            && self
-                .output_directory
-                .as_ref()
-                .is_some_and(|root| path.starts_with(root));
+        let metadata = file.metadata().map_err(io_error)?;
+        let length = metadata.len();
+        let before = Stamp::of(&metadata);
+        let managed = self
+            .output_directory
+            .as_ref()
+            .is_some_and(|root| path.starts_with(root));
+        if read == ArchiveRead::Metadata && managed {
+            let (archive, bytes) = ArchiveIndex::read_metadata(&mut file, length)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            if Stamp::of(&file.metadata().map_err(io_error)?) != before {
+                return Err(format!("{} changed while reading", path.display()));
+            }
+            let index = ArtifactIndex::from_framing(archive, &bytes, read)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let manifest = manifest_from_view(index.view(&bytes))?;
+            return Ok(Resolved {
+                path: path.to_owned(),
+                bytes: std::sync::Arc::new(bytes),
+                index: std::sync::Arc::new(index),
+                manifest,
+            });
+        }
+        let cacheable = before.settled() && managed;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).map_err(io_error)?;
         if Stamp::of(&file.metadata().map_err(io_error)?) != before {
@@ -1138,7 +1689,7 @@ impl FreshArtifacts {
         if let Some(previous) = indexes.get(path).filter(|entry| entry.stamp == before) {
             return Ok(Resolved {
                 path: path.to_owned(),
-                bytes,
+                bytes: std::sync::Arc::new(bytes),
                 index: previous.index.clone(),
                 manifest: previous.manifest.clone(),
             });
@@ -1304,9 +1855,14 @@ fn validate_linkage(artifact: ArtifactView<'_>) -> Result<bool, String> {
     let checksum = Option::<Vec<u8>>::decode(&mut d).map_err(|e| e.to_string())?;
     d.blob().map_err(|e| e.to_string())?;
     d.finish().map_err(|e| e.to_string())?;
-    match (checksum, artifact.object()) {
-        (None, None) => Ok(false),
-        (Some(checksum), Some(bytes)) if checksum.as_slice() == crate::flib::digest(bytes) => {
+    match (checksum, artifact.has_object()) {
+        (None, false) => Ok(false),
+        (Some(checksum), true)
+            if checksum.len() == 32
+                && artifact
+                    .object()
+                    .is_none_or(|bytes| checksum.as_slice() == crate::flib::digest(bytes)) =>
+        {
             Ok(true)
         }
         _ => Err("flux artifact object checksum mismatch; rebuild the artifact".into()),

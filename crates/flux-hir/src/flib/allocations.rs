@@ -98,6 +98,13 @@ fn set_depth(entry: &mut AllocationMemo, depth: u32) -> Result<(), Error> {
 
 // Compact definitions can expand far beyond their on-disk size. Charge
 // only new definitions, not references to allocations already counted.
+// A packed writer can fall back to ordinary records. Its budget must not
+// consume capacity reserved for legacy byte arrays with no ordinary encoding.
+enum Expansion {
+    LargeByteArray,
+    IntegerTable,
+}
+
 fn charge_expansion(total: &mut usize, count: usize, element_size: usize) -> Result<(), Error> {
     const MAX_EXPANDED_BYTES: usize = 256 * 1024 * 1024;
     *total = count
@@ -108,9 +115,44 @@ fn charge_expansion(total: &mut usize, count: usize, element_size: usize) -> Res
     Ok(())
 }
 
+#[test]
+fn independent_records_share_the_parent_expansion_limit() {
+    let mut parent = Decoder::new(&[]);
+    parent
+        .charge_allocation_expansion(1, (256 << 20) - 2)
+        .unwrap();
+    let shared = parent.share_allocation_budget();
+    let mut first = Decoder::new(&[]).with_allocation_budget(shared.clone());
+    let mut second = Decoder::new(&[]).with_allocation_budget(shared);
+    first.charge_allocation_expansion(1, 1).unwrap();
+    second.charge_allocation_expansion(1, 1).unwrap();
+    assert!(parent.charge_allocation_expansion(1, 1).is_err());
+    first
+        .charge_integer_table_expansion(1, (256 << 20) - 1)
+        .unwrap();
+    second.charge_integer_table_expansion(1, 1).unwrap();
+    assert!(parent.charge_integer_table_expansion(1, 1).is_err());
+}
+
 impl Encoder {
     pub fn charge_allocation_expansion(&mut self, count: usize, size: usize) -> Result<(), Error> {
-        charge_expansion(&mut self.expanded_allocation_bytes, count, size)
+        charge_expansion(
+            &mut self.expanded_allocation_bytes[Expansion::LargeByteArray as usize],
+            count,
+            size,
+        )
+    }
+
+    pub fn charge_integer_table_expansion(
+        &mut self,
+        count: usize,
+        size: usize,
+    ) -> Result<(), Error> {
+        charge_expansion(
+            &mut self.expanded_allocation_bytes[Expansion::IntegerTable as usize],
+            count,
+            size,
+        )
     }
 
     /// Holds an allocation owner so its pointer key cannot be recycled during encoding.
@@ -198,7 +240,38 @@ impl Encoder {
 
 impl Decoder<'_> {
     pub fn charge_allocation_expansion(&mut self, count: usize, size: usize) -> Result<(), Error> {
-        charge_expansion(&mut self.expanded_allocation_bytes, count, size)
+        self.charge_shared_expansion(Expansion::LargeByteArray, count, size)
+    }
+
+    pub fn charge_integer_table_expansion(
+        &mut self,
+        count: usize,
+        size: usize,
+    ) -> Result<(), Error> {
+        self.charge_shared_expansion(Expansion::IntegerTable, count, size)
+    }
+
+    fn charge_shared_expansion(
+        &mut self,
+        expansion: Expansion,
+        count: usize,
+        size: usize,
+    ) -> Result<(), Error> {
+        let slot = expansion as usize;
+        if let Some(budget) = &self.shared_allocation_budget {
+            use std::sync::atomic::Ordering::Relaxed;
+            let bytes = &budget.0[slot];
+            let mut current = bytes.load(Relaxed);
+            loop {
+                let mut updated = current;
+                charge_expansion(&mut updated, count, size)?;
+                match bytes.compare_exchange_weak(current, updated, Relaxed, Relaxed) {
+                    Ok(_) => return Ok(()),
+                    Err(observed) => current = observed,
+                }
+            }
+        }
+        charge_expansion(&mut self.expanded_allocation_bytes[slot], count, size)
     }
 
     /// Reserves the next allocation slot before reading its payload.

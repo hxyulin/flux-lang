@@ -132,13 +132,24 @@ pub fn proc_macro_declarations(
     // generated declarations whose helpers agree across those cfg inputs.
     let cfg = source.parse.tree().cfg_options().map(|cfg| (**cfg).clone());
     let mut common = None::<BTreeMap<String, Vec<String>>>;
+    let mut profiles = Vec::<(bool, PanicStrategy, crate::cfg::ProfileReads)>::new();
     for debug_assertions in [true, false] {
         for panic_strategy in [PanicStrategy::Abort, PanicStrategy::Unwind] {
+            // A previous expansion that receives the same answers to every
+            // profile query follows the same path and declares the same helpers.
+            if profiles.iter().any(|&(debug, panic, reads)| {
+                (!reads.debug_assertions || debug == debug_assertions)
+                    && (!reads.panic_strategy || panic == panic_strategy)
+            }) {
+                continue;
+            }
             let mut cfg = cfg.clone().unwrap_or_default();
             cfg.debug_assertions = debug_assertions;
             cfg.panic_strategy = panic_strategy;
             let configured = db.configured_file(root, Some(Arc::new(cfg)));
-            let found = expanded_declarations(db, configured);
+            let (found, reads) =
+                crate::cfg::track_profile_reads(|| expanded_declarations(db, configured));
+            profiles.push((debug_assertions, panic_strategy, reads));
             if let Some(common) = &mut common {
                 common.retain(|name, helpers| found.get(name) == Some(helpers));
                 if common.is_empty() {
@@ -408,6 +419,32 @@ mod tests {
             }
             #[cfg(debug_assertions)] declare!(debug_only);
             #[cfg(not(debug_assertions))] declare!(release_only);
+            "#,
+        );
+        let declarations = proc_macro_declarations(&mut db, root, &["Generated"]).unwrap();
+        assert!(!declarations.contains_key("Generated"));
+    }
+
+    #[test]
+    fn generated_helpers_track_flags_read_only_in_an_alternate_profile() {
+        let mut db = SourceDb::empty();
+        let root = db.add(
+            "host.rs",
+            r#"
+            macro_rules! declare {
+                ($helper:ident) => {
+                    #[proc_macro_derive(Generated, attributes($helper))]
+                    pub fn derive() {}
+                };
+            }
+            macro_rules! declare_release {
+                () => {
+                    #[cfg(panic = "abort")] declare!(common);
+                    #[cfg(panic = "unwind")] declare!(different);
+                };
+            }
+            #[cfg(debug_assertions)] declare!(common);
+            #[cfg(not(debug_assertions))] declare_release!();
             "#,
         );
         let declarations = proc_macro_declarations(&mut db, root, &["Generated"]).unwrap();

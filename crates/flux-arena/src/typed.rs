@@ -582,11 +582,13 @@ mod tests {
     }
 }
 
-/// An arena map with a frozen shared base and private entry overrides.
+/// An arena map with shared frozen rows and private entry overrides.
 /// Mutating an inherited value clones only that value.
 #[derive(Clone)]
 pub struct LayeredArenaMap<T, V> {
     base: Arc<ArenaMap<T, V>>,
+    // Dependency rows can be frozen alongside the existing built-in prefix.
+    frozen_tail: Option<Arc<ArenaMap<T, V>>>,
     own: ArenaMap<T, V>,
     overrides: std::collections::BTreeMap<Idx<T>, V>,
 }
@@ -595,6 +597,7 @@ impl<T, V> Default for LayeredArenaMap<T, V> {
     fn default() -> Self {
         Self {
             base: Arc::new(ArenaMap::new()),
+            frozen_tail: None,
             own: ArenaMap::new(),
             overrides: Default::default(),
         }
@@ -610,7 +613,29 @@ impl<T, V> LayeredArenaMap<T, V> {
         self.own
             .get(idx)
             .or_else(|| self.overrides.get(&idx))
-            .or_else(|| self.base.get(idx))
+            .or_else(|| self.frozen_get(idx))
+    }
+
+    #[inline]
+    fn frozen_get(&self, idx: Idx<T>) -> Option<&V> {
+        if let Some(tail) = &self.frozen_tail
+            && idx.index() >= self.base.offset + self.base.data.len()
+        {
+            return tail.get(idx);
+        }
+        self.base.get(idx)
+    }
+
+    #[inline]
+    fn frozen_end(&self) -> usize {
+        let last = self.frozen_tail.as_ref().unwrap_or(&self.base);
+        last.offset + last.data.len()
+    }
+
+    fn frozen_entries(&self) -> impl Iterator<Item = (Idx<T>, &V)> {
+        self.base
+            .iter()
+            .chain(self.frozen_tail.iter().flat_map(|tail| tail.iter()))
     }
 
     pub fn contains(&self, idx: Idx<T>) -> bool {
@@ -618,7 +643,7 @@ impl<T, V> LayeredArenaMap<T, V> {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (Idx<T>, &V)> {
-        let mut base = self.base.iter().peekable();
+        let mut base = self.frozen_entries().peekable();
         let mut own = self
             .overrides
             .iter()
@@ -638,6 +663,20 @@ impl<T, V> LayeredArenaMap<T, V> {
 }
 
 impl<T: Clone, V: Clone> LayeredArenaMap<T, V> {
+    /// Moves entries from a newly collected map before it has been frozen.
+    pub fn append_unfrozen(&mut self, other: Self) {
+        assert!(
+            other.base.data.is_empty() && other.frozen_tail.is_none() && other.overrides.is_empty()
+        );
+        if self.base.data.is_empty() && self.own.data.is_empty() {
+            self.own = other.own;
+            return;
+        }
+        for (id, value) in other.own.into_entries() {
+            self.insert(id, value);
+        }
+    }
+
     /// Share all current entries with future copies.
     pub fn freeze(&mut self) {
         if self.own.data.is_empty() && self.overrides.is_empty() {
@@ -645,33 +684,39 @@ impl<T: Clone, V: Clone> LayeredArenaMap<T, V> {
         }
         if self.base.data.is_empty() {
             self.base = Arc::new(std::mem::take(&mut self.own));
+        } else if self.frozen_tail.is_none() && self.overrides.is_empty() {
+            self.frozen_tail = Some(Arc::new(std::mem::take(&mut self.own)));
         } else {
             let mut merged = (*self.base).clone();
-            for (idx, value) in self.own.iter() {
-                merged.insert(idx, value.clone());
+            if let Some(tail) = self.frozen_tail.take() {
+                for (idx, value) in tail.iter() {
+                    merged.insert(idx, value.clone());
+                }
+            }
+            for (idx, value) in std::mem::take(&mut self.own).into_entries() {
+                merged.insert(idx, value);
             }
             for (idx, value) in std::mem::take(&mut self.overrides) {
                 merged.insert(idx, value);
             }
             self.base = Arc::new(merged);
-            self.own = ArenaMap::new();
         }
     }
 
     pub fn insert(&mut self, idx: Idx<T>, value: V) -> Option<V> {
-        if idx.index() < self.base.offset + self.base.data.len() {
+        if idx.index() < self.frozen_end() {
             self.overrides
                 .insert(idx, value)
-                .or_else(|| self.base.get(idx).cloned())
+                .or_else(|| self.frozen_get(idx).cloned())
         } else {
             self.own.insert(idx, value)
         }
     }
 
     pub fn get_mut(&mut self, idx: Idx<T>) -> Option<&mut V> {
-        if idx.index() < self.base.offset + self.base.data.len() {
+        if idx.index() < self.frozen_end() {
             if !self.overrides.contains_key(&idx) {
-                self.overrides.insert(idx, self.base.get(idx)?.clone());
+                self.overrides.insert(idx, self.frozen_get(idx)?.clone());
             }
             self.overrides.get_mut(&idx)
         } else {
@@ -757,6 +802,47 @@ mod layered_map_tests {
         copy.freeze();
         assert_eq!(copy[b], "b");
         assert_eq!(base[a], "a");
+    }
+
+    #[test]
+    fn freezing_a_suffix_shares_the_prefix_and_preserves_gaps_and_overrides() {
+        let index = Idx::<String>::from_raw;
+        let mut base = LayeredArenaMap::new();
+        base.insert(index(50), "builtin".to_owned());
+        base.freeze();
+
+        let mut copy = base.clone();
+        copy.insert(index(100), "dependency".to_owned());
+        copy.insert(index(200), "last".to_owned());
+        // The descending insert gives the tail spare space in the base's range.
+        copy.insert(index(60), "first".to_owned());
+        copy.freeze();
+        assert!(std::ptr::eq(&base[index(50)], &copy[index(50)]));
+        assert!(copy.get(index(59)).is_none());
+        assert!(
+            copy.iter()
+                .map(|(id, _)| id.into_raw())
+                .eq([50, 60, 100, 200])
+        );
+
+        let mut edited = copy.clone();
+        edited.get_mut(index(100)).unwrap().push('!');
+        assert_eq!(
+            edited.insert(index(50), "local".to_owned()),
+            Some("builtin".to_owned())
+        );
+        edited.insert(index(59), "gap".to_owned());
+        edited.insert(index(201), "source".to_owned());
+        edited.freeze();
+        assert_eq!(copy[index(100)], "dependency");
+        assert!(edited.iter().map(|(_, name)| name.as_str()).eq([
+            "local",
+            "gap",
+            "first",
+            "dependency!",
+            "last",
+            "source"
+        ]));
     }
 }
 

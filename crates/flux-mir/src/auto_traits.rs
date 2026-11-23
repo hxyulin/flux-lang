@@ -189,7 +189,7 @@ fn collect(
                 continue;
             }
             let built = if let Some(provider) = SharedMir::of(hir, imported, owner) {
-                provider.built(owner)
+                provider.built(&hir.items, &typed.sigs, owner)
             } else {
                 let result = match owner {
                     ClosureOwner::Function(id) => typed.bodies.get(id),

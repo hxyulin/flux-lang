@@ -404,6 +404,13 @@ impl Builder<'_> {
         // Only an immediately enclosing reference supplies the default object
         // lifetime. Containers establish a new defaulting context.
         let enclosing = self.enclosing.take();
+        if self.scope.self_impl.is_some()
+            && let TypeRef::Path(path) = written
+            && path.as_name() == Some(flux_intern::kw::SelfUpper)
+        {
+            // Self carries the impl header's regions outside this binder.
+            return self.capture(written, ty);
+        }
         if let TypeRef::Path(path) = written
             && let Ok(flux_hir::def_map::Resolved::Def(flux_hir::def_map::Def::TypeAlias(id))) =
                 self.items

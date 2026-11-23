@@ -1,4 +1,6 @@
-use flux_hir::flib::{CrateIndices, Decoder, Encoder, IdMap, read_items, write_items};
+use flux_hir::flib::{
+    CrateIndices, Decoder, Encoder, IdMap, ItemArchiveLayout, read_items, write_items,
+};
 use flux_hir::{CrateId, ItemTree, SourceDb};
 use flux_intern::Symbol;
 
@@ -19,10 +21,72 @@ fn encode(items: &ItemTree, krate: CrateId) -> Vec<u8> {
 }
 
 #[test]
+fn dependency_hir_decodes_before_its_referenced_crate_is_appended() {
+    let mut source = SourceDb::new();
+    let a = source.add("a.rs", "pub struct Record(pub u32);");
+    let a = flux_hir::lower(&mut source, a, Symbol::intern("a"));
+    let a_id = a.items.main_crate();
+    let a_bytes = encode(&a.items, a_id);
+    let b = source.add("b.rs", "pub fn record() -> a::Record { a::Record(7) }");
+    let b = flux_hir::lower_source_on(
+        &mut source,
+        a.items,
+        b,
+        Symbol::intern("b"),
+        vec![(Symbol::intern("a"), a_id)],
+    );
+    assert!(b.diagnostics.is_empty(), "{:?}", b.diagnostics);
+    let b_bytes = encode(&b.items, b.items.main_crate());
+
+    let mut db = SourceDb::new();
+    let noise = db.add("noise.rs", "struct Padding;");
+    let mut items = flux_hir::lower(&mut db, noise, Symbol::intern("noise")).items;
+    let mut base_ids = IdMap::strict();
+    for index in 0..a_id.0 {
+        let id = CrateId(index);
+        CrateIndices::collect(&items, id)
+            .add_decode_mapping(&mut base_ids, id, index + 1)
+            .unwrap();
+    }
+    let mut layout = ItemArchiveLayout::new(&items);
+    let mut a_decoder = Decoder::with_ids(&a_bytes, base_ids.clone());
+    let a = layout.prepare(&mut db, &mut a_decoder).unwrap();
+    let (planned_a, indices) = a.identity();
+    indices
+        .add_decode_mapping(&mut base_ids, planned_a, a_id.0 + 1)
+        .unwrap();
+    let mut b_decoder = Decoder::with_ids(&b_bytes, base_ids);
+    let b = layout.prepare(&mut db, &mut b_decoder).unwrap();
+    let b = b.decode(&mut b_decoder).unwrap();
+    let a = a.decode(&mut a_decoder).unwrap();
+    a_decoder.finish().unwrap();
+    b_decoder.finish().unwrap();
+    let (a, _) = a.append(&mut items, &mut db, &a_decoder.ids).unwrap();
+    let (b, _) = b.append(&mut items, &mut db, &b_decoder.ids).unwrap();
+    assert_eq!(a, planned_a);
+    assert_eq!(b.0, a.0 + 1);
+    let consumer = db.add("consumer.rs", "fn main() { let _ = b::record().0; }");
+    let hir = flux_hir::lower_source_on(
+        &mut db,
+        items,
+        consumer,
+        Symbol::intern("consumer"),
+        vec![(Symbol::intern("b"), b)],
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+}
+
+#[test]
 fn decode_mappings_match_the_inverse_and_reject_missing_ids() {
     use flux_hir::flib::IdKind;
 
-    for functions in [vec![17, 40, 81], vec![81, 17, 81]] {
+    for functions in [
+        vec![17, 18, 19],
+        vec![17, 40, 81],
+        vec![81, 17, 81],
+        vec![u32::MAX - 2, u32::MAX - 1, u32::MAX],
+    ] {
+        let owned = functions[0];
         let indices = CrateIndices {
             functions,
             ..CrateIndices::default()
@@ -44,9 +108,36 @@ fn decode_mappings_match_the_inverse_and_reject_missing_ids() {
                 );
             }
             assert!(decoder.get(IdKind::Function, (slot << 24) | 3).is_err());
-            assert_eq!(decoder.contains_owned(IdKind::Function, 17), slot == 0);
+            assert_eq!(decoder.contains_owned(IdKind::Function, owned), slot == 0);
+            assert!(!decoder.contains_owned(IdKind::Function, 0));
+            assert!(decoder.get(IdKind::Const, slot << 24).is_err());
         }
     }
+}
+
+#[test]
+fn compact_decode_slots_preserve_explicit_updates_and_inversion() {
+    use flux_hir::flib::IdKind;
+
+    let mut original = IdMap::strict();
+    CrateIndices {
+        functions: vec![19, 20],
+        ..CrateIndices::default()
+    }
+    .add_decode_mapping(&mut original, CrateId(9), 0)
+    .unwrap();
+
+    let mut updated = original.clone();
+    updated.insert(IdKind::Function, 0, 25);
+    assert_eq!(updated.get(IdKind::Function, 0).unwrap(), 25);
+    assert_eq!(original.get(IdKind::Function, 0).unwrap(), 19);
+    updated.extend(&original);
+    assert_eq!(updated.get(IdKind::Function, 0).unwrap(), 19);
+    assert!(updated.contains_owned(IdKind::Function, 19));
+
+    let encoder = original.inverse().unwrap();
+    assert_eq!(encoder.get(IdKind::Function, 20).unwrap(), 1);
+    assert!(encoder.contains_owned(IdKind::Function, 20));
 }
 
 #[test]

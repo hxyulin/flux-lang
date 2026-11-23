@@ -90,6 +90,8 @@ struct PlannedPackage {
     checksum: Option<String>,
     manifest: PathBuf,
     links: Option<String>,
+    #[serde(skip)]
+    fields: toml::Table,
 }
 #[derive(Serialize)]
 struct Unit {
@@ -122,6 +124,7 @@ struct Planner {
     states: BTreeMap<(usize, Domain), Features>,
     edges: BTreeMap<(usize, Domain), Vec<ResolvedDependency>>,
     home: PathBuf,
+    source_caches: SourceCaches,
     cfg: BTreeSet<String>,
     host: String,
 }
@@ -151,6 +154,7 @@ fn make_plan(options: &Options) -> Result<Plan> {
         states: BTreeMap::new(),
         edges: BTreeMap::new(),
         home,
+        source_caches: SourceCaches::default(),
         cfg,
         host: host.clone(),
     };
@@ -223,7 +227,7 @@ fn make_plan(options: &Options) -> Result<Plan> {
                 dependency_tables(
                     &table,
                     &workspace,
-                    &workspace_table,
+                    workspace_table.get("workspace"),
                     condition.as_deref(),
                     &mut dev,
                     string(&package.fields, "edition")? == "2024",
@@ -444,6 +448,7 @@ fn make_plan(options: &Options) -> Result<Plan> {
                 source: locked.source.clone(),
                 checksum: locked.checksum.clone(),
                 manifest: planner.packages[&id].manifest.clone(),
+                fields: planner.packages[&id].fields.clone(),
                 links: planner.packages[&id]
                     .fields
                     .get("links")
@@ -536,16 +541,22 @@ impl Planner {
                     .join(path)
                     .join("Cargo.toml"),
             )?;
-            let package = load(&manifest)?;
-            if string(&package.fields, "name")? != name {
-                return Err(format!(
-                    "path dependency {name} has a different package name"
-                ));
-            }
             let source = self.lock.package[parent]
                 .source
                 .as_deref()
                 .filter(|s| s.starts_with("git+"));
+            // Subsequent feature-resolution passes use the manifest already
+            // admitted under this exact path and locked source.
+            if let Some((&id, package)) = self.packages.iter().find(|(id, package)| {
+                package.manifest == manifest && self.lock.package[**id].source.as_deref() == source
+            }) {
+                check_path_name(package, name)?;
+                self.check_locked_edge(parent, id)?;
+                check_version(&self.lock.package[id], req.as_ref())?;
+                return Ok(id);
+            }
+            let package = load(&manifest)?;
+            check_path_name(&package, name)?;
             let id = self.identify(&package, source)?;
             self.check_locked_edge(parent, id)?;
             check_version(&self.lock.package[id], req.as_ref())?;
@@ -619,9 +630,9 @@ impl Planner {
         }
     }
 
-    fn cached(&self, id: usize) -> Result<PathBuf> {
+    fn cached(&mut self, id: usize) -> Result<PathBuf> {
         let package = &self.lock.package[id];
-        cached_source(&self.home, package)?.ok_or_else(|| {
+        find_cached_source(&self.home, package, &mut self.source_caches)?.ok_or_else(|| {
             format!(
                 "offline source missing for {} {}; run `flux fetch --locked` first",
                 package.name, package.version
@@ -836,6 +847,15 @@ impl Planner {
     }
 }
 
+fn check_path_name(package: &Package, name: &str) -> Result<()> {
+    if string(&package.fields, "name")? != name {
+        return Err(format!(
+            "path dependency {name} has a different package name"
+        ));
+    }
+    Ok(())
+}
+
 fn expand(package: &Package, state: &mut Features) -> Result<()> {
     let mut optional = BTreeSet::new();
     let mut required = BTreeSet::new();
@@ -909,7 +929,8 @@ fn load(path: &Path) -> Result<Package> {
     if table.contains_key("patch") || table.contains_key("replace") {
         return Err("native planning does not support patch or replace tables yet".into());
     }
-    let (root, ws) = workspace(&manifest)?;
+    let (root, outer) = workspace_from_table(&manifest, &table)?;
+    let ws = outer.as_ref().unwrap_or(&table).get("workspace").cloned();
     let fields = table
         .get_mut("package")
         .and_then(toml::Value::as_table_mut)
@@ -917,7 +938,7 @@ fn load(path: &Path) -> Result<Package> {
     for (key, value) in fields.iter_mut() {
         if value.get("workspace").and_then(toml::Value::as_bool) == Some(true) {
             *value = ws
-                .get("workspace")
+                .as_ref()
                 .and_then(|w| w.get("package"))
                 .and_then(|p| p.get(key))
                 .ok_or_else(|| format!("missing workspace package field {key}"))?
@@ -933,7 +954,7 @@ fn load(path: &Path) -> Result<Package> {
     dependency_tables(
         &table,
         &root,
-        &ws,
+        ws.as_ref(),
         None,
         &mut dependencies,
         string(&fields, "edition")? == "2024",
@@ -945,7 +966,7 @@ fn load(path: &Path) -> Result<Package> {
                     .as_table()
                     .ok_or("expected target dependency table")?,
                 &root,
-                &ws,
+                ws.as_ref(),
                 Some(condition),
                 &mut dependencies,
                 string(&fields, "edition")? == "2024",
@@ -1015,7 +1036,7 @@ fn load(path: &Path) -> Result<Package> {
 fn dependency_tables(
     table: &Table,
     root: &Path,
-    ws: &Table,
+    ws: Option<&toml::Value>,
     condition: Option<&str>,
     output: &mut Vec<Dependency>,
     override_defaults: bool,
@@ -1033,7 +1054,6 @@ fn dependency_tables(
                 }
                 if boolean(&spec, "workspace", false)? {
                     let inherited = ws
-                        .get("workspace")
                         .and_then(|w| w.get("dependencies"))
                         .and_then(|d| d.get(alias))
                         .ok_or_else(|| format!("missing workspace dependency {alias}"))?;
@@ -1087,6 +1107,12 @@ fn dependency_spec(value: &toml::Value) -> Result<Table> {
 }
 fn workspace(manifest: &Path) -> Result<(PathBuf, Table)> {
     let table = read_table(manifest)?;
+    let (root, outer) = workspace_from_table(manifest, &table)?;
+    Ok((root, outer.unwrap_or(table)))
+}
+
+/// A missing outer table means the caller already loaded the workspace table.
+fn workspace_from_table(manifest: &Path, table: &Table) -> Result<(PathBuf, Option<Table>)> {
     let dir = manifest.parent().ok_or("manifest has no parent")?;
     if let Some(path) = table
         .get("package")
@@ -1094,19 +1120,26 @@ fn workspace(manifest: &Path) -> Result<(PathBuf, Table)> {
         .and_then(toml::Value::as_str)
     {
         let root = canonical(&dir.join(path))?;
-        return Ok((root.clone(), read_table(&root.join("Cargo.toml"))?));
+        let path = root.join("Cargo.toml");
+        let outer = (path != manifest).then(|| read_table(&path)).transpose()?;
+        return Ok((root, outer));
     }
     for ancestor in dir.ancestors() {
         let path = ancestor.join("Cargo.toml");
-        if path.is_file() {
+        if path == manifest {
+            if table.contains_key("workspace") {
+                return Ok((ancestor.into(), None));
+            }
+        } else if path.is_file() {
             let table = read_table(&path)?;
             if table.contains_key("workspace") {
-                return Ok((ancestor.into(), table));
+                return Ok((ancestor.into(), Some(table)));
             }
         }
     }
-    Ok((dir.into(), table))
+    Ok((dir.into(), None))
 }
+
 fn members(root: &Path, table: &Table, manifest: &Path) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     if table.contains_key("package") {
@@ -1372,23 +1405,22 @@ fn package_version(fields: &Table, path: &Path) -> Result<String> {
     }
     Err("missing package version".into())
 }
-fn find_manifests(root: &Path, name: &str, version: &str, found: &mut Vec<PathBuf>) -> Result<()> {
+struct GitManifest {
+    path: PathBuf,
+    package: Table,
+}
+
+fn read_checkout_manifests(root: &Path, found: &mut Vec<GitManifest>) -> Result<()> {
     let manifest = root.join("Cargo.toml");
     if manifest.is_file() {
-        let table = read_table(&manifest)?;
-        if table
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .and_then(toml::Value::as_str)
-            == Some(name)
+        let mut table = read_table(&manifest)?;
+        if let Some(toml::Value::Table(package)) = table.remove("package")
+            && package.get("name").and_then(toml::Value::as_str).is_some()
         {
-            let fields = table
-                .get("package")
-                .and_then(toml::Value::as_table)
-                .ok_or("missing package table")?;
-            if package_version(fields, &manifest)? == version {
-                found.push(manifest);
-            }
+            found.push(GitManifest {
+                path: manifest,
+                package,
+            });
         }
     }
     for directory in directories(root)? {
@@ -1396,7 +1428,7 @@ fn find_manifests(root: &Path, name: &str, version: &str, found: &mut Vec<PathBu
             .file_name()
             .is_some_and(|n| n != ".git" && n != "target")
         {
-            find_manifests(&directory, name, version, found)?;
+            read_checkout_manifests(&directory, found)?;
         }
     }
     Ok(())
@@ -1477,13 +1509,34 @@ pub(super) fn prepare(options: &Options, build: Option<crate::BuildOptions>) -> 
 }
 
 fn cached_source(home: &Path, package: &Locked) -> Result<Option<PathBuf>> {
+    find_cached_source(home, package, &mut SourceCaches::default())
+}
+
+#[derive(Default)]
+struct SourceCaches {
+    registries: Option<Vec<PathBuf>>,
+    git_revisions: Option<BTreeMap<String, Vec<PathBuf>>>,
+    git_manifests: BTreeMap<PathBuf, Vec<GitManifest>>,
+}
+
+fn find_cached_source(
+    home: &Path,
+    package: &Locked,
+    caches: &mut SourceCaches,
+) -> Result<Option<PathBuf>> {
     let source = package
         .source
         .as_deref()
         .ok_or("expected a cached dependency")?;
     let mut found = Vec::new();
     if source.starts_with("registry+") {
-        for registry in directories(&home.join("registry/src"))? {
+        let registries = match &mut caches.registries {
+            Some(registries) => registries,
+            None => caches
+                .registries
+                .insert(directories(&home.join("registry/src"))?),
+        };
+        for registry in registries {
             // Only Cargo's standard crates.io caches. Source replacement needs explicit support.
             if !registry
                 .file_name()
@@ -1515,24 +1568,25 @@ fn cached_source(home: &Path, package: &Locked) -> Result<Option<PathBuf>> {
         if commit.len() != 40 || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err("expected a full locked git commit".into());
         }
-        for repo in directories(&home.join("git/checkouts"))? {
-            for checkout in directories(&repo)? {
-                if checkout
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with(".flux-fetch-"))
-                {
-                    continue;
+        let revisions = match &mut caches.git_revisions {
+            Some(revisions) => revisions,
+            None => caches.git_revisions.insert(git_revisions(home)?),
+        };
+        for checkout in revisions.get(commit).into_iter().flatten() {
+            let manifests = match caches.git_manifests.entry(checkout.clone()) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let mut manifests = Vec::new();
+                    read_checkout_manifests(checkout, &mut manifests)?;
+                    entry.insert(manifests)
                 }
-                let head = super::output(
-                    Command::new("git")
-                        .arg("-C")
-                        .arg(&checkout)
-                        .args(["rev-parse", "HEAD"]),
-                    "cached git revision",
-                )?;
-                if head.trim() == commit {
-                    find_manifests(&checkout, &package.name, &package.version, &mut found)?;
+            };
+            for manifest in manifests.iter() {
+                if manifest.package.get("name").and_then(toml::Value::as_str)
+                    == Some(package.name.as_str())
+                    && package_version(&manifest.package, &manifest.path)? == package.version
+                {
+                    found.push(manifest.path.clone());
                 }
             }
         }
@@ -1547,6 +1601,33 @@ fn cached_source(home: &Path, package: &Locked) -> Result<Option<PathBuf>> {
             package.name, package.version
         )),
     }
+}
+
+fn git_revisions(home: &Path) -> Result<BTreeMap<String, Vec<PathBuf>>> {
+    let mut revisions: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for repo in directories(&home.join("git/checkouts"))? {
+        for checkout in directories(&repo)? {
+            if checkout
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(".flux-fetch-"))
+            {
+                continue;
+            }
+            let head = super::output(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&checkout)
+                    .args(["rev-parse", "HEAD"]),
+                "cached git revision",
+            )?;
+            revisions
+                .entry(head.trim().to_owned())
+                .or_default()
+                .push(checkout);
+        }
+    }
+    Ok(revisions)
 }
 
 pub(super) fn fetch(options: &FetchOptions) -> Result<ExitCode> {

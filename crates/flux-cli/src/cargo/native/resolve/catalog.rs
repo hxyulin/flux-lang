@@ -138,7 +138,7 @@ impl Catalog {
                 super::super::dependency_tables(
                     &table,
                     &workspace,
-                    &ws,
+                    ws.get("workspace"),
                     None,
                     &mut values,
                     super::super::string(&package.fields, "edition")? == "2024",

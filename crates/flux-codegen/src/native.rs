@@ -130,6 +130,40 @@ impl DarwinLibraries {
         }
         inputs
     }
+
+    pub(crate) fn link(
+        self,
+        objects: &[crate::ObjectInput<'_>],
+    ) -> Result<keel_link::Executable, Error> {
+        let archive_names: Vec<_> = self
+            .archives
+            .iter()
+            .map(|(path, _)| path.to_string_lossy())
+            .collect();
+        let inputs: Vec<_> = objects
+            .iter()
+            .map(|object| keel_link::Input {
+                name: object.name,
+                bytes: object.bytes,
+            })
+            .chain(
+                self.archives
+                    .iter()
+                    .zip(&archive_names)
+                    .map(|((_, bytes), name)| keel_link::Input { name, bytes }),
+            )
+            .collect();
+        keel_link::link(
+            &inputs,
+            keel_link::Options {
+                dylibs: self.dylibs,
+                sdk_version: self.sdk_version,
+                dead_strip: true,
+                ..keel_link::Options::default()
+            },
+        )
+        .map_err(|message| Error::message(Stage::Link, message))
+    }
 }
 
 /// Resolve once with the same ordering for linking and freshness inspection.
@@ -137,7 +171,7 @@ pub(crate) fn darwin(native: &NativeLink) -> Result<DarwinLibraries, Error> {
     darwin_at(native, crate::macos_sdk()?)
 }
 
-fn darwin_at(native: &NativeLink, sdk: PathBuf) -> Result<DarwinLibraries, Error> {
+pub(crate) fn darwin_at(native: &NativeLink, sdk: PathBuf) -> Result<DarwinLibraries, Error> {
     let system = keel_link::Dylib::from_tbd(&sdk.join("usr/lib/libSystem.tbd"), &sdk)
         .map_err(|message| Error::message(Stage::Sdk, message))?;
     let mut files = vec![sdk.join("usr/lib/libSystem.tbd")];

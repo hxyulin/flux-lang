@@ -15,10 +15,10 @@ use flux_mir::FileMir;
 use flux_ty::Signatures;
 
 use crate::flib::executable::{CheckMethod, CheckedIdentity, ExecutableIdentity};
-use crate::flib::{Archive, write_atomic};
+use crate::flib::{Archive, ArchiveIndex, write_atomic};
 
 const MAGIC: &[u8; 8] = b"FLUXSUIT";
-const VERSION: u32 = 8;
+const VERSION: u32 = 9;
 const NAME: &str = "flux-builtins.flib";
 const UNWIND_NAME: &str = "flux-builtins-unwind.flib";
 static ABORT: OnceLock<Option<PreparedSuite>> = OnceLock::new();
@@ -105,10 +105,6 @@ pub(crate) fn activate_selected_while(work: InterfaceWork<'_>) -> Result<(), Str
 
 pub(crate) fn object_hash(optimized: bool) -> Option<&'static [u8]> {
     selected()?.object_hash(optimized)
-}
-
-pub(crate) fn object_link_hash(optimized: bool) -> Option<&'static [u8]> {
-    selected()?.object_link_hash(optimized)
 }
 
 pub(crate) fn payload_checksum() -> Option<[u8; 32]> {
@@ -230,10 +226,15 @@ struct PreparedSuite {
     compiler: CheckedIdentity,
     options: SuiteOptions,
     payload_checksum: [u8; 32],
-    link_hash: Option<[u8; 32]>,
     cached: bool,
-    archive: Mutex<Option<(Archive, Option<SuiteStamp>)>>,
+    archive: Mutex<Option<SuiteArchive>>,
     decoded: OnceLock<Result<Arc<BuiltinSuite>, String>>,
+}
+
+struct SuiteArchive {
+    bytes: Vec<u8>,
+    index: ArchiveIndex,
+    stamp: Option<SuiteStamp>,
 }
 
 impl PreparedSuite {
@@ -244,23 +245,20 @@ impl PreparedSuite {
         .flatten()
     }
 
-    fn object_link_hash(&self, optimized: bool) -> Option<&[u8]> {
-        self.object_hash(optimized)?;
-        self.link_hash.as_ref().map(|hash| hash.as_slice())
-    }
-
     fn decode(&self, work: Option<InterfaceWork<'_>>) -> Result<BuiltinSuite, String> {
-        let (archive, stamp) = self
+        let archive = self
             .archive
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take()
             .ok_or("built-in archive was already consumed")?;
-        let (_, payload, _) = envelope(&archive.metadata).map_err(|e| invalid(&self.path, e))?;
-        let mut suite = decode_payload_with(payload, archive.object, true, work)
-            .map_err(|e| invalid(&self.path, e))?;
+        let (_, payload, _) =
+            envelope(archive.index.metadata(&archive.bytes)).map_err(|e| invalid(&self.path, e))?;
+        let object = archive.index.object(&archive.bytes).map(<[u8]>::to_vec);
+        let mut suite =
+            decode_payload_with(payload, object, true, work).map_err(|e| invalid(&self.path, e))?;
         suite.compiler = self.compiler.hash;
-        if let Some(stamp) = stamp {
+        if let Some(stamp) = archive.stamp {
             let _ = write_stamp_record(&self.path, &stamp.suite, stamp.executable);
         }
         Ok(suite)
@@ -300,7 +298,7 @@ fn prepare(path: &Path, executable: &Path) -> Result<Option<PreparedSuite>, Stri
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes).map_err(|e| invalid(path, e))?;
     let metadata = file.metadata().map_err(|e| invalid(path, e))?;
-    let archive = Archive::decode(&bytes).map_err(|e| invalid(path, e))?;
+    let index = ArchiveIndex::decode(&bytes).map_err(|e| invalid(path, e))?;
     if std::env::var_os("FLUX_BUILTINS_TRACE").is_some() {
         eprintln!(
             "flux builtins: phase=read-and-framing elapsed={:.3}ms",
@@ -308,7 +306,7 @@ fn prepare(path: &Path, executable: &Path) -> Result<Option<PreparedSuite>, Stri
         );
     }
     let (identity, payload, checksum) =
-        envelope(&archive.metadata).map_err(|e| invalid(path, e))?;
+        envelope(index.metadata(&bytes)).map_err(|e| invalid(path, e))?;
     let stamp = read_stamp(path);
     let (checked, current) = measured("identity", || {
         check_executable(&identity, stamp.as_ref(), executable)
@@ -338,12 +336,8 @@ fn prepare(path: &Path, executable: &Path) -> Result<Option<PreparedSuite>, Stri
         Ok(())
     })
     .map_err(|e| invalid(path, e))?;
-    let options = read_payload_options(&mut Decoder::new(payload), archive.object.as_deref())
+    let options = read_payload_options(&mut Decoder::new(payload), index.object(&bytes))
         .map_err(|e| invalid(path, e))?;
-    let link_hash = archive
-        .object
-        .as_deref()
-        .map(|object| *blake3::hash(object).as_bytes());
     // Only an archive already checked by this compiler can defer decoding.
     // Record a newly verified archive after semantic validation succeeds.
     let pending_stamp = if cached {
@@ -366,9 +360,12 @@ fn prepare(path: &Path, executable: &Path) -> Result<Option<PreparedSuite>, Stri
         payload_checksum: checksum
             .try_into()
             .map_err(|_| invalid(path, "invalid suite checksum length"))?,
-        link_hash,
         cached,
-        archive: Mutex::new(Some((archive, pending_stamp))),
+        archive: Mutex::new(Some(SuiteArchive {
+            bytes,
+            index,
+            stamp: pending_stamp,
+        })),
         decoded: OnceLock::new(),
     }))
 }
@@ -624,6 +621,7 @@ fn decode_payload_with(
 pub fn empty_mir() -> FileMir {
     FileMir {
         panic_strategy: selected_strategy(),
+        deferred_functions: Default::default(),
         bodies: Default::default(),
         closures: Default::default(),
         consts: Default::default(),

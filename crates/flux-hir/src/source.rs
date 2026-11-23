@@ -913,16 +913,19 @@ impl SourceDb {
     pub fn add_metadata_source(
         &mut self,
         path: PathBuf,
-        text: String,
+        text: impl Into<Arc<str>>,
         edition: flux_syntax::Edition,
     ) -> FileId {
+        static EMPTY_PARSE: OnceLock<Parse> = OnceLock::new();
         let id = FileId(self.files.len() as u32);
         self.files.push(Arc::new(SourceFile {
-            diagnostic_text: Some(Arc::from(text.into_boxed_str())),
+            diagnostic_text: Some(text.into()),
             path,
             edition,
             range_base: 0,
-            parse: flux_syntax::parse_source_file(""),
+            parse: EMPTY_PARSE
+                .get_or_init(|| flux_syntax::parse_source_file(""))
+                .clone(),
             expansion_of: None,
         }));
         id

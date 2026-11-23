@@ -58,6 +58,11 @@ fn may_dangle_matches_rustc() {
             false,
         ),
         (
+            "repeated_option_phantom_ownership",
+            "use std::marker::PhantomData;struct Read<'a>(&'a u32);impl Drop for Read<'_>{fn drop(&mut self){assert_eq!(*self.0,7);}}struct Selection<'a>{marker:Option<PhantomData<Read<'a>>>}fn select<'a>(_:&'a u32)->Selection<'a>{Selection{marker:Some(PhantomData)}}fn main(){let mut value=7;let _saved=vec![Some(select(&value))];value=9;assert_eq!(value,9);}",
+            false,
+        ),
+        (
             "array_inspecting_drop",
             "struct Read<'a>(&'a u32);impl Drop for Read<'_>{fn drop(&mut self){assert_eq!(*self.0,7);}}fn main(){let iter;let value=7;iter=[Read(&value)].into_iter();}",
             false,

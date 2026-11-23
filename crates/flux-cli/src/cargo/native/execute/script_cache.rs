@@ -1,4 +1,4 @@
-//! Reuses a build script's stdout and OUT_DIR after checking its declared inputs.
+//! Reuses a build script's stdout and OUT_DIR after checking its inputs.
 
 use crate::artifact_cache::hash_file;
 use crate::flib::executable::Stamp;
@@ -26,6 +26,8 @@ struct Record {
     stdout: Digest,
     generated: Digest,
     inputs: BTreeMap<PathBuf, Digest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    package: Option<Digest>,
     environment: BTreeMap<String, Digest>,
     #[serde(default, skip_serializing_if = "FileHashes::is_empty")]
     file_hashes: FileHashes,
@@ -94,6 +96,9 @@ impl<'a> RunCache<'a> {
         let mut record: Record = serde_json::from_slice(&fs::read(self.path()).ok()?).ok()?;
         if record.version != 1
             || command_key(command, None, &mut record.file_hashes)? != record.command
+            || record.package.is_some_and(|digest| {
+                package_fingerprint(command, None, &mut record.file_hashes) != Some(digest)
+            })
             || record.inputs.iter().any(|(path, &digest)| {
                 fingerprint(path, true, None, &mut record.file_hashes) != Some(digest)
             })
@@ -140,12 +145,17 @@ impl<'a> RunCache<'a> {
         stdout: &str,
         started: SystemTime,
     ) -> Option<Record> {
-        // Scripts without rerun directives need a package-wide input list.
-        if rerun.paths.is_empty() && rerun.environment.is_empty() {
-            return None;
-        }
         let directory = command.get_current_dir()?;
         let mut file_hashes = FileHashes::default();
+        let package = if rerun.paths.is_empty() && rerun.environment.is_empty() {
+            Some(package_fingerprint(
+                command,
+                Some(started),
+                &mut file_hashes,
+            )?)
+        } else {
+            None
+        };
         let inputs = rerun
             .paths
             .iter()
@@ -169,6 +179,7 @@ impl<'a> RunCache<'a> {
             stdout: blake3::hash(stdout.as_bytes()).into(),
             generated: fingerprint(self.out, false, None, &mut file_hashes)?,
             inputs,
+            package,
             environment,
             file_hashes,
         })
@@ -220,11 +231,47 @@ fn field(hash: &mut blake3::Hasher, field: &OsStr) {
     hash.update(bytes);
 }
 
+fn package_fingerprint(
+    command: &Command,
+    started: Option<SystemTime>,
+    file_hashes: &mut FileHashes,
+) -> Option<Digest> {
+    let mut hash = blake3::Hasher::new();
+    hash.update(&fingerprint_tree(
+        command.get_current_dir()?,
+        true,
+        started,
+        file_hashes,
+        true,
+    )?);
+    // Preserve freshness when an inherited input changes, even when the
+    // script omitted its rerun-if-env-changed declaration.
+    let mut inherited: BTreeMap<_, _> = std::env::vars_os().collect();
+    for (name, _) in command.get_envs() {
+        inherited.remove(name);
+    }
+    for (name, value) in inherited {
+        field(&mut hash, &name);
+        field(&mut hash, &value);
+    }
+    Some(hash.finalize().into())
+}
+
 fn fingerprint(
     path: &Path,
     watch: bool,
     started: Option<SystemTime>,
     file_hashes: &mut FileHashes,
+) -> Option<Digest> {
+    fingerprint_tree(path, watch, started, file_hashes, false)
+}
+
+fn fingerprint_tree(
+    path: &Path,
+    watch: bool,
+    started: Option<SystemTime>,
+    file_hashes: &mut FileHashes,
+    package_root: bool,
 ) -> Option<Digest> {
     fn visit(
         path: &Path,
@@ -232,6 +279,7 @@ fn fingerprint(
         started: Option<SystemTime>,
         hash: &mut blake3::Hasher,
         file_hashes: &mut FileHashes,
+        package_root: bool,
     ) -> Option<()> {
         let metadata = fs::symlink_metadata(path).ok()?;
         let before = Stamp::of(&metadata);
@@ -262,8 +310,18 @@ fn fingerprint(
                 .ok()?;
             children.sort_unstable();
             for name in children {
+                let child = path.join(&name);
+                // Cargo's default package scan excludes VCS metadata and the
+                // top-level build output directory. Include other files
+                // conservatively, even when the manifest excludes them.
+                if package_root
+                    && (name == ".git"
+                        || (name == "target" && fs::symlink_metadata(&child).ok()?.is_dir()))
+                {
+                    continue;
+                }
                 field(hash, &name);
-                visit(&path.join(name), watch, started, hash, file_hashes)?;
+                visit(&child, watch, started, hash, file_hashes, false)?;
             }
             hash.update(b"e");
         } else {
@@ -275,6 +333,6 @@ fn fingerprint(
 
     let mut hash = blake3::Hasher::new();
     field(&mut hash, fs::canonicalize(path).ok()?.as_os_str());
-    visit(path, watch, started, &mut hash, file_hashes)?;
+    visit(path, watch, started, &mut hash, file_hashes, package_root)?;
     Some(hash.finalize().into())
 }

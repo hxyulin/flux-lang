@@ -800,6 +800,14 @@ pub(super) fn value(
     value_at(v, items, sigs, depth, &mut ValueChecks::default())
 }
 
+// Scalar leaves have no children or artifact-local references to validate.
+fn scalar_leaf(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Int { .. } | Value::Float { .. } | Value::Bool(_) | Value::RawAddr(_)
+    )
+}
+
 fn value_at(
     v: &Value,
     items: &ItemTree,
@@ -809,6 +817,9 @@ fn value_at(
 ) -> Result<(), Error> {
     if depth > 128 {
         return Err(invalid());
+    }
+    if scalar_leaf(v) {
+        return Ok(());
     }
     let key = (v as *const Value as usize, depth);
     if memo.values.contains(&key) {
@@ -957,13 +968,16 @@ fn value_for_storage(
     if depth > 128 {
         return Err(invalid());
     }
+    let memoize = !scalar_leaf(v);
     let key = (v as *const Value as usize, expected, depth, storage);
     let storage = storage
         || matches!(expected.kind(), TyKind::Adt(adt, _) if flux_solve::is_lang_struct(items, adt.strukt, "maybe_uninit"));
-    if memo.typed.contains(&key) {
+    if memoize && memo.typed.contains(&key) {
         return Ok(());
     }
-    value_at(v, items, sigs, depth, memo)?;
+    if memoize {
+        value_at(v, items, sigs, depth, memo)?;
+    }
     match (v, expected.kind()) {
         (Value::Uninit(ty), _)
             if storage
@@ -1052,13 +1066,34 @@ fn value_for_storage(
         (_, TyKind::Param(_) | TyKind::Alias(_) | TyKind::Opaque(_)) => {}
         _ => return Err(Error::new("constant value does not match its type")),
     }
-    memo.typed.insert(key);
+    if memoize {
+        memo.typed.insert(key);
+    }
     Ok(())
 }
 
 #[cfg(test)]
 mod dag_tests {
     use super::*;
+
+    #[test]
+    fn scalar_leaves_still_check_type_and_depth() {
+        use flux_ty::IntTy;
+
+        let items = ItemTree::default();
+        let sigs = Signatures::default();
+        let byte = |bits| Value::Int {
+            bits,
+            ty: IntTy::U8,
+        };
+        let ty = Ty::int(IntTy::U8);
+        assert!(value_for(&byte(255), ty, &items, &sigs, 128).is_ok());
+        assert!(value_for(&byte(256), ty, &items, &sigs, 128).is_err());
+        assert!(value_for(&byte(255), Ty::BOOL, &items, &sigs, 128).is_err());
+        assert!(value_for(&byte(255), ty, &items, &sigs, 129).is_err());
+        assert!(value(&byte(255), &items, &sigs, 129).is_err());
+    }
+
     #[test]
     fn type_validation_visits_distinct_dag_nodes() {
         let mut ty = Ty::BOOL;
@@ -1175,7 +1210,7 @@ mod value_dag_tests {
     }
 
     #[test]
-    fn forty_level_shared_reference_dag_validates_each_stored_node_once() {
+    fn forty_level_shared_reference_dag_memoizes_each_branch_once() {
         let mut v = Value::Bool(false);
         let mut ty = Ty::BOOL;
         for _ in 0..40 {
@@ -1194,12 +1229,8 @@ mod value_dag_tests {
             &mut memo,
         )
         .unwrap();
-        assert_eq!(
-            memo.values.len(),
-            121,
-            "40 aggregates, 80 references and one leaf"
-        );
-        assert_eq!(memo.typed.len(), 121);
+        assert_eq!(memo.values.len(), 120, "40 aggregates and 80 references");
+        assert_eq!(memo.typed.len(), 120);
     }
 
     #[test]

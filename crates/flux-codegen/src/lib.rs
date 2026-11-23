@@ -22,6 +22,7 @@ mod lower;
 mod native;
 mod profile;
 mod units;
+pub mod workers;
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +31,7 @@ pub use keel_opt::OptimizationTier;
 pub use lower::{
     Compilation, LoweredCrate, LoweringTimings, NativeDefinitions, OutputKind, lower_crate,
     lower_crate_with_requirements, lower_linked_executable, lower_module, lower_partitioned_crate,
-    lower_with_native_definitions, lower_with_timings,
+    lower_with_native_definitions, lower_with_requirements_and_timings, lower_with_timings,
 };
 pub use native::{NativeLink, NativeLinkInputs};
 pub use units::split_fast_module;
@@ -299,33 +300,63 @@ fn compile_object_inner(
         emission.unwind_tables = keel_codegen::UnwindTables::All;
     }
     let lifecycle = lifecycle::Sections::prepare(module, target)?;
-    let result = keel_codegen::Request::new(target, pipeline)
-        .emission(emission)
-        .program_chunks(module, &mut |mut chunk| {
-            if let Some(assembler) = &mut assembler {
-                let start = timed.then(std::time::Instant::now);
-                if target == Target::Aarch64AppleDarwin {
-                    for item in &mut chunk.items {
-                        if let keel_asm_ir::Item::Text(text) = item {
-                            if let std::borrow::Cow::Owned(rewritten) = asm_labels.rewrite(text) {
-                                *text = rewritten;
-                            }
-                            if let std::borrow::Cow::Owned(rewritten) =
-                                aarch64_asm::compatible_source(text)
-                            {
-                                *text = rewritten;
-                            }
+    let mut sink = |mut chunk: keel_asm_ir::Program| {
+        if let Some(assembler) = &mut assembler {
+            let start = timed.then(std::time::Instant::now);
+            if target == Target::Aarch64AppleDarwin {
+                for item in &mut chunk.items {
+                    if let keel_asm_ir::Item::Text(text) = item {
+                        if let std::borrow::Cow::Owned(rewritten) = asm_labels.rewrite(text) {
+                            *text = rewritten;
+                        }
+                        if let std::borrow::Cow::Owned(rewritten) =
+                            aarch64_asm::compatible_source(text)
+                        {
+                            *text = rewritten;
                         }
                     }
                 }
-                lifecycle.rewrite(&mut chunk);
-                assembler.push(chunk);
-                emitted = true;
-                if let Some(start) = start {
-                    encoding += start.elapsed();
-                }
             }
-        });
+            lifecycle.rewrite(&mut chunk);
+            assembler.push(chunk);
+            emitted = true;
+            if let Some(start) = start {
+                encoding += start.elapsed();
+            }
+        }
+    };
+    let jobs = workers::limit().get();
+    let parallel =
+        jobs > 1 && target == Target::Aarch64AppleDarwin && module.functions.len() >= 1024;
+    let result = if parallel {
+        // Keep one slot for the coordinator, which assembles chunks in order.
+        let workers = std::num::NonZeroUsize::new(jobs - 1).unwrap();
+        let budget = std::num::NonZeroUsize::new(jobs.saturating_mul(2)).unwrap();
+        std::thread::scope(|scope| {
+            keel_codegen::parallel::program_chunks(
+                module,
+                keel_codegen::parallel::Options {
+                    target,
+                    pipeline: keel_codegen::parallel::Pipeline {
+                        selector: &selector,
+                        allocator: &keel_codegen::regalloc::AllocationTier::Full,
+                    },
+                    emission,
+                    pools: None,
+                    workers,
+                    budget,
+                },
+                &|job| {
+                    scope.spawn(move || job.run());
+                },
+                &mut sink,
+            )
+        })
+    } else {
+        keel_codegen::Request::new(target, pipeline)
+            .emission(emission)
+            .program_chunks(module, &mut sink)
+    };
     lifecycle.restore(module);
     if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
         // Encoding happens inside the codegen callback. Keep the two scopes exclusive.
@@ -405,6 +436,11 @@ pub fn native_link_inputs(target: Target, native: &NativeLink) -> Result<NativeL
     }
 }
 
+/// Resolves the native inputs for an already selected macOS SDK.
+pub fn macos_link_inputs(native: &NativeLink, sdk: &Path) -> Result<NativeLinkInputs, Error> {
+    Ok(native::darwin_at(native, sdk.to_owned())?.inputs())
+}
+
 /// One native object supplied to the executable link.
 #[derive(Debug, Clone, Copy)]
 pub struct ObjectInput<'a> {
@@ -434,7 +470,7 @@ pub fn link_objects(
     link_objects_with_inputs(objects, target, output, native).map(|(warnings, _)| warnings)
 }
 
-/// Reports which candidate symbols a Darwin link needs after dead stripping.
+/// Builds an in-memory Darwin image whose imports identify live candidate symbols.
 ///
 /// The probe resolves candidate imports against a temporary weak interface.
 /// Its image stays in memory. A regular link must validate the real objects.
@@ -446,49 +482,17 @@ pub fn probe_specialization_imports(
     candidate_library: &str,
     candidates: &std::collections::HashSet<String>,
 ) -> Result<Vec<u8>, Error> {
-    let native::DarwinLibraries {
-        sdk_version,
-        mut dylibs,
-        archives,
-        ..
-    } = native::darwin(native)?;
+    let mut resolved = native::darwin(native)?;
     let mut symbols = keel_link::SymbolSet::default();
     for name in candidates {
         symbols.insert(name);
     }
-    dylibs.push(keel_link::Dylib {
+    resolved.dylibs.push(keel_link::Dylib {
         install_name: candidate_library.to_owned(),
         weak_exports: symbols.clone(),
         exports: symbols,
     });
-    let archive_names: Vec<_> = archives
-        .iter()
-        .map(|(path, _)| path.to_string_lossy())
-        .collect();
-    let inputs: Vec<_> = objects
-        .iter()
-        .map(|object| keel_link::Input {
-            name: object.name,
-            bytes: object.bytes,
-        })
-        .chain(
-            archives
-                .iter()
-                .zip(&archive_names)
-                .map(|((_, bytes), name)| keel_link::Input { name, bytes }),
-        )
-        .collect();
-    keel_link::link(
-        &inputs,
-        keel_link::Options {
-            dead_strip: true,
-            dylibs,
-            sdk_version,
-            ..keel_link::Options::default()
-        },
-    )
-    .map(|executable| executable.bytes)
-    .map_err(|error| Error::message(Stage::Link, error))
+    resolved.link(objects).map(|executable| executable.bytes)
 }
 
 /// Links an executable and reports the native inputs actually consumed.
@@ -510,41 +514,7 @@ pub fn link_objects_with_inputs(
         Target::Aarch64AppleDarwin => {
             let resolved = native::darwin(native)?;
             let consumed = resolved.inputs();
-            let native::DarwinLibraries {
-                sdk_version,
-                dylibs,
-                archives,
-                ..
-            } = resolved;
-            let names: Vec<_> = archives
-                .iter()
-                .map(|(path, _)| path.to_string_lossy().into_owned())
-                .collect();
-            let inputs: Vec<_> = objects
-                .iter()
-                .map(|o| keel_link::Input {
-                    name: o.name,
-                    bytes: o.bytes,
-                })
-                .chain(
-                    names
-                        .iter()
-                        .zip(&archives)
-                        .map(|(name, (_, bytes))| keel_link::Input { name, bytes }),
-                )
-                .collect();
-            let defaults = keel_link::Options::default();
-            let executable = keel_link::link(
-                &inputs,
-                keel_link::Options {
-                    dylibs,
-                    sdk_version,
-                    // Functions nothing reaches are removed one by one.
-                    dead_strip: true,
-                    ..defaults
-                },
-            )
-            .map_err(|message| Error::message(Stage::Link, message))?;
+            let executable = resolved.link(objects)?;
             keel_link::write_signed(&executable, output)
                 .map_err(|message| Error::message(Stage::Write, message))?;
             Ok((executable.warnings, consumed))
@@ -586,7 +556,7 @@ fn parse_version(text: &str) -> Option<u32> {
 }
 
 /// The macOS SDK: `$SDKROOT`, or what `xcrun` reports.
-fn macos_sdk() -> Result<PathBuf, Error> {
+pub fn macos_sdk() -> Result<PathBuf, Error> {
     if let Some(root) = std::env::var_os("SDKROOT").filter(|s| !s.is_empty()) {
         return Ok(PathBuf::from(root));
     }
