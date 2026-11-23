@@ -701,6 +701,13 @@ fn optimized_executable_reuses_current_dependency_specializations() {
         "{another}"
     );
 
+    // An old executable-owned entry must not take precedence over the
+    // library companion, including when the companion needs rebuilding.
+    std::fs::write(
+        release.join("app.demand.dependency-specializations"),
+        b"stale executable cache",
+    )
+    .unwrap();
     consumer("src/main.rs", "edited");
     let edited = build("app", "25 true edited\n");
     assert!(!edited.contains("Compiling helper"), "{edited}");

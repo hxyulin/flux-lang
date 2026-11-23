@@ -435,8 +435,15 @@ fn run_in_directory(
             .collect())
     };
     let prepare_specializations = |producer: usize| {
-        let files = dependency_files(root).ok()?;
         let (_, root_request) = &requests[&root];
+        let library = &requests[&producer].1.output;
+        if crate::flib_build::specialization_object::defer_to_executable(
+            library,
+            &root_request.output,
+        ) {
+            return None;
+        }
+        let files = dependency_files(root).ok()?;
         let source = root_request.source().ok()?;
         if crate::flib_build::is_binary_fresh(
             &source,
@@ -456,7 +463,7 @@ fn run_in_directory(
         }
         crate::backend_workers::with_limit(jobs, || {
             crate::flib_build::prepare_library_specializations(
-                &requests[&producer].1.output,
+                library,
                 &files,
                 artifacts,
                 options,

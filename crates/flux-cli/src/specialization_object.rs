@@ -23,6 +23,12 @@ pub(super) fn demand_path(output: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Defers specialization work to an executable with its own cache entry.
+/// The executable validates the entry against its resolved dependency graph.
+pub(crate) fn defer_to_executable(library: &Path, output: &Path) -> bool {
+    cache_path(&demand_path(output)).is_file() && !cache_path(library).is_file()
+}
+
 pub(super) struct Cache {
     key: [u8; 32],
     object: Option<Specializations>,

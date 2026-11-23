@@ -115,7 +115,7 @@ pub(crate) fn compile_with_specializations(
     native: &flux_codegen::NativeLink,
 ) -> Result<bool, String> {
     options.validate()?;
-    let _strategy = crate::builtins::compilation_scope(options.panic_strategy)?;
+    let _strategy = crate::builtins::strategy_scope(options.panic_strategy)?;
     let units = crate::backend_units::count(options.fast_build && kind == CrateType::Bin)?;
     let whole_program = kind == CrateType::Bin && whole_program_native(native);
     let mut timings = crate::build::Timings::new(options.timings, "compile scoped elapsed");
@@ -128,6 +128,21 @@ pub(crate) fn compile_with_specializations(
     let paths: Vec<_> = externs.iter().map(|(_, path)| path.clone()).collect();
     use semantic::Recheck;
     let cache_specializations = !whole_program && cache_specializations(options, kind, libraries);
+    let workers = crate::backend_workers::limit().get();
+    let overlap = !cfg!(debug_assertions)
+        && kind == CrateType::Bin
+        && !whole_program
+        && libraries.dependency_files.is_some()
+        && libraries.cache.is_some()
+        && !paths.is_empty()
+        && workers > 1
+        && crate::builtins::needs_activation();
+    let dependency_phase = if overlap {
+        "built-ins and dependency artifact load"
+    } else {
+        crate::builtins::activate_selected()?;
+        "dependency artifact load"
+    };
     let (
         mut state,
         deferred,
@@ -136,48 +151,95 @@ pub(crate) fn compile_with_specializations(
         recheck,
         specialization_checksums,
         demand_inputs,
-    ) = timings.time("dependency artifact load", || {
-        let state = crate::flib::time("dependency state initialization", DependencyState::new)?;
-        let dependencies = state.resolve(&paths, libraries.dependency_files, libraries.cache)?;
-        let all_linkable = dependencies.all_linkable();
-        let specialization_checksums =
-            (cache_specializations && all_linkable).then(|| dependencies.checksums());
-        let mut checked_dependencies = Vec::new();
-        if kind == CrateType::Lib
-            && libraries.dependency_files.is_some()
-            && input.host_macros.is_none()
-            && let Ok(root) = std::fs::read(&input.file)
-        {
-            checked_dependencies = dependencies.checksums();
-            if !checked_dependencies.is_empty() {
-                checked_dependencies.extend_from_slice(&crate::flib::digest(&root));
+    ) = timings.time(dependency_phase, || {
+        let load = |state: DependencyState, dependencies: semantic::DependencyInputs| {
+            let all_linkable = dependencies.all_linkable();
+            let specialization_checksums =
+                (cache_specializations && all_linkable).then(|| dependencies.checksums());
+            let mut checked_dependencies = Vec::new();
+            if kind == CrateType::Lib
+                && libraries.dependency_files.is_some()
+                && input.host_macros.is_none()
+                && let Ok(root) = std::fs::read(&input.file)
+            {
+                checked_dependencies = dependencies.checksums();
+                if !checked_dependencies.is_empty() {
+                    checked_dependencies.extend_from_slice(&crate::flib::digest(&root));
+                }
             }
+            let recheck = if checked_dependencies.is_empty() {
+                Recheck::Full
+            } else {
+                semantic::reusable_library(output, &checked_dependencies, libraries.cache)
+                    .ok()
+                    .filter(|(manifest, _)| metadata_only || manifest.linkable)
+                    .map_or(Recheck::Full, |(_, recheck)| recheck)
+            };
+            let defer_ir = recheck != Recheck::Full;
+            let state = state.load_inputs(&dependencies, defer_ir)?;
+            let (deferred, demand_inputs) = if defer_ir {
+                (Some(dependencies), None)
+            } else {
+                let demand =
+                    specialization_checksums.is_some() && large_specialization_graph(&state);
+                (None, demand.then_some(dependencies))
+            };
+            Ok::<_, String>((
+                state,
+                deferred,
+                checked_dependencies,
+                all_linkable,
+                recheck,
+                specialization_checksums,
+                demand_inputs,
+            ))
+        };
+        let resolve = |state: &DependencyState| {
+            state.resolve(&paths, libraries.dependency_files, libraries.cache)
+        };
+        if overlap {
+            let known = semantic::embedded_hashes()?;
+            return std::thread::scope(|scope| {
+                // Discover archives while built-in HIR and signatures decode.
+                let mut pending = std::thread::Builder::new()
+                    .spawn_scoped(scope, || {
+                        crate::backend_workers::with_limit(workers - 1, || {
+                            semantic::DependencyInputs::resolve(
+                                &paths,
+                                &known,
+                                libraries.dependency_files,
+                                libraries.cache,
+                            )
+                        })
+                    })
+                    .ok();
+                let mut finish = |state: DependencyState| {
+                    let dependencies = match pending.take() {
+                        Some(worker) => worker.join().expect("dependency discovery panicked"),
+                        None => resolve(&state),
+                    }?;
+                    load(state, dependencies)
+                };
+                let mut loaded = None;
+                crate::builtins::activate_selected_while(&mut |db, items, sigs| {
+                    loaded = Some(crate::backend_workers::with_limit(workers - 1, || {
+                        let state = crate::flib::time("dependency state initialization", || {
+                            DependencyState::from_interface(db, items, sigs)
+                        })?;
+                        finish(state)
+                    }));
+                })?;
+                if let Some(loaded) = loaded {
+                    return loaded;
+                }
+                let state =
+                    crate::flib::time("dependency state initialization", DependencyState::new)?;
+                finish(state)
+            });
         }
-        let recheck = if checked_dependencies.is_empty() {
-            Recheck::Full
-        } else {
-            semantic::reusable_library(output, &checked_dependencies, libraries.cache)
-                .ok()
-                .filter(|(manifest, _)| metadata_only || manifest.linkable)
-                .map_or(Recheck::Full, |(_, recheck)| recheck)
-        };
-        let defer_ir = recheck != Recheck::Full;
-        let state = state.load_inputs(&dependencies, defer_ir)?;
-        let (deferred, demand_inputs) = if defer_ir {
-            (Some(dependencies), None)
-        } else {
-            let demand = specialization_checksums.is_some() && large_specialization_graph(&state);
-            (None, demand.then_some(dependencies))
-        };
-        Ok::<_, String>((
-            state,
-            deferred,
-            checked_dependencies,
-            all_linkable,
-            recheck,
-            specialization_checksums,
-            demand_inputs,
-        ))
+        let state = crate::flib::time("dependency state initialization", DependencyState::new)?;
+        let dependencies = resolve(&state)?;
+        load(state, dependencies)
     })?;
     let mut aliases = Vec::new();
     let mut imports = Vec::new();

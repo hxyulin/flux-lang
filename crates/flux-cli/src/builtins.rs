@@ -89,6 +89,20 @@ pub(crate) fn has_staged_libraries() -> bool {
     selected().is_some()
 }
 
+pub(crate) fn needs_activation() -> bool {
+    selected().is_some_and(|suite| suite.decoded.get().is_none())
+}
+
+pub(crate) fn activate_selected() -> Result<(), String> {
+    selected().map_or(Ok(()), PreparedSuite::activate)
+}
+
+/// Runs work against the checked interface before the suite's MIR is ready.
+/// A cached activation leaves the work to the caller.
+pub(crate) fn activate_selected_while(work: InterfaceWork<'_>) -> Result<(), String> {
+    selected().map_or(Ok(()), |suite| suite.activate_with(Some(work)))
+}
+
 pub(crate) fn object_hash(optimized: bool) -> Option<&'static [u8]> {
     selected()?.object_hash(optimized)
 }
@@ -235,7 +249,7 @@ impl PreparedSuite {
         self.link_hash.as_ref().map(|hash| hash.as_slice())
     }
 
-    fn decode(&self) -> Result<BuiltinSuite, String> {
+    fn decode(&self, work: Option<InterfaceWork<'_>>) -> Result<BuiltinSuite, String> {
         let (archive, stamp) = self
             .archive
             .lock()
@@ -243,8 +257,8 @@ impl PreparedSuite {
             .take()
             .ok_or("built-in archive was already consumed")?;
         let (_, payload, _) = envelope(&archive.metadata).map_err(|e| invalid(&self.path, e))?;
-        let mut suite =
-            decode_payload(payload, archive.object, true).map_err(|e| invalid(&self.path, e))?;
+        let mut suite = decode_payload_with(payload, archive.object, true, work)
+            .map_err(|e| invalid(&self.path, e))?;
         suite.compiler = self.compiler.hash;
         if let Some(stamp) = stamp {
             let _ = write_stamp_record(&self.path, &stamp.suite, stamp.executable);
@@ -253,8 +267,12 @@ impl PreparedSuite {
     }
 
     fn activate(&self) -> Result<(), String> {
+        self.activate_with(None)
+    }
+
+    fn activate_with(&self, work: Option<InterfaceWork<'_>>) -> Result<(), String> {
         self.decoded
-            .get_or_init(|| self.decode().map(Arc::new))
+            .get_or_init(|| self.decode(work).map(Arc::new))
             .as_ref()
             .map(|_| ())
             .map_err(Clone::clone)
@@ -266,7 +284,7 @@ pub fn load(path: &Path, executable: &Path) -> Result<Option<(BuiltinSuite, Chec
     prepare(path, executable)?
         .map(|suite| {
             suite
-                .decode()
+                .decode(None)
                 .map(|decoded| (decoded, suite.compiler.method))
         })
         .transpose()
@@ -540,6 +558,17 @@ fn decode_payload(
     object: Option<Vec<u8>>,
     staged: bool,
 ) -> Result<BuiltinSuite, String> {
+    decode_payload_with(payload, object, staged, None)
+}
+
+type InterfaceWork<'a> = &'a mut dyn FnMut(&SourceDb, &ItemTree, &Signatures);
+
+fn decode_payload_with(
+    payload: &[u8],
+    object: Option<Vec<u8>>,
+    staged: bool,
+    work: Option<InterfaceWork<'_>>,
+) -> Result<BuiltinSuite, String> {
     let mut d = Decoder::new(payload);
     if staged {
         d.skip_staged_mir_typing();
@@ -555,14 +584,30 @@ fn decode_payload(
     let mut sigs = Signatures::default();
     measured("types-and-signatures", || {
         sigs.decode_flib_into(&mut d, &items)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        sigs.freeze();
+        Ok::<_, String>(())
     })?;
-    let mut mir = empty_mir();
-    mir.panic_strategy = strategy;
-    measured("mir-and-values", || {
-        mir.decode_flib_into(&mut d, &items, &sigs)
-            .map_err(|e| e.to_string())
-    })?;
+    let decode_mir = |d: &mut Decoder<'_>| {
+        let mut mir = empty_mir();
+        mir.panic_strategy = strategy;
+        measured("mir-and-values", || {
+            mir.decode_flib_into(d, &items, &sigs)
+                .map_err(|e| e.to_string())
+        })?;
+        Ok::<_, String>(mir)
+    };
+    let parallel = work.and_then(|work| {
+        std::thread::scope(|scope| {
+            let worker = std::thread::Builder::new()
+                .stack_size(8 * 1024 * 1024)
+                .spawn_scoped(scope, || decode_mir(&mut d))
+                .ok()?;
+            work(&db, &items, &sigs);
+            Some(worker.join().expect("built-in MIR worker panicked"))
+        })
+    });
+    let mir = parallel.unwrap_or_else(|| decode_mir(&mut d))?;
     d.finish().map_err(|e| e.to_string())?;
     Ok(BuiltinSuite {
         compiler: [0; 32],

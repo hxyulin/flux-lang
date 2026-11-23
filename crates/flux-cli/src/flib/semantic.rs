@@ -817,6 +817,19 @@ pub(crate) struct DependencyInputs {
 }
 
 impl DependencyInputs {
+    pub(crate) fn resolve(
+        paths: &[std::path::PathBuf],
+        known: &[[u8; 32]],
+        dependency_files: Option<&[&std::path::Path]>,
+        cache: Option<&FreshArtifacts>,
+    ) -> Result<Self, String> {
+        super::time("dependency discovery", || {
+            let (artifacts, roots) =
+                resolve_paths_with_roots(paths, known, dependency_files, cache)?;
+            Ok(Self { artifacts, roots })
+        })
+    }
+
     /// Each validated metadata checksum binds all sections, including the
     /// expected native-object digest. Order also binds the loading context.
     pub(crate) fn checksums(&self) -> Vec<u8> {
@@ -878,19 +891,26 @@ pub(crate) fn reusable_library(
 impl DependencyState {
     /// Starts with the compiler-owned embedded libraries and their signature tables.
     pub fn new() -> Result<Self, String> {
-        let (db, mut items, sigs) = if let Some(suite) = crate::builtins::active() {
-            (
-                suite.db.fork(),
-                suite.items.clone(),
-                suite.sigs.fork_for_extension(),
-            )
+        if let Some(suite) = crate::builtins::active() {
+            Self::from_interface(&suite.db, &suite.items, &suite.sigs)
         } else {
-            (
+            Self::with_prefix(
                 SourceDb::new(),
                 flux_hir::Core::get().items.clone(),
                 flux_ty::LibraryTypes::get().sigs.fork_for_extension(),
             )
-        };
+        }
+    }
+
+    pub(crate) fn from_interface(
+        db: &SourceDb,
+        items: &ItemTree,
+        sigs: &Signatures,
+    ) -> Result<Self, String> {
+        Self::with_prefix(db.fork(), items.clone(), sigs.fork_for_extension())
+    }
+
+    fn with_prefix(db: SourceDb, mut items: ItemTree, sigs: Signatures) -> Result<Self, String> {
         items.core = items.counts();
         let compiler = compiler_identity()?;
         let dependencies = items
@@ -947,12 +967,8 @@ impl DependencyState {
         dependency_files: Option<&[&std::path::Path]>,
         cache: Option<&FreshArtifacts>,
     ) -> Result<DependencyInputs, String> {
-        super::time("dependency discovery", || {
-            let known: Vec<_> = self.dependencies.iter().map(|dep| dep.hash).collect();
-            let (artifacts, roots) =
-                resolve_paths_with_roots(paths, &known, dependency_files, cache)?;
-            Ok(DependencyInputs { artifacts, roots })
-        })
+        let known: Vec<_> = self.dependencies.iter().map(|dep| dep.hash).collect();
+        DependencyInputs::resolve(paths, &known, dependency_files, cache)
     }
 
     pub(crate) fn load_inputs(
