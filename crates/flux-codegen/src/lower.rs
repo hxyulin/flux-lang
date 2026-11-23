@@ -280,6 +280,7 @@ pub fn lower_linked_executable(
         NativeDefinitions {
             dependencies: symbols,
             specializations: None,
+            specialization_roots: None,
         },
         timings,
     )
@@ -289,6 +290,8 @@ pub fn lower_linked_executable(
 pub struct NativeDefinitions<'a> {
     pub dependencies: &'a std::collections::HashSet<String>,
     pub specializations: Option<&'a std::collections::HashSet<String>>,
+    /// Linker-visible roots for dependency specialization lowering.
+    pub specialization_roots: Option<&'a std::collections::HashSet<String>>,
 }
 
 /// Lowers a dependency closure or an executable that links compiled specializations.
@@ -588,8 +591,48 @@ fn lower_inner(
         .into_iter()
         .filter_map(monomorphic)
         .collect();
+    let specialization_roots = provided_symbols
+        .as_ref()
+        .and_then(|definitions| definitions.specialization_roots);
     if let Some(compilation) = compilation {
-        roots.extend_from_slice(compilation.required_instances);
+        if let Some(names) = specialization_roots {
+            // Match the instance mangling's final digest component before
+            // computing type keys for every instance of each function.
+            let bases: FxHashSet<_> = names
+                .iter()
+                .map(|name| name.strip_suffix(".__flux_reify").unwrap_or(name))
+                .collect();
+            let prefixes: FxHashSet<_> = bases
+                .iter()
+                .filter_map(|name| {
+                    let (prefix, suffix) = name.split_at_checked(name.len().checked_sub(68)?)?;
+                    let hash = suffix.strip_prefix("65h")?.strip_suffix('E')?;
+                    hash.bytes()
+                        .all(|byte| byte.is_ascii_hexdigit())
+                        .then_some(prefix)
+                })
+                .collect();
+            roots.extend(
+                compilation
+                    .required_instances
+                    .iter()
+                    .copied()
+                    .filter(|&instance| {
+                        let base = symbols[&instance.function].as_str();
+                        if !bases.contains(base)
+                            && base
+                                .strip_suffix('E')
+                                .is_some_and(|prefix| !prefixes.contains(prefix))
+                        {
+                            return false;
+                        }
+                        let name = instance_symbol(hir, &symbols, instance);
+                        bases.contains(name.as_str())
+                    }),
+            );
+        } else {
+            roots.extend_from_slice(compilation.required_instances);
+        }
     }
     roots.sort_unstable_by_key(|i| i.function);
     let mut static_roots: Vec<_> = retained_statics.iter().copied().collect();
@@ -603,6 +646,19 @@ fn lower_inner(
                 &roots,
                 &static_roots,
                 Some(native_leaf),
+            )
+        } else if specialization_roots.is_some() {
+            // A native definition still refers to any specializations used
+            // by its body. Record it as supplied, then visit its checked MIR.
+            let native_without_mir = |instance: Instance| {
+                native_leaf(instance) && mir.instance_body(items, instance).is_none()
+            };
+            flux_mir::mono::collect_linked_roots(
+                hir,
+                &typed.sigs,
+                mir,
+                &roots,
+                Some(&native_without_mir),
             )
         } else {
             flux_mir::mono::collect_linked_roots(hir, &typed.sigs, mir, &roots, Some(native_leaf))

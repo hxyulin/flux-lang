@@ -8,6 +8,7 @@ use crate::flib::semantic::{
 };
 use crate::{BuildOptions, CrateType, report_all};
 use flux_hir::flib::{Encode, Encoder};
+use std::collections::HashSet;
 use std::path::Path;
 
 #[path = "specialization_object.rs"]
@@ -134,6 +135,7 @@ pub(crate) fn compile_with_specializations(
         all_linkable,
         recheck,
         specialization_checksums,
+        demand_inputs,
     ) = timings.time("dependency artifact load", || {
         let state = crate::flib::time("dependency state initialization", DependencyState::new)?;
         let dependencies = state.resolve(&paths, libraries.dependency_files, libraries.cache)?;
@@ -161,13 +163,20 @@ pub(crate) fn compile_with_specializations(
         };
         let defer_ir = recheck != Recheck::Full;
         let state = state.load_inputs(&dependencies, defer_ir)?;
+        let (deferred, demand_inputs) = if defer_ir {
+            (Some(dependencies), None)
+        } else {
+            let demand = specialization_checksums.is_some() && large_specialization_graph(&state);
+            (None, demand.then_some(dependencies))
+        };
         Ok::<_, String>((
             state,
-            defer_ir.then_some(dependencies),
+            deferred,
             checked_dependencies,
             all_linkable,
             recheck,
             specialization_checksums,
+            demand_inputs,
         ))
     })?;
     let mut aliases = Vec::new();
@@ -213,10 +222,17 @@ pub(crate) fn compile_with_specializations(
             specialization_object::Cache::open(output, checksums, specializations)
         })
     });
-    let dependency_items = specialization_cache
-        .as_ref()
-        .is_some_and(specialization_object::Cache::needs_build)
-        .then(|| state.items.clone());
+    let mut demand_cache = demand_inputs.as_ref().and_then(|_| {
+        specialization_cache
+            .as_ref()
+            .filter(|cache| cache.needs_build())?;
+        specialization_object::Cache::open_demand(output, specialization_checksums.as_deref()?)
+    });
+    let dependency_items = (demand_cache.is_none()
+        && specialization_cache
+            .as_ref()
+            .is_some_and(specialization_object::Cache::needs_build))
+    .then(|| state.items.clone());
     let semantic_inputs = if deferred.is_some() {
         None
     } else {
@@ -387,6 +403,7 @@ pub(crate) fn compile_with_specializations(
     let builtin_object =
         crate::builtins::active().is_some_and(|suite| suite.use_object(options.optimized()));
     let specialization_inputs = specialization_cache
+        .filter(|_| demand_cache.is_none())
         .filter(|_| !roots.instances.is_empty())
         .and_then(|cache| {
             let native = timings
@@ -398,6 +415,7 @@ pub(crate) fn compile_with_specializations(
             let object = cache.prepare(
                 dependency_items.map(|items| (items, &loaded, &mut imported)),
                 &native,
+                None,
                 flux_codegen::Compilation {
                     kind: flux_codegen::OutputKind::DependencySpecializations,
                     crate_hashes: dependency_hashes,
@@ -410,6 +428,10 @@ pub(crate) fn compile_with_specializations(
                 &mut timings,
             )?;
             Some((native, object))
+        })
+        .or_else(|| {
+            let object = demand_cache.as_mut()?.take_object()?;
+            Some((native_function_symbols(&state.objects).ok()?, object))
         });
     let mir = timings.time("mir build + checks", || {
         flux_mir::build_file_from_owned_with_panic_strategy(
@@ -474,6 +496,7 @@ pub(crate) fn compile_with_specializations(
                         flux_codegen::NativeDefinitions {
                             dependencies: &native_symbols,
                             specializations: Some(&specializations.symbols),
+                            specialization_roots: None,
                         },
                         parts,
                     )
@@ -503,6 +526,32 @@ pub(crate) fn compile_with_specializations(
                 specializations.publish(output, &mut timings);
                 linked = Some(result);
             }
+        }
+        if linked.is_none()
+            && let Some((cache, dependencies)) = demand_cache.zip(demand_inputs.as_ref())
+            && let Some(compilation) = compilation
+        {
+            let demand = DemandSpecialization {
+                cache,
+                dependencies,
+                compilation,
+                codegen: (&hir, &typed, &mir),
+            };
+            linked = specialize_on_demand(
+                demand,
+                ExecutableLink {
+                    output,
+                    target,
+                    name: &input.name,
+                    options,
+                    native: &effective_native,
+                    dependencies: &state.objects,
+                    objects: &[],
+                    specialization: None,
+                },
+                &mut timings,
+            )
+            .ok();
         }
         if linked.is_some() {
             Some(Vec::new())
@@ -709,12 +758,19 @@ pub(crate) fn supports_dependency_specializations(options: BuildOptions) -> bool
         && native_cutoff_enabled()
 }
 
+fn large_specialization_graph(state: &DependencyState) -> bool {
+    // Small graphs are cheaper to complete directly. Larger graphs can
+    // provide many requirements from exports the link will discard.
+    state.required_instances.len() >= 4096
+}
+
 /// Completes the concrete Rust requirements of the checked library graph.
 pub(crate) fn prepare_library_specializations(
     library: &Path,
     files: &[&Path],
     artifacts: &semantic::FreshArtifacts,
     options: BuildOptions,
+    executable: Option<&Path>,
 ) -> Option<specialization_object::Specializations> {
     crate::builtins::select_for_strategy(options.panic_strategy).ok()?;
     let _strategy = crate::builtins::strategy_scope(options.panic_strategy).ok()?;
@@ -733,15 +789,26 @@ pub(crate) fn prepare_library_specializations(
     if !dependencies.all_linkable() {
         return None;
     }
+    let checksums = dependencies.checksums();
     let cache = timings.time("library specialization cache read", || {
-        specialization_object::Cache::open(library, &dependencies.checksums(), None)
+        specialization_object::Cache::open(library, &checksums, None)
     })?;
     let mut object = if cache.needs_build() {
+        if let Some(output) = executable
+            && specialization_object::Cache::open_demand(output, &checksums)
+                .is_some_and(|cache| !cache.needs_build())
+        {
+            // The executable can try its graph-matched object directly.
+            return None;
+        }
         let mut state = timings
             .time("specialization dependency IR", || {
                 state.load_inputs(&dependencies, false)
             })
             .ok()?;
+        if executable.is_some() && large_specialization_graph(&state) {
+            return None;
+        }
         let native = native_function_symbols(&state.objects).ok()?;
         let (loaded, mut imported) = prepare_semantics(&mut state).ok()?;
         let hashes: Vec<_> = state
@@ -763,6 +830,7 @@ pub(crate) fn prepare_library_specializations(
         cache.prepare(
             Some((state.items, &loaded, &mut imported)),
             &native,
+            None,
             flux_codegen::Compilation {
                 kind: flux_codegen::OutputKind::DependencySpecializations,
                 crate_hashes: &hashes,
@@ -825,17 +893,160 @@ struct ExecutableLink<'a> {
     specialization: Option<&'a [u8]>,
 }
 
-fn link_executable(
+type LinkedExecutable = (
+    Vec<String>,
+    flux_codegen::NativeLinkInputs,
+    Option<crate::native_link::Snapshot>,
+);
+
+struct DemandSpecialization<'a> {
+    cache: specialization_object::Cache,
+    dependencies: &'a semantic::DependencyInputs,
+    compilation: flux_codegen::Compilation<'a>,
+    codegen: (
+        &'a flux_hir::Hir,
+        &'a flux_ty::TypedFile,
+        &'a flux_mir::FileMir,
+    ),
+}
+
+fn specialize_on_demand(
+    demand: DemandSpecialization<'_>,
     link: ExecutableLink<'_>,
     timings: &mut crate::build::Timings,
-) -> Result<
-    (
-        Vec<String>,
-        flux_codegen::NativeLinkInputs,
-        Option<crate::native_link::Snapshot>,
-    ),
-    String,
-> {
+) -> Result<LinkedExecutable, String> {
+    let native = native_function_symbols(link.dependencies)?;
+    let calls = undefined_symbols(link.dependencies.iter().map(|(_, bytes)| bytes.as_slice()))?;
+    let calls = calls
+        .iter()
+        .filter_map(|name| name.strip_prefix('_'))
+        .map(str::to_owned)
+        .collect();
+    let (hir, typed, mir) = demand.codegen;
+    let lower = |symbols: &HashSet<String>| {
+        flux_codegen::lower_with_native_definitions(
+            hir,
+            typed,
+            mir,
+            flux_codegen::Compilation {
+                required_instances: &[],
+                ..demand.compilation
+            },
+            flux_codegen::NativeDefinitions {
+                dependencies: &native,
+                specializations: Some(symbols),
+                specialization_roots: None,
+            },
+            None,
+        )
+        .map(|lowered| lowered.module)
+        .map_err(|_| String::from("cannot lower executable"))
+    };
+    // The first executable object exposes dependency calls and their native
+    // reachability. Never publish or execute a probe image.
+    let mut scout = timings.time("specialization probe lowering", || lower(&calls))?;
+    let scout = [compile_object(
+        &mut scout,
+        link.target,
+        link.options,
+        timings,
+    )?];
+    let probe_link = ExecutableLink {
+        objects: &scout,
+        ..link
+    };
+    let names = timings.time("specialization probe link", || {
+        with_executable_inputs(&probe_link, |inputs| {
+            probe_specialization_imports(inputs, probe_link.native)
+        })
+    })?;
+    if names.is_empty() {
+        return link_executable(probe_link, timings);
+    }
+    let mut state = timings.time("demand specialization dependency IR", || {
+        DependencyState::new()?.load_inputs(demand.dependencies, false)
+    })?;
+    let (loaded, mut imported) = prepare_semantics(&mut state)?;
+    let hashes = demand.compilation.crate_hashes;
+    let mut specialized = demand
+        .cache
+        .prepare(
+            Some((state.items, &loaded, &mut imported)),
+            &native,
+            Some(&names),
+            flux_codegen::Compilation {
+                kind: flux_codegen::OutputKind::DependencySpecializations,
+                crate_hashes: &hashes[..hashes.len() - 1],
+                required_functions: &[],
+                ..demand.compilation
+            },
+            (link.target, link.options.object_options()),
+            timings,
+        )
+        .ok_or("cannot lower required dependency specializations")?;
+    let mut module = timings.time("mono + keel lowering", || lower(&specialized.symbols))?;
+    let objects = [compile_object(
+        &mut module,
+        link.target,
+        link.options,
+        timings,
+    )?];
+    let result = link_executable(
+        ExecutableLink {
+            objects: &objects,
+            specialization: Some(specialized.bytes()),
+            ..link
+        },
+        timings,
+    )?;
+    specialized.publish(&specialization_object::demand_path(link.output), timings);
+    Ok(result)
+}
+
+fn undefined_symbols<'a>(
+    objects: impl Iterator<Item = &'a [u8]>,
+) -> Result<HashSet<String>, String> {
+    use object::{Object, ObjectSymbol};
+
+    let mut undefined = HashSet::new();
+    for bytes in objects {
+        let object = object::File::parse(bytes).map_err(|error| error.to_string())?;
+        undefined.extend(
+            object
+                .symbols()
+                .filter(|symbol| symbol.is_undefined())
+                .filter_map(|symbol| symbol.name().ok())
+                .map(str::to_owned),
+        );
+    }
+    Ok(undefined)
+}
+
+fn probe_specialization_imports(
+    inputs: &[flux_codegen::ObjectInput<'_>],
+    native: &flux_codegen::NativeLink,
+) -> Result<HashSet<String>, String> {
+    use object::Object;
+    const CANDIDATE_LIBRARY: &str = "/flux-specialization-probe.dylib";
+
+    let names = undefined_symbols(inputs.iter().map(|input| input.bytes))?;
+    let bytes =
+        flux_codegen::probe_specialization_imports(inputs, native, CANDIDATE_LIBRARY, &names)
+            .map_err(|error| error.to_string())?;
+    let image = object::File::parse(bytes.as_slice()).map_err(|error| error.to_string())?;
+    let imports = image.imports().map_err(|error| error.to_string())?;
+    Ok(imports
+        .iter()
+        .filter(|import| import.library() == CANDIDATE_LIBRARY.as_bytes())
+        .filter_map(|import| std::str::from_utf8(import.name()).ok()?.strip_prefix('_'))
+        .map(str::to_owned)
+        .collect())
+}
+
+fn with_executable_inputs<T>(
+    link: &ExecutableLink<'_>,
+    f: impl FnOnce(&[flux_codegen::ObjectInput<'_>]) -> T,
+) -> T {
     let names: Vec<_> = (0..link.objects.len())
         .map(|index| format!("{}-{index}", link.name))
         .collect();
@@ -873,10 +1084,24 @@ fn link_executable(
             bytes,
         });
     }
+    f(&inputs)
+}
+
+fn link_executable(
+    link: ExecutableLink<'_>,
+    timings: &mut crate::build::Timings,
+) -> Result<LinkedExecutable, String> {
     let native_before = crate::native_link::Snapshot::capture(link.native).ok();
     let (warnings, consumed_native) = timings
         .time("link", || {
-            flux_codegen::link_objects_with_inputs(&inputs, link.target, link.output, link.native)
+            with_executable_inputs(&link, |inputs| {
+                flux_codegen::link_objects_with_inputs(
+                    inputs,
+                    link.target,
+                    link.output,
+                    link.native,
+                )
+            })
         })
         .map_err(|e| e.to_string())?;
     Ok((warnings, consumed_native, native_before))

@@ -434,6 +434,63 @@ pub fn link_objects(
     link_objects_with_inputs(objects, target, output, native).map(|(warnings, _)| warnings)
 }
 
+/// Reports which candidate symbols a Darwin link needs after dead stripping.
+///
+/// The probe resolves candidate imports against a temporary weak interface.
+/// Its image stays in memory. A regular link must validate the real objects.
+/// # Errors
+/// Reports failures loading native inputs or probing the link.
+pub fn probe_specialization_imports(
+    objects: &[ObjectInput<'_>],
+    native: &NativeLink,
+    candidate_library: &str,
+    candidates: &std::collections::HashSet<String>,
+) -> Result<Vec<u8>, Error> {
+    let native::DarwinLibraries {
+        sdk_version,
+        mut dylibs,
+        archives,
+        ..
+    } = native::darwin(native)?;
+    let mut symbols = keel_link::SymbolSet::default();
+    for name in candidates {
+        symbols.insert(name);
+    }
+    dylibs.push(keel_link::Dylib {
+        install_name: candidate_library.to_owned(),
+        weak_exports: symbols.clone(),
+        exports: symbols,
+    });
+    let archive_names: Vec<_> = archives
+        .iter()
+        .map(|(path, _)| path.to_string_lossy())
+        .collect();
+    let inputs: Vec<_> = objects
+        .iter()
+        .map(|object| keel_link::Input {
+            name: object.name,
+            bytes: object.bytes,
+        })
+        .chain(
+            archives
+                .iter()
+                .zip(&archive_names)
+                .map(|((_, bytes), name)| keel_link::Input { name, bytes }),
+        )
+        .collect();
+    keel_link::link(
+        &inputs,
+        keel_link::Options {
+            dead_strip: true,
+            dylibs,
+            sdk_version,
+            ..keel_link::Options::default()
+        },
+    )
+    .map(|executable| executable.bytes)
+    .map_err(|error| Error::message(Stage::Link, error))
+}
+
 /// Links an executable and reports the native inputs actually consumed.
 ///
 /// The returned context includes digests of the retained archive/runtime bytes

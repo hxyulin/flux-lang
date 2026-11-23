@@ -460,6 +460,7 @@ fn run_in_directory(
                 &files,
                 artifacts,
                 options,
+                Some(&root_request.output),
             )
         })
     };
@@ -605,6 +606,7 @@ fn run_in_directory(
                     &files,
                     artifacts,
                     options,
+                    None,
                 )
             });
         }

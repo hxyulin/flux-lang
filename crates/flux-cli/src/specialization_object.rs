@@ -17,6 +17,12 @@ fn cache_path(output: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
+pub(super) fn demand_path(output: &Path) -> PathBuf {
+    let mut path = output.as_os_str().to_owned();
+    path.push(".demand");
+    PathBuf::from(path)
+}
+
 pub(super) struct Cache {
     key: [u8; 32],
     object: Option<Specializations>,
@@ -57,6 +63,16 @@ impl Cache {
         Some(Self { key, object })
     }
 
+    pub(super) fn open_demand(output: &Path, checksums: &[u8]) -> Option<Self> {
+        let mut checksums = checksums.to_vec();
+        checksums.extend_from_slice(b"flux-specialization-demand-v1");
+        Self::open(&demand_path(output), &checksums, None)
+    }
+
+    pub(super) fn take_object(&mut self) -> Option<Specializations> {
+        self.object.take()
+    }
+
     pub(super) fn into_object(self) -> Option<Specializations> {
         self.object
     }
@@ -69,6 +85,7 @@ impl Cache {
         self,
         dependencies: Option<(ItemTree, &flux_ty::flib::LoadedTypes, &mut ImportedMir)>,
         native: &HashSet<String>,
+        roots: Option<&HashSet<String>>,
         compilation: Compilation<'_>,
         policy: (Target, ObjectOptions),
         timings: &mut Timings,
@@ -94,7 +111,7 @@ impl Cache {
                     return None;
                 }
                 flux_ty::Ty::with_substitution_cache(|| {
-                    flux_codegen::lower_linked_executable(
+                    flux_codegen::lower_with_native_definitions(
                         &hir,
                         &typed,
                         mir,
@@ -104,7 +121,11 @@ impl Cache {
                             required_instances,
                             ..compilation
                         },
-                        native,
+                        flux_codegen::NativeDefinitions {
+                            dependencies: native,
+                            specializations: None,
+                            specialization_roots: roots,
+                        },
                         None,
                     )
                     .ok()

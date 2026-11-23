@@ -170,6 +170,56 @@ fn opt_in_timings_preserve_objects_and_partial_verification_failure() {
 
 #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
 #[test]
+fn specialization_probe_reports_live_imports() {
+    let entry = keel_asm::assemble_object(concat!(
+        ".text\n.globl _main\n_main:\n",
+        "stp x29, x30, [sp, #-16]!\nbl _flux_live_template\n",
+        "ldp x29, x30, [sp], #16\nret\n",
+    ))
+    .unwrap();
+    let dead = keel_asm::assemble_object(concat!(
+        ".text\n.globl _unused\n_unused:\n",
+        "stp x29, x30, [sp, #-16]!\nbl _flux_dead_template\n",
+        "ldp x29, x30, [sp], #16\nret\n",
+    ))
+    .unwrap();
+    let inputs = [
+        flux_codegen::ObjectInput {
+            name: "entry",
+            bytes: &entry,
+        },
+        flux_codegen::ObjectInput {
+            name: "dead",
+            bytes: &dead,
+        },
+    ];
+    let candidates = [
+        "_flux_live_template".to_owned(),
+        "_flux_dead_template".to_owned(),
+    ]
+    .into_iter()
+    .collect();
+    let image = flux_codegen::probe_specialization_imports(
+        &inputs,
+        &Default::default(),
+        "/flux-test-templates.dylib",
+        &candidates,
+    )
+    .unwrap();
+    assert!(
+        image
+            .windows(20)
+            .any(|window| window == b"_flux_live_template\0")
+    );
+    assert!(
+        !image
+            .windows(20)
+            .any(|window| window == b"_flux_dead_template\0")
+    );
+}
+
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+#[test]
 fn linker_dead_strip_collects_sections_but_not_individual_functions() {
     let entry = keel_asm::assemble_object(".text\n.globl _main\n_main:\n stp x29, x30, [sp, #-16]!\n bl _live\n mov w0, #0\n ldp x29, x30, [sp], #16\n ret\n").unwrap();
     let shared = keel_asm::assemble_object(".text\n.globl _live\n_live:\n mov x0, #7\n ret\n.globl _dead_same\n_dead_same:\n mov x0, #11\n ret\n").unwrap();
