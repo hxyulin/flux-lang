@@ -714,6 +714,25 @@ struct CachePadded<T>(T);
 /// Entries in each thread's caches of interned kinds and lists: 4096 × 16
 /// and 4096 × 24 bytes, 160 KiB per thread.
 const CACHE_SLOTS: usize = 4096;
+
+// Borrow checking repeatedly substitutes the same small generic argument lists.
+// Keep arguments inline and bound the storage independently of the input size.
+const SUBSTITUTION_ARGS: usize = 4;
+
+#[derive(Clone, Copy)]
+struct Substitution {
+    argument_count: u8,
+    arguments: [Ty; SUBSTITUTION_ARGS],
+    input: Ty,
+    output: Ty,
+}
+
+thread_local! {
+    static CACHE_SUBSTITUTIONS: Cell<bool> = const { Cell::new(false) };
+    static SUBSTITUTIONS: [Cell<Option<Substitution>>; CACHE_SLOTS] =
+        const { [const { Cell::new(None) }; CACHE_SLOTS] };
+}
+
 /// Marks an empty cache slot; never a real type.
 const EMPTY: Ty = Ty(u32::MAX);
 
@@ -1037,6 +1056,20 @@ impl Ty {
         }
     }
 
+    /// Keep a bounded thread-local cache of pure type substitutions while running `f`.
+    pub fn with_substitution_cache<R>(f: impl FnOnce() -> R) -> R {
+        struct Restore<'a>(&'a Cell<bool>, bool);
+        impl Drop for Restore<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.1);
+            }
+        }
+        CACHE_SUBSTITUTIONS.with(|enabled| {
+            let _restore = Restore(enabled, enabled.replace(true));
+            f()
+        })
+    }
+
     /// The type with each generic parameter replaced by its argument in
     /// `args`.
     pub fn subst(self, args: &[Ty]) -> Ty {
@@ -1046,6 +1079,32 @@ impl Ty {
         if let TyKind::Param(param) = self.kind() {
             return args.get(param.index as usize).copied().unwrap_or(Ty::ERROR);
         }
+        if args.len() <= SUBSTITUTION_ARGS && CACHE_SUBSTITUTIONS.get() {
+            let hash = FxBuildHasher.hash_one((self, args));
+            return SUBSTITUTIONS.with(|cache| {
+                let slot = &cache[hash as usize % CACHE_SLOTS];
+                if let Some(cached) = slot.get()
+                    && cached.input == self
+                    && &cached.arguments[..usize::from(cached.argument_count)] == args
+                {
+                    return cached.output;
+                }
+                let output = self.subst_compound(args);
+                let mut arguments = [Ty::ERROR; SUBSTITUTION_ARGS];
+                arguments[..args.len()].copy_from_slice(args);
+                slot.set(Some(Substitution {
+                    argument_count: args.len() as u8,
+                    arguments,
+                    input: self,
+                    output,
+                }));
+                output
+            });
+        }
+        self.subst_compound(args)
+    }
+
+    fn subst_compound(self, args: &[Ty]) -> Ty {
         // Common signatures such as `&T` and `Pair<T, U>` need no graph
         // traversal or heap scratch when only their direct children vary.
         if self
@@ -1573,6 +1632,23 @@ mod tests {
             mapped.fn_sig().unwrap().inputs_output,
             Ty::list(&[expected, expected, expected])
         ));
+    }
+
+    #[test]
+    fn scoped_substitution_cache_preserves_argument_order_and_missing_arguments() {
+        let first = Ty::param(0, Symbol::intern("First"));
+        let second = Ty::param(1, Symbol::intern("Second"));
+        let input = Ty::tuple(&[Ty::tuple(&[first]), second]);
+        let cases: &[&[Ty]] = &[&[Ty::BOOL, Ty::STR], &[Ty::STR, Ty::BOOL], &[Ty::BOOL]];
+        let expected: Vec<_> = cases.iter().map(|args| input.subst(args)).collect();
+
+        Ty::with_substitution_cache(|| {
+            for _ in 0..2 {
+                for (args, &expected) in cases.iter().zip(&expected) {
+                    assert_eq!(input.subst(args), expected);
+                }
+            }
+        });
     }
 
     #[test]

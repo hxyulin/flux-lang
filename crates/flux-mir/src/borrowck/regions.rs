@@ -260,7 +260,7 @@ pub(crate) fn infer(
 ) -> Regions {
     let mut cx = Cx::new(body, items, sigs, requirements);
     cx.universal_regions();
-    cx.generate();
+    Ty::with_substitution_cache(|| cx.generate());
     cx.member_constraints();
     let points = Points::new(body);
     let liveness = cx.liveness(&points, true);
