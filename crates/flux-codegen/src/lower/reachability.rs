@@ -6,7 +6,8 @@ use flux_hir::{
 };
 use flux_mir::{Body, Constant, FileMir, Operand, Rvalue, StatementKind, TerminatorKind};
 use flux_ty::{ClosureOwner, Instance, Signatures, Ty, TyKind};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use std::hash::{Hash, Hasher};
 
 pub(super) struct Roots {
     pub functions: Vec<FunctionId>,
@@ -143,6 +144,12 @@ struct Template {
     ancestors: Vec<Context>,
 }
 
+#[derive(Clone, Copy)]
+struct CallbackContext {
+    args: flux_ty::GenericArgs,
+    receiver: TypeShape,
+}
+
 struct Reach<'a> {
     hir: &'a Hir,
     items: &'a ItemTree,
@@ -164,7 +171,7 @@ struct Reach<'a> {
     callback_bounds: FxHashMap<TraitId, Vec<flux_ty::Predicate>>,
     callback_subjects: FxHashMap<Ty, Option<usize>>,
     seen_callback_contexts: FxHashSet<(TraitId, flux_ty::GenericArgs)>,
-    callback_contexts: FxHashMap<(TraitId, Option<CallbackAnchor>), Vec<flux_ty::GenericArgs>>,
+    callback_contexts: FxHashMap<(TraitId, Option<CallbackAnchor>), Vec<CallbackContext>>,
     growth: GrowthCache,
     dropped: FxHashSet<StructId>,
     traits: FxHashSet<TraitId>,
@@ -733,11 +740,12 @@ impl<'a> Reach<'a> {
             // Only visit buckets whose anchor actually appears in this goal.
             let anchors = callback_anchors(wanted);
             let trait_ = bound.trait_ref.trait_;
+            let context = self.growth.callback_context(wanted);
             if std::iter::once(None)
                 .chain(anchors.iter().copied().map(Some))
                 .filter_map(|anchor| self.callback_contexts.get(&(trait_, anchor)))
                 .flatten()
-                .any(|&old| self.growth.grows(old, wanted))
+                .any(|&old| self.growth.callback_grows(old, context))
             {
                 continue;
             }
@@ -749,7 +757,7 @@ impl<'a> Reach<'a> {
             self.callback_contexts
                 .entry((trait_, anchor))
                 .or_default()
-                .push(wanted);
+                .push(context);
             self.expose_trait(bound.trait_ref.trait_);
             self.callback_bounds
                 .entry(bound.trait_ref.trait_)
@@ -1469,10 +1477,41 @@ struct GrowthCache {
     unknowns: FxHashMap<Ty, Ty>,
     arguments: FxHashMap<flux_ty::GenericArgs, flux_ty::GenericArgs>,
     embeddings: FxHashMap<(Ty, Ty), bool>,
-    sizes: FxHashMap<Ty, u32>,
+    shapes: FxHashMap<Ty, TypeShape>,
+}
+
+#[derive(Clone, Copy)]
+struct TypeShape {
+    size: u32,
+    heads: u64,
+    tree: u64,
+}
+
+impl TypeShape {
+    fn can_embed_in(self, other: Self) -> bool {
+        self.size <= other.size
+            && self.heads & !other.heads == 0
+            && (self.size != other.size || self.size == u32::MAX || self.tree == other.tree)
+    }
 }
 
 impl GrowthCache {
+    fn callback_context(&mut self, args: flux_ty::GenericArgs) -> CallbackContext {
+        let args = self.canonical(args);
+        // A trait's callback arguments begin with its Self type.
+        CallbackContext {
+            args,
+            receiver: self.shape(args[0]),
+        }
+    }
+
+    fn callback_grows(&mut self, previous: CallbackContext, next: CallbackContext) -> bool {
+        // Every argument must embed. A cached receiver shape can reject the
+        // pair before looking up the shapes and embeddings of its arguments.
+        previous.receiver.can_embed_in(next.receiver)
+            && self.grows_canonical(previous.args, next.args)
+    }
+
     fn canonical(&mut self, args: flux_ty::GenericArgs) -> flux_ty::GenericArgs {
         fn unknowns(ty: Ty, memo: &mut FxHashMap<Ty, Ty>) -> Ty {
             if let Some(&known) = memo.get(&ty) {
@@ -1502,29 +1541,65 @@ impl GrowthCache {
         }
         let previous = self.canonical(previous);
         let next = self.canonical(next);
+        self.grows_canonical(previous, next)
+    }
+
+    fn grows_canonical(
+        &mut self,
+        previous: flux_ty::GenericArgs,
+        next: flux_ty::GenericArgs,
+    ) -> bool {
         // Changing equality relationships between parameters is not growth.
-        previous != next
-            && previous
-                .iter()
-                .zip(next)
-                .all(|(&left, &right)| self.size(left) <= self.size(right))
+        previous.len() == next.len()
+            && previous != next
+            && previous.iter().zip(next).all(|(&left, &right)| {
+                if left == right {
+                    return true;
+                }
+                let left = self.shape(left);
+                let right = self.shape(right);
+                left.can_embed_in(right)
+            })
             && previous
                 .iter()
                 .zip(next)
                 .all(|(&left, &right)| embeds_cached(left, right, &mut self.embeddings))
     }
 
-    fn size(&mut self, ty: Ty) -> u32 {
-        if let Some(&size) = self.sizes.get(&ty) {
-            return size;
+    fn shape(&mut self, ty: Ty) -> TypeShape {
+        if let Some(&shape) = self.shapes.get(&ty) {
+            return shape;
         }
-        // Embedding can discard nodes from the larger tree, but cannot
-        // embed more nodes than it contains. Saturation only loses pruning.
-        let size = ty
-            .children()
-            .fold(1u32, |size, child| size.saturating_add(self.size(child)));
-        self.sizes.insert(ty, size);
-        size
+        let kind = ty.kind();
+        let mut head = FxHasher::default();
+        std::mem::discriminant(&kind).hash(&mut head);
+        match kind {
+            TyKind::Adt(id, _) => id.strukt.hash(&mut head),
+            TyKind::Closure(id, _) => id.hash(&mut head),
+            TyKind::FnDef(def) => def.function.hash(&mut head),
+            TyKind::Alias(alias) => alias.trait_.hash(&mut head),
+            _ => {}
+        }
+        let head = head.finish();
+        let mut tree = FxHasher::default();
+        tree.write_u64(head);
+        let mut shape = TypeShape {
+            size: 1,
+            heads: 1 << (head & 63),
+            tree: 0,
+        };
+        for child in ty.children() {
+            let child = self.shape(child);
+            shape.size = shape.size.saturating_add(child.size);
+            shape.heads |= child.heads;
+            tree.write_u64(child.tree);
+        }
+        shape.tree = tree.finish();
+        // Embedding preserves each matched head. Equally large trees
+        // cannot skip a node, so their ordered shapes must also match.
+        // Collisions can only pass more candidates to the exact comparison.
+        self.shapes.insert(ty, shape);
+        shape
     }
 }
 
@@ -1630,6 +1705,43 @@ mod tests {
         assert!(!growing_args(prior, unrelated));
         assert!(callback_anchors(prior) == callback_anchors(nested));
         assert!(callback_anchors(prior) != callback_anchors(unrelated));
+    }
+
+    #[test]
+    fn callback_growth_checks_all_arguments_after_the_receiver_shape() {
+        let before = Ty::param(0, flux_intern::Symbol::intern("T"));
+        let after = Ty::param(3, flux_intern::Symbol::intern("U"));
+        let nested = Ty::tuple(&[after]);
+        let mut growth = GrowthCache::default();
+        let original = growth.callback_context(Ty::list(&[before, Ty::BOOL]));
+        let growing = growth.callback_context(Ty::list(&[nested, Ty::BOOL]));
+        let incompatible = growth.callback_context(Ty::list(&[nested, Ty::UNIT]));
+        let renamed = growth.callback_context(Ty::list(&[after, Ty::BOOL]));
+
+        assert!(growth.callback_grows(original, growing));
+        assert!(!growth.callback_grows(original, incompatible));
+        assert!(!growth.callback_grows(original, renamed));
+        assert!(!growth.callback_grows(growing, original));
+    }
+
+    #[test]
+    fn equal_size_shapes_preserve_relaxed_embedding_heads() {
+        // The exact comparison uses the declaration, even if the
+        // type's diagnostic spelling differs.
+        let declaration = StructId::from_raw(0);
+        let original = Ty::adt(declaration, flux_intern::Symbol::intern("Original"), &[]);
+        let alias = Ty::adt(declaration, flux_intern::Symbol::intern("Alias"), &[]);
+        assert_ne!(original, alias);
+        assert!(growing_args(Ty::list(&[original]), Ty::list(&[alias])));
+        assert!(growing_args(
+            Ty::list(&[original]),
+            Ty::list(&[Ty::tuple(&[alias, Ty::BOOL])])
+        ));
+        // Array lengths still participate as children.
+        assert!(!growing_args(
+            Ty::list(&[Ty::array(Ty::UNIT, 1)]),
+            Ty::list(&[Ty::array(Ty::UNIT, 2)])
+        ));
     }
 
     #[test]
