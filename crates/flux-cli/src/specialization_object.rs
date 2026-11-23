@@ -93,21 +93,23 @@ impl Cache {
                 if required_instances.is_empty() {
                     return None;
                 }
-                flux_codegen::lower_linked_executable(
-                    &hir,
-                    &typed,
-                    mir,
-                    Compilation {
-                        kind: OutputKind::DependencySpecializations,
-                        required_functions: &[],
-                        required_instances,
-                        ..compilation
-                    },
-                    native,
-                    None,
-                )
-                .ok()
-                .map(|lowered| lowered.module)
+                flux_ty::Ty::with_substitution_cache(|| {
+                    flux_codegen::lower_linked_executable(
+                        &hir,
+                        &typed,
+                        mir,
+                        Compilation {
+                            kind: OutputKind::DependencySpecializations,
+                            required_functions: &[],
+                            required_instances,
+                            ..compilation
+                        },
+                        native,
+                        None,
+                    )
+                    .ok()
+                    .map(|lowered| lowered.module)
+                })
             })
         })?;
         let bytes = timings
