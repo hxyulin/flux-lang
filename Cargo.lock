@@ -255,6 +255,7 @@ dependencies = [
  "flux-proc-macro",
  "flux-syntax",
  "flux-ty",
+ "object",
  "postcard",
  "semver",
  "serde",

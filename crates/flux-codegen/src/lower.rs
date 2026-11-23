@@ -77,7 +77,8 @@ pub fn lower_module(
     typed: &TypedFile,
     mir: &FileMir,
 ) -> Result<Module, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, None, None, SymbolIdentity::Artifact).map(|lowered| lowered.module)
+    lower_inner(hir, typed, mir, None, None, SymbolIdentity::Artifact, None)
+        .map(|lowered| lowered.module)
 }
 
 /// Time spent in parts of lowering, for `--timings`. Each field sums its part
@@ -111,6 +112,7 @@ pub fn lower_with_timings(
         compilation,
         Some(timings),
         SymbolIdentity::Artifact,
+        None,
     )
     .map(|lowered| lowered.module)
 }
@@ -124,6 +126,8 @@ pub enum OutputKind {
     Library(flux_hir::CrateId),
     /// Emits every monomorphic function and static in the trusted built-in prefix.
     BuiltinSuite,
+    /// Owns concrete code reached from checked dependency requirements.
+    DependencySpecializations,
 }
 
 /// Stable identities and ownership for a separately compiled object.
@@ -200,6 +204,7 @@ pub fn lower_crate_with_requirements(
         Some(compilation),
         None,
         SymbolIdentity::Artifact,
+        None,
     )
 }
 
@@ -230,6 +235,7 @@ pub fn lower_partitioned_crate(
         Some(compilation),
         None,
         SymbolIdentity::Query,
+        None,
     )?;
     if matches!(compilation.kind, OutputKind::Executable)
         && compilation.imported.is_empty()
@@ -255,6 +261,56 @@ enum SymbolIdentity {
     Query,
 }
 
+/// Lowers a separately linked executable. The symbol set must come from the
+/// exact checked dependency objects passed to the linker, whose native
+/// requirements must be included in `compilation.required_instances`.
+pub fn lower_linked_executable(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Compilation<'_>,
+    symbols: &std::collections::HashSet<String>,
+    timings: Option<&mut LoweringTimings>,
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    lower_with_native_definitions(
+        hir,
+        typed,
+        mir,
+        compilation,
+        NativeDefinitions {
+            dependencies: symbols,
+            specializations: None,
+        },
+        timings,
+    )
+}
+
+/// Checked native inputs that accompany a separately lowered object.
+pub struct NativeDefinitions<'a> {
+    pub dependencies: &'a std::collections::HashSet<String>,
+    pub specializations: Option<&'a std::collections::HashSet<String>>,
+}
+
+/// Lowers a dependency closure or an executable that links compiled specializations.
+pub fn lower_with_native_definitions(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Compilation<'_>,
+    definitions: NativeDefinitions<'_>,
+    timings: Option<&mut LoweringTimings>,
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    lower_inner(
+        hir,
+        typed,
+        mir,
+        Some(compilation),
+        timings,
+        SymbolIdentity::Artifact,
+        Some(definitions),
+    )
+}
+
 fn lower_inner(
     hir: &Hir,
     typed: &TypedFile,
@@ -262,6 +318,7 @@ fn lower_inner(
     compilation: Option<Compilation<'_>>,
     mut timings: Option<&mut LoweringTimings>,
     identity: SymbolIdentity,
+    provided_symbols: Option<NativeDefinitions<'_>>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
     // Exceptional bodies cannot silently use abort-mode object emission.
     if mir.panic_strategy == flux_mir::PanicStrategy::Abort
@@ -307,128 +364,6 @@ fn lower_inner(
             && mir.bodies.get(id).is_some())
         .then_some(instance)
     };
-    let mut retained_functions = FxHashSet::default();
-    let mut retained_statics = FxHashSet::default();
-    if let Some(c) = compilation {
-        if matches!(c.kind, OutputKind::BuiltinSuite) {
-            for (id, function) in hir
-                .items
-                .functions
-                .iter()
-                .take(hir.items.core.functions as usize)
-            {
-                if function.has_body && !function.is_extern && mir.bodies.get(id).is_none() {
-                    let mut diagnostic =
-                        Diagnostic::new(function.ret_range, "missing checked built-in MIR");
-                    diagnostic.file = function.loc.file;
-                    return Err(vec![diagnostic]);
-                }
-                if monomorphic(id).is_some() {
-                    retained_functions.insert(id);
-                }
-            }
-            for (id, konst) in hir.items.consts.iter().take(hir.items.core.consts as usize) {
-                if konst.is_static.is_none() {
-                    continue;
-                }
-                if konst.extern_symbol.is_none() && mir.const_values.items.get(id).is_none() {
-                    let mut diagnostic =
-                        Diagnostic::new(konst.def_range, "missing checked built-in static value");
-                    diagnostic.file = konst.loc.file;
-                    return Err(vec![diagnostic]);
-                }
-                retained_statics.insert(id);
-            }
-        } else {
-            // The imported provider also sees dead metadata bodies. Their user
-            // definitions enter through export/template reachability below, rather
-            // than becoming unconditional roots of the executable's source crate.
-            let source_required: Vec<_> = c
-                .required_functions
-                .iter()
-                .copied()
-                .filter(|&id| {
-                    !c.imported
-                        .contains(&hir.items.modules[hir.items.functions[id].loc.module].krate)
-                        && monomorphic(id).is_some()
-                })
-                .collect();
-            let own = match c.kind {
-                OutputKind::Library(krate) => reachability::library(hir, &typed.sigs, mir, krate),
-                OutputKind::Executable => {
-                    reachability::executable(hir, &typed.sigs, mir, &source_required)
-                }
-                OutputKind::BuiltinSuite => unreachable!(),
-            };
-            retained_functions.extend(own.functions);
-            retained_statics.extend(own.statics);
-            if matches!(c.kind, OutputKind::Executable) {
-                for &krate in c.imported {
-                    let imported = reachability::library(hir, &typed.sigs, mir, krate);
-                    retained_functions.extend(imported.functions);
-                    retained_statics.extend(imported.statics);
-                }
-                // Embedded definitions still belong to the executable. Their
-                // compiler-owned static roots retain the existing runtime policy.
-                retained_statics.extend(hir.items.consts.iter().filter_map(|(id, c)| {
-                    (id.index() < hir.items.core.consts as usize && c.is_static.is_some())
-                        .then_some(id)
-                }));
-            }
-            for &function in c.required_functions {
-                let owner = hir.items.modules[hir.items.functions[function].loc.module].krate;
-                if !c.imported.contains(&owner) || retained_functions.contains(&function) {
-                    retained_functions.insert(function);
-                }
-            }
-        }
-    }
-    let mut roots: Vec<_> = retained_functions
-        .into_iter()
-        .filter_map(monomorphic)
-        .collect();
-    if let Some(compilation) = compilation {
-        roots.extend_from_slice(compilation.required_instances);
-    }
-    roots.sort_unstable_by_key(|i| i.function);
-    let mut static_roots: Vec<_> = retained_statics.iter().copied().collect();
-    static_roots.sort_unstable();
-    let collected = match compilation.map(|c| c.kind) {
-        Some(OutputKind::Library(_) | OutputKind::BuiltinSuite) => {
-            flux_mir::mono::collect_from_roots_and_statics(
-                hir,
-                &typed.sigs,
-                mir,
-                &roots,
-                &static_roots,
-            )
-        }
-        Some(OutputKind::Executable) => flux_mir::mono::collect_all_with_roots_and_statics(
-            hir,
-            &typed.sigs,
-            mir,
-            &roots,
-            &static_roots,
-        ),
-        None => flux_mir::mono::collect_all(hir, &typed.sigs, mir),
-    }
-    .map_err(|d| vec![d])?;
-    if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
-        timings.collect = start.elapsed();
-    }
-    let instances = collected.instances;
-    let required_instances = compilation.map_or_else(Vec::new, |compilation| {
-        instances
-            .iter()
-            .copied()
-            .filter(|&instance| !owns_instance(&hir.items, instance, compilation))
-            .collect()
-    });
-    let errors = check_c_abi(hir, typed, mir, &instances);
-    if !errors.is_empty() {
-        return Err(errors);
-    }
-    let mut module = Module::default();
     let items = &hir.items;
     let identities = compilation.map_or(&[][..], |c| c.crate_hashes);
     let definitions = std::cell::RefCell::new(DefinitionKeys::new(items, identities));
@@ -527,6 +462,199 @@ fn lower_inner(
         type_keys: std::cell::RefCell::new(FxHashMap::default()),
         instances: std::cell::RefCell::new(FxHashMap::default()),
     };
+    let admitted = std::cell::RefCell::new(FxHashSet::default());
+    let native_leaf = |instance: Instance| {
+        let Some(provided) = &provided_symbols else {
+            return false;
+        };
+        if admitted.borrow().contains(&instance) {
+            return true;
+        }
+        let function = &items.functions[instance.function];
+        let owner = items.modules[function.loc.module].krate;
+        let imported = compilation.is_some_and(|c| c.imported.contains(&owner));
+        let cached = provided
+            .specializations
+            .filter(|_| owner != items.main_crate());
+        if !imported && cached.is_none() || instance.args.iter().any(|ty| ty.has_params()) {
+            return false;
+        }
+        let generic = generic_instance(items, instance);
+        let ordinary = imported
+            && function.link_name.is_none()
+            && !function.track_caller
+            && (!instance.args.is_empty() || !generic);
+        if !ordinary && cached.is_none() {
+            return false;
+        }
+        let present = ordinary
+            && if instance.args.is_empty() {
+                provided.dependencies.contains(&symbols[&instance.function])
+            } else {
+                provided
+                    .dependencies
+                    .contains(&instance_symbol(hir, &symbols, instance))
+            }
+            || cached.is_some_and(|names| {
+                let name = instance_symbol(hir, &symbols, instance);
+                names.contains(&name)
+                    && (!function.track_caller || names.contains(&format!("{name}.__flux_reify")))
+            });
+        if present {
+            admitted.borrow_mut().insert(instance);
+        }
+        present
+    };
+    let native_leaf = provided_symbols
+        .as_ref()
+        .map(|_| &native_leaf as &dyn Fn(Instance) -> bool);
+    let mut retained_functions = FxHashSet::default();
+    let mut retained_statics = FxHashSet::default();
+    if let Some(c) = compilation {
+        if matches!(c.kind, OutputKind::BuiltinSuite) {
+            for (id, function) in hir
+                .items
+                .functions
+                .iter()
+                .take(hir.items.core.functions as usize)
+            {
+                if function.has_body && !function.is_extern && mir.bodies.get(id).is_none() {
+                    let mut diagnostic =
+                        Diagnostic::new(function.ret_range, "missing checked built-in MIR");
+                    diagnostic.file = function.loc.file;
+                    return Err(vec![diagnostic]);
+                }
+                if monomorphic(id).is_some() {
+                    retained_functions.insert(id);
+                }
+            }
+            for (id, konst) in hir.items.consts.iter().take(hir.items.core.consts as usize) {
+                if konst.is_static.is_none() {
+                    continue;
+                }
+                if konst.extern_symbol.is_none() && mir.const_values.items.get(id).is_none() {
+                    let mut diagnostic =
+                        Diagnostic::new(konst.def_range, "missing checked built-in static value");
+                    diagnostic.file = konst.loc.file;
+                    return Err(vec![diagnostic]);
+                }
+                retained_statics.insert(id);
+            }
+        } else if !matches!(c.kind, OutputKind::DependencySpecializations) {
+            // The imported provider also sees dead metadata bodies. Their user
+            // definitions enter through export/template reachability below, rather
+            // than becoming unconditional roots of the executable's source crate.
+            let source_required: Vec<_> = c
+                .required_functions
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    !c.imported
+                        .contains(&hir.items.modules[hir.items.functions[id].loc.module].krate)
+                        && monomorphic(id).is_some()
+                })
+                .collect();
+            let own = match c.kind {
+                OutputKind::Library(krate) => reachability::library(hir, &typed.sigs, mir, krate),
+                OutputKind::Executable => {
+                    reachability::executable(hir, &typed.sigs, mir, &source_required)
+                }
+                OutputKind::BuiltinSuite | OutputKind::DependencySpecializations => unreachable!(),
+            };
+            retained_functions.extend(own.functions);
+            retained_statics.extend(own.statics);
+            if matches!(c.kind, OutputKind::Executable) {
+                for &krate in c.imported.iter().filter(|_| provided_symbols.is_none()) {
+                    let imported = reachability::library(hir, &typed.sigs, mir, krate);
+                    retained_functions.extend(imported.functions);
+                    retained_statics.extend(imported.statics);
+                }
+                // Embedded definitions still belong to the executable. Their
+                // compiler-owned static roots retain the existing runtime policy.
+                retained_statics.extend(hir.items.consts.iter().filter_map(|(id, c)| {
+                    (id.index() < hir.items.core.consts as usize && c.is_static.is_some())
+                        .then_some(id)
+                }));
+            }
+            for &function in c.required_functions {
+                let owner = hir.items.modules[hir.items.functions[function].loc.module].krate;
+                if !c.imported.contains(&owner) || retained_functions.contains(&function) {
+                    retained_functions.insert(function);
+                }
+            }
+        }
+    }
+    let mut roots: Vec<_> = retained_functions
+        .into_iter()
+        .filter_map(monomorphic)
+        .collect();
+    if let Some(compilation) = compilation {
+        roots.extend_from_slice(compilation.required_instances);
+    }
+    roots.sort_unstable_by_key(|i| i.function);
+    let mut static_roots: Vec<_> = retained_statics.iter().copied().collect();
+    static_roots.sort_unstable();
+    let collected = if let Some(native_leaf) = native_leaf {
+        if compilation.is_some_and(|c| matches!(c.kind, OutputKind::Executable)) {
+            flux_mir::mono::collect_linked_executable(
+                hir,
+                &typed.sigs,
+                mir,
+                &roots,
+                &static_roots,
+                Some(native_leaf),
+            )
+        } else {
+            flux_mir::mono::collect_linked_roots(hir, &typed.sigs, mir, &roots, Some(native_leaf))
+        }
+    } else {
+        match compilation.map(|c| c.kind) {
+            Some(OutputKind::Library(_) | OutputKind::BuiltinSuite) => {
+                flux_mir::mono::collect_from_roots_and_statics(
+                    hir,
+                    &typed.sigs,
+                    mir,
+                    &roots,
+                    &static_roots,
+                )
+            }
+            Some(OutputKind::Executable) => flux_mir::mono::collect_all_with_roots_and_statics(
+                hir,
+                &typed.sigs,
+                mir,
+                &roots,
+                &static_roots,
+            ),
+            Some(OutputKind::DependencySpecializations) => unreachable!(),
+            None => flux_mir::mono::collect_all(hir, &typed.sigs, mir),
+        }
+    }
+    .map_err(|d| vec![d])?;
+    if let (Some(timings), Some(start)) = (timings.as_deref_mut(), start) {
+        timings.collect = start.elapsed();
+    }
+    let admitted = admitted.into_inner();
+    if provided_symbols.is_some() && timings.is_some() {
+        eprintln!(
+            "native cutoff: {} verified dependency instances",
+            admitted.len()
+        );
+    }
+    let instances = collected.instances;
+    let required_instances = compilation.map_or_else(Vec::new, |compilation| {
+        instances
+            .iter()
+            .copied()
+            .filter(|&instance| {
+                !owns_instance(&hir.items, instance, compilation) || admitted.contains(&instance)
+            })
+            .collect()
+    });
+    let errors = check_c_abi(hir, typed, mir, &instances);
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    let mut module = Module::default();
     let mut declared_abort = false;
     let mut declared: FxHashSet<_> = instances
         .iter()
@@ -654,7 +782,9 @@ fn lower_inner(
         layouts,
     };
     for instance in instances {
-        if compilation.is_some_and(|c| !owns_instance(items, instance, c)) {
+        if compilation.is_some_and(|c| !owns_instance(items, instance, c))
+            || admitted.contains(&instance)
+        {
             let sig = flux_solve::traits::instance_sig(
                 items,
                 &typed.sigs,
@@ -958,7 +1088,7 @@ impl QuerySymbols {
                     && match compilation.kind {
                         OutputKind::Library(owner) => krate == owner,
                         OutputKind::Executable => true,
-                        OutputKind::BuiltinSuite => false,
+                        OutputKind::BuiltinSuite | OutputKind::DependencySpecializations => false,
                     };
                 let mut namespace = Encoder::new();
                 if source {
@@ -1078,7 +1208,7 @@ fn owns_instance(
             instance.function.index() >= items.core.functions as usize
                 && (owner == krate || generic_instance(items, instance))
         }
-        OutputKind::Executable => {
+        OutputKind::Executable | OutputKind::DependencySpecializations => {
             generic_instance(items, instance)
                 || (!compilation.imported.contains(&owner)
                     && (!compilation.builtin_object
@@ -1117,6 +1247,7 @@ fn owns_static(
                 && (!compilation.builtin_object || id.index() >= items.core.consts as usize)
         }
         OutputKind::BuiltinSuite => id.index() < items.core.consts as usize,
+        OutputKind::DependencySpecializations => false,
     }
 }
 

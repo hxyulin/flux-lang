@@ -28,8 +28,9 @@ use std::path::{Path, PathBuf};
 pub use keel_ir::{Module, Target};
 pub use keel_opt::OptimizationTier;
 pub use lower::{
-    Compilation, LoweredCrate, LoweringTimings, OutputKind, lower_crate,
-    lower_crate_with_requirements, lower_module, lower_partitioned_crate, lower_with_timings,
+    Compilation, LoweredCrate, LoweringTimings, NativeDefinitions, OutputKind, lower_crate,
+    lower_crate_with_requirements, lower_linked_executable, lower_module, lower_partitioned_crate,
+    lower_with_native_definitions, lower_with_timings,
 };
 pub use native::{NativeLink, NativeLinkInputs};
 pub use units::split_fast_module;

@@ -273,6 +273,19 @@ runtime and dynamic interfaces. Records are accepted only when the linker
 consumed the tracked inputs. A native-only change rebuilds the final executable
 while leaving unchanged checked Rust libraries reusable.
 
+Single-unit executables that link separate dependency objects skip runtime MIR
+traversal when a checked object supplies the exact function instance.
+Optimized arm64 macOS package builds with staged built-ins and panic=abort
+also compile dependency-generated specializations into a reusable object. A
+library build publishes this object beside its dependency archive. When one
+direct library covers the executable's full dependency graph, that library
+prepares the object before the executable compiles. Multiple executables can
+reuse it. Other dependency graphs keep one object per executable. Changes to
+checked dependencies or compiler identity replace the corresponding object.
+For native-link experiments, `FLUX_EXPERIMENTAL_NATIVE_LINK=cutoff` forces
+separate linking with this cutoff, and `FLUX_EXPERIMENTAL_NATIVE_LINK=separate`
+forces separate linking with ordinary MIR traversal.
+
 Build scripts receive package, feature, target cfg, and profile variables, plus
 `DEP_*` metadata from direct dependencies with `links` declarations. Both
 `cargo:` and `cargo::` output prefixes support cfg, environment, linker search

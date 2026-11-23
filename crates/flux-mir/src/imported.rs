@@ -185,6 +185,26 @@ impl ImportedMir {
         self.source_counts
     }
 
+    /// Supplies checked dependency MIR and explicit object requirements for codegen.
+    pub fn with_codegen_inputs<T>(&self, f: impl FnOnce(&FileMir, &[flux_ty::Instance]) -> T) -> T {
+        let mut mir = FileMir {
+            panic_strategy: self.mir.panic_strategy,
+            discriminants: self.mir.discriminants.clone(),
+            ..Default::default()
+        };
+        if let Some(suite) = &self.builtins {
+            for (id, body) in suite.bodies.iter() {
+                mir.bodies.insert(id, body.clone());
+            }
+            for (&key, body) in &suite.closures {
+                mir.closures.insert(key, body.clone());
+            }
+        }
+        self.copy_bodies_into(&mut mir);
+        mir.const_values = self.mir.const_values.clone();
+        f(&mir, &self.required_instances)
+    }
+
     /// A dependency function's already checked generic template.
     pub fn function(&self, id: FunctionId) -> Option<&Body> {
         self.mir

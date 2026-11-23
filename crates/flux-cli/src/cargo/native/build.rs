@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::build::SourceInput;
 use crate::flib::semantic::FreshArtifacts;
-use crate::flib_build::ExternalLibraries;
+use crate::flib_build::specialization_object::Specializations;
+use crate::flib_build::{ArtifactOutput, ExternalLibraries};
 use crate::{BuildOptions, CrateType};
 
 #[derive(Deserialize, Serialize)]
@@ -174,13 +175,14 @@ impl Request {
 pub(crate) fn worker(path: &Path) -> Result<bool, String> {
     let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
     let request: Request = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    compile_request(&request, &Default::default(), None)
+    compile_request(&request, &Default::default(), None, None)
 }
 
 fn compile_request(
     request: &Request,
     artifacts: &FreshArtifacts,
     dependency_files: Option<&[&Path]>,
+    specializations: Option<Specializations>,
 ) -> Result<bool, String> {
     let options = BuildOptions {
         panic_strategy: crate::cargo::parse_panic_strategy(&request.panic_strategy)?,
@@ -225,9 +227,12 @@ fn compile_request(
     }
     eprintln!("Compiling {}", request.name);
     crate::backend_workers::with_limit(request.backend_jobs, || {
-        crate::flib_build::compile_native(
+        crate::flib_build::compile_with_specializations(
             &source,
-            &request.output,
+            ArtifactOutput {
+                path: &request.output,
+                specializations,
+            },
             options,
             if request.library {
                 CrateType::Lib
@@ -336,7 +341,8 @@ fn run_in_directory(
         }
         // Native-linked executables keep one whole-program backend pass. The
         // DAG caches checked MIR instead of multiplying generic native objects.
-        request.metadata_only = (index != root) && !library && *native != Default::default();
+        request.metadata_only =
+            (index != root) && !library && crate::flib_build::whole_program_native(native);
         request.externs = sources[index]
             .dependencies
             .iter()
@@ -389,6 +395,31 @@ fn run_in_directory(
         }
         requests.insert(index, (path, request));
     }
+    let mut specialization_producer = None;
+    if !library
+        && !shared_outputs
+        && !optimize_root
+        && !crate::flib_build::whole_program_native(native)
+        && crate::flib_build::supports_dependency_specializations(options)
+    {
+        for (position, (_, index)) in sources[root].dependencies.iter().enumerate() {
+            if sources[*index].host_macros.is_none()
+                && needed_units(sources, *index)?.len() + 1 == needed.len()
+            {
+                specialization_producer = Some(*index);
+                let externs = &mut requests
+                    .get_mut(&root)
+                    .expect("requested executable")
+                    .1
+                    .externs;
+                // Resolving this library first gives both jobs the same artifact
+                // loading order and type identities.
+                let producer = externs.remove(position);
+                externs.insert(0, producer);
+                break;
+            }
+        }
+    }
     let dependency_files = |index| -> Result<Vec<&Path>, String> {
         Ok(needed_units(sources, index)?
             .into_iter()
@@ -396,6 +427,36 @@ fn run_in_directory(
             .map(|dependency| requests[&dependency].1.output.as_path())
             .collect())
     };
+    let prepare_specializations = |producer: usize| {
+        let files = dependency_files(root).ok()?;
+        let (_, root_request) = &requests[&root];
+        let source = root_request.source().ok()?;
+        if crate::flib_build::is_binary_fresh(
+            &source,
+            &root_request.output,
+            options,
+            ExternalLibraries {
+                externs: &root_request.externs,
+                dependency_files: Some(&files),
+                cache: Some(artifacts),
+            },
+            native,
+            artifacts,
+        )
+        .ok()?
+        {
+            return None;
+        }
+        crate::backend_workers::with_limit(jobs, || {
+            crate::flib_build::prepare_library_specializations(
+                &requests[&producer].1.output,
+                &files,
+                artifacts,
+                options,
+            )
+        })
+    };
+    let mut prepared_specializations = None;
     let (finished, completions) = std::sync::mpsc::channel();
     let mut started = BTreeSet::new();
     let mut done = BTreeSet::new();
@@ -419,6 +480,12 @@ fn run_in_directory(
                     }
                     started.insert(index);
                     running += 1;
+                    let specializations = if index == root {
+                        prepared_specializations.take()
+                    } else {
+                        None
+                    };
+                    let prepare_specializations = &prepare_specializations;
                     let finished = finished.clone();
                     // Compilation used to run on a process's main thread.
                     // Recursive parsing and evaluation need more than the
@@ -440,7 +507,16 @@ fn run_in_directory(
                                 let _guard = lock.as_ref().map(|lock| {
                                     lock.lock().expect("shared host output lock poisoned")
                                 });
-                                compile_request(request, artifacts, Some(&files))
+                                let success = compile_request(
+                                    request,
+                                    artifacts,
+                                    Some(&files),
+                                    specializations,
+                                )?;
+                                let prepared = (success && specialization_producer == Some(index))
+                                    .then(|| prepare_specializations(index))
+                                    .flatten();
+                                Ok((success, prepared))
                             }));
                         })
                         .map_err(|error| format!("cannot start compiler unit: {error}"))?;
@@ -452,10 +528,13 @@ fn run_in_directory(
             let (index, result) = completions.recv().map_err(|e| e.to_string())?;
             running -= 1;
             match result {
-                Ok(true) => {
+                Ok((true, specializations)) => {
+                    if specializations.is_some() {
+                        prepared_specializations = specializations;
+                    }
                     done.insert(index);
                 }
-                Ok(false) => {
+                Ok((false, _)) => {
                     eprintln!("compilation of {} failed", sources[index].name);
                     diagnosed = true;
                 }
@@ -492,6 +571,16 @@ fn run_in_directory(
         )? {
             let bytes = std::fs::read(&request.output).map_err(|e| e.to_string())?;
             crate::flib::write_atomic(output, &bytes).map_err(|e| e.to_string())?;
+        }
+        if !shared_outputs && crate::flib_build::supports_dependency_specializations(options) {
+            crate::backend_workers::with_limit(jobs, || {
+                crate::flib_build::prepare_library_specializations(
+                    &request.output,
+                    &files,
+                    artifacts,
+                    options,
+                )
+            });
         }
     }
     Ok(ExitCode::SUCCESS)

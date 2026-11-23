@@ -127,7 +127,7 @@ pub struct Collected {
 
 /// [`collect`], with the instances whose address is taken.
 pub fn collect_all(hir: &Hir, sigs: &Signatures, mir: &FileMir) -> Result<Collected, Diagnostic> {
-    collect_roots(hir, sigs, mir, None, None, &[], None)
+    collect_roots(hir, sigs, mir, None, &[], StaticRoots::All, None)
 }
 
 /// Collects executable roots and additional concrete instances in one traversal.
@@ -138,7 +138,15 @@ pub fn collect_all_with_roots(
     mir: &FileMir,
     additional_roots: &[Instance],
 ) -> Result<Collected, Diagnostic> {
-    collect_roots(hir, sigs, mir, None, None, additional_roots, None)
+    collect_roots(
+        hir,
+        sigs,
+        mir,
+        None,
+        additional_roots,
+        StaticRoots::All,
+        None,
+    )
 }
 
 /// Collects instances reachable from explicit roots, without an executable entry point.
@@ -148,7 +156,7 @@ pub fn collect_from_roots(
     mir: &FileMir,
     roots: &[Instance],
 ) -> Result<Collected, Diagnostic> {
-    collect_roots(hir, sigs, mir, Some(roots), None, &[], None)
+    collect_roots(hir, sigs, mir, Some(roots), &[], StaticRoots::All, None)
 }
 
 /// Collects explicit roots and only the selected crates' static initializers.
@@ -160,7 +168,15 @@ pub fn collect_from_roots_in_crates(
     roots: &[Instance],
     static_crates: &[flux_hir::CrateId],
 ) -> Result<Collected, Diagnostic> {
-    collect_roots(hir, sigs, mir, Some(roots), Some(static_crates), &[], None)
+    collect_roots(
+        hir,
+        sigs,
+        mir,
+        Some(roots),
+        &[],
+        StaticRoots::Crates(static_crates),
+        None,
+    )
 }
 
 /// Collects executable roots with an explicit set of retained static definitions.
@@ -171,7 +187,15 @@ pub fn collect_all_with_roots_and_statics(
     additional_roots: &[Instance],
     statics: &[flux_hir::ConstId],
 ) -> Result<Collected, Diagnostic> {
-    collect_roots(hir, sigs, mir, None, None, additional_roots, Some(statics))
+    collect_roots(
+        hir,
+        sigs,
+        mir,
+        None,
+        additional_roots,
+        StaticRoots::Items(statics),
+        None,
+    )
 }
 
 /// Collects library instances and only its retained static definitions.
@@ -182,7 +206,62 @@ pub fn collect_from_roots_and_statics(
     roots: &[Instance],
     statics: &[flux_hir::ConstId],
 ) -> Result<Collected, Diagnostic> {
-    collect_roots(hir, sigs, mir, Some(roots), None, &[], Some(statics))
+    collect_roots(
+        hir,
+        sigs,
+        mir,
+        Some(roots),
+        &[],
+        StaticRoots::Items(statics),
+        None,
+    )
+}
+
+/// Collects executable instances, treating dependency definitions supplied by
+/// native objects as leaves. The roots must include those objects' requirements.
+pub fn collect_linked_executable(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    additional_roots: &[Instance],
+    statics: &[flux_hir::ConstId],
+    native_leaf: Option<&dyn Fn(Instance) -> bool>,
+) -> Result<Collected, Diagnostic> {
+    collect_roots(
+        hir,
+        sigs,
+        mir,
+        None,
+        additional_roots,
+        StaticRoots::Items(statics),
+        native_leaf,
+    )
+}
+
+/// Collects an explicit dependency closure without adding executable roots.
+/// The native objects supplying leaves must be supplied to the final link.
+pub fn collect_linked_roots(
+    hir: &Hir,
+    sigs: &Signatures,
+    mir: &FileMir,
+    roots: &[Instance],
+    native_leaf: Option<&dyn Fn(Instance) -> bool>,
+) -> Result<Collected, Diagnostic> {
+    collect_roots(
+        hir,
+        sigs,
+        mir,
+        Some(roots),
+        &[],
+        StaticRoots::Items(&[]),
+        native_leaf,
+    )
+}
+
+enum StaticRoots<'a> {
+    All,
+    Crates(&'a [flux_hir::CrateId]),
+    Items(&'a [flux_hir::ConstId]),
 }
 
 fn collect_roots(
@@ -190,9 +269,9 @@ fn collect_roots(
     sigs: &Signatures,
     mir: &FileMir,
     roots: Option<&[Instance]>,
-    static_crates: Option<&[flux_hir::CrateId]>,
     additional_roots: &[Instance],
-    static_items: Option<&[flux_hir::ConstId]>,
+    statics: StaticRoots<'_>,
+    native_leaf: Option<&dyn Fn(Instance) -> bool>,
 ) -> Result<Collected, Diagnostic> {
     let mut reified = FxHashSet::default();
     let mut instances = Vec::new();
@@ -273,10 +352,13 @@ fn collect_roots(
     // unbounded monomorphization of a function that is never called.
     for (id, value) in mir.const_values.items.iter() {
         if items.consts[id].is_static.is_none()
-            || static_crates.is_some_and(|crates| {
-                !crates.contains(&items.modules[items.consts[id].loc.module].krate)
-            })
-            || static_items.is_some_and(|items| !items.contains(&id))
+            || match statics {
+                StaticRoots::All => false,
+                StaticRoots::Crates(crates) => {
+                    !crates.contains(&items.modules[items.consts[id].loc.module].krate)
+                }
+                StaticRoots::Items(items) => !items.contains(&id),
+            }
         {
             continue;
         }
@@ -322,6 +404,9 @@ fn collect_roots(
     let mut next = 0;
     while let Some(&caller) = instances.get(next) {
         next += 1;
+        if native_leaf.is_some_and(|supplies| supplies(caller)) {
+            continue;
+        }
         if let Some(message) = neon_immediate_error(items, caller) {
             let function = &items.functions[caller.function];
             let mut error = Diagnostic::new(function.def_range, message);

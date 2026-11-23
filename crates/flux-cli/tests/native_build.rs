@@ -48,9 +48,12 @@ impl Fixture {
             .completed()
     }
     fn command(&self, args: &[&str], value: &str) -> Command {
+        self.command_from(Path::new(env!("CARGO_BIN_EXE_flux")), args, value)
+    }
+    fn command_from(&self, executable: &Path, args: &[&str], value: &str) -> Command {
         let mut paths = vec![self.path().join("tools")];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-        let mut command = Command::new(env!("CARGO_BIN_EXE_flux"));
+        let mut command = Command::new(executable);
         command
             .args(["build", "--offline", "--manifest-path"])
             .arg(self.path().join("Cargo.toml"))
@@ -509,4 +512,221 @@ pub fn mask(a:__m128i,b:__m128i)->u32 {
     assert!(rebuilt.contains("Fresh helper"), "{rebuilt}");
     assert!(rebuilt.contains("Compiling app"), "{rebuilt}");
     f.run(b"90 65535\n");
+}
+
+#[test]
+fn native_cutoff_reuses_dependency_objects_and_tracks_edits() {
+    let f = Fixture::new();
+    f.write(
+        "Cargo.toml",
+        "[package]\nname='app'\nversion='0.1.0'\nedition='2024'\n\
+         [dependencies]\nhelper={path='helper'}\n",
+    );
+    f.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    f.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['helper']\n\
+         [[package]]\nname='helper'\nversion='0.1.0'\n",
+    );
+    f.write(
+        "src/main.rs",
+        "fn main() { println!(\"{}\", helper::value()); }\n",
+    );
+    f.write("helper/src/lib.rs", "pub fn value() -> u32 { 42 }\n");
+
+    let build = |mode: Option<&str>| {
+        let mut command = f.command(&["--timings"], "unused");
+        if let Some(mode) = mode {
+            command.env("FLUX_EXPERIMENTAL_NATIVE_LINK", mode);
+        } else {
+            command.env_remove("FLUX_EXPERIMENTAL_NATIVE_LINK");
+        }
+        let label = mode.unwrap_or("default");
+        let output = support::process::run(&mut command, f.path(), label, Duration::from_secs(120))
+            .completed();
+        support::oracle::success(&output, label);
+        assert!(!f.path().join("compiler-was-called").exists());
+        String::from_utf8(output.stderr).unwrap()
+    };
+
+    let control = build(Some("separate"));
+    assert!(!control.contains("native cutoff:"), "{control}");
+    f.run(b"42\n");
+    let switched = build(None);
+    assert!(switched.contains("Compiling app"), "{switched}");
+    assert!(switched.contains("Fresh helper"), "{switched}");
+    assert!(
+        switched.lines().any(|line| {
+            line.strip_prefix("native cutoff: ")
+                .and_then(|rest| rest.strip_suffix(" verified dependency instances"))
+                .and_then(|count| count.parse::<usize>().ok())
+                .is_some_and(|count| count > 0)
+        }),
+        "{switched}"
+    );
+    f.run(b"42\n");
+
+    let unchanged = build(None);
+    assert!(unchanged.contains("Fresh app"), "{unchanged}");
+
+    f.write("helper/src/lib.rs", "pub fn value() -> u32 { 73 }\n");
+    let edited = build(None);
+    assert!(edited.contains("Compiling helper"), "{edited}");
+    f.run(b"73\n");
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn optimized_executable_reuses_current_dependency_specializations() {
+    let f = Fixture::new();
+    let staged = scratch::Scratch::new(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../out/native-build-staging"),
+    );
+    let wrapper = staged.path().join("flux");
+    let compiler = staged.path().join("fluxc");
+    std::fs::copy(env!("CARGO_BIN_EXE_flux"), &wrapper).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_fluxc"), &compiler).unwrap();
+    let stage = Command::new(&compiler)
+        .arg("build-builtins")
+        .env_remove("FLUX_BUILTINS_SOURCE")
+        .output()
+        .unwrap();
+    support::oracle::success(&stage, "stage built-ins for the release fixture");
+    f.write(
+        "Cargo.toml",
+        "[workspace]\nmembers=['helper']\ndefault-members=['.']\n\
+         [package]\nname='app'\nversion='0.1.0'\nedition='2024'\n\
+         [dependencies]\nhelper={path='helper'}\n[profile.release]\npanic='abort'\n",
+    );
+    f.write(
+        "Cargo.lock",
+        "version=4\n[[package]]\nname='app'\nversion='0.1.0'\ndependencies=['helper']\n\
+         [[package]]\nname='helper'\nversion='0.1.0'\n",
+    );
+    f.write(
+        "helper/Cargo.toml",
+        "[package]\nname='helper'\nversion='0.1.0'\nedition='2024'\n",
+    );
+    let helper = |offset: u32| {
+        f.write(
+            "helper/src/lib.rs",
+            &format!(
+                "static VALUES: [u32; 3] = [1, 3, 7];\n\
+                 #[track_caller] pub fn location() -> &'static str {{\n\
+                     std::panic::Location::caller().file()\n\
+                 }}\n\
+                 pub fn value() -> u32 {{\n\
+                     let values = VALUES.iter().map(|v| v * 2).collect::<Vec<_>>();\n\
+                     let sum: Box<dyn Fn() -> u32> = Box::new(move || values.iter().sum());\n\
+                     sum() + {offset}\n\
+                 }}\n"
+            ),
+        );
+    };
+    let consumer = |file: &str, word: &str| {
+        f.write(
+            file,
+            &format!(
+                r#"fn main() {{
+                    let items = vec![String::from("{word}")];
+                    println!("{{}} {{}} {{}}", helper::value(),
+                        helper::location().ends_with(file!()), items[0]);
+                }}"#
+            ),
+        );
+    };
+    let run_build = |args: &[&str]| {
+        let mut command = f.command_from(&wrapper, args, "");
+        command
+            .env_remove("FLUX_BUILTINS_SOURCE")
+            .env_remove("FLUX_EXPERIMENTAL_NATIVE_LINK");
+        let built =
+            support::process::run(&mut command, f.path(), "build", Duration::from_secs(120))
+                .completed();
+        support::oracle::success(&built, "release fixture build");
+        assert!(!f.path().join("compiler-was-called").exists());
+        String::from_utf8(built.stderr).unwrap()
+    };
+    let release = f.path().join("target/flux/release");
+    let build = |target: &str, expected: &str| {
+        let log = run_build(&["--release", "--timings", "--bin", target]);
+        let output = Command::new(release.join(target)).output().unwrap();
+        support::oracle::success(&output, "specialized executable");
+        assert_eq!(output.stdout, expected.as_bytes());
+        assert!(
+            !release
+                .join(format!("{target}.dependency-specializations"))
+                .exists()
+        );
+        log
+    };
+
+    helper(3);
+    consumer("src/main.rs", "first");
+    consumer("src/bin/second.rs", "another");
+    let library = run_build(&["--release", "--timings", "--lib", "-p", "helper"]);
+    assert!(
+        library.contains("Preparing native specializations"),
+        "{library}"
+    );
+    let mut entries: Vec<_> = std::fs::read_dir(release.join("deps"))
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name.starts_with("helper-")
+                        && name.ends_with(".flib.dependency-specializations")
+                })
+                .then_some(path)
+        })
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let cache = entries.pop().unwrap();
+    let original = std::fs::read(&cache).unwrap();
+
+    let first = build("app", "25 true first\n");
+    assert!(first.contains("Fresh helper"), "{first}");
+    assert!(
+        !first.contains("dependency specialization lowering"),
+        "{first}"
+    );
+    let another = build("second", "25 true another\n");
+    assert!(
+        !another.contains("dependency specialization lowering"),
+        "{another}"
+    );
+
+    consumer("src/main.rs", "edited");
+    let edited = build("app", "25 true edited\n");
+    assert!(!edited.contains("Compiling helper"), "{edited}");
+    assert!(
+        !edited.contains("dependency specialization lowering"),
+        "{edited}"
+    );
+    assert_eq!(std::fs::read(&cache).unwrap(), original);
+
+    let mut corrupt = original.clone();
+    *corrupt.last_mut().expect("cache contains an object") ^= 1;
+    std::fs::write(&cache, corrupt).unwrap();
+    consumer("src/main.rs", "again");
+    let recovered = build("app", "25 true again\n");
+    assert!(
+        recovered.contains("dependency specialization cache write"),
+        "{recovered}"
+    );
+    assert_eq!(std::fs::read(&cache).unwrap(), original);
+
+    helper(5);
+    let changed = build("app", "27 true again\n");
+    let prepared = changed
+        .find("Preparing native specializations")
+        .expect(&changed);
+    let launcher = changed.find("Compiling app").expect(&changed);
+    assert!(prepared < launcher, "{changed}");
+    assert_ne!(std::fs::read(&cache).unwrap()[..32], original[..32]);
 }

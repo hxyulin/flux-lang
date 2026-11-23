@@ -106,6 +106,18 @@ pub struct Hir {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+impl Hir {
+    /// Wraps checked dependency items for consumers of artifact bodies.
+    pub fn from_checked_items(items: ItemTree) -> Self {
+        Self {
+            items,
+            bodies: ArenaMap::default(),
+            const_bodies: ArenaMap::default(),
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
 /// Builds the item tree of the crate whose root file is `root`, after
 /// `core`'s, and lowers every body.
 pub fn lower(db: &mut SourceDb, root: FileId, crate_name: Symbol) -> Hir {
