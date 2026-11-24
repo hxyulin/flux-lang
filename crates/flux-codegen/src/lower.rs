@@ -3108,7 +3108,103 @@ struct Storage {
     addresses: Vec<Option<Value>>,
 }
 
+/// Checks whether any path to a call took the address of its result
+/// temporary since the last end of that temporary's storage lifetime.
+fn result_slot_is_fresh(
+    body: &Body,
+    predecessors: &[Vec<flux_mir::BasicBlock>],
+    call: flux_mir::BasicBlock,
+    local: Local,
+    budget: &mut usize,
+) -> bool {
+    let mut visited = vec![false; body.blocks.len()];
+    let mut pending = vec![call];
+    while let Some(block) = pending.pop() {
+        if std::mem::replace(&mut visited[block.index()], true) {
+            continue;
+        }
+        let statements = &body.blocks[block].statements;
+        let incoming = &predecessors[block.index()];
+        let Some(remaining) = budget.checked_sub(1 + statements.len() + incoming.len()) else {
+            *budget = 0;
+            return false;
+        };
+        *budget = remaining;
+        let mut lifetime_ended = false;
+        for statement in statements.iter().rev() {
+            match &statement.kind {
+                StatementKind::StorageDead(dead) if *dead == local => {
+                    lifetime_ended = true;
+                    break;
+                }
+                StatementKind::Assign(_, Rvalue::Ref { place, .. })
+                    if place.local == local && !place.has_deref() =>
+                {
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        if !lifetime_ended {
+            pending.extend_from_slice(incoming);
+        }
+    }
+    true
+}
+
 impl Lower<'_, '_, '_> {
+    /// Permits a Rust call to write into a result temporary that is borrowed
+    /// only after the call. The ordinary lowering checks its arguments before
+    /// passing the slot to the callee.
+    fn allow_fresh_return_slots(&mut self, borrowed: &[bool], definitions: &[usize]) {
+        if self.ctx.panic_strategy != flux_mir::PanicStrategy::Abort
+            || !borrowed.iter().any(|&borrowed| borrowed)
+        {
+            return;
+        }
+        let body = self.body;
+        let mut flow = None;
+        for (block, data) in body.blocks.iter() {
+            let TerminatorKind::Call {
+                func,
+                dest,
+                target: Some(_),
+                ..
+            } = &data.terminator.kind
+            else {
+                continue;
+            };
+            let index = dest.local.index();
+            if !dest.projection.is_empty()
+                || !borrowed[index]
+                || definitions[index] != 1
+                || body.locals[dest.local].kind != flux_mir::LocalKind::Temp
+                || self.ctx.hir.items.functions[*func].abi.is_c()
+                || !is_memory(self.sigs, body.locals[dest.local].ty)
+            {
+                continue;
+            }
+            let (predecessors, budget) = flow.get_or_insert_with(|| {
+                let mut predecessors = vec![Vec::new(); body.blocks.len()];
+                let mut work = body.blocks.len();
+                for (block, data) in body.blocks.iter() {
+                    work += data.statements.len();
+                    for successor in data.terminator.successors() {
+                        predecessors[successor.index()].push(block);
+                        work += 1;
+                    }
+                }
+                // Bound the combined cost of all backward searches in a body.
+                (predecessors, work.saturating_mul(4))
+            });
+            if *budget == 0 {
+                break;
+            }
+            self.direct_sret[index] =
+                result_slot_is_fresh(body, predecessors, block, dest.local, budget);
+        }
+    }
+
     /// The address of the storage that local `root` and the locals
     /// coalesced with it share: the caller's return memory, a field of
     /// an aggregate's or a new stack slot.
@@ -3164,6 +3260,7 @@ impl Lower<'_, '_, '_> {
             .zip(&borrowed)
             .map(|(&n, &borrowed)| n == 1 && !borrowed)
             .collect();
+        self.allow_fresh_return_slots(&borrowed, &definitions);
         self.return_slot_unborrowed = !borrowed[Body::RETURN.index()];
         self.b.switch_to_block(entry);
         if body.has_unwind() {
