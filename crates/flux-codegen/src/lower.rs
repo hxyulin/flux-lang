@@ -2604,6 +2604,7 @@ struct Lower<'a, 'c, 'f> {
 struct MemoryStorage {
     borrowed: Vec<bool>,
     definitions: Vec<usize>,
+    table_constants: FxHashMap<Local, Constant>,
     /// The local whose storage each local shares.
     roots: Vec<usize>,
     /// Locals stored inside the aggregate they are an operand of: the
@@ -2632,6 +2633,7 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
     let mut uses = vec![0; count];
     let mut copies = Vec::new();
     let mut operands = Vec::new();
+    let mut table_constants = FxHashMap::default();
     for param in body.params() {
         definitions[param.index()] += 1;
     }
@@ -2659,6 +2661,13 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
                     operand(op, &mut uses);
                 }
                 match value {
+                    Rvalue::Use(Operand::Const(constant @ Constant::Item { ty, .. }))
+                        if dest.projection.is_empty()
+                            && dest.local != Body::RETURN
+                            && matches!(ty.kind(), TyKind::Array(_, n) if array_len(n) >= 128) =>
+                    {
+                        table_constants.insert(dest.local, *constant);
+                    }
                     Rvalue::Ref { place, .. } => {
                         uses[place.local.index()] += 1;
                         if !place.has_deref() {
@@ -2729,6 +2738,36 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
             TerminatorKind::Drop { place, .. } => uses[place.local.index()] += 1,
             TerminatorKind::Return => uses[Body::RETURN.index()] += 1,
             _ => {}
+        }
+    }
+    table_constants.retain(|local, _| definitions[local.index()] == 1 && !borrowed[local.index()]);
+    if !table_constants.is_empty() {
+        // Array constants are values, so any write, borrow, or whole-value
+        // use needs its own storage. Indexed scalar reads can use read-only
+        // data directly.
+        for block in body.blocks.values() {
+            for statement in &block.statements {
+                if let StatementKind::Assign(dest, value) = &statement.kind {
+                    if !dest.projection.is_empty() {
+                        table_constants.remove(&dest.local);
+                    }
+                    for operand in value.operands() {
+                        reject_table_address(operand, &mut table_constants);
+                    }
+                }
+            }
+            if let TerminatorKind::Call { dest, .. } | TerminatorKind::CallIndirect { dest, .. } =
+                &block.terminator.kind
+                && !dest.projection.is_empty()
+            {
+                table_constants.remove(&dest.local);
+            }
+            if let TerminatorKind::Drop { place, .. } = &block.terminator.kind {
+                table_constants.remove(&place.local);
+            }
+            for operand in block.terminator.kind.operands() {
+                reject_table_address(operand, &mut table_constants);
+            }
         }
     }
     // A branch can construct a field in the return slot even when other
@@ -2841,8 +2880,24 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
     MemoryStorage {
         borrowed,
         definitions,
+        table_constants,
         roots,
         fields,
+    }
+}
+
+fn reject_table_address(operand: &Operand, candidates: &mut FxHashMap<Local, Constant>) {
+    match operand {
+        Operand::Copy(place)
+            if place.projection.len() == 1
+                && matches!(
+                    place.projection.first(),
+                    Some(ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. })
+                ) => {}
+        Operand::Copy(place) | Operand::Move(place) => {
+            candidates.remove(&place.local);
+        }
+        Operand::Const(_) => {}
     }
 }
 
@@ -2896,6 +2951,7 @@ impl Lower<'_, '_, '_> {
         let MemoryStorage {
             borrowed,
             definitions,
+            table_constants,
             roots,
             fields,
         } = memory_storage(body, sigs);
@@ -2929,6 +2985,32 @@ impl Lower<'_, '_, '_> {
             placed,
             addresses: vec![None; body.locals.len()],
         };
+        let mut shared_tables = FxHashSet::default();
+        for (local, constant) in table_constants {
+            let Constant::Item { id, args, ty } = constant else {
+                unreachable!("only named array constants are candidates");
+            };
+            let Some(value) = self.constant_item_value(id, args) else {
+                continue;
+            };
+            let TyKind::Array(elem, _) = ty.kind() else {
+                unreachable!("only array constants are candidates");
+            };
+            use flux_mir::eval::Value as V;
+            if self.ctx.layouts.of(elem).size == 1
+                && let V::Aggregate(elements) = &value
+                && elements.iter().all(|value| {
+                    matches!(value, V::Int { .. })
+                        || matches!(value, V::Variant { fields, .. } if fields.is_empty())
+                })
+            {
+                let name = self.ctx.promoted(&value, ty);
+                let data = self.b.import_data(&name);
+                storage.addresses[local.index()] =
+                    Some(self.b.ins().symbol_addr(keel_ir::Symbol::Data(data)));
+                shared_tables.insert(local);
+            }
+        }
         for (local, decl) in body.locals.iter() {
             if storage.placed[local.index()].is_some()
                 || borrowed[local.index()]
@@ -2985,6 +3067,9 @@ impl Lower<'_, '_, '_> {
             self.b.switch_to_block(self.blocks[block.index()]);
             for statement in &data.statements {
                 if let StatementKind::Assign(dest, rvalue) = &statement.kind {
+                    if shared_tables.contains(&dest.local) {
+                        continue;
+                    }
                     let ty = body.place_ty(dest, sigs);
                     if is_memory(sigs, ty)
                         && let Rvalue::Aggregate(..) | Rvalue::Repeat(..) = rvalue
