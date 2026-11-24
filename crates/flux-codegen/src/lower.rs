@@ -1493,10 +1493,10 @@ fn is_memory_uncached(sigs: &Signatures, ty: Ty) -> bool {
 /// An enum with more leaves than this lives in memory. Held in variables,
 /// an enum carries every variant's fields, and each copy, argument and
 /// return moves all of them, though only one variant's mean anything.
-/// In memory, a copy moves the bytes of the actual layout. A limit of 32
+/// In memory, a copy moves the bytes of the actual layout. A limit of 12
 /// keeps small enums scalar and avoids passing all variants of generated
 /// lexer results in separate slots.
-const ENUM_MEMORY_LEAVES: usize = 32;
+const ENUM_MEMORY_LEAVES: usize = 12;
 
 /// keel expands a `memmove` of up to this many bytes into loads and
 /// stores itself, after inlining, and calls the C library's for more.
