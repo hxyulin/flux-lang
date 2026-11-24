@@ -3115,12 +3115,13 @@ fn result_slot_is_fresh(
     predecessors: &[Vec<flux_mir::BasicBlock>],
     call: flux_mir::BasicBlock,
     local: Local,
+    visited: &mut [Option<flux_mir::BasicBlock>],
     budget: &mut usize,
 ) -> bool {
-    let mut visited = vec![false; body.blocks.len()];
     let mut pending = vec![call];
     while let Some(block) = pending.pop() {
-        if std::mem::replace(&mut visited[block.index()], true) {
+        // Each call block has its own mark, so searches can reuse this array.
+        if visited[block.index()].replace(call) == Some(call) {
             continue;
         }
         let statements = &body.blocks[block].statements;
@@ -3184,7 +3185,7 @@ impl Lower<'_, '_, '_> {
             {
                 continue;
             }
-            let (predecessors, budget) = flow.get_or_insert_with(|| {
+            let (predecessors, visited, budget) = flow.get_or_insert_with(|| {
                 let mut predecessors = vec![Vec::new(); body.blocks.len()];
                 let mut work = body.blocks.len();
                 for (block, data) in body.blocks.iter() {
@@ -3195,13 +3196,14 @@ impl Lower<'_, '_, '_> {
                     }
                 }
                 // Bound the combined cost of all backward searches in a body.
-                (predecessors, work.saturating_mul(4))
+                let visited = vec![None; body.blocks.len()];
+                (predecessors, visited, work.saturating_mul(4))
             });
             if *budget == 0 {
                 break;
             }
             self.direct_sret[index] =
-                result_slot_is_fresh(body, predecessors, block, dest.local, budget);
+                result_slot_is_fresh(body, predecessors, block, dest.local, visited, budget);
         }
     }
 
