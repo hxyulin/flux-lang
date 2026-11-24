@@ -225,6 +225,56 @@ pub fn offset(pointer: *const u16, index: usize) -> *const u16 {
 }
 
 #[test]
+fn optimized_pop_forwards_immediate_payload_reads() {
+    use flux_codegen::{ObjectOptimization, lower_with_optimization};
+
+    let (_, _, hir) = flux_hir::lower_text(
+        "popped_payload.rs",
+        include_str!("../../../tests/run/popped_payload.rs"),
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let module = lower_with_optimization(
+        &hir,
+        &typed,
+        &mir,
+        None,
+        ObjectOptimization::Tier(OptimizationTier::Full),
+        None,
+    )
+    .expect("lower the vector payload fixture")
+    .module;
+    keel_ir::verify_module(&module).expect("forwarded payloads keep valid IR");
+    for (name, expected) in [
+        ("4take", true),
+        ("11replace_top", false),
+        ("13pass_by_value", false),
+    ] {
+        let function = module
+            .functions
+            .iter()
+            .find(|f| f.name.contains(name))
+            .unwrap_or_else(|| panic!("missing payload fixture {name}"));
+        assert_eq!(
+            function.layout_insts().any(|(_, inst)| matches!(
+                function.inst_data(inst),
+                keel_ir::InstData::Call { func, .. }
+                    if function.callee(*func).name.starts_with("__flux_pop_slot_")
+            )),
+            expected,
+            "{name} payload forwarding"
+        );
+    }
+    for target in [Target::Aarch64AppleDarwin, Target::X86_64LinuxGnu] {
+        flux_codegen::compile_object(&mut module.clone(), target, OptimizationTier::Full)
+            .unwrap_or_else(|error| panic!("compile payload forwarding for {target:?}: {error}"));
+    }
+}
+
+#[test]
 fn optimized_library_specializes_fresh_pure_string_membership() {
     use flux_codegen::{ObjectOptimization, lower_with_optimization};
 

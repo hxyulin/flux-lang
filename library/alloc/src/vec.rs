@@ -256,6 +256,8 @@ impl<T> Vec<T> {
     }
 
     /// Adds `value` at the end, growing if it is full.
+    // Optimized calls can initialize an existing slot with the same layout.
+    #[lang = "vec_push"]
     pub fn push(&mut self, value: T) {
         let len = self.len;
         if len == self.buf.capacity() {
@@ -275,6 +277,9 @@ impl<T> Vec<T> {
     }
 
     /// Removes the last element.
+    // Code generation can borrow the slot for immediate field reads of this
+    // result. Keep the optimized path aligned with this implementation.
+    #[lang = "vec_pop"]
     pub fn pop(&mut self) -> Option<T> {
         if self.len == 0 {
             None

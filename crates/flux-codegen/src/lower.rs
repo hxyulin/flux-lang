@@ -33,6 +33,8 @@
 
 mod abi;
 mod deferred_copy;
+mod popped_payload;
+mod push_slots;
 mod reachability;
 mod shapes;
 mod string_membership;
@@ -832,6 +834,38 @@ fn lower_inner(
         panic_strategy: mir.panic_strategy,
         mir,
         specialize_string_scans: inline_small_builtins,
+        projected_pop: if matches!(
+            optimization,
+            Some(crate::ObjectOptimization::Tier(
+                crate::OptimizationTier::Full
+            ))
+        ) && mir.panic_strategy == flux_mir::PanicStrategy::Abort
+        {
+            items
+                .lang_fns
+                .get(&flux_intern::Symbol::intern("vec_pop"))
+                .copied()
+        } else {
+            None
+        },
+        pop_slot_helpers: FxHashMap::default(),
+        direct_push: if matches!(
+            optimization,
+            Some(crate::ObjectOptimization::Tier(
+                crate::OptimizationTier::Full
+            ))
+        ) && mir.panic_strategy == flux_mir::PanicStrategy::Abort
+            && cfg!(target_arch = "aarch64")
+        {
+            items
+                .lang_fns
+                .get(&flux_intern::Symbol::intern("vec_push"))
+                .copied()
+        } else {
+            None
+        },
+        push_layouts: FxHashMap::default(),
+        checked_pushes: FxHashSet::default(),
         defer_aggregate_copies: matches!(
             optimization,
             Some(crate::ObjectOptimization::Tier(
@@ -1113,6 +1147,9 @@ fn lower_inner(
     }
     unwind::declare_personality(&mut module);
     module.sync_function_attrs();
+    if !ctx.push_layouts.is_empty() {
+        push_slots::forward_module(&mut module, &ctx.push_layouts);
+    }
     if let Some(error) = mir.deferred_error() {
         return Err(vec![Diagnostic::new(Default::default(), error.to_string())]);
     }
@@ -1962,6 +1999,11 @@ struct ReferencedStorage {
 }
 
 struct Ctx<'a> {
+    projected_pop: Option<FunctionId>,
+    pop_slot_helpers: FxHashMap<Instance, String>,
+    direct_push: Option<FunctionId>,
+    push_layouts: FxHashMap<String, push_slots::VecLayout>,
+    checked_pushes: FxHashSet<Instance>,
     panic_strategy: flux_mir::PanicStrategy,
     mir: &'a FileMir,
     specialize_string_scans: bool,
@@ -2160,6 +2202,12 @@ impl Ctx<'_> {
             cleanup_propagates: None,
         };
         self.builder_context = lower.body();
+        if let Some(push) = self.direct_push {
+            push_slots::record_calls(self, push, body);
+        }
+        if let Some(pop) = self.projected_pop {
+            popped_payload::forward(self, pop, body, &mut function);
+        }
         function
     }
 
