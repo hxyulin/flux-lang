@@ -32,8 +32,10 @@
 //! and its length.
 
 mod abi;
+mod deferred_copy;
 mod reachability;
 mod shapes;
+mod string_membership;
 mod unwind;
 use abi::{
     Argument, Convention, Return, attrs, c_signature, check_c_abi, ctx_signature, signature,
@@ -252,6 +254,7 @@ pub fn lower_with_optimization(
         timings,
         LoweringPolicy {
             inline_small_builtins,
+            optimization: Some(optimization),
             ..LoweringPolicy::default()
         },
     )
@@ -318,6 +321,7 @@ struct LoweringPolicy<'a> {
     identity: SymbolIdentity,
     provided_symbols: Option<NativeDefinitions<'a>>,
     inline_small_builtins: bool,
+    optimization: Option<crate::ObjectOptimization>,
 }
 
 /// Lowers a separately linked executable. The symbol set must come from the
@@ -362,6 +366,30 @@ pub fn lower_with_native_definitions(
     definitions: NativeDefinitions<'_>,
     timings: Option<&mut LoweringTimings>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    lower_native_object(
+        hir,
+        typed,
+        mir,
+        compilation,
+        definitions,
+        crate::ObjectOptimization::Tier(crate::OptimizationTier::None),
+        timings,
+    )
+}
+
+/// Lowers separately linked code with its selected optimization tier.
+///
+/// # Errors
+/// Returns the same diagnostics as [`lower_crate_with_requirements`].
+pub fn lower_native_object(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Compilation<'_>,
+    definitions: NativeDefinitions<'_>,
+    optimization: crate::ObjectOptimization,
+    timings: Option<&mut LoweringTimings>,
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
     lower_inner(
         hir,
         typed,
@@ -370,6 +398,7 @@ pub fn lower_with_native_definitions(
         timings,
         LoweringPolicy {
             provided_symbols: Some(definitions),
+            optimization: Some(optimization),
             ..LoweringPolicy::default()
         },
     )
@@ -387,6 +416,7 @@ fn lower_inner(
         identity,
         provided_symbols,
         inline_small_builtins,
+        optimization,
     } = policy;
     // Exceptional bodies cannot silently use abort-mode object emission.
     if mir.panic_strategy == flux_mir::PanicStrategy::Abort
@@ -800,6 +830,14 @@ fn lower_inner(
             .map(|decl| (decl.name.clone(), decl.sig.clone()))
             .collect(),
         panic_strategy: mir.panic_strategy,
+        mir,
+        specialize_string_scans: inline_small_builtins,
+        defer_aggregate_copies: matches!(
+            optimization,
+            Some(crate::ObjectOptimization::Tier(
+                crate::OptimizationTier::Full
+            ))
+        ) && mir.panic_strategy == flux_mir::PanicStrategy::Abort,
         indirect_thunks: FxHashMap::default(),
         generated_functions: Vec::new(),
         builder_context: FunctionBuilderContext::new(),
@@ -848,8 +886,8 @@ fn lower_inner(
         {
             if inline_small_builtins
                 && instance.function.index() < items.core.functions as usize
-                && instance.args.is_empty()
                 && let Some(body) = mir.instance_body(items, instance).map(|(body, _)| body)
+                && (instance.args.is_empty() || pointer_intrinsic_wrapper(items, body))
                 && small_import_body(&items.functions[instance.function], body)
             {
                 let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
@@ -1373,6 +1411,31 @@ fn small_import_body(info: &flux_hir::Function, body: &Body) -> bool {
                     | TerminatorKind::Unreachable
             )
         })
+}
+
+/// Admit generic built-ins before substitution when they just forward a
+/// pointer operation to an intrinsic. Full lowering still uses the actual
+/// instance's layout and ABI.
+fn pointer_intrinsic_wrapper(items: &flux_hir::ItemTree, body: &Body) -> bool {
+    use flux_hir::Intrinsic::{PtrAdd, RawSliceLen};
+
+    if body.blocks.len() > 4 || body.locals.len() > 10 {
+        return false;
+    }
+    let mut intrinsic = None;
+    for block in body.blocks.values() {
+        match block.terminator.kind {
+            TerminatorKind::Goto(_) | TerminatorKind::Return => {}
+            TerminatorKind::Call { func, .. }
+                if intrinsic.is_none()
+                    && matches!(items.functions[func].intrinsic, Some(PtrAdd | RawSliceLen)) =>
+            {
+                intrinsic = items.functions[func].intrinsic;
+            }
+            _ => return false,
+        }
+    }
+    intrinsic.is_some()
 }
 
 fn redirect_small_import_calls(module: &mut Module, copies: Vec<(String, Function)>) {
@@ -1900,6 +1963,9 @@ struct ReferencedStorage {
 
 struct Ctx<'a> {
     panic_strategy: flux_mir::PanicStrategy,
+    mir: &'a FileMir,
+    specialize_string_scans: bool,
+    defer_aggregate_copies: bool,
     indirect_thunks: FxHashMap<Signature, String>,
     generated_functions: Vec<Function>,
     /// Reuse SSA construction tables across functions without retaining their state.
@@ -2079,6 +2145,7 @@ impl Ctx<'_> {
             b: FunctionBuilder::with_context(&mut function, builder_context),
             blocks: Vec::new(),
             vars: Vec::new(),
+            scan_activity: None,
             variable_lists: SlicePool::default(),
             slots: Vec::new(),
             sret: None,
@@ -2705,6 +2772,7 @@ struct Lower<'a, 'c, 'f> {
     ctx: &'c mut Ctx<'a>,
     sigs: &'a Signatures,
     body: &'c Body,
+    scan_activity: Option<string_membership::LocalActivity>,
     /// The file the body's ranges are in.
     file: flux_hir::FileId,
     convention: Convention,
@@ -2742,8 +2810,10 @@ struct Lower<'a, 'c, 'f> {
 
 /// Where locals of memory types are stored, from [`memory_storage`].
 struct MemoryStorage {
+    acyclic: bool,
     borrowed: Vec<bool>,
     definitions: Vec<usize>,
+    uses: Vec<usize>,
     table_constants: FxHashMap<Local, Constant>,
     /// The local whose storage each local shares.
     roots: Vec<usize>,
@@ -3018,8 +3088,10 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
         }
     }
     MemoryStorage {
+        acyclic,
         borrowed,
         definitions,
+        uses,
         table_constants,
         roots,
         fields,
@@ -3250,13 +3322,17 @@ impl Lower<'_, '_, '_> {
         // take blocks of its own (an enum's variants), then `bb0` runs.
         let entry = self.b.create_block();
         self.blocks = body.blocks.iter().map(|_| self.b.create_block()).collect();
+        let memory = memory_storage(body, sigs);
+        let deferred_copy = deferred_copy::plan(&mut self, &memory);
         let MemoryStorage {
             borrowed,
             definitions,
+            uses,
             table_constants,
             roots,
             fields,
-        } = memory_storage(body, sigs);
+            ..
+        } = memory;
         let mut placed = vec![None; body.locals.len()];
         for &(src, dest, field) in &fields {
             placed[src] = Some((dest, field));
@@ -3268,6 +3344,9 @@ impl Lower<'_, '_, '_> {
             .map(|(&n, &borrowed)| n == 1 && !borrowed)
             .collect();
         self.allow_fresh_return_slots(&borrowed, &definitions);
+        if self.ctx.specialize_string_scans {
+            self.scan_activity = Some(string_membership::LocalActivity { definitions, uses });
+        }
         self.return_slot_unborrowed = !borrowed[Body::RETURN.index()];
         self.b.switch_to_block(entry);
         if body.has_unwind() {
@@ -3344,8 +3423,16 @@ impl Lower<'_, '_, '_> {
                 self.vars.push(vars);
             }
         }
+        let mut deferred_source = None;
         for param in body.params() {
             let ty = body.locals[param].ty;
+            if deferred_copy.is_some_and(|plan| plan.argument == param) {
+                let incoming = self.b.append_block_param(entry, Type::Ptr);
+                let address = self.b.declare_var(Type::Ptr);
+                self.b.def_var(address, incoming);
+                deferred_source = Some((incoming, address));
+                continue;
+            }
             match self.convention.argument(sigs, &self.ctx.layouts, ty) {
                 Argument::Ignore => continue,
                 Argument::Indirect | Argument::ByVal(_) => {
@@ -3406,6 +3493,34 @@ impl Lower<'_, '_, '_> {
                     }
                     let values = self.rvalue(rvalue, ty);
                     self.write(dest, &values);
+                }
+            }
+            if let Some(plan) = deferred_copy
+                && let Some((incoming, address)) = deferred_source
+            {
+                let ty = body.locals[plan.argument].ty;
+                if block == plan.snapshot {
+                    let slot = self.slots[plan.argument.index()]
+                        .expect("a deferred aggregate has stack storage");
+                    self.copy(slot, incoming, ty);
+                    self.b.def_var(address, slot);
+                }
+                if block == plan.write {
+                    let TerminatorKind::Call {
+                        args,
+                        dest,
+                        target: Some(target),
+                        ..
+                    } = &data.terminator.kind
+                    else {
+                        unreachable!("a deferred aggregate has a verified copy-out call");
+                    };
+                    let target_address = self.operand(&args[0])[0];
+                    let source = self.b.use_var(address);
+                    self.copy(target_address, source, ty);
+                    self.write(dest, &[]);
+                    self.b.ins().jump(self.blocks[target.index()], &[]);
+                    continue;
                 }
             }
             self.terminator(&data.terminator.kind, data.terminator.range.start(), block);
@@ -5845,6 +5960,23 @@ impl Lower<'_, '_, '_> {
                     .is_some_and(|intrinsic| !intrinsic.is_coroutine())
                 {
                     self.dyn_intrinsic(*func, args, dest, *target);
+                    return;
+                }
+                if self.scan_activity.is_some()
+                    && let Some(target) = *target
+                    && string_membership::lower(
+                        self,
+                        Instance {
+                            function: *func,
+                            args: generic_args,
+                        },
+                        block,
+                        args,
+                        dest,
+                        target,
+                    )
+                    .is_some()
+                {
                     return;
                 }
                 let callee = self.callee(*func, generic_args);

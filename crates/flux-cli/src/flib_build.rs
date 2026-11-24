@@ -612,7 +612,7 @@ pub(crate) fn compile_native_pipelined(
                 let compilation =
                     compilation.expect("separate executable uses checked dependencies");
                 let lower = |parts: Option<&mut flux_codegen::LoweringTimings>| {
-                    flux_codegen::lower_with_native_definitions(
+                    flux_codegen::lower_native_object(
                         &hir,
                         &typed,
                         &mir,
@@ -625,6 +625,7 @@ pub(crate) fn compile_native_pipelined(
                             specializations: Some(&specializations.symbols),
                             specialization_roots: None,
                         },
+                        options.object_options().optimization,
                         parts,
                     )
                 };
@@ -695,26 +696,25 @@ pub(crate) fn compile_native_pipelined(
                     native_function_symbols(&state.objects)
                 })?;
                 let compilation = compilation.expect("separate executable has native requirements");
-                if options.timings {
-                    timings.time_lowering(|parts| {
-                        flux_codegen::lower_linked_executable(
-                            &hir,
-                            &typed,
-                            &mir,
-                            compilation,
-                            &defined,
-                            Some(parts),
-                        )
-                    })
-                } else {
-                    flux_codegen::lower_linked_executable(
+                let lower = |parts: Option<&mut flux_codegen::LoweringTimings>| {
+                    flux_codegen::lower_native_object(
                         &hir,
                         &typed,
                         &mir,
                         compilation,
-                        &defined,
-                        None,
+                        flux_codegen::NativeDefinitions {
+                            dependencies: &defined,
+                            specializations: None,
+                            specialization_roots: None,
+                        },
+                        options.object_options().optimization,
+                        parts,
                     )
+                };
+                if options.timings {
+                    timings.time_lowering(|parts| lower(Some(parts)))
+                } else {
+                    lower(None)
                 }
             } else if units.get() == 1 && options.timings {
                 timings.time_lowering(|parts| {
@@ -1102,7 +1102,7 @@ fn specialize_on_demand(
         .collect();
     let (hir, typed, mir) = demand.codegen;
     let lower = |symbols: &HashSet<String>| {
-        flux_codegen::lower_with_native_definitions(
+        flux_codegen::lower_native_object(
             hir,
             typed,
             mir,
@@ -1115,6 +1115,7 @@ fn specialize_on_demand(
                 specializations: Some(symbols),
                 specialization_roots: None,
             },
+            link.options.object_options().optimization,
             None,
         )
         .map(|lowered| lowered.module)

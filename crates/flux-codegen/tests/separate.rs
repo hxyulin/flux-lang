@@ -131,6 +131,10 @@ fn optimized_library_imports_small_builtin_bodies_for_direct_calls() {
         r#"
 pub fn multiply(a: u32, b: u32) -> u32 { a.wrapping_mul(b) }
 pub fn pointer() -> fn(u32, u32) -> u32 { u32::wrapping_mul }
+pub fn length(values: &[u32]) -> usize { values.len() }
+pub fn offset(pointer: *const u16, index: usize) -> *const u16 {
+    unsafe { pointer.add(index) }
+}
 "#,
     );
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
@@ -172,17 +176,23 @@ pub fn pointer() -> fn(u32, u32) -> u32 { u32::wrapping_mul }
     let copy = optimized
         .functions
         .iter()
-        .find(|f| f.name.starts_with(prefix))
+        .find(|f| f.name.starts_with(prefix) && f.name.contains("wrapping_mul"))
         .unwrap();
     assert!(copy.local && copy.attrs.alwaysinline);
     let original = copy.name.strip_prefix(prefix).unwrap();
     let mut copied_call = false;
     let mut original_address = false;
+    let mut imported_length = false;
+    let mut imported_offset = false;
     for function in &optimized.functions {
         for (_, inst) in function.layout_insts() {
             match function.inst_data(inst) {
                 InstData::Call { func, .. } => {
-                    copied_call |= function.callee(*func).name == copy.name
+                    let name = &function.callee(*func).name;
+                    copied_call |= *name == copy.name;
+                    imported_length |=
+                        name.starts_with(prefix) && name.contains("5slice5slice3len");
+                    imported_offset |= name.starts_with(prefix) && name.contains("9const_ptr3add");
                 }
                 InstData::SymbolAddr {
                     symbol: KeelSymbol::Func(func),
@@ -196,6 +206,14 @@ pub fn pointer() -> fn(u32, u32) -> u32 { u32::wrapping_mul }
     }
     assert!(copied_call, "the direct call should see the imported body");
     assert!(
+        imported_length,
+        "the generic slice wrapper should be imported"
+    );
+    assert!(
+        imported_offset,
+        "the generic pointer wrapper should be imported"
+    );
+    assert!(
         original_address,
         "the function pointer should keep the original symbol"
     );
@@ -204,6 +222,125 @@ pub fn pointer() -> fn(u32, u32) -> u32 { u32::wrapping_mul }
         optimized.to_string(),
         lower(OptimizationTier::Full, None).to_string()
     );
+}
+
+#[test]
+fn optimized_library_specializes_fresh_pure_string_membership() {
+    use flux_codegen::{ObjectOptimization, lower_with_optimization};
+
+    let (_, _, hir) = flux_hir::lower_text(
+        "constant_string_membership.rs",
+        include_str!("../../../tests/run/constant_string_membership.rs"),
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let krate = hir.items.main_crate();
+    let compilation = Compilation {
+        kind: OutputKind::Library(krate),
+        crate_hashes: &[(krate, [116; 32])],
+        imported: &[],
+        builtin_object: false,
+        required_instances: &[],
+        required_functions: &[],
+    };
+    let module = lower_with_optimization(
+        &hir,
+        &typed,
+        &mir,
+        Some(compilation),
+        ObjectOptimization::Tier(OptimizationTier::Full),
+        None,
+    )
+    .unwrap()
+    .module;
+    keel_ir::verify_module(&module).unwrap();
+    let specialized: Vec<_> = module
+        .functions
+        .iter()
+        .filter(|function| {
+            function.layout_insts().any(|(_, inst)| {
+                matches!(
+                    function.inst_data(inst),
+                    keel_ir::InstData::Call { func, .. }
+                        if function.callee(*func).name.starts_with("__flux_string_membership_")
+                )
+            })
+        })
+        .map(|function| function.name.as_str())
+        .collect();
+    assert_eq!(specialized.len(), 1, "specialized callers: {specialized:?}");
+    assert!(specialized[0].contains("5fresh"), "{specialized:?}");
+    for target in [Target::Aarch64AppleDarwin, Target::X86_64LinuxGnu] {
+        flux_codegen::compile_object(&mut module.clone(), target, OptimizationTier::Full)
+            .expect("string membership should emit a valid native object");
+    }
+}
+
+#[test]
+fn optimized_library_defers_aggregate_copies_until_mutation() {
+    use flux_codegen::{ObjectOptimization, lower_with_optimization};
+
+    let (_, _, hir) = flux_hir::lower_text(
+        "deferred_aggregate_copy.rs",
+        include_str!("../../../tests/run/deferred_aggregate_copy.rs"),
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let krate = hir.items.main_crate();
+    let module = lower_with_optimization(
+        &hir,
+        &typed,
+        &mir,
+        Some(Compilation {
+            kind: OutputKind::Library(krate),
+            crate_hashes: &[(krate, [117; 32])],
+            imported: &[],
+            builtin_object: false,
+            required_instances: &[],
+            required_functions: &[],
+        }),
+        ObjectOptimization::Tier(OptimizationTier::Full),
+        None,
+    )
+    .unwrap()
+    .module;
+    keel_ir::verify_module(&module).unwrap();
+    let calls_write = |name: &str| {
+        let function = module
+            .functions
+            .iter()
+            .find(|function| function.name.contains(name))
+            .expect("the public transfer function is emitted");
+        function.layout_insts().any(|(_, inst)| {
+            matches!(
+                function.inst_data(inst),
+                keel_ir::InstData::Call { func, .. }
+                    if function.callee(*func).name.contains("3ptr5write")
+            )
+        })
+    };
+    assert!(
+        !calls_write("8transfer82"),
+        "the single transfer is lowered to a copy"
+    );
+    assert!(
+        calls_write("17transfer_and_read82"),
+        "a later read needs the snapshot"
+    );
+    assert!(
+        calls_write("20transfer_two_changes82"),
+        "multiple effects keep the eager snapshot"
+    );
+    for target in [Target::Aarch64AppleDarwin, Target::X86_64LinuxGnu] {
+        flux_codegen::compile_object(&mut module.clone(), target, OptimizationTier::Full)
+            .expect("deferred aggregate copies should emit a valid native object");
+    }
 }
 
 #[test]

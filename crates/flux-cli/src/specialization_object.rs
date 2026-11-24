@@ -117,7 +117,7 @@ impl Cache {
                     return None;
                 }
                 flux_ty::Ty::with_substitution_cache(|| {
-                    flux_codegen::lower_with_native_definitions(
+                    flux_codegen::lower_native_object(
                         &hir,
                         &typed,
                         mir,
@@ -132,6 +132,7 @@ impl Cache {
                             specializations: None,
                             specialization_roots: roots,
                         },
+                        policy.1.optimization,
                         None,
                     )
                     .ok()
