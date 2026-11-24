@@ -31,7 +31,8 @@ pub use keel_opt::OptimizationTier;
 pub use lower::{
     Compilation, LoweredCrate, LoweringTimings, NativeDefinitions, OutputKind, lower_crate,
     lower_crate_with_requirements, lower_linked_executable, lower_module, lower_partitioned_crate,
-    lower_with_native_definitions, lower_with_requirements_and_timings, lower_with_timings,
+    lower_with_native_definitions, lower_with_optimization, lower_with_requirements_and_timings,
+    lower_with_timings,
 };
 pub use native::{NativeLink, NativeLinkInputs};
 pub use units::split_fast_module;

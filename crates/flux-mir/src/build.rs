@@ -6871,6 +6871,7 @@ impl Builder<'_> {
         let at = self.range(scrutinee);
         let place = self.pat_place(scrutinee);
         let join = self.new_block();
+        let arms = self.lower_switch_match_prefix(arms, &place, dest, join, at, range);
         for arm in arms {
             let next = self.new_block();
             self.scoped(ScopeKind::Block, range, |b| {
@@ -6992,6 +6993,116 @@ impl Builder<'_> {
         // Exhaustive: no value gets here.
         self.terminate(TerminatorKind::Unreachable, range);
         self.current = Some(join);
+    }
+
+    /// Group a leading run of distinct integer literals or enum tags.
+    /// Grouped arms have no bindings, payload tests or effectful guards.
+    fn lower_switch_match_prefix<'a>(
+        &mut self,
+        arms: &'a [MatchArm],
+        place: &PatPlace,
+        dest: &Place,
+        join: BasicBlock,
+        at: TextRange,
+        range: TextRange,
+    ) -> &'a [MatchArm] {
+        const MIN_ARMS: usize = 16;
+        if arms.len() < MIN_ARMS {
+            return arms;
+        }
+        let derefs = self.types.pat_derefs.get(arms[0].pat).copied().unwrap_or(0);
+        let scrutinee = (0..derefs).fold(place.clone(), |place, _| place.deref());
+        let (int, variants) = match self.pat_place_ty(&scrutinee).kind() {
+            TyKind::Int(int) if int.bits() <= 64 => (Some(int), None),
+            TyKind::Adt(adt, _) if self.items.structs[adt.strukt].variant_count() >= MIN_ARMS => {
+                (None, Some(adt.strukt))
+            }
+            _ => return arms,
+        };
+        let mut cases = Vec::new();
+        let mut seen = rustc_hash::FxHashSet::default();
+        for arm in arms {
+            if arm.guard.is_some_and(|guard| {
+                !matches!(self.body.exprs[guard], Expr::Literal(Literal::Bool(true)))
+            }) || self.types.pat_derefs.get(arm.pat).copied().unwrap_or(0) != derefs
+            {
+                break;
+            }
+            let value = match self.body.pats[arm.pat] {
+                Pat::Unit(strukt, variant) if variants == Some(strukt) => u128::from(variant),
+                Pat::TupleStruct {
+                    strukt,
+                    variant,
+                    pats,
+                    ..
+                } if variants == Some(strukt)
+                    && self.body.lists[pats]
+                        .iter()
+                        .all(|&pat| matches!(self.body.pats[pat], Pat::Wild)) =>
+                {
+                    u128::from(variant)
+                }
+                Pat::Record {
+                    strukt,
+                    variant,
+                    fields,
+                    ..
+                } if variants == Some(strukt)
+                    && self.body.lists[fields]
+                        .iter()
+                        .all(|&(_, pat)| matches!(self.body.pats[pat], Pat::Wild)) =>
+                {
+                    u128::from(variant)
+                }
+                Pat::Expr(expr)
+                    if let Some(int) = int
+                        && let Expr::Literal(Literal::Int { value, .. }) =
+                            self.body.exprs[expr]
+                        && value <= int.max() =>
+                {
+                    value
+                }
+                _ => break,
+            };
+            if !seen.insert(value) {
+                break;
+            }
+            cases.push(value);
+        }
+        if cases.len() < MIN_ARMS {
+            return arms;
+        }
+        let place = self.resolve(scrutinee, at);
+        let discr = if let Some(strukt) = variants {
+            let tag = self.temp(Ty::int(flux_ty::discriminant_ty(self.items, strukt)));
+            self.assign(&tag.into(), Rvalue::Discriminant(place), at);
+            Operand::Copy(tag.into())
+        } else {
+            Operand::Copy(place)
+        };
+        let otherwise = self.new_block();
+        let targets: Vec<_> = cases
+            .into_iter()
+            .map(|value| (value, self.new_block()))
+            .collect();
+        self.terminate(
+            TerminatorKind::SwitchInt {
+                discr,
+                targets: targets.clone(),
+                otherwise,
+                variants,
+            },
+            at,
+        );
+        for (arm, &(_, block)) in arms.iter().zip(&targets) {
+            self.current = Some(block);
+            self.scoped(ScopeKind::Block, range, |b| {
+                b.scoped(ScopeKind::Temps, range, |b| b.lower_into(arm.body, dest));
+            });
+            self.goto(join, range);
+        }
+        self.current = Some(otherwise);
+        &arms[targets.len()..]
     }
 
     /// The bindings of the `let`s of a condition.

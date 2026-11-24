@@ -77,7 +77,7 @@ pub fn lower_module(
     typed: &TypedFile,
     mir: &FileMir,
 ) -> Result<Module, Vec<Diagnostic>> {
-    lower_inner(hir, typed, mir, None, None, SymbolIdentity::Artifact, None)
+    lower_inner(hir, typed, mir, None, None, LoweringPolicy::default())
         .map(|lowered| lowered.module)
 }
 
@@ -128,8 +128,7 @@ pub fn lower_with_requirements_and_timings(
         mir,
         compilation,
         Some(timings),
-        SymbolIdentity::Artifact,
-        None,
+        LoweringPolicy::default(),
     )
 }
 
@@ -219,8 +218,42 @@ pub fn lower_crate_with_requirements(
         mir,
         Some(compilation),
         None,
-        SymbolIdentity::Artifact,
-        None,
+        LoweringPolicy::default(),
+    )
+}
+
+/// Lowers an object using its requested IR optimization policy.
+///
+/// Full optimization can import small built-in bodies into separately compiled
+/// libraries. Direct calls can inline the bodies while other references
+/// continue to use the original definitions.
+///
+/// # Errors
+/// Returns the same diagnostics as [`lower_crate_with_requirements`].
+pub fn lower_with_optimization(
+    hir: &Hir,
+    typed: &TypedFile,
+    mir: &FileMir,
+    compilation: Option<Compilation<'_>>,
+    optimization: crate::ObjectOptimization,
+    timings: Option<&mut LoweringTimings>,
+) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    let inline_small_builtins = matches!(
+        optimization,
+        crate::ObjectOptimization::Tier(crate::OptimizationTier::Full)
+    ) && compilation
+        .is_some_and(|c| matches!(c.kind, OutputKind::Library(_)))
+        && mir.panic_strategy == flux_mir::PanicStrategy::Abort;
+    lower_inner(
+        hir,
+        typed,
+        mir,
+        compilation,
+        timings,
+        LoweringPolicy {
+            inline_small_builtins,
+            ..LoweringPolicy::default()
+        },
     )
 }
 
@@ -250,8 +283,10 @@ pub fn lower_partitioned_crate(
         mir,
         Some(compilation),
         None,
-        SymbolIdentity::Query,
-        None,
+        LoweringPolicy {
+            identity: SymbolIdentity::Query,
+            ..LoweringPolicy::default()
+        },
     )?;
     if matches!(compilation.kind, OutputKind::Executable)
         && compilation.imported.is_empty()
@@ -271,10 +306,18 @@ pub fn lower_partitioned_crate(
     Ok(lowered)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum SymbolIdentity {
+    #[default]
     Artifact,
     Query,
+}
+
+#[derive(Default)]
+struct LoweringPolicy<'a> {
+    identity: SymbolIdentity,
+    provided_symbols: Option<NativeDefinitions<'a>>,
+    inline_small_builtins: bool,
 }
 
 /// Lowers a separately linked executable. The symbol set must come from the
@@ -325,8 +368,10 @@ pub fn lower_with_native_definitions(
         mir,
         Some(compilation),
         timings,
-        SymbolIdentity::Artifact,
-        Some(definitions),
+        LoweringPolicy {
+            provided_symbols: Some(definitions),
+            ..LoweringPolicy::default()
+        },
     )
 }
 
@@ -336,9 +381,13 @@ fn lower_inner(
     mir: &FileMir,
     compilation: Option<Compilation<'_>>,
     mut timings: Option<&mut LoweringTimings>,
-    identity: SymbolIdentity,
-    provided_symbols: Option<NativeDefinitions<'_>>,
+    policy: LoweringPolicy<'_>,
 ) -> Result<LoweredCrate, Vec<Diagnostic>> {
+    let LoweringPolicy {
+        identity,
+        provided_symbols,
+        inline_small_builtins,
+    } = policy;
     // Exceptional bodies cannot silently use abort-mode object emission.
     if mir.panic_strategy == flux_mir::PanicStrategy::Abort
         && let Some(body) = mir
@@ -792,10 +841,27 @@ fn lower_inner(
         layouts,
     };
     let defer_imports = compilation.is_some_and(|c| matches!(c.kind, OutputKind::Library(_)));
+    let mut inline_copies = Vec::new();
     for instance in instances {
         if admitted.contains(&instance)
             || compilation.is_some_and(|c| !owns_instance(items, instance, c))
         {
+            if inline_small_builtins
+                && instance.function.index() < items.core.functions as usize
+                && instance.args.is_empty()
+                && let Some(body) = mir.instance_body(items, instance).map(|(body, _)| body)
+                && small_import_body(&items.functions[instance.function], body)
+            {
+                let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
+                let mut function = ctx.function(instance, &body, false);
+                let original = function.name.clone();
+                function.name = format!("__flux_small_body_copy_{original}");
+                function.local = true;
+                function.weak_odr = false;
+                function.hidden = false;
+                function.attrs.alwaysinline = true;
+                inline_copies.push((original, function));
+            }
             if !defer_imports {
                 ctx.declare_instance(instance, &mut declared, &mut module.decls);
             }
@@ -1004,6 +1070,9 @@ fn lower_inner(
         module.functions.push(entry);
     }
     module.functions.append(&mut ctx.generated_functions);
+    if !inline_copies.is_empty() {
+        redirect_small_import_calls(&mut module, inline_copies);
+    }
     unwind::declare_personality(&mut module);
     module.sync_function_attrs();
     if let Some(error) = mir.deferred_error() {
@@ -1267,6 +1336,72 @@ fn generic_instance(items: &flux_hir::ItemTree, instance: Instance) -> bool {
         || items
             .owner_generics(function.owner)
             .is_some_and(|g| !g.is_empty())
+}
+
+/// Limit imported bodies to small callable Rust functions with ordinary linkage.
+fn small_import_body(info: &flux_hir::Function, body: &Body) -> bool {
+    !info.is_extern
+        && !info.abi.is_c()
+        && !info.track_caller
+        && info.intrinsic.is_none()
+        && info.link_name.is_none()
+        && info.link_section.is_none()
+        && info.target_features.is_none()
+        && info.inline != Some(flux_hir::InlineHint::Never)
+        && !info.cold
+        && body.blocks.len() <= 8
+        && body.locals.len() <= 16
+        && body
+            .blocks
+            .values()
+            .map(|block| block.statements.len())
+            .sum::<usize>()
+            <= 32
+        && !body.has_unwind()
+        && body.blocks.values().all(|block| {
+            block.statements.iter().all(|statement| {
+                !matches!(
+                    statement.kind,
+                    StatementKind::Assign(_, Rvalue::InlineAsm { .. })
+                )
+            }) && matches!(
+                block.terminator.kind,
+                TerminatorKind::Goto(_)
+                    | TerminatorKind::Return
+                    | TerminatorKind::SwitchInt { .. }
+                    | TerminatorKind::Call { .. }
+                    | TerminatorKind::Unreachable
+            )
+        })
+}
+
+fn redirect_small_import_calls(module: &mut Module, copies: Vec<(String, Function)>) {
+    let mut names = FxHashMap::default();
+    for (original, function) in copies {
+        names.insert(original, (function.name.clone(), function.sig.clone()));
+        module.functions.push(function);
+    }
+    // Only direct calls use the private copy. Taking the function's address
+    // still refers to the original definition.
+    for function in &mut module.functions {
+        let sites: Vec<_> = function
+            .layout_insts()
+            .filter_map(|(_, inst)| {
+                let keel_ir::InstData::Call { func, .. } = function.inst_data(inst) else {
+                    return None;
+                };
+                let decl = function.callee(*func);
+                let (name, sig) = names.get(&decl.name)?;
+                (&decl.sig == sig).then_some((inst, name, sig))
+            })
+            .collect();
+        for (inst, name, sig) in sites {
+            let callee = function.import_function(name, sig.clone());
+            if let keel_ir::InstData::Call { func, .. } = function.inst_data_mut(inst) {
+                *func = callee;
+            }
+        }
+    }
 }
 
 fn owns_instance(
@@ -2901,6 +3036,70 @@ fn reject_table_address(operand: &Operand, candidates: &mut FxHashMap<Local, Con
     }
 }
 
+/// A straight-line copy-out wrapper may read its incoming memory argument
+/// directly when its temporary aliases all share one slot and the only
+/// external effect is the final overlap-safe move.
+fn forwarded_write_parameter(body: &Body, sigs: &Signatures, roots: &[usize]) -> Option<Local> {
+    if body.param_count != 2 || body.locals[Body::RETURN].ty != Ty::UNIT || body.blocks.len() > 8 {
+        return None;
+    }
+    let mut origins: SmallVec<[Option<Local>; 8]> = body
+        .locals
+        .iter()
+        .map(|(local, _)| body.is_param(local).then_some(local))
+        .collect();
+    let mut result = None;
+    let mut block = flux_mir::BasicBlock::from_raw(0);
+    for _ in 0..body.blocks.len() {
+        let data = &body.blocks[block];
+        if data.terminator.unwind != flux_mir::UnwindAction::Unreachable {
+            return None;
+        }
+        for statement in &data.statements {
+            match &statement.kind {
+                StatementKind::StorageDead(local) => origins[local.index()] = None,
+                StatementKind::Assign(dest, Rvalue::Use(Operand::Const(Constant::Unit)))
+                    if dest.local == Body::RETURN && dest.projection.is_empty() => {}
+                StatementKind::Assign(
+                    dest,
+                    Rvalue::Use(Operand::Move(src) | Operand::Copy(src)),
+                ) if result.is_none() && src.projection.is_empty() => {
+                    let origin = origins[src.local.index()]?;
+                    let ty = body.locals[origin].ty;
+                    if dest.projection.is_empty() {
+                        if body.is_param(dest.local) || dest.local == Body::RETURN {
+                            return None;
+                        }
+                        if is_memory(sigs, ty) && roots[dest.local.index()] != roots[origin.index()]
+                        {
+                            return None;
+                        }
+                        origins[dest.local.index()] = Some(origin);
+                    } else {
+                        let pointer = origins[dest.local.index()]?;
+                        if pointer == origin
+                            || !matches!(body.locals[pointer].ty.kind(), TyKind::RawPtr(..))
+                            || dest.projection.len() != 1
+                            || dest.projection.first() != Some(&ProjectionElem::Deref)
+                            || !is_memory(sigs, ty)
+                        {
+                            return None;
+                        }
+                        result = Some(origin);
+                    }
+                }
+                _ => return None,
+            }
+        }
+        match data.terminator.kind {
+            TerminatorKind::Goto(next) => block = next,
+            TerminatorKind::Return => return result,
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// The storage of a body's locals, while [`Lower::body`] assigns it.
 struct Storage {
     types: Vec<Ty>,
@@ -3011,8 +3210,18 @@ impl Lower<'_, '_, '_> {
                 shared_tables.insert(local);
             }
         }
+        let forwarded_write = if self.convention.is_c() {
+            None
+        } else {
+            forwarded_write_parameter(body, sigs, &storage.roots)
+        };
         for (local, decl) in body.locals.iter() {
-            if storage.placed[local.index()].is_some()
+            if forwarded_write
+                .is_some_and(|param| storage.roots[local.index()] == storage.roots[param.index()])
+            {
+                self.slots.push(None);
+                self.vars.push(SliceId::default());
+            } else if storage.placed[local.index()].is_some()
                 || borrowed[local.index()]
                 || is_memory(sigs, decl.ty)
             {
@@ -3048,6 +3257,16 @@ impl Lower<'_, '_, '_> {
                     continue;
                 }
                 Argument::Direct => {}
+            }
+            if Some(param) == forwarded_write {
+                let pointer = self.b.append_block_param(entry, Type::Ptr);
+                let root = storage.roots[param.index()];
+                for (local, &representative) in storage.roots.iter().enumerate() {
+                    if representative == root {
+                        self.slots[local] = Some(pointer);
+                    }
+                }
+                continue;
             }
             let leaves = leaves_of(sigs, body.locals[param].ty);
             let values: Values = leaves

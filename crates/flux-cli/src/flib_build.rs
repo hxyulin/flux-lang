@@ -718,28 +718,35 @@ pub(crate) fn compile_native_pipelined(
                 }
             } else if units.get() == 1 && options.timings {
                 timings.time_lowering(|parts| {
-                    flux_codegen::lower_with_requirements_and_timings(
+                    flux_codegen::lower_with_optimization(
                         &hir,
                         &typed,
                         &mir,
                         compilation,
-                        parts,
+                        options.object_options().optimization,
+                        Some(parts),
                     )
                 })
             } else {
-                timings.time("mono + keel lowering", || match compilation {
-                    Some(compilation) if units.get() > 1 => {
-                        flux_codegen::lower_partitioned_crate(&hir, &typed, &mir, compilation)
+                timings.time("mono + keel lowering", || {
+                    if let Some(compilation) = compilation
+                        && units.get() > 1
+                    {
+                        return flux_codegen::lower_partitioned_crate(
+                            &hir,
+                            &typed,
+                            &mir,
+                            compilation,
+                        );
                     }
-                    Some(compilation) => {
-                        flux_codegen::lower_crate_with_requirements(&hir, &typed, &mir, compilation)
-                    }
-                    None => flux_codegen::lower_module(&hir, &typed, &mir).map(|module| {
-                        flux_codegen::LoweredCrate {
-                            module,
-                            required_instances: Vec::new(),
-                        }
-                    }),
+                    flux_codegen::lower_with_optimization(
+                        &hir,
+                        &typed,
+                        &mir,
+                        compilation,
+                        options.object_options().optimization,
+                        None,
+                    )
                 })
             }
             .map_err(|mut errors| {

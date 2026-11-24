@@ -414,16 +414,16 @@ impl UnwindDrops<'_> {
 struct VariantTests {
     predecessor: Vec<Option<BasicBlock>>,
     borrowed: FxHashSet<Local>,
-    dead_drops: Vec<bool>,
+    dead_drops: Option<Vec<bool>>,
 }
 
 impl VariantTests {
-    fn new(body: &Body, paths: &MovePaths, entry: &EntryStates) -> Self {
+    fn new(body: &Body, elaborating: Option<(&MovePaths, &EntryStates)>) -> Self {
         let mut predecessor = vec![None; body.blocks.len()];
         let mut seen = vec![false; body.blocks.len()];
         let mut borrowed = FxHashSet::default();
-        let mut dead_drops = vec![false; body.blocks.len()];
-        let mut state = State::new(paths.paths.len());
+        let mut dead_drops = elaborating.map(|_| vec![false; body.blocks.len()]);
+        let mut state = elaborating.map(|(paths, _)| State::new(paths.paths.len()));
         for block in crate::lint::reverse_postorder(body) {
             let data = &body.blocks[block];
             for statement in &data.statements {
@@ -433,13 +433,16 @@ impl VariantTests {
                     borrowed.insert(place.local);
                 }
             }
-            if let TerminatorKind::Drop { place, .. } = &data.terminator.kind
+            if let Some((paths, entry)) = elaborating
+                && let Some(state) = &mut state
+                && let Some(dead_drops) = &mut dead_drops
+                && let TerminatorKind::Drop { place, .. } = &data.terminator.kind
                 && let Some((path, false)) = paths.find(place)
-                && entry.load(block.index(), &mut state)
+                && entry.load(block.index(), state)
             {
                 for statement in &data.statements {
                     for event in statement_events(&statement.kind) {
-                        paths.apply(&mut state, &event, true);
+                        paths.apply(state, &event, true);
                     }
                 }
                 dead_drops[block.index()] = paths.subtree(path).all(|p| !state.maybe_held[p]);
@@ -493,15 +496,17 @@ impl VariantTests {
             }
             match &data.terminator.kind {
                 TerminatorKind::SwitchInt {
-                    discr: Operand::Copy(discr),
+                    discr,
                     targets,
-                    variants: Some(_),
+                    variants,
                     ..
                 } => {
-                    if let Some(Statement {
-                        kind: StatementKind::Assign(dest, Rvalue::Discriminant(tested)),
-                        ..
-                    }) = data.statements.last()
+                    if variants.is_some()
+                        && let Operand::Copy(discr) = discr
+                        && let Some(Statement {
+                            kind: StatementKind::Assign(dest, Rvalue::Discriminant(tested)),
+                            ..
+                        }) = data.statements.last()
                         && dest == discr
                         && dest.projection.is_empty()
                         && dest.local != place.local
@@ -510,15 +515,105 @@ impl VariantTests {
                         return targets.iter().find_map(|&(variant, target)| {
                             (target == block).then_some(variant as u32)
                         });
+                    } else if self.dead_drops.is_some() {
+                        return None;
                     }
                 }
                 TerminatorKind::Goto(_) => {}
-                TerminatorKind::Drop { .. } if self.dead_drops[pred.index()] => {}
+                // On the normal return edge, a call can change this unborrowed
+                // local only by moving it or assigning its destination.
+                TerminatorKind::Call { args, dest, .. }
+                    if self.dead_drops.is_none()
+                        && dest.local != place.local
+                        && !args.iter().any(
+                            |arg| matches!(arg, Operand::Move(moved) if moved.local == place.local),
+                        ) => {}
+                TerminatorKind::Drop { .. }
+                    if self
+                        .dead_drops
+                        .as_ref()
+                        .is_some_and(|dead| dead[pred.index()]) => {}
                 _ => return None,
             }
             block = pred;
         }
         None
+    }
+}
+
+/// Removes runtime drops whose active variants have no destructor work.
+/// Call after borrow and const checking, which still see the original drops.
+pub(super) fn prune_trivial_variant_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
+    let known = KnownDropVariants {
+        items,
+        sigs,
+        body,
+        tests: OnceCell::new(),
+    };
+    let mut dead = Vec::new();
+    for (block, data) in body.blocks.iter() {
+        if let TerminatorKind::Drop { place, target } = &data.terminator.kind
+            && !place.has_deref()
+        {
+            let ty = body.place_ty(place, sigs);
+            if (matches!(ty.kind(), TyKind::Tuple(_))
+                || matches!(ty.kind(), TyKind::Adt(adt, _) if sigs.is_enum(adt.strukt)))
+                && known.trivial(block, place, ty, 4)
+            {
+                dead.push((block, *target));
+            }
+        }
+    }
+    for &(block, target) in &dead {
+        let terminator = &mut body.blocks[block].terminator;
+        terminator.kind = TerminatorKind::Goto(target);
+        terminator.unwind = crate::UnwindAction::Unreachable;
+    }
+    merge_dead(
+        body,
+        &dead.into_iter().map(|(block, _)| block).collect::<Vec<_>>(),
+    );
+}
+
+struct KnownDropVariants<'a> {
+    items: &'a ItemTree,
+    sigs: &'a Signatures,
+    body: &'a Body,
+    tests: OnceCell<VariantTests>,
+}
+
+impl KnownDropVariants<'_> {
+    fn trivial(&self, block: BasicBlock, place: &Place, ty: Ty, depth: usize) -> bool {
+        if !flux_solve::traits::needs_drop(self.items, self.sigs, &[], ty) {
+            return true;
+        }
+        if depth == 0 {
+            return false;
+        }
+        let (place, fields) = match ty.kind() {
+            TyKind::Tuple(fields) => (place.clone(), fields),
+            TyKind::Adt(adt, _)
+                if self.sigs.is_enum(adt.strukt)
+                    && flux_solve::traits::drop_impl(self.items, self.sigs, adt.strukt)
+                        .is_none() =>
+            {
+                let Some(active) = self
+                    .tests
+                    .get_or_init(|| VariantTests::new(self.body, None))
+                    .active(self.body, block, place)
+                else {
+                    return false;
+                };
+                let Some(fields) = flux_solve::variant_fields(self.sigs, ty, active) else {
+                    return false;
+                };
+                (place.downcast(active), fields)
+            }
+            _ => return false,
+        };
+        fields.iter().enumerate().all(|(index, &field)| {
+            self.trivial(block, &place.field(index as u32), field, depth - 1)
+        })
     }
 }
 
@@ -598,7 +693,7 @@ impl Open<'_> {
         ) {
             let active = self
                 .variant_tests
-                .get_or_init(|| VariantTests::new(self.body, self.paths, self.entry))
+                .get_or_init(|| VariantTests::new(self.body, Some((self.paths, self.entry))))
                 .active(self.body, self.block, &place);
             // Each variant's fields, if it is the one the enum holds.
             for (v, fields) in variants.into_iter().enumerate() {

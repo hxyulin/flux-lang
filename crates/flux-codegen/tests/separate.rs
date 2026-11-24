@@ -122,6 +122,91 @@ fn module(library_only: bool, padding: bool) -> keel_ir::Module {
 }
 
 #[test]
+fn optimized_library_imports_small_builtin_bodies_for_direct_calls() {
+    use flux_codegen::{LoweringTimings, ObjectOptimization, lower_with_optimization};
+    use keel_ir::{InstData, Symbol as KeelSymbol};
+
+    let (_, _, hir) = flux_hir::lower_text(
+        "inline_builtin.rs",
+        r#"
+pub fn multiply(a: u32, b: u32) -> u32 { a.wrapping_mul(b) }
+pub fn pointer() -> fn(u32, u32) -> u32 { u32::wrapping_mul }
+"#,
+    );
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    let typed = flux_mir::check_file(&hir);
+    assert!(typed.diagnostics.is_empty(), "{:?}", typed.diagnostics);
+    let mir = flux_mir::build_file(&hir, &typed);
+    assert!(mir.diagnostics.is_empty(), "{:?}", mir.diagnostics);
+    let krate = hir.items.main_crate();
+    let compilation = Compilation {
+        kind: OutputKind::Library(krate),
+        crate_hashes: &[(krate, [115; 32])],
+        imported: &[],
+        builtin_object: false,
+        required_instances: &[],
+        required_functions: &[],
+    };
+    let lower = |tier, timings| {
+        lower_with_optimization(
+            &hir,
+            &typed,
+            &mir,
+            Some(compilation),
+            ObjectOptimization::Tier(tier),
+            timings,
+        )
+        .unwrap()
+        .module
+    };
+    let unoptimized = lower(OptimizationTier::None, None);
+    let mut timings = LoweringTimings::default();
+    let optimized = lower(OptimizationTier::Full, Some(&mut timings));
+    let prefix = "__flux_small_body_copy_";
+    assert!(
+        !unoptimized
+            .functions
+            .iter()
+            .any(|f| f.name.starts_with(prefix))
+    );
+    let copy = optimized
+        .functions
+        .iter()
+        .find(|f| f.name.starts_with(prefix))
+        .unwrap();
+    assert!(copy.local && copy.attrs.alwaysinline);
+    let original = copy.name.strip_prefix(prefix).unwrap();
+    let mut copied_call = false;
+    let mut original_address = false;
+    for function in &optimized.functions {
+        for (_, inst) in function.layout_insts() {
+            match function.inst_data(inst) {
+                InstData::Call { func, .. } => {
+                    copied_call |= function.callee(*func).name == copy.name
+                }
+                InstData::SymbolAddr {
+                    symbol: KeelSymbol::Func(func),
+                } => {
+                    original_address |= function.callee(*func).name == original;
+                    assert_ne!(function.callee(*func).name, copy.name);
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(copied_call, "the direct call should see the imported body");
+    assert!(
+        original_address,
+        "the function pointer should keep the original symbol"
+    );
+    keel_ir::verify_module(&optimized).unwrap();
+    assert_eq!(
+        optimized.to_string(),
+        lower(OptimizationTier::Full, None).to_string()
+    );
+}
+
+#[test]
 fn library_symbols_survive_unrelated_arena_entries() {
     let first = module(true, false);
     let shifted = module(true, true);

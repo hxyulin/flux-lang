@@ -14,6 +14,7 @@ enum Entry {
     Single(Owned),
     Pair(Owned, Owned),
     Other(Owned),
+    Plain(usize),
 }
 
 fn take(entries: &mut Vec<(usize, Entry, usize)>) -> Owned {
@@ -37,6 +38,13 @@ fn take_known_pair(entry: Entry) -> Owned {
     }
 }
 
+fn take_plain(entries: &mut Vec<(usize, Entry, usize)>) -> (usize, usize, usize) {
+    match entries.pop() {
+        Some((start, Entry::Plain(value), end)) => (start, value, end),
+        _ => panic!("expected a plain entry"),
+    }
+}
+
 fn main() {
     let mut entries = vec![
         (0, Entry::Other(Owned(16)), 0),
@@ -56,6 +64,9 @@ fn main() {
     assert_eq!(DROPPED.load(Ordering::Relaxed), 158);
     drop(value);
     assert_eq!(DROPPED.load(Ordering::Relaxed), 222);
+    let plain = take_plain(&mut vec![(1, Entry::Plain(2), 3)]);
+    assert_eq!(plain, (1, 2, 3));
+    assert_eq!(DROPPED.load(Ordering::Relaxed), 222);
 
     #[cfg(panic = "unwind")]
     {
@@ -66,6 +77,12 @@ fn main() {
         assert!(mismatch.is_err());
         assert!(std::panic::catch_unwind(|| take(&mut Vec::new())).is_err());
         assert_eq!(DROPPED.load(Ordering::Relaxed), 254);
+        let mismatch = std::panic::catch_unwind(|| {
+            take_plain(&mut vec![(0, Entry::Other(Owned(64)), 0)]);
+        });
+        assert!(mismatch.is_err());
+        assert!(std::panic::catch_unwind(|| take_plain(&mut Vec::new())).is_err());
+        assert_eq!(DROPPED.load(Ordering::Relaxed), 318);
     }
     println!("verified");
 }

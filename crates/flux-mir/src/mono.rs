@@ -2485,6 +2485,7 @@ fn drop_glue_inner<const GROUPED: bool>(
 /// and for enums, a test of the variant they hold. Exceptional MIR also
 /// expands non-dynamic `drop_in_place` intrinsics and preserves value boundaries.
 pub fn expand_drops(items: &ItemTree, sigs: &Signatures, body: &mut Body) {
+    crate::drops::prune_trivial_variant_drops(items, sigs, body);
     if body.has_unwind() {
         unwind::expand_drops(items, sigs, body);
         return;
