@@ -1639,7 +1639,12 @@ const KEEL_COPY_EXPAND_BYTES: u64 = 32;
 
 /// Larger copies of values of memory types, up to this many bytes, are
 /// loads and stores here rather than calls of `memmove`.
-const COPY_EXPAND_BYTES: u64 = 128;
+/// AArch64 can keep a 256-byte snapshot in sixteen vector registers.
+const COPY_EXPAND_BYTES: u64 = if cfg!(target_arch = "aarch64") {
+    256
+} else {
+    128
+};
 
 /// Whether `ty` is an enum of several variants with more than
 /// [`ENUM_MEMORY_LEAVES`] leaves, its discriminant included.
