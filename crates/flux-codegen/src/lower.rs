@@ -1493,12 +1493,10 @@ fn is_memory_uncached(sigs: &Signatures, ty: Ty) -> bool {
 /// An enum with more leaves than this lives in memory. Held in variables,
 /// an enum carries every variant's fields, and each copy, argument and
 /// return moves all of them, though only one variant's mean anything.
-/// In memory, a copy moves its bytes instead, and a variable's value is
-/// a stack slot's. Measured on the self-built compiler, 40 to 64 put its
-/// largest enums (`TyKind`, MIR's `Rvalue`, `Result`s of whole crates) in
-/// memory and keep keel's small instruction enums in variables; 8 and 16
-/// made it slower.
-const ENUM_MEMORY_LEAVES: usize = 48;
+/// In memory, a copy moves the bytes of the actual layout. A limit of 32
+/// keeps small enums scalar and avoids passing all variants of generated
+/// lexer results in separate slots.
+const ENUM_MEMORY_LEAVES: usize = 32;
 
 /// keel expands a `memmove` of up to this many bytes into loads and
 /// stores itself, after inlining, and calls the C library's for more.
@@ -2733,6 +2731,43 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
             _ => {}
         }
     }
+    // A branch can construct a field in the return slot even when other
+    // branches also define the return value. A call whose sole continuation
+    // immediately constructs the return aggregate leaves no intervening
+    // access to that slot.
+    let mut return_call_results = FxHashSet::default();
+    if definitions[Body::RETURN.index()] > 1
+        && is_memory(sigs, body.locals[Body::RETURN].ty)
+        && !body.has_unwind()
+    {
+        for block in body.blocks.values() {
+            let TerminatorKind::Call {
+                dest,
+                target: Some(target),
+                ..
+            } = &block.terminator.kind
+            else {
+                continue;
+            };
+            if !dest.projection.is_empty() || incoming[target.index()] != 1 {
+                continue;
+            }
+            if let Some(statement) = body.blocks[*target].statements.first()
+                && let StatementKind::Assign(result, Rvalue::Aggregate(_, fields)) = &statement.kind
+                && result.local == Body::RETURN
+                && result.projection.is_empty()
+                && fields
+                    .iter()
+                    .any(|field| matches!(field, Operand::Move(place) if place == dest))
+                && !fields.iter().any(|field| {
+                    matches!(field, Operand::Move(place) | Operand::Copy(place)
+                        if place.local == Body::RETURN)
+                })
+            {
+                return_call_results.insert(dest.local.index());
+            }
+        }
+    }
     // Kahn's algorithm also detects loops outside the entry component.
     let mut queue: Vec<_> = incoming
         .iter()
@@ -2791,7 +2826,8 @@ fn memory_storage(body: &Body, sigs: &Signatures) -> MemoryStorage {
         for (src, dest, field) in operands {
             if uses[src] == 1
                 && definitions[src] == 1
-                && definitions[dest] == 1
+                && (definitions[dest] == 1
+                    || dest == Body::RETURN.index() && return_call_results.contains(&src))
                 && !borrowed[src]
                 && !borrowed[dest]
                 && src != Body::RETURN.index()
