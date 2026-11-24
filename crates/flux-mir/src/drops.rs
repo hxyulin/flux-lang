@@ -20,6 +20,7 @@
 //! What remains are drops of initialized values, which code generation
 //! expands into calls of `Drop::drop` ([`mono::expand_drops`](crate::mono::expand_drops)).
 
+use std::cell::OnceCell;
 use std::collections::BTreeMap;
 
 use rustc_hash::FxHashSet;
@@ -27,7 +28,9 @@ use rustc_hash::FxHashSet;
 use flux_hir::{Diagnostic, ItemTree};
 use flux_ty::{Predicate, Signatures, Ty, TyKind};
 
-use crate::init::{Event, MovePaths, State, analyze, statement_events, terminator_events};
+use crate::init::{
+    EntryStates, Event, MovePaths, State, analyze, statement_events, terminator_events,
+};
 use crate::{
     BasicBlock, BasicBlockData, Body, Constant, Local, LocalDecl, LocalKind, Operand, Place,
     ProjectionElem, Rvalue, Statement, StatementKind, Terminator, TerminatorKind,
@@ -109,6 +112,7 @@ pub(crate) fn elaborate(
     let mut plans: Vec<(BasicBlock, usize, Vec<Step>)> = Vec::new();
     let mut flagged: BTreeMap<usize, Local> = BTreeMap::new();
     let mut state = State::new(paths.paths.len());
+    let variant_tests = OnceCell::new();
     for (block, data) in body.blocks.iter() {
         let TerminatorKind::Drop { place, .. } = &data.terminator.kind else {
             continue;
@@ -135,6 +139,10 @@ pub(crate) fn elaborate(
             }
             let ty = body.place_ty(place, sigs);
             let mut open = Open {
+                body,
+                block,
+                entry: &entry,
+                variant_tests: &variant_tests,
                 paths: &paths,
                 state: &state,
                 items,
@@ -402,8 +410,124 @@ impl UnwindDrops<'_> {
     }
 }
 
+/// Local CFG facts used to narrow drops following pattern tests.
+struct VariantTests {
+    predecessor: Vec<Option<BasicBlock>>,
+    borrowed: FxHashSet<Local>,
+    dead_drops: Vec<bool>,
+}
+
+impl VariantTests {
+    fn new(body: &Body, paths: &MovePaths, entry: &EntryStates) -> Self {
+        let mut predecessor = vec![None; body.blocks.len()];
+        let mut seen = vec![false; body.blocks.len()];
+        let mut borrowed = FxHashSet::default();
+        let mut dead_drops = vec![false; body.blocks.len()];
+        let mut state = State::new(paths.paths.len());
+        for block in crate::lint::reverse_postorder(body) {
+            let data = &body.blocks[block];
+            for statement in &data.statements {
+                if let StatementKind::Assign(_, Rvalue::Ref { place, .. }) = &statement.kind
+                    && !place.has_deref()
+                {
+                    borrowed.insert(place.local);
+                }
+            }
+            if let TerminatorKind::Drop { place, .. } = &data.terminator.kind
+                && let Some((path, false)) = paths.find(place)
+                && entry.load(block.index(), &mut state)
+            {
+                for statement in &data.statements {
+                    for event in statement_events(&statement.kind) {
+                        paths.apply(&mut state, &event, true);
+                    }
+                }
+                dead_drops[block.index()] = paths.subtree(path).all(|p| !state.maybe_held[p]);
+            }
+            for next in data.terminator.successors() {
+                predecessor[next.index()] =
+                    (!std::mem::replace(&mut seen[next.index()], true)).then_some(block);
+            }
+        }
+        predecessor[Body::entry().index()] = None;
+        Self {
+            predecessor,
+            borrowed,
+            dead_drops,
+        }
+    }
+
+    /// The active variant on a straight-line path from a pattern test.
+    /// A borrowed local may change through an alias even without a MIR write.
+    fn active(&self, body: &Body, mut block: BasicBlock, place: &Place) -> Option<u32> {
+        if self.borrowed.contains(&place.local)
+            || place
+                .projection
+                .iter()
+                .any(|elem| !matches!(elem, ProjectionElem::Field(_) | ProjectionElem::Downcast(_)))
+        {
+            return None;
+        }
+        for _ in 0..32 {
+            if body.blocks[block]
+                .statements
+                .iter()
+                .any(|statement| match &statement.kind {
+                    StatementKind::Assign(dest, value) => {
+                        dest.local == place.local
+                            || dest.projection.iter().any(|part| {
+                                matches!(part, ProjectionElem::Deref | ProjectionElem::BoxDeref)
+                            })
+                            || matches!(value, Rvalue::InlineAsm { .. })
+                    }
+                    StatementKind::StorageDead(local) => *local == place.local,
+                    StatementKind::PlaceMention(_) => false,
+                })
+            {
+                return None;
+            }
+            let pred = self.predecessor[block.index()]?;
+            let data = &body.blocks[pred];
+            if data.terminator.unwind == crate::UnwindAction::Cleanup(block) {
+                return None;
+            }
+            match &data.terminator.kind {
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Copy(discr),
+                    targets,
+                    variants: Some(_),
+                    ..
+                } => {
+                    if let Some(Statement {
+                        kind: StatementKind::Assign(dest, Rvalue::Discriminant(tested)),
+                        ..
+                    }) = data.statements.last()
+                        && dest == discr
+                        && dest.projection.is_empty()
+                        && dest.local != place.local
+                        && tested == place
+                    {
+                        return targets.iter().find_map(|&(variant, target)| {
+                            (target == block).then_some(variant as u32)
+                        });
+                    }
+                }
+                TerminatorKind::Goto(_) => {}
+                TerminatorKind::Drop { .. } if self.dead_drops[pred.index()] => {}
+                _ => return None,
+            }
+            block = pred;
+        }
+        None
+    }
+}
+
 /// Decides how to drop a place from what may be initialized of it.
 struct Open<'a> {
+    body: &'a Body,
+    block: BasicBlock,
+    entry: &'a EntryStates,
+    variant_tests: &'a OnceCell<VariantTests>,
     paths: &'a MovePaths,
     state: &'a State,
     items: &'a ItemTree,
@@ -472,15 +596,26 @@ impl Open<'_> {
             !has_children,
             has_drop_impl,
         ) {
+            let active = self
+                .variant_tests
+                .get_or_init(|| VariantTests::new(self.body, self.paths, self.entry))
+                .active(self.body, self.block, &place);
             // Each variant's fields, if it is the one the enum holds.
             for (v, fields) in variants.into_iter().enumerate() {
                 let v = v as u32;
+                if active.is_some_and(|active| active != v) {
+                    continue;
+                }
                 let child = self.paths.children(path).find(|&c| {
                     self.paths.paths[c].fields.last() == Some(&ProjectionElem::Downcast(v))
                 });
-                self.variants.push((place.clone(), v));
+                if active.is_none() {
+                    self.variants.push((place.clone(), v));
+                }
                 self.fields(child.unwrap_or(path), path, &place.downcast(v), fields);
-                self.variants.pop();
+                if active.is_none() {
+                    self.variants.pop();
+                }
             }
             return;
         }
