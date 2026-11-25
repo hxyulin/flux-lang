@@ -77,6 +77,12 @@ pub(crate) const fn ctpop<T>(x: T) -> u32 {
     loop {}
 }
 
+/// Tests the complete representation of a primitive integer for zero.
+#[rustc_intrinsic]
+pub(crate) const fn is_nonzero<T: crate::num::NonZeroPrimitive>(x: T) -> bool {
+    loop {}
+}
+
 /// The integer `x` with its bytes in reverse order.
 #[rustc_intrinsic]
 pub(crate) const fn bswap<T>(x: T) -> T {

@@ -8,6 +8,11 @@ use keel_opt::{OptimizationReport, OptimizationTier, Pipeline};
 
 use crate::{Error, Stage, workers};
 
+#[path = "local_indirect.rs"]
+mod local_indirect;
+#[path = "widened_products.rs"]
+mod widened_products;
+
 #[path = "private_returns.rs"]
 mod private_returns;
 #[path = "terminal_regions.rs"]
@@ -21,15 +26,90 @@ pub(crate) fn share_terminal_returns(module: &mut Module) -> Result<(), Error> {
     private_returns::run(module, &seeds).map_err(Error::optimize)
 }
 
-pub(crate) fn optimize(module: &mut Module, tier: OptimizationTier) -> Result<(), Error> {
-    let Some(directory) = std::env::var_os("FLUX_KEEL_PROFILE") else {
-        return Pipeline::named(&passes(tier))
-            .map_err(Error::optimize)?
-            .workers(workers::limit())
-            .run(module)
-            .map_err(Error::optimize);
-    };
-    record(module, tier, Path::new(&directory))
+pub(crate) fn optimize(
+    module: &mut Module,
+    tier: OptimizationTier,
+    clean_imports: bool,
+) -> Result<(), Error> {
+    let mut schedule = passes(tier);
+    if clean_imports {
+        // Inlined dependency methods expose initialization and mutation of
+        // caller-owned stack temporaries. Clean those up before and after
+        // inlining newly cheap callees.
+        let promote = [
+            "stack-forward",
+            "load-reuse",
+            "stack-promote-large",
+            "phi-simplify",
+            "canonicalize",
+            "instcombine",
+            "simplify-cfg",
+            "dce",
+        ];
+        schedule.extend(promote);
+        for _ in 0..2 {
+            schedule.extend([
+                "inline-cheap-reserve",
+                "private-aggregate-cleanup",
+                "small-memory",
+            ]);
+            schedule.extend(promote);
+        }
+    }
+    if clean_imports {
+        schedule.extend([
+            "if-convert",
+            "simplify-cfg",
+            "instcombine",
+            "branch-facts",
+            "phi-simplify",
+            "simplify-cfg",
+            "dce",
+        ]);
+    }
+    let directory = std::env::var_os("FLUX_KEEL_PROFILE");
+    let directory = directory.as_deref().map(Path::new);
+    optimize_pipeline(module, &schedule, directory)?;
+    if clean_imports && local_indirect::run(module) {
+        optimize_pipeline(
+            module,
+            &[
+                "inline-cheap-reserve",
+                "simplify-cfg",
+                "small-memory",
+                "stack-forward",
+                "load-reuse",
+                "stack-promote-large",
+                "phi-simplify",
+                "if-convert",
+                "instcombine",
+                "branch-facts",
+                "simplify-cfg",
+                "dce",
+                "compact-unused-functions",
+            ],
+            directory,
+        )?;
+    }
+    if clean_imports && widened_products::run(module) {
+        optimize_pipeline(module, &["dce", "instcombine", "gvn", "dce"], directory)?;
+    }
+    Ok(())
+}
+
+fn optimize_pipeline(
+    module: &mut Module,
+    schedule: &[&str],
+    directory: Option<&Path>,
+) -> Result<(), Error> {
+    if let Some(directory) = directory {
+        return record(module, schedule, directory);
+    }
+    Pipeline::named(schedule)
+        .map_err(Error::optimize)?
+        .workers(workers::limit())
+        .run(module)
+        .map_err(Error::optimize)
 }
 
 fn passes(tier: OptimizationTier) -> Vec<&'static str> {
@@ -51,7 +131,7 @@ fn passes(tier: OptimizationTier) -> Vec<&'static str> {
     passes
 }
 
-fn record(module: &mut Module, tier: OptimizationTier, directory: &Path) -> Result<(), Error> {
+fn record(module: &mut Module, schedule: &[&str], directory: &Path) -> Result<(), Error> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let io = |error| Error::io(Stage::Write, "cannot write keel optimizer profile", error);
     std::fs::create_dir_all(directory).map_err(io)?;
@@ -65,7 +145,7 @@ fn record(module: &mut Module, tier: OptimizationTier, directory: &Path) -> Resu
     write!(input, "{module}").map_err(io)?;
     input.flush().map_err(io)?;
     let mut report = OptimizationReport::default();
-    let result = Pipeline::named(&passes(tier))
+    let result = Pipeline::named(schedule)
         .map_err(Error::optimize)?
         .report(&mut report)
         .run(module);
@@ -115,7 +195,7 @@ mod tests {
         keel_opt::run_passes(&mut expected, &passes(OptimizationTier::Full)).unwrap();
         let directory =
             std::env::temp_dir().join(format!("flux-keel-profile-{}", std::process::id()));
-        record(&mut module, OptimizationTier::Full, &directory).unwrap();
+        record(&mut module, &passes(OptimizationTier::Full), &directory).unwrap();
         assert_eq!(module.to_string(), expected.to_string());
         let files: Vec<_> = std::fs::read_dir(&directory)
             .unwrap()

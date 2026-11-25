@@ -11,6 +11,7 @@ pub(crate) struct CallHints {
     /// The exact element stride from the instantiated Rust signature.
     pub(crate) last: FxHashMap<String, u64>,
     pub(crate) unwrap: FxHashSet<String>,
+    pub(crate) native_imports: bool,
 }
 
 pub(crate) fn fuse(module: &mut Module, hints: &CallHints) {
@@ -286,6 +287,7 @@ mod tests {
         )
         .unwrap();
         let hints = CallHints {
+            native_imports: false,
             last: FxHashMap::from_iter([("last".to_owned(), 12)]),
             unwrap: FxHashSet::from_iter(["unwrap".to_owned()]),
         };

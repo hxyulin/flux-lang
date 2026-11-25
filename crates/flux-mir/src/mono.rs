@@ -1798,7 +1798,7 @@ pub fn expand_intrinsics(
                 | "fmaf64"
         ) || intrinsic.is_neon()
             || intrinsic.is_x86()
-            || intrinsic.is_bit_count()
+            || intrinsic.is_integer_bit_operation()
             || atomic_intrinsic(intrinsic.name()).is_some()
         {
             // Code generation's: where the call is.

@@ -20,21 +20,7 @@ nonzero_primitives!(u8,u16,u32,u64,u128,usize,i8,i16,i32,i64,i128,isize);
 pub struct NonZero<T:NonZeroPrimitive>(T);
 impl<T:NonZeroPrimitive> NonZero<T>{
     pub const fn new(value: T) -> Option<Self> {
-        let bytes = &value as *const T;
-        // SAFETY: the sealed integer bound guarantees initialized,
-        // padding-free storage of the selected width. The unsigned
-        // types accept every bit pattern and need no input alignment.
-        let nonzero = unsafe {
-            match crate::mem::size_of::<T>() {
-                1 => crate::ptr::read_unaligned(bytes as *const u8) != 0,
-                2 => crate::ptr::read_unaligned(bytes as *const u16) != 0,
-                4 => crate::ptr::read_unaligned(bytes as *const u32) != 0,
-                8 => crate::ptr::read_unaligned(bytes as *const u64) != 0,
-                16 => crate::ptr::read_unaligned(bytes as *const u128) != 0,
-                _ => unreachable!("sealed NonZero integer has an unsupported width"),
-            }
-        };
-        if nonzero { Some(Self(value)) } else { None }
+        if crate::intrinsics::is_nonzero(value) { Some(Self(value)) } else { None }
     }
     /// # Safety
     /// value must not be zero.

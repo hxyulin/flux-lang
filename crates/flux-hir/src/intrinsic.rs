@@ -9,11 +9,10 @@ macro_rules! intrinsics {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum Intrinsic { $(#[doc = $name] $variant,)* }
         impl Intrinsic {
-    /// An integer's leading or trailing zeros, set bits, or bytes in
-    /// reverse order: one machine instruction each.
-    pub const fn is_bit_count(self) -> bool {
-        matches!(self, Self::Ctlz | Self::Cttz | Self::Ctpop | Self::Bswap)
-    }
+            /// Intrinsics that inspect or rearrange an integer's bits.
+            pub const fn is_integer_bit_operation(self) -> bool {
+                matches!(self, Self::Ctlz | Self::Cttz | Self::Ctpop | Self::Bswap | Self::IsNonzero)
+            }
 
             pub(crate) fn from_name(name: &str) -> Option<Self> {
                 Some(match name { $($name => Self::$variant,)* _ => return None })
@@ -233,6 +232,7 @@ intrinsics! {
     Cttz => "cttz",
     Ctpop => "ctpop",
     Bswap => "bswap",
+    IsNonzero => "is_nonzero",
 }
 
 impl Intrinsic {

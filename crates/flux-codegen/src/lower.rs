@@ -402,6 +402,11 @@ pub fn lower_native_object(
         LoweringPolicy {
             provided_symbols: Some(definitions),
             optimization: Some(optimization),
+            inline_small_builtins: matches!(
+                optimization,
+                crate::ObjectOptimization::Tier(crate::OptimizationTier::Full)
+            ) && mir.panic_strategy == flux_mir::PanicStrategy::Abort
+                && cfg!(all(target_arch = "aarch64", target_os = "macos")),
             ..LoweringPolicy::default()
         },
     )
@@ -497,10 +502,17 @@ fn lower_inner(
         let Some(provided) = &provided_symbols else {
             return false;
         };
-        if admitted.borrow().contains(&instance) {
-            return true;
-        }
         let function = &items.functions[instance.function];
+        let expand = || {
+            inline_small_builtins
+                && inline_body_requested(items, instance.function)
+                && mir
+                    .instance_body(items, instance)
+                    .is_some_and(|(body, _)| small_import_body(function, body))
+        };
+        if admitted.borrow().contains(&instance) {
+            return !expand();
+        }
         let owner = items.modules[function.loc.module].krate;
         let imported = compilation.is_some_and(|c| c.imported.contains(&owner));
         let cached = provided
@@ -535,7 +547,7 @@ fn lower_inner(
         if present {
             admitted.borrow_mut().insert(instance);
         }
-        present
+        present && !expand()
     };
     let native_leaf = provided_symbols
         .as_ref()
@@ -951,7 +963,7 @@ fn lower_inner(
             || compilation.is_some_and(|c| !owns_instance(items, instance, c))
         {
             if inline_small_builtins
-                && instance.function.index() < items.core.functions as usize
+                && inline_body_requested(items, instance.function)
                 && let Some(body) = mir.instance_body(items, instance).map(|(body, _)| body)
                 && (defer_inline_copies
                     || instance.args.is_empty()
@@ -1176,6 +1188,7 @@ fn lower_inner(
     }
     module.functions.append(&mut ctx.generated_functions);
     if !inline_copies.is_empty() {
+        ctx.call_hints.native_imports = provided_symbols.is_some();
         redirect_small_import_calls(&mut module, inline_copies);
     }
     unwind::declare_personality(&mut module);
@@ -1447,8 +1460,43 @@ fn generic_instance(items: &flux_hir::ItemTree, instance: Instance) -> bool {
             .is_some_and(|g| !g.is_empty())
 }
 
+fn inline_body_requested(items: &flux_hir::ItemTree, function: FunctionId) -> bool {
+    function.index() < items.core.functions as usize
+        || matches!(
+            items.functions[function].inline,
+            Some(flux_hir::InlineHint::Hint | flux_hir::InlineHint::Always)
+        )
+}
+
+// An empty #[cold] function marks a branch without work to keep out of line.
+fn empty_cold_marker(info: &flux_hir::Function, body: &Body) -> bool {
+    info.inline == Some(flux_hir::InlineHint::Always)
+        && body.param_count == 0
+        && body.locals[Body::RETURN].ty == Ty::UNIT
+        && body.blocks.len() == 1
+        && body.blocks.values().all(|block| {
+            matches!(block.terminator.kind, TerminatorKind::Return)
+                && block.statements.iter().all(|statement| {
+                    matches!(
+                        &statement.kind,
+                        StatementKind::Assign(place, Rvalue::Use(Operand::Const(Constant::Unit)))
+                            if place.local == Body::RETURN && place.projection.is_empty()
+                    )
+                })
+        })
+}
+
 /// Limit imported bodies to small callable Rust functions with ordinary linkage.
 fn small_import_body(info: &flux_hir::Function, body: &Body) -> bool {
+    let requested = matches!(
+        info.inline,
+        Some(flux_hir::InlineHint::Hint | flux_hir::InlineHint::Always)
+    );
+    let (blocks, locals, statements) = if requested {
+        (64, 96, 192)
+    } else {
+        (8, 16, 32)
+    };
     !info.is_extern
         && !info.abi.is_c()
         && !info.track_caller
@@ -1462,15 +1510,15 @@ fn small_import_body(info: &flux_hir::Function, body: &Body) -> bool {
                 && features.iter().all(|feature| feature.as_str() == "neon")
         })
         && info.inline != Some(flux_hir::InlineHint::Never)
-        && !info.cold
-        && body.blocks.len() <= 8
-        && body.locals.len() <= 16
+        && (!info.cold || empty_cold_marker(info, body))
+        && body.blocks.len() <= blocks
+        && body.locals.len() <= locals
         && body
             .blocks
             .values()
             .map(|block| block.statements.len())
             .sum::<usize>()
-            <= 32
+            <= statements
         && !body.has_unwind()
         && body.blocks.values().all(|block| {
             block.statements.iter().all(|statement| {
@@ -1484,6 +1532,8 @@ fn small_import_body(info: &flux_hir::Function, body: &Body) -> bool {
                     | TerminatorKind::Return
                     | TerminatorKind::SwitchInt { .. }
                     | TerminatorKind::Call { .. }
+                    | TerminatorKind::CallIndirect { .. }
+                    | TerminatorKind::Assert { .. }
                     | TerminatorKind::Unreachable
             )
         })
@@ -5800,7 +5850,7 @@ impl Lower<'_, '_, '_> {
                 }
                 if let Some(intrinsic) = items.functions[*func]
                     .intrinsic
-                    .filter(|intrinsic| intrinsic.is_bit_count())
+                    .filter(|intrinsic| intrinsic.is_integer_bit_operation())
                 {
                     let ty = keel_type(generic_args[0]).expect("an integer argument");
                     let x = self.scalar(&args[0]).expect("an integer argument");
@@ -5809,6 +5859,10 @@ impl Lower<'_, '_, '_> {
                         // A byte is its own reverse; keel's `bswap` needs two.
                         flux_hir::Intrinsic::Bswap if ty == Type::I8 => x,
                         flux_hir::Intrinsic::Bswap => ins.bswap(x),
+                        flux_hir::Intrinsic::IsNonzero => {
+                            let zero = ins.iconst(ty, 0);
+                            self.b.ins().icmp(IntCC::Ne, x, zero)
+                        }
                         // Counts come in the argument's type, and are `u32`s.
                         count => {
                             let n = match count {
@@ -6660,7 +6714,7 @@ impl Lower<'_, '_, '_> {
         {
             sig = canonical.clone();
         }
-        if instance.function.index() < self.ctx.hir.items.core.functions as usize
+        if inline_body_requested(&self.ctx.hir.items, instance.function)
             && let Some(refs) = &mut self.ctx.inline_refs
         {
             refs.entry(symbol.clone()).or_insert(instance);

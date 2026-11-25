@@ -288,7 +288,9 @@ fn compile_object_inner(
         } else {
             Default::default()
         };
-        profile::optimize(module, tier)?;
+        let clean_imports =
+            optimized_darwin && call_hints.is_some_and(|hints| hints.native_imports);
+        profile::optimize(module, tier, clean_imports)?;
         if optimized_darwin {
             profile::share_terminal_returns(module)?;
             if let Some(hints) = call_hints {

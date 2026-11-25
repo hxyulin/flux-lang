@@ -2764,7 +2764,7 @@ impl<'a> Evaluator<'a> {
                     }
                     if let Some(intrinsic) = self.items.functions[*func]
                         .intrinsic
-                        .filter(|intrinsic| intrinsic.is_bit_count())
+                        .filter(|intrinsic| intrinsic.is_integer_bit_operation())
                     {
                         let Value::Int { bits, ty } =
                             self.operand(body, locals, generics, &args[0], range)?
@@ -2776,7 +2776,7 @@ impl<'a> Evaluator<'a> {
                             locals,
                             generics,
                             dest,
-                            bit_count(intrinsic, bits, ty),
+                            integer_bits(intrinsic, bits, ty),
                             range,
                         )?;
                         match target {
@@ -5114,13 +5114,13 @@ pub fn show(value: &Value) -> String {
     }
 }
 
-/// `ctlz`, `cttz`, `ctpop` or `bswap` of the integer `bits` of type `ty`,
-/// which are truncated to its width.
-fn bit_count(intrinsic: flux_hir::Intrinsic, bits: u128, ty: IntTy) -> Value {
+/// Evaluate a bit intrinsic on `bits`, which are already truncated to `ty`.
+fn integer_bits(intrinsic: flux_hir::Intrinsic, bits: u128, ty: IntTy) -> Value {
     let width = ty.bits();
     let count = match intrinsic {
         flux_hir::Intrinsic::Ctlz => bits.leading_zeros() - (128 - width),
         flux_hir::Intrinsic::Cttz => bits.trailing_zeros().min(width),
+        flux_hir::Intrinsic::IsNonzero => return Value::Bool(bits != 0),
         flux_hir::Intrinsic::Ctpop => bits.count_ones(),
         _ => {
             let bits = bits.swap_bytes() >> (128 - width);
