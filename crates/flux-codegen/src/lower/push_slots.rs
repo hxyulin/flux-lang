@@ -7,12 +7,12 @@ use flux_ty::{Instance, IntTy, Mutability, Ty, TyKind};
 use keel_frontend::FunctionBuilder;
 use keel_ir::dominators::{ControlFlowGraph, DominatorTree};
 use keel_ir::{
-    BinaryOp, Block, FuncRef, Function, InsertPoint, Inst, InstData, IntCC, Intrinsic, MemoryFlags,
-    Module, Purpose, Signature, StackSlot, Type, Value, ValueDef,
+    BinaryOp, Block, CallConv, FuncRef, Function, InsertPoint, Inst, InstData, IntCC, Intrinsic,
+    MemoryFlags, Module, Purpose, Signature, StackSlot, Type, Value, ValueDef,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use super::{Ctx, instance_symbol, popped_payload::field};
+use super::{Ctx, instance_symbol, keel_type, popped_payload::field};
 
 const MIN_ELEMENT_BYTES: u64 = 128;
 // Smaller savings rarely justify an additional helper and capacity check.
@@ -37,10 +37,15 @@ impl VecLayout {
             return None;
         };
         let elt = ctx.layouts.of(*element);
+        // A pointer in the call signature can also be the address of an
+        // aggregate argument. Only scalar elements can be stored as sent.
+        let scalar = cfg!(target_os = "macos")
+            && (1..=8).contains(&elt.size)
+            && keel_type(*element).is_some();
         const USIZE: Ty = Ty::int(IntTy::Usize);
         if sig.ret != Ty::UNIT
             || !elt.exact
-            || !(MIN_ELEMENT_BYTES..=u32::MAX.into()).contains(&elt.size)
+            || !(scalar || (MIN_ELEMENT_BYTES..=u32::MAX.into()).contains(&elt.size))
             || !ctx.layouts.of(vector).exact
             || ctx.layouts.of(vector).align < 8
         {
@@ -139,6 +144,7 @@ struct Argument {
 enum Rewrite {
     Fields(Site),
     Ranges(Push, Vec<Range<u64>>),
+    Scalar(Push),
 }
 
 const MAX_RESULT_CHAIN: usize = 16;
@@ -193,6 +199,7 @@ pub(super) fn forward_module(module: &mut Module, layouts: &FxHashMap<String, Ve
         .collect();
     let mut field_helpers = FxHashMap::default();
     let mut range_helpers = FxHashMap::default();
+    let mut scalar_helpers = FxHashMap::default();
     let mut next_helper = 0;
     let mut bodies = Vec::new();
     for (function, plans) in module.functions.iter_mut().zip(plans) {
@@ -240,19 +247,58 @@ pub(super) fn forward_module(module: &mut Module, layouts: &FxHashMap<String, Ve
                 }
                 Rewrite::Ranges(push, written) => {
                     let callee = function.callee(push.callee);
+                    let signature = callee.sig.clone();
                     let name = range_helpers
                         .entry((callee.name.clone(), written.clone()))
                         .or_insert_with(|| {
                             let name = next_name(&names, &mut next_helper);
-                            bodies.push(make_range_helper(&name, callee, push.layout, &written));
+                            bodies.push(make_slot_writer(
+                                &name,
+                                &signature,
+                                push.layout,
+                                &callee.name,
+                                |b, slot, args| {
+                                    for range in &written {
+                                        copy_bytes(
+                                            b,
+                                            args[0],
+                                            slot,
+                                            range.clone(),
+                                            push.layout.align as u32,
+                                        );
+                                    }
+                                },
+                            ));
                             name
                         });
-                    let func = function.import_function(name, callee.sig.clone());
-                    let InstData::Call { args, .. } = function.inst_data_mut(push.call) else {
-                        unreachable!("the vector argument plan must refer to its original call");
-                    };
-                    let args = std::mem::take(args);
-                    function.replace_inst(push.call, InstData::Call { func, args });
+                    redirect_push(function, push.call, name, signature);
+                }
+                Rewrite::Scalar(push) => {
+                    let callee = function.callee(push.callee);
+                    let mut signature = callee.sig.clone();
+                    signature.cc = CallConv::Fast;
+                    let name = scalar_helpers
+                        .entry(callee.name.clone())
+                        .or_insert_with(|| {
+                            let name = next_name(&names, &mut next_helper);
+                            let slow_name = format!("{name}_slow");
+                            bodies.push(make_original_call(&slow_name, &signature, callee));
+                            bodies.push(make_slot_writer(
+                                &name,
+                                &signature,
+                                push.layout,
+                                &slow_name,
+                                |b, slot, args| {
+                                    b.ins().store_with_flags(
+                                        args[0],
+                                        slot,
+                                        memory_flags(push.layout.align as u32),
+                                    );
+                                },
+                            ));
+                            name
+                        });
+                    redirect_push(function, push.call, name, signature);
                 }
             }
         }
@@ -277,6 +323,7 @@ fn plan_pushes(
     extents: &mut ResultExtents,
 ) -> Vec<Rewrite> {
     let mut slots = FxHashMap::default();
+    let mut rewrites = Vec::new();
     for (block, call) in function.layout_insts() {
         let InstData::Call { func, args } = function.inst_data(call) else {
             continue;
@@ -288,6 +335,38 @@ fn plan_pushes(
         let Some(&layout) = layouts.get(&callee.name) else {
             continue;
         };
+        if layout.bytes < MIN_ELEMENT_BYTES {
+            let [vector_ty, element_ty] = callee.sig.params.as_slice() else {
+                continue;
+            };
+            if vector_ty.ty == Type::Ptr
+                && matches!(
+                    element_ty.ty,
+                    Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Ptr
+                )
+                && width(element_ty.ty) == Some(layout.bytes)
+                && callee
+                    .sig
+                    .params
+                    .iter()
+                    .all(|p| p.purpose == Purpose::Normal)
+                && callee.sig.returns.is_empty()
+                && !callee.sig.variadic
+                && !callee.sig.returns_twice
+                && callee.attrs.nounwind
+                && !args.has_explicit_abi()
+                && function.call_contract(call).is_none()
+            {
+                rewrites.push(Rewrite::Scalar(Push {
+                    block,
+                    call,
+                    callee: *func,
+                    vector: *vector,
+                    layout,
+                }));
+            }
+            continue;
+        }
         if !push_args(function, call, callee, args) {
             continue;
         }
@@ -320,7 +399,7 @@ fn plan_pushes(
             });
     }
     if slots.is_empty() {
-        return Vec::new();
+        return rewrites;
     }
 
     // A private argument can only be observed by its push. Build the union of
@@ -375,7 +454,6 @@ fn plan_pushes(
         });
     }
 
-    let mut rewrites = Vec::new();
     let mut arguments = slots
         .into_values()
         .filter(|arg| !arg.escapes)
@@ -474,23 +552,29 @@ fn indirect_writer<'a>(
         && function.call_contract(inst).is_none())
     .then_some((decl.name.as_str(), layout.size()))
 }
-fn make_range_helper(
-    name: &str,
-    original: &keel_ir::FuncDecl,
-    layout: VecLayout,
-    ranges: &[Range<u64>],
-) -> Function {
-    make_slot_writer(
-        name,
-        &original.sig,
-        layout,
-        &original.name,
-        |b, slot, args| {
-            for range in ranges {
-                copy_bytes(b, args[0], slot, range.clone(), layout.align as u32);
-            }
-        },
-    )
+fn redirect_push(function: &mut Function, call: Inst, name: &str, signature: Signature) {
+    let func = function.import_function(name, signature);
+    let InstData::Call { args, .. } = function.inst_data_mut(call) else {
+        unreachable!("the vector argument plan must refer to its original call");
+    };
+    let args = std::mem::take(args);
+    function.replace_inst(call, InstData::Call { func, args });
+}
+
+fn make_original_call(name: &str, signature: &Signature, original: &keel_ir::FuncDecl) -> Function {
+    let mut function = Function::new(name, signature.clone());
+    function.local = true;
+    function.attrs.nounwind = true;
+    function.attrs.cold = true;
+    function.attrs.noinline = true;
+    let mut b = FunctionBuilder::new(&mut function);
+    let args = entry(&mut b, signature);
+    let callee = b.import_function(&original.name, original.sig.clone());
+    b.ins().call(callee, &args);
+    b.ins().return_(&[]);
+    b.seal_all_blocks();
+    b.finalize();
+    function
 }
 
 fn width(ty: Type) -> Option<u64> {

@@ -8,6 +8,19 @@ use keel_opt::{OptimizationReport, OptimizationTier, Pipeline};
 
 use crate::{Error, Stage, workers};
 
+#[path = "private_returns.rs"]
+mod private_returns;
+#[path = "terminal_regions.rs"]
+mod terminal_regions;
+
+pub(crate) fn share_terminal_returns(module: &mut Module) -> Result<(), Error> {
+    let seeds = terminal_regions::run(module);
+    if seeds.is_empty() {
+        return Ok(());
+    }
+    private_returns::run(module, &seeds).map_err(Error::optimize)
+}
+
 pub(crate) fn optimize(module: &mut Module, tier: OptimizationTier) -> Result<(), Error> {
     let Some(directory) = std::env::var_os("FLUX_KEEL_PROFILE") else {
         return Pipeline::named(&passes(tier))

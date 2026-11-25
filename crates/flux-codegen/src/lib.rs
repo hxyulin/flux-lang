@@ -251,8 +251,15 @@ fn compile_object_inner(
             ),
         ));
     }
+    let optimized_darwin = tier == OptimizationTier::Full
+        && target == Target::Aarch64AppleDarwin
+        && panic_strategy == flux_mir::PanicStrategy::Abort;
     measured(timings.as_deref_mut().map(|t| &mut t.optimize), || {
-        profile::optimize(module, tier)
+        profile::optimize(module, tier)?;
+        if optimized_darwin {
+            profile::share_terminal_returns(module)?;
+        }
+        Ok(())
     })?;
     let selector = selection.unwrap_or(if tier == OptimizationTier::Full {
         keel_codegen::SelectionTier::Full
@@ -297,6 +304,9 @@ fn compile_object_inner(
     let mut asm_labels = aarch64_asm::NumericLabels::default();
     let start = timed.then(std::time::Instant::now);
     let mut emission = keel_codegen::EmissionOptions::default();
+    if optimized_darwin {
+        emission.goal = keel_codegen::CodegenGoal::Size;
+    }
     if panic_strategy == flux_mir::PanicStrategy::Unwind {
         emission.unwind_tables = keel_codegen::UnwindTables::All;
     }

@@ -16,18 +16,25 @@ fn full_tier_uses_target_selection_for_offset_loads() {
         let mut module = keel_ir::parse(source).unwrap();
         let actual =
             flux_codegen::compile_object(&mut module, Target::Aarch64AppleDarwin, tier).unwrap();
-        let baseline = keel_codegen::compile_program(&module, Target::Aarch64AppleDarwin).unwrap();
+        let goal = if tier == OptimizationTier::Full {
+            keel_codegen::CodegenGoal::Size
+        } else {
+            keel_codegen::CodegenGoal::Speed
+        };
+        let baseline = batch_program(
+            &module,
+            Target::Aarch64AppleDarwin,
+            keel_codegen::SelectionTier::Baseline,
+            goal,
+        );
         let baseline = keel_asm::assemble_program(&baseline, Default::default()).unwrap();
         if tier == OptimizationTier::Full {
-            let selected = keel_codegen::compile_program_with_pipeline(
+            let selected = batch_program(
                 &module,
                 Target::Aarch64AppleDarwin,
-                &keel_codegen::CodegenPipeline {
-                    selector: &keel_codegen::SelectionTier::Full,
-                    allocator: &keel_codegen::regalloc::AllocationTier::Full,
-                },
-            )
-            .unwrap();
+                keel_codegen::SelectionTier::Full,
+                goal,
+            );
             let selected = keel_asm::assemble_program(&selected, Default::default()).unwrap();
             assert!(
                 selected.text.len() < baseline.text.len(),
@@ -451,6 +458,26 @@ fn linux_native_link_preserves_output_on_failure() {
     std::fs::remove_dir_all(directory).unwrap();
 }
 
+fn batch_program(
+    module: &keel_ir::Module,
+    target: Target,
+    selection: keel_codegen::SelectionTier,
+    goal: keel_codegen::CodegenGoal,
+) -> keel_asm_ir::Program {
+    let mut emission = keel_codegen::EmissionOptions::default();
+    emission.goal = goal;
+    keel_codegen::Request::new(
+        target,
+        keel_codegen::CodegenPipeline {
+            selector: &selection,
+            allocator: &keel_codegen::regalloc::AllocationTier::Full,
+        },
+    )
+    .emission(emission)
+    .program(module)
+    .unwrap()
+}
+
 /// Keep the batch API as an independent reference for chunk layout and metadata.
 fn batch_object(module: &keel_ir::Module, target: Target, tier: OptimizationTier) -> Vec<u8> {
     let selector = if tier == OptimizationTier::Full {
@@ -458,15 +485,12 @@ fn batch_object(module: &keel_ir::Module, target: Target, tier: OptimizationTier
     } else {
         keel_codegen::SelectionTier::Baseline
     };
-    let program = keel_codegen::compile_program_with_pipeline(
-        module,
-        target,
-        &keel_codegen::CodegenPipeline {
-            selector: &selector,
-            allocator: &keel_codegen::regalloc::AllocationTier::Full,
-        },
-    )
-    .unwrap();
+    let goal = if tier == OptimizationTier::Full && target == Target::Aarch64AppleDarwin {
+        keel_codegen::CodegenGoal::Size
+    } else {
+        keel_codegen::CodegenGoal::Speed
+    };
+    let program = batch_program(module, target, selector, goal);
     match target {
         Target::Aarch64AppleDarwin => {
             keel_asm::assemble_program_object(&program, Default::default()).unwrap()

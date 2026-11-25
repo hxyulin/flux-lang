@@ -825,7 +825,10 @@ fn lower_inner(
         })
         .collect();
     let names = |id: flux_hir::ConstId| items.const_name(id);
+    let defer_inline_copies =
+        inline_small_builtins && cfg!(all(target_arch = "aarch64", target_os = "macos"));
     let mut ctx = Ctx {
+        inline_refs: defer_inline_copies.then(FxHashMap::default),
         external_signatures: module
             .decls
             .iter()
@@ -914,6 +917,7 @@ fn lower_inner(
     };
     let defer_imports = compilation.is_some_and(|c| matches!(c.kind, OutputKind::Library(_)));
     let mut inline_copies = Vec::new();
+    let mut deferred_inline = Vec::new();
     for instance in instances {
         if admitted.contains(&instance)
             || compilation.is_some_and(|c| !owns_instance(items, instance, c))
@@ -921,18 +925,16 @@ fn lower_inner(
             if inline_small_builtins
                 && instance.function.index() < items.core.functions as usize
                 && let Some(body) = mir.instance_body(items, instance).map(|(body, _)| body)
-                && (instance.args.is_empty() || pointer_intrinsic_wrapper(items, body))
+                && (defer_inline_copies
+                    || instance.args.is_empty()
+                    || pointer_intrinsic_wrapper(items, body))
                 && small_import_body(&items.functions[instance.function], body)
             {
-                let body = flux_mir::mono::body_of(hir, &typed.sigs, mir, instance);
-                let mut function = ctx.function(instance, &body, false);
-                let original = function.name.clone();
-                function.name = format!("__flux_small_body_copy_{original}");
-                function.local = true;
-                function.weak_odr = false;
-                function.hidden = false;
-                function.attrs.alwaysinline = true;
-                inline_copies.push((original, function));
+                if defer_inline_copies {
+                    deferred_inline.push(instance);
+                } else {
+                    inline_copies.push(build_inline_copy(&mut ctx, instance));
+                }
             }
             if !defer_imports {
                 ctx.declare_instance(instance, &mut declared, &mut module.decls);
@@ -958,6 +960,9 @@ fn lower_inner(
         if compilation.is_some() && items.functions[instance.function].track_caller {
             module.functions.push(ctx.function(instance, &body, true));
         }
+    }
+    if !deferred_inline.is_empty() {
+        inline_copies = used_inline_copies(&mut ctx, &module.functions, &deferred_inline);
     }
     // Constants whose values depend on generic arguments fail only
     // once code needs them, as in rustc.
@@ -1473,6 +1478,73 @@ fn pointer_intrinsic_wrapper(items: &flux_hir::ItemTree, body: &Body) -> bool {
         }
     }
     intrinsic.is_some()
+}
+
+fn build_inline_copy(ctx: &mut Ctx<'_>, instance: Instance) -> (String, Function) {
+    let body = flux_mir::mono::body_of(ctx.hir, &ctx.typed.sigs, ctx.mir, instance);
+    let mut function = ctx.function(instance, &body, false);
+    let original = function.name.clone();
+    function.name = format!("__flux_small_body_copy_{original}");
+    function.local = true;
+    function.weak_odr = false;
+    function.hidden = false;
+    function.attrs.alwaysinline = true;
+    (original, function)
+}
+
+// Start with direct calls from emitted bodies and follow the imported copies
+// they need. Most eligible instances are never called by this object.
+fn used_inline_copies(
+    ctx: &mut Ctx<'_>,
+    roots: &[Function],
+    candidates: &[Instance],
+) -> Vec<(String, Function)> {
+    let eligible: FxHashMap<_, _> = candidates
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(index, instance)| (instance, index))
+        .collect();
+    let mut scheduled = vec![false; candidates.len()];
+    let mut pending = Vec::new();
+
+    let discover =
+        |function: &Function, ctx: &Ctx<'_>, scheduled: &mut [bool], pending: &mut Vec<usize>| {
+            let refs = ctx
+                .inline_refs
+                .as_ref()
+                .expect("on-demand copies record call identities");
+            for (_, inst) in function.layout_insts() {
+                let keel_ir::InstData::Call { func, .. } = function.inst_data(inst) else {
+                    continue;
+                };
+                if let Some(instance) = refs.get(function.callee(*func).name.as_str())
+                    && let Some(&index) = eligible.get(instance)
+                    && !scheduled[index]
+                {
+                    scheduled[index] = true;
+                    pending.push(index);
+                }
+            }
+        };
+    for function in roots.iter().chain(&ctx.generated_functions) {
+        discover(function, ctx, &mut scheduled, &mut pending);
+    }
+    let mut next = 0;
+    let mut copies = Vec::new();
+    while next < pending.len() {
+        let index = pending[next];
+        next += 1;
+        let generated = ctx.generated_functions.len();
+        let copy = build_inline_copy(ctx, candidates[index]);
+        discover(&copy.1, ctx, &mut scheduled, &mut pending);
+        for function in &ctx.generated_functions[generated..] {
+            discover(function, ctx, &mut scheduled, &mut pending);
+        }
+        copies.push((index, copy));
+    }
+    copies.sort_unstable_by_key(|&(index, _)| index);
+    copies.into_iter().map(|(_, copy)| copy).collect()
 }
 
 fn redirect_small_import_calls(module: &mut Module, copies: Vec<(String, Function)>) {
@@ -1999,6 +2071,7 @@ struct ReferencedStorage {
 }
 
 struct Ctx<'a> {
+    inline_refs: Option<FxHashMap<String, Instance>>,
     projected_pop: Option<FunctionId>,
     pop_slot_helpers: FxHashMap<Instance, String>,
     direct_push: Option<FunctionId>,
@@ -6536,6 +6609,11 @@ impl Lower<'_, '_, '_> {
             && let Some(canonical) = self.ctx.external_signatures.get(&symbol)
         {
             sig = canonical.clone();
+        }
+        if instance.function.index() < self.ctx.hir.items.core.functions as usize
+            && let Some(refs) = &mut self.ctx.inline_refs
+        {
+            refs.entry(symbol.clone()).or_insert(instance);
         }
         let callee = self.b.import_function(&symbol, sig);
         self.callees.insert(instance, callee);
