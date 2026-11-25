@@ -29,7 +29,11 @@ fn main() {
     let store: unsafe fn(*mut u8, uint8x8_t) = vst1_u8;
     let equal: unsafe fn(uint8x8_t, uint8x8_t) -> uint8x8_t = vceq_u8;
     let a = [0, 127, 128, 255, 19, 23, 31, 0];
-    let mut b = [0u8; 8];
-    unsafe { store(b.as_mut_ptr(), equal(load(a.as_ptr()), load(a.as_ptr()))); }
-    println!("{} {} {} {}", digest, b[0], b[3], std::mem::size_of::<int8x8_t>());
+    let c = [0, 63, 128, 127, 1, 23, 31, 255];
+    let mut b = [71u8; 10];
+    unsafe {
+        store(b.as_mut_ptr().add(1), equal(load(a.as_ptr()), load(c.as_ptr())));
+    }
+    assert_eq!(b, [71, 255, 0, 255, 0, 0, 255, 255, 0, 71]);
+    println!("{} {} {} {}", digest, b[1], b[4], std::mem::size_of::<int8x8_t>());
 }

@@ -239,6 +239,7 @@ impl<T> [T] {
     }
 
     /// The last element, or `None` if the slice is empty.
+    #[lang = "slice_last"]
     pub const fn last(&self) -> Option<&T> {
         let len = self.len();
         if len == 0 { None } else { Some(&self[len - 1]) }

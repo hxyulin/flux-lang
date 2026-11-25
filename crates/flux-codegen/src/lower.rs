@@ -176,6 +176,7 @@ pub struct Compilation<'a> {
 pub struct LoweredCrate {
     pub module: Module,
     pub required_instances: Vec<Instance>,
+    pub(crate) call_hints: crate::slice_last::CallHints,
 }
 
 /// Lowers one object using stable crate identities and a fixed Rust convention.
@@ -827,7 +828,34 @@ fn lower_inner(
     let names = |id: flux_hir::ConstId| items.const_name(id);
     let defer_inline_copies =
         inline_small_builtins && cfg!(all(target_arch = "aarch64", target_os = "macos"));
+    let last_and_unwrap = if cfg!(all(target_arch = "aarch64", target_os = "macos"))
+        && mir.panic_strategy == flux_mir::PanicStrategy::Abort
+        && matches!(
+            optimization,
+            Some(crate::ObjectOptimization::Tier(
+                crate::OptimizationTier::Full
+            ))
+        ) {
+        items
+            .lang_fns
+            .get(&flux_intern::Symbol::intern("slice_last"))
+            .copied()
+            .zip(
+                items
+                    .lang_fns
+                    .get(&flux_intern::Symbol::intern("option_unwrap"))
+                    .copied(),
+            )
+            .filter(|&(last, unwrap)| {
+                last.index() < items.core.functions as usize
+                    && unwrap.index() < items.core.functions as usize
+            })
+    } else {
+        None
+    };
     let mut ctx = Ctx {
+        last_and_unwrap,
+        call_hints: crate::slice_last::CallHints::default(),
         inline_refs: defer_inline_copies.then(FxHashMap::default),
         external_signatures: module
             .decls
@@ -1161,6 +1189,7 @@ fn lower_inner(
     Ok(LoweredCrate {
         module,
         required_instances,
+        call_hints: ctx.call_hints,
     })
 }
 
@@ -1426,7 +1455,12 @@ fn small_import_body(info: &flux_hir::Function, body: &Body) -> bool {
         && info.intrinsic.is_none()
         && info.link_name.is_none()
         && info.link_section.is_none()
-        && info.target_features.is_none()
+        // NEON is a baseline feature for native AArch64 Darwin. Other
+        // feature-dependent bodies must keep their original call boundary.
+        && info.target_features.as_deref().is_none_or(|features| {
+            cfg!(all(target_arch = "aarch64", target_os = "macos"))
+                && features.iter().all(|feature| feature.as_str() == "neon")
+        })
         && info.inline != Some(flux_hir::InlineHint::Never)
         && !info.cold
         && body.blocks.len() <= 8
@@ -2071,6 +2105,8 @@ struct ReferencedStorage {
 }
 
 struct Ctx<'a> {
+    last_and_unwrap: Option<(FunctionId, FunctionId)>,
+    call_hints: crate::slice_last::CallHints,
     inline_refs: Option<FxHashMap<String, Instance>>,
     projected_pop: Option<FunctionId>,
     pop_slot_helpers: FxHashMap<Instance, String>,
@@ -6593,6 +6629,20 @@ impl Lower<'_, '_, '_> {
             return callee;
         }
         let sig = self.ctx.normalized_signature(instance);
+        let stride = self.ctx.last_and_unwrap.and_then(|(last, _)| {
+            if instance.function != last {
+                return None;
+            }
+            let [param] = &*sig.params else { return None };
+            let TyKind::Ref(_, slice) = param.kind() else {
+                return None;
+            };
+            let TyKind::Slice(element) = slice.kind() else {
+                return None;
+            };
+            let layout = self.ctx.layouts.of(element);
+            layout.exact.then_some(layout.size)
+        });
         let function = &self.ctx.hir.items.functions[instance.function];
         let mut sig = self.ctx.convention(instance).signature(
             self.sigs,
@@ -6614,6 +6664,16 @@ impl Lower<'_, '_, '_> {
             && let Some(refs) = &mut self.ctx.inline_refs
         {
             refs.entry(symbol.clone()).or_insert(instance);
+        }
+        if let Some(stride) = stride {
+            self.ctx.call_hints.last.insert(symbol.clone(), stride);
+        } else if self
+            .ctx
+            .last_and_unwrap
+            .is_some_and(|(_, unwrap)| instance.function == unwrap)
+            && sig.returns.as_slice() == [AbiParam::new(Type::Ptr)]
+        {
+            self.ctx.call_hints.unwrap.insert(symbol.clone());
         }
         let callee = self.b.import_function(&symbol, sig);
         self.callees.insert(instance, callee);
@@ -7031,22 +7091,24 @@ impl Lower<'_, '_, '_> {
             .strip_prefix("__neon_")
             .expect("NEON intrinsic");
         let first = self.operand(&args[0])[0];
-        let bytes = Type::Vector(
-            if matches!(
-                name,
-                "vld1_u8"
-                    | "vst1_u8"
-                    | "vdup_n_u8"
-                    | "vceq_u8"
-                    | "vorr_u8"
-                    | "vcltz_s8"
-                    | "vcgez_s8"
-            ) {
-                VectorType::I8x8
-            } else {
-                VectorType::I8x16
-            },
+        let bytes = Type::Vector(VectorType::I8x16);
+        let words = Type::Vector(VectorType::I64x2);
+        let narrow = matches!(
+            name,
+            "vdup_n_u8" | "vceq_u8" | "vorr_u8" | "vcltz_s8" | "vcgez_s8"
         );
+        // Keel's generic lane operations use native NEON on 128-bit vectors.
+        // Duplicate an eight-byte input and keep only the low half of the
+        // result. Each lane is independent, and memory accesses stay 8 bytes.
+        let load_bytes = |builder: &mut FunctionBuilder<'_>, address| {
+            if narrow {
+                let word = builder.ins().load(Type::I64, address);
+                let pair = builder.ins().vsplat(words, word);
+                builder.ins().convert(ConvertOp::Bitcast, bytes, pair)
+            } else {
+                builder.ins().load(bytes, address)
+            }
+        };
         let value = match name {
             "vshrn_n_u16" => {
                 let TyKind::Value(shift) = generic_args[0].kind() else {
@@ -7063,13 +7125,13 @@ impl Lower<'_, '_, '_> {
             }
             "vpmaxq_u8" => {
                 let second = self.operand(&args[1])[0];
-                let a = self.b.ins().load(bytes, first);
-                let b = self.b.ins().load(bytes, second);
+                let a = load_bytes(&mut self.b, first);
+                let b = load_bytes(&mut self.b, second);
                 self.b.ins().vector_binary(VectorBinaryOp::Pumax, a, b)
             }
             "vdup_n_u8" | "vdupq_n_u8" => self.b.ins().vsplat(bytes, first),
             "vcltz_s8" | "vcgez_s8" => {
-                let a = self.b.ins().load(bytes, first);
+                let a = load_bytes(&mut self.b, first);
                 let zero = self.b.ins().iconst(Type::I8, 0);
                 let zero = self.b.ins().vsplat(bytes, zero);
                 self.b.ins().vicmp(
@@ -7082,9 +7144,10 @@ impl Lower<'_, '_, '_> {
                     zero,
                 )
             }
+            "vld1_u8" => self.b.ins().load(Type::I64, first),
             "vst1_u8" => {
                 let second = self.operand(&args[1])[0];
-                let vector = self.b.ins().load(bytes, second);
+                let vector = self.b.ins().load(Type::I64, second);
                 self.b.ins().store(vector, first);
                 vector
             }
@@ -7099,12 +7162,12 @@ impl Lower<'_, '_, '_> {
             _ => {
                 // The load intrinsic explicitly promises no alignment. Using
                 // the same conservative flags for aggregate inputs is valid.
-                let a = self.b.ins().load(bytes, first);
-                if matches!(name, "vld1q_u8" | "vld1_u8") {
+                let a = load_bytes(&mut self.b, first);
+                if name == "vld1q_u8" {
                     a
                 } else {
                     let second = self.operand(&args[1])[0];
-                    let b = self.b.ins().load(bytes, second);
+                    let b = load_bytes(&mut self.b, second);
                     match name {
                         "vceq_u8" | "vceqq_u8" => self.b.ins().vicmp(IntCC::Eq, a, b),
                         "vandq_u8" => self.b.ins().vector_binary(VectorBinaryOp::And, a, b),
@@ -7121,6 +7184,12 @@ impl Lower<'_, '_, '_> {
         } else if name != "vst1_u8" {
             let (Location::Memory(address), _) = self.locate(dest) else {
                 unreachable!("NEON aggregates live in memory")
+            };
+            let value = if narrow {
+                let pair = self.b.ins().convert(ConvertOp::Bitcast, words, value);
+                self.b.ins().vextract(pair, 0)
+            } else {
+                value
             };
             self.b.ins().store(value, address);
         }

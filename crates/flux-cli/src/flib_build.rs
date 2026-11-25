@@ -634,8 +634,7 @@ pub(crate) fn compile_native_pipelined(
                 } else {
                     lower(None)
                 }
-                .ok()?
-                .module;
+                .ok()?;
                 let output_object =
                     compile_object(&mut module, target, options, &mut timings).ok()?;
                 link_executable(
@@ -687,7 +686,7 @@ pub(crate) fn compile_native_pipelined(
         if linked.is_some() {
             None
         } else {
-            let lowered = if units.get() == 1
+            let mut lowered = if units.get() == 1
                 && link_dependency_objects
                 && !state.objects.is_empty()
                 && native_cutoff_enabled()
@@ -753,8 +752,7 @@ pub(crate) fn compile_native_pipelined(
                 report_all(&state.db, &mut errors);
                 "cannot lower crate".to_owned()
             })?;
-            let mut module = lowered.module;
-            object_requirements = lowered.required_instances;
+            object_requirements = std::mem::take(&mut lowered.required_instances);
             if let Some(publish) = pipeline.as_ref().and_then(|stage| stage.publish) {
                 let metadata = timings.time("pipeline metadata", || {
                     write_checked_with_indices(
@@ -779,7 +777,7 @@ pub(crate) fn compile_native_pipelined(
             let object = if units.get() > 1 {
                 timings.time("backend units (parallel inclusive)", || {
                     crate::backend_units::compile(
-                        module,
+                        lowered.module,
                         units,
                         target,
                         output,
@@ -787,7 +785,7 @@ pub(crate) fn compile_native_pipelined(
                     )
                 })?
             } else {
-                vec![compile_object(&mut module, target, options, &mut timings)?]
+                vec![compile_object(&mut lowered, target, options, &mut timings)?]
             };
             Some(object)
         }
@@ -1030,17 +1028,19 @@ pub(crate) fn prepare_library_specializations(
 }
 
 fn compile_object(
-    module: &mut flux_codegen::Module,
+    module: &mut flux_codegen::LoweredCrate,
     target: flux_codegen::Target,
     options: BuildOptions,
     timings: &mut crate::build::Timings,
 ) -> Result<Vec<u8>, String> {
     let result = if options.timings {
-        let (result, backend) = timings.time("backend (inclusive)", || {
-            flux_codegen::compile_object_with_options_and_timings(
+        let mut backend = flux_codegen::ObjectTimings::default();
+        let result = timings.time("backend (inclusive)", || {
+            flux_codegen::compile_lowered_object(
                 module,
                 target,
                 options.object_options(),
+                Some(&mut backend),
             )
         });
         for (name, duration) in [
@@ -1055,7 +1055,7 @@ fn compile_object(
         }
         result
     } else {
-        flux_codegen::compile_object_with_options(module, target, options.object_options())
+        flux_codegen::compile_lowered_object(module, target, options.object_options(), None)
     };
     result.map_err(|e| e.to_string())
 }
@@ -1118,7 +1118,6 @@ fn specialize_on_demand(
             link.options.object_options().optimization,
             None,
         )
-        .map(|lowered| lowered.module)
         .map_err(|_| String::from("cannot lower executable"))
     };
     // The first executable object exposes dependency calls and their native

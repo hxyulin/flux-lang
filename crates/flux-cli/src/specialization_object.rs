@@ -136,13 +136,12 @@ impl Cache {
                         None,
                     )
                     .ok()
-                    .map(|lowered| lowered.module)
                 })
             })
         })?;
         let bytes = timings
             .time("dependency specialization backend", || {
-                flux_codegen::compile_object_with_options(&mut module, policy.0, policy.1)
+                flux_codegen::compile_lowered_object(&mut module, policy.0, policy.1, None)
             })
             .ok()?;
         let mut entry = Vec::with_capacity(64 + bytes.len());

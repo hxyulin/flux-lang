@@ -21,7 +21,9 @@ mod linux;
 mod lower;
 mod native;
 mod profile;
+mod slice_last;
 mod units;
+mod wide_dispatch;
 pub mod workers;
 
 use std::path::{Path, PathBuf};
@@ -51,6 +53,7 @@ pub fn compile_object(
         flux_mir::PanicStrategy::Abort,
         None,
         None,
+        None,
     )
 }
 
@@ -70,7 +73,7 @@ pub fn compile_object_with_panic_strategy(
     tier: OptimizationTier,
     panic_strategy: flux_mir::PanicStrategy,
 ) -> Result<Vec<u8>, Error> {
-    compile_object_inner(module, target, tier, panic_strategy, None, None)
+    compile_object_inner(module, target, tier, panic_strategy, None, None, None)
 }
 
 /// The IR and native selection policy of an object build.
@@ -98,7 +101,7 @@ pub fn compile_object_with_options(
     target: Target,
     options: ObjectOptions,
 ) -> Result<Vec<u8>, Error> {
-    compile_options(module, target, options, None)
+    compile_options(module, target, options, None, None)
 }
 /// The timed equivalent of [`compile_object_with_options`].
 pub fn compile_object_with_options_and_timings(
@@ -107,13 +110,33 @@ pub fn compile_object_with_options_and_timings(
     options: ObjectOptions,
 ) -> (Result<Vec<u8>, Error>, ObjectTimings) {
     let mut timings = ObjectTimings::default();
-    let result = compile_options(module, target, options, Some(&mut timings));
+    let result = compile_options(module, target, options, None, Some(&mut timings));
     (result, timings)
 }
+/// Compile a lowered crate, retaining type information used by native optimization.
+///
+/// # Errors
+/// Returns staged verification, optimization, code generation or assembly errors.
+pub fn compile_lowered_object(
+    lowered: &mut LoweredCrate,
+    target: Target,
+    options: ObjectOptions,
+    timings: Option<&mut ObjectTimings>,
+) -> Result<Vec<u8>, Error> {
+    compile_options(
+        &mut lowered.module,
+        target,
+        options,
+        Some(&lowered.call_hints),
+        timings,
+    )
+}
+
 fn compile_options(
     module: &mut Module,
     target: Target,
     options: ObjectOptions,
+    call_hints: Option<&slice_last::CallHints>,
     timings: Option<&mut ObjectTimings>,
 ) -> Result<Vec<u8>, Error> {
     let (tier, selection) = match options.optimization {
@@ -133,6 +156,7 @@ fn compile_options(
         tier,
         options.panic_strategy,
         selection,
+        call_hints,
         timings,
     )
 }
@@ -151,6 +175,7 @@ pub fn compile_fast_object(module: &mut keel_ir::Module, target: Target) -> Resu
         OptimizationTier::Fast,
         flux_mir::PanicStrategy::Abort,
         Some(keel_codegen::SelectionTier::Full),
+        None,
         None,
     )
 }
@@ -183,6 +208,7 @@ pub fn compile_object_with_timings(
         tier,
         flux_mir::PanicStrategy::Abort,
         None,
+        None,
         Some(&mut timings),
     );
     (result, timings)
@@ -201,6 +227,7 @@ pub fn compile_fast_object_with_timings(
         OptimizationTier::Fast,
         flux_mir::PanicStrategy::Abort,
         Some(keel_codegen::SelectionTier::Full),
+        None,
         Some(&mut timings),
     );
     (result, timings)
@@ -220,6 +247,7 @@ fn compile_object_inner(
     tier: OptimizationTier,
     panic_strategy: flux_mir::PanicStrategy,
     selection: Option<keel_codegen::SelectionTier>,
+    call_hints: Option<&slice_last::CallHints>,
     mut timings: Option<&mut ObjectTimings>,
 ) -> Result<Vec<u8>, Error> {
     if panic_strategy == flux_mir::PanicStrategy::Unwind && target != Target::Aarch64AppleDarwin {
@@ -254,13 +282,28 @@ fn compile_object_inner(
     let optimized_darwin = tier == OptimizationTier::Full
         && target == Target::Aarch64AppleDarwin
         && panic_strategy == flux_mir::PanicStrategy::Abort;
-    measured(timings.as_deref_mut().map(|t| &mut t.optimize), || {
+    let dispatches = measured(timings.as_deref_mut().map(|t| &mut t.optimize), || {
+        let dispatches = if optimized_darwin && call_hints.is_some() {
+            wide_dispatch::keep_large_dispatch_arms_out_of_line(module)
+        } else {
+            Default::default()
+        };
         profile::optimize(module, tier)?;
         if optimized_darwin {
             profile::share_terminal_returns(module)?;
+            if let Some(hints) = call_hints {
+                slice_last::fuse(module, hints);
+            }
         }
-        Ok(())
+        Ok(dispatches)
     })?;
+    let dispatch_allocator = wide_dispatch::Allocator(&dispatches);
+    let allocator: &(dyn keel_codegen::regalloc::RegisterAllocator + Sync) =
+        if dispatches.is_empty() {
+            &keel_codegen::regalloc::AllocationTier::Full
+        } else {
+            &dispatch_allocator
+        };
     let selector = selection.unwrap_or(if tier == OptimizationTier::Full {
         keel_codegen::SelectionTier::Full
     } else {
@@ -268,7 +311,7 @@ fn compile_object_inner(
     });
     let pipeline = keel_codegen::CodegenPipeline {
         selector: &selector,
-        allocator: &keel_codegen::regalloc::AllocationTier::Full,
+        allocator,
     };
     let mut assembler = match target {
         Target::Aarch64AppleDarwin => Some(
@@ -350,7 +393,7 @@ fn compile_object_inner(
                     target,
                     pipeline: keel_codegen::parallel::Pipeline {
                         selector: &selector,
-                        allocator: &keel_codegen::regalloc::AllocationTier::Full,
+                        allocator,
                     },
                     emission,
                     pools: None,

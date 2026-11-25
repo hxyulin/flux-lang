@@ -135,6 +135,12 @@ pub fn length(values: &[u32]) -> usize { values.len() }
 pub fn offset(pointer: *const u16, index: usize) -> *const u16 {
     unsafe { pointer.add(index) }
 }
+#[cfg(all(target_arch = "aarch64", target_os = "macos"))]
+pub fn compare(a: core::arch::aarch64::uint8x8_t, b: core::arch::aarch64::uint8x8_t)
+    -> core::arch::aarch64::uint8x8_t
+{
+    unsafe { core::arch::aarch64::vceq_u8(a, b) }
+}
 "#,
     );
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
@@ -184,6 +190,7 @@ pub fn offset(pointer: *const u16, index: usize) -> *const u16 {
     let mut original_address = false;
     let mut imported_length = false;
     let mut imported_offset = false;
+    let mut imported_neon = false;
     for function in &optimized.functions {
         for (_, inst) in function.layout_insts() {
             match function.inst_data(inst) {
@@ -193,6 +200,7 @@ pub fn offset(pointer: *const u16, index: usize) -> *const u16 {
                     imported_length |=
                         name.starts_with(prefix) && name.contains("5slice5slice3len");
                     imported_offset |= name.starts_with(prefix) && name.contains("9const_ptr3add");
+                    imported_neon |= name.starts_with(prefix) && name.contains("vceq_u8");
                 }
                 InstData::SymbolAddr {
                     symbol: KeelSymbol::Func(func),
@@ -204,6 +212,11 @@ pub fn offset(pointer: *const u16, index: usize) -> *const u16 {
             }
         }
     }
+    assert_eq!(
+        imported_neon,
+        cfg!(all(target_arch = "aarch64", target_os = "macos")),
+        "the NEON wrapper should be imported where NEON is a baseline feature",
+    );
     assert!(copied_call, "the direct call should see the imported body");
     assert!(
         imported_length,
