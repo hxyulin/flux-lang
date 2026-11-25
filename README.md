@@ -5,7 +5,7 @@
   <a href="Cargo.toml"><img alt="Rust edition 2024" src="https://img.shields.io/badge/edition-2024-dea584"></a>
   <a href="docs/SELF_HOSTING.md"><img alt="Target arm64 macOS" src="https://img.shields.io/badge/target-arm64%20macOS-lightgrey?logo=apple"></a>
   <a href="docs/SELF_HOSTING.md"><img alt="Target x86-64 Linux" src="https://img.shields.io/badge/target-x86--64%20Linux-lightgrey?logo=linux"></a>
-  <a href="https://github.com/hxyulin/keel/commit/ba43874ceb671af1cd1eb59811a87d14b55c92dd"><img alt="Keel ba43874c" src="https://img.shields.io/badge/Keel-ba43874c-6e56cf"></a>
+  <a href="https://github.com/hxyulin/keel/commit/ee0a6c4b5fadd2ff34ca73ebb7d0faa1cd3d8296"><img alt="Keel ee0a6c4b" src="https://img.shields.io/badge/Keel-ee0a6c4b-6e56cf"></a>
   <a href="#size"><img alt="About 520k lines of compiler source" src="https://img.shields.io/badge/source-~520k%20lines-informational"></a>
   <a href="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/hxyulin/flux-lang/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="#license"><img alt="MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue"></a>
@@ -152,7 +152,17 @@ Counted with `tokei` on 2026-10-30, Rust only, vendored code excluded.
 
 As of 2026-11-10, `tests/run` holds 640 programs compiled and run against rustc.
 
-## Compile time
+## Performance
+
+![Hashbrown warmed CPU cycles relative to Cargo. Default hasher: Cargo 1.00×, prior Flux 8.27×, current Flux 2.96×. Fixed hasher: Cargo 1.00×, prior Flux 4.92×, current Flux 2.81×.](docs/status/hashbrown-cycles.svg)
+
+On arm64 macOS, two locked hashbrown 0.17.2 insert/lookup probes use
+**2.96×** and **2.81×** as many CPU cycles as the Cargo-built executables. Both
+95% confidence intervals fall below 3×. Linked text shrank 16–17% against
+the prior Flux builds. Clean builds took about 0.60–0.61 s with Flux and
+0.57 s with Cargo. [Workloads and measurement method](docs/ARCHITECTURE.md#hashbrown-release-benchmarks).
+
+### Compile time
 
 <details>
 <summary><strong>Measured against rustc on one source graph</strong></summary>

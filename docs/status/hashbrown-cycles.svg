@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 448" role="img" aria-labelledby="title desc">
+  <title id="title">Hashbrown CPU cycles relative to Cargo</title>
+  <desc id="desc">The default hasher uses 1.00 times Cargo cycles for Cargo, 8.27 for prior Flux, and 2.96 for Flux. The fixed hasher uses 1.00, 4.92, and 2.81.</desc>
+  <style>
+    :root { color-scheme: light dark; --bg: #f6f7fb; --fg: #162033; --cargo: #536984; --prior: #92632b; --flux: #19776a; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #161b22; --fg: #e6edf3; --cargo: #a2b7d0; --prior: #e4b77e; --flux: #68d5bf; }
+    }
+    .background { fill: var(--bg); }
+    .text { fill: var(--fg); }
+    .cargo { fill: var(--cargo); }
+    .prior { fill: var(--prior); }
+    .flux { fill: var(--flux); }
+  </style>
+  <rect class="background" width="720" height="448" rx="20"/>
+  <g class="text" font-family="system-ui, -apple-system, sans-serif">
+    <text x="32" y="55" font-size="34" font-weight="700">CPU cycles relative to Cargo</text>
+    <g font-size="29" font-weight="600">
+      <text x="32" y="110">Default hasher</text>
+      <text x="32" y="286">Fixed hasher</text>
+    </g>
+    <g font-size="26">
+      <text x="32" y="151">Cargo</text>
+      <text x="32" y="194">Prior Flux</text>
+      <text x="32" y="237">Flux</text>
+      <text x="32" y="327">Cargo</text>
+      <text x="32" y="370">Prior Flux</text>
+      <text x="32" y="413">Flux</text>
+    </g>
+    <g font-size="26" text-anchor="end" style="font-variant-numeric: tabular-nums">
+      <text x="688" y="151">1.00×</text>
+      <text x="688" y="194">8.27×</text>
+      <text x="688" y="237">2.96×</text>
+      <text x="688" y="327">1.00×</text>
+      <text x="688" y="370">4.92×</text>
+      <text x="688" y="413">2.81×</text>
+    </g>
+  </g>
+  <rect class="cargo" x="180" y="130" width="50" height="24" rx="4"/>
+  <rect class="prior" x="180" y="173" width="413.5" height="24" rx="4"/>
+  <rect class="flux" x="180" y="216" width="148" height="24" rx="4"/>
+  <rect class="cargo" x="180" y="306" width="50" height="24" rx="4"/>
+  <rect class="prior" x="180" y="349" width="246" height="24" rx="4"/>
+  <rect class="flux" x="180" y="392" width="140.5" height="24" rx="4"/>
+</svg>

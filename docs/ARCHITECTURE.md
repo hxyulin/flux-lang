@@ -1306,6 +1306,51 @@ test suites, copies what it reaches and takes about 15 ms: 5 ms of type
 checking and 8 ms of MIR. A single `fluxc build` still does the
 libraries' work once.
 
+### Hashbrown release benchmarks
+
+The 2026-11-25 comparison ran on an Apple M5 Max with AArch64 Darwin.
+Both probes used locked hashbrown 0.17.2 with default features. Each
+iteration allocates a map for 4,096 keys, inserts them in input order and
+looks them up in reverse order. The default probe uses hashbrown's
+default hasher. The fixed probe uses the same deterministic hasher
+implementation in both compilers.
+
+The prior Flux build includes the NEON and slice optimizations in
+`39ff6c4e`. The measured Flux changes are in `76924daf`, using Keel
+`ee0a6c4b`. Both toolchains built offline in release mode with eight jobs,
+panic abort, debug assertions off and overflow checks off.
+
+| Hasher | Prior Flux cycles relative to Cargo | Flux cycles relative to Cargo | 95% CI | Cargo linked text | Prior Flux linked text | Flux linked text |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Default | 8.27× | **2.96×** | 2.94–2.99× | 226,088 B | 80,056 B | 66,820 B |
+| Fixed | 4.92× | **2.81×** | 2.79–2.83× | 225,128 B | 74,208 B | 62,212 B |
+
+Cycles are paired median ratios from 13 interleaved rounds with randomized
+execution order. Each binary runs one warm-up iteration before the repeated
+workload. macOS `time -l` captures process cycle counts, including startup
+and warm-up. Confidence limits use order statistics on the paired ratios.
+A byte-identical copy of the prior Flux executable served as a timing control.
+All measured executables returned the same lookup value and checksum within
+each round. Linked text is the Mach-O `__text` section size.
+
+| Hasher | Cargo clean build | Prior Flux clean build | Flux clean build |
+| --- | ---: | ---: | ---: |
+| Default | 0.567 s | 0.531 s | 0.604 s |
+| Fixed | 0.566 s | 0.531 s | 0.609 s |
+
+Clean build times are medians of three interleaved rounds using fresh build
+directories and the same cached dependency sources.
+
+Optimized native objects on arm64 macOS can inline bounded Rust dependency
+bodies from retained MIR. Private copies preserve the original symbol for
+address-taking. Flux resolves indirect calls when the referenced local,
+immutable table slot and exact call signature are known. Keel then inlines
+small callees and simplifies the resulting control flow. Flux also replaces
+truncated and shifted 128-bit products of widened 64-bit operands with the
+corresponding low- and high-half multiplies, so the default hasher avoids
+materializing the wide intermediates. The regression suite covers integer
+boundary values, native ABI, and hash-table collisions, growth and removal.
+
 ## Testing
 
 | Test | Checks |
